@@ -99,8 +99,15 @@ def select_dynamic_universe(
         if instrument.base_coin.upper() in excluded_bases:
             excluded["excluded_base_coin"] += 1
             continue
+        # Bybit documents ``symbolType`` as the region/segment to which the pair belongs,
+        # not as a crypto-vs-TradFi classifier.  Treating every non-empty value as
+        # non-crypto can collapse the dynamic universe to only a handful of symbols.
+        # Only explicitly identified xStocks are excluded by this guard.
         symbol_type = str(raw.get("symbolType") or "").strip().lower()
-        if symbol_type and symbol_type not in {"crypto"} and not settings.universe_allow_non_crypto_symbol_types:
+        if (
+            symbol_type in {"xstocks", "xstock"}
+            and not settings.universe_allow_non_crypto_symbol_types
+        ):
             excluded["non_crypto_symbol_type"] += 1
             continue
         if instrument.launch_time and instrument.launch_time > minimum_launch_time:

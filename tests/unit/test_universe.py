@@ -99,3 +99,25 @@ def test_dynamic_universe_ranks_by_turnover_and_honours_limit() -> None:
 
     assert selected.eligible_before_limit == 3
     assert selected.symbols == ("BBBUSDT", "CCCUSDT")
+
+
+def test_dynamic_universe_does_not_treat_region_symbol_type_as_non_crypto() -> None:
+    settings = Settings(
+        database_url="postgresql+psycopg://u:p@localhost/db",
+        universe_mode="dynamic",
+        universe_min_turnover_24h=0,
+        universe_max_spread_bps=0,
+    )
+    instruments = [
+        instrument("REGIONUSDT", symbol_type="innovation"),
+        instrument("XSTOCKUSDT", symbol_type="xstocks"),
+    ]
+    tickers = [
+        ticker("REGIONUSDT", turnover="10000000"),
+        ticker("XSTOCKUSDT", turnover="10000000"),
+    ]
+
+    selected = select_dynamic_universe(instruments, tickers, settings)
+
+    assert selected.symbols == ("REGIONUSDT",)
+    assert selected.excluded_counts["non_crypto_symbol_type"] == 1

@@ -65,7 +65,7 @@ async def list_recommendations(
     profile_id: UUID | None = None,
     symbol: str | None = None,
     include_expired: bool = False,
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=1000, ge=1, le=2000),
 ) -> dict:
     profile = await resolve_profile(session, profile_id)
     query = select(MarketSignal).order_by(desc(MarketSignal.publish_time)).limit(limit)
@@ -92,6 +92,8 @@ async def list_recommendations(
             "version": profile.version,
         },
         "items": items,
+        "returned_count": len(items),
+        "query_limit": limit,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 

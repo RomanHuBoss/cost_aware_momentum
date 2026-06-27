@@ -54,3 +54,42 @@ def test_configure_env_quotes_special_characters(tmp_path: Path) -> None:
     parsed = Parsed()
     assert parsed.secret_key == 'secret\\value"x'
     assert parsed.operator_password == "Pass # with spaces"
+
+
+def test_comma_separated_complex_settings_from_dotenv(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT\nHORIZONS_HOURS=4,8,12\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    settings = Settings()
+    assert settings.symbols == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert settings.horizons_hours == [4, 8, 12]
+
+
+def test_json_array_complex_settings_are_also_supported(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        'SYMBOLS=["BTCUSDT","ETHUSDT"]\nHORIZONS_HOURS=[4,12]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    settings = Settings()
+    assert settings.symbols == ["BTCUSDT", "ETHUSDT"]
+    assert settings.horizons_hours == [4, 12]
+
+
+def test_ui_requests_full_recommendation_page_and_shows_universe_count() -> None:
+    js = Path("web/js/app.js").read_text(encoding="utf-8")
+    html = Path("web/index.html").read_text(encoding="utf-8")
+    assert "limit: '2000'" in js
+    assert "updateUniverseState" in js
+    assert 'id="universe-state"' in html
+
+
+def test_worker_contains_dynamic_universe_catchup_inference() -> None:
+    runner = Path("app/workers/runner.py").read_text(encoding="utf-8")
+    assert "catchup_inference_job" in runner
+    assert "startup_backfill" in runner
+    assert "universe_expanded" in runner

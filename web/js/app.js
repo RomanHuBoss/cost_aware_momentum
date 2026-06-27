@@ -9,6 +9,7 @@ const state = {
   decisionAction: null,
   csrf: readCookie('cam_csrf'),
   eventSource: null,
+  universeStatus: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -145,11 +146,16 @@ async function loadRecommendations() {
   if (!state.activeProfile) return;
   const symbol = $('#symbol-filter').value.trim().toUpperCase();
   const includeExpired = $('#show-all').checked;
-  const params = new URLSearchParams({ profile_id: state.activeProfile.id, include_expired: String(includeExpired) });
+  const params = new URLSearchParams({
+    profile_id: state.activeProfile.id,
+    include_expired: String(includeExpired),
+    limit: '2000',
+  });
   if (symbol) params.set('symbol', symbol);
   const result = await api(`/api/v1/recommendations?${params}`);
   state.recommendations = result.items;
   $('#last-update').textContent = `Последнее обновление: ${new Date(result.generated_at).toLocaleString('ru-RU')}`;
+  updateUniverseState();
   renderRecommendations();
 }
 
@@ -159,11 +165,27 @@ async function loadStatus() {
     $('#system-dot').className = 'status-dot ok';
     $('#system-state').textContent = 'Система доступна';
     $('#model-state').textContent = `Модель: ${status.active_model.version}`;
+    const worker = status.heartbeats.find(item => item.service === 'worker');
+    state.universeStatus = worker?.details?.universe || null;
+    updateUniverseState();
   } catch (error) {
     $('#system-dot').className = 'status-dot bad';
     $('#system-state').textContent = 'Ограниченная готовность';
     $('#model-state').textContent = error.message;
   }
+}
+
+function updateUniverseState() {
+  const universe = state.universeStatus;
+  const cards = state.recommendations.length;
+  if (!universe) {
+    $('#universe-state').textContent = `Universe: данные worker еще не получены · карточек ${cards}`;
+    return;
+  }
+  const selected = Number(universe.selected_count || 0);
+  const eligible = Number(universe.eligible_before_limit || selected);
+  const mode = universe.mode === 'dynamic' ? 'динамический' : 'статический';
+  $('#universe-state').textContent = `Universe: ${selected} из ${eligible} · ${mode} · карточек ${cards}`;
 }
 
 async function loadAll() {

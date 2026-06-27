@@ -1,6 +1,6 @@
 # QA report
 
-Дата повторной проверки нативной версии 1.2.0: 27 июня 2026 г.
+Дата повторной проверки нативной версии 1.2.1: 27 июня 2026 г.
 
 ## Выполненные проверки
 
@@ -8,23 +8,25 @@
 |---|---|
 | `ruff check app scripts tests migrations manage.py` | Пройдена без замечаний |
 | `python -m compileall -q app scripts migrations tests manage.py` | Пройдена |
-| `pytest -q` | 33 теста пройдены, 2 PostgreSQL integration-теста пропущены без подключенной БД |
-| Проверка версии пакета | `1.2.0` |
+| `pytest tests/unit -q` | 36 unit-тестов пройдены |
+| Проверка версии пакета | `1.2.1` |
 | Поиск Docker/Compose-файлов | Запрещенная контейнерная конфигурация отсутствует |
 
 
-## Динамический universe 1.2.0
+## Динамический universe 1.2.1
 
 Проверено, что dynamic mode:
 
 1. загружает полный список `linear` инструментов с пагинацией;
 2. допускает только `Trading`, `LinearPerpetual`, USDT-settled и не pre-listing контракты;
 3. применяет возраст, turnover и spread filters;
-4. исключает stablecoin-base и non-crypto symbol types по политике;
+4. исключает stablecoin-base и только явно идентифицированные xStocks; региональное поле `symbolType` больше не трактуется как crypto/non-crypto classifier;
 5. ранжирует по 24h turnover и корректно обрабатывает `UNIVERSE_MAX_SYMBOLS=0` как отсутствие top-N cap;
 6. выполняет backfill только для новых участников и часовое обновление свечей перед inference;
 7. передает активный состав в inference, train и backtest;
-8. публикует counts и причины исключения в status/job metadata.
+8. публикует counts и причины исключения в status/job metadata;
+9. выполняет catch-up inference после стартового backfill и при расширении universe;
+10. UI запрашивает до 2000 рекомендаций и показывает selected/eligible/card counts.
 
 ## Регрессия Windows/Python 3.12
 

@@ -262,6 +262,36 @@ class Worker:
 
         return await self.run_job("hourly_inference", event_time, task)
 
+    async def catchup_inference_job(self, reason: str) -> dict:
+        """Publish missing current-hour signals after a universe bootstrap/change.
+
+        The normal hourly job is intentionally idempotent.  After switching from a
+        small static universe to a dynamic one, the current hour may already be marked
+        SUCCESS for the old symbols.  This separate job fills only missing natural keys
+        and therefore does not duplicate existing recommendations.
+        """
+        now = datetime.now(UTC)
+        event_time = now.replace(minute=0, second=0, microsecond=0)
+        scheduled = now.replace(second=0, microsecond=0)
+
+        async def task(session):
+            published = await publish_hourly_signals(
+                session,
+                settings=settings,
+                runtime=self.runtime,
+                event_time=event_time,
+                symbols=self.active_symbols,
+            )
+            return {
+                "reason": reason,
+                "event_time": event_time.isoformat(),
+                "universe_symbols": len(self.active_symbols),
+                "published": len(published),
+                "signal_ids": [str(item.id) for item in published],
+            }
+
+        return await self.run_job("universe_catchup_inference", scheduled, task)
+
     async def retention_job(self, event_time: datetime) -> dict:
         async def task(session):
             cutoff = datetime.now(UTC) - timedelta(hours=max(1, settings.ticker_retention_hours))
@@ -285,8 +315,10 @@ class Worker:
         try:
             await self.instrument_job()
             self.last_instrument_sync = datetime.now(UTC)
-            await self.market_job(backfill=True)
+            market_result = await self.market_job(backfill=True)
             self.last_market_sync = datetime.now(UTC)
+            if self.active_symbols and not market_result.get("skipped"):
+                await self.catchup_inference_job("startup_backfill")
             if settings.bybit_read_only_account:
                 await self.account_job()
                 self.last_account_sync = datetime.now(UTC)
@@ -307,8 +339,10 @@ class Worker:
                     self.last_market_sync is None
                     or (now - self.last_market_sync).total_seconds() >= settings.market_poll_seconds
                 ):
-                    await self.market_job(backfill=False)
+                    market_result = await self.market_job(backfill=False)
                     self.last_market_sync = now
+                    if market_result.get("backfilled_symbols", 0) > 0:
+                        await self.catchup_inference_job("universe_expanded")
                 if settings.bybit_read_only_account and (
                     self.last_account_sync is None
                     or (now - self.last_account_sync).total_seconds() >= settings.market_poll_seconds
