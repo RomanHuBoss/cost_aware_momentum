@@ -91,3 +91,17 @@ python manage.py model-registry activate --version <version>
 - операторский выбор создает selection bias;
 - backtest не является доказательством прибыли и не заменяет paper/shadow forward test;
 - полноценные PSI/feature/probability drift gates и автоматический rollback по realized performance еще не реализованы; текущий trainer использует holdout quality gate до активации.
+
+## Post-event counterfactual evaluation
+
+Начиная с версии 1.6.0 worker независимо от accept/reject разрешает первичный outcome каждого market signal: `TP`, `SL` или `TIMEOUT`. Evaluation использует ту же directional primary-barrier семантику, что и label contract:
+
+- только confirmed hourly last-price candles;
+- непрерывный путь от `event_time` до первого barrier hit или точного конца горизонта;
+- same-bar TP/SL трактуется как SL и помечается ambiguous;
+- missing bar не заменяется TIMEOUT;
+- outcome сохраняется один раз и не редактируется решением оператора.
+
+Для каждой execution-plan version сохраняется отдельный estimate по ее immutable qty/risk/cost snapshot. Комиссии входа/выхода применяются к соответствующим notionals, stop-gap reserve — только к SL. Funding включает только settlement timestamps, пересеченные гипотетическим holding period, когда timeline присутствует в snapshot. Legacy-планы без такого timeline получают `FUNDING_UNAVAILABLE` и не получают counterfactual R.
+
+Этот журнал предназначен для анализа selection bias, calibration и policy quality. Он не является realized P&L ручной сделки, не использует фактические fills и пока не служит автоматическим live rollback gate.

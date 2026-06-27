@@ -1,0 +1,561 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Literal
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.locks import acquire_advisory_xact_lock
+from app.db.models import Candle, ExecutionPlan, MarketSignal, PlanOutcome, SignalOutcome
+from app.risk.math import funding_cash_flow, gross_pnl
+from app.services.audit import append_audit_event, publish_outbox
+
+Direction = Literal["LONG", "SHORT"]
+Outcome = Literal["TP", "SL", "TIMEOUT"]
+EVALUATION_VERSION = "primary-barrier-hourly-v1"
+
+
+@dataclass(frozen=True)
+class OutcomeBar:
+    candle_id: int
+    open_time: datetime
+    close_time: datetime
+    high: Decimal
+    low: Decimal
+    close: Decimal
+
+
+@dataclass(frozen=True)
+class BarrierEvaluation:
+    outcome: Outcome
+    exit_price: Decimal
+    exit_time: datetime
+    source_candle_id: int
+    bars_evaluated: int
+    ambiguous: bool
+
+
+@dataclass(frozen=True)
+class PlanOutcomeEstimate:
+    valuation_status: Literal["VALUED", "NOT_SIZED", "FUNDING_UNAVAILABLE"]
+    gross_pnl: Decimal
+    estimated_trading_costs: Decimal
+    estimated_funding_cash_flow: Decimal
+    estimated_net_pnl: Decimal
+    counterfactual_r: Decimal | None
+
+
+def _require_aware(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
+
+
+def _validate_geometry(*, direction: Direction, entry: Decimal, stop: Decimal, take_profit: Decimal) -> None:
+    if entry <= 0 or stop <= 0 or take_profit <= 0:
+        raise ValueError("Barrier prices must be positive")
+    if direction == "LONG":
+        if not stop < entry < take_profit:
+            raise ValueError("Invalid LONG geometry: expected stop < entry < take_profit")
+    elif direction == "SHORT":
+        if not take_profit < entry < stop:
+            raise ValueError("Invalid SHORT geometry: expected take_profit < entry < stop")
+    else:
+        raise ValueError(f"Unsupported direction: {direction}")
+
+
+def evaluate_barrier_outcome(
+    bars: list[OutcomeBar],
+    *,
+    direction: Direction,
+    entry: Decimal,
+    stop: Decimal,
+    take_profit: Decimal,
+    window_start: datetime,
+    horizon_end: datetime,
+) -> BarrierEvaluation | None:
+    """Resolve the primary TP/SL/TIMEOUT outcome from confirmed hourly bars.
+
+    The evaluator matches the model-label contract: TP1 is the primary take-profit
+    barrier and a same-hour TP/SL touch is resolved conservatively as SL.  TIMEOUT
+    is emitted only when the confirmed candle ending exactly at ``horizon_end`` is
+    present; incomplete history remains unresolved instead of fabricating an exit.
+    """
+
+    _require_aware(window_start, "window_start")
+    _require_aware(horizon_end, "horizon_end")
+    if horizon_end <= window_start:
+        raise ValueError("horizon_end must be later than window_start")
+    entry = Decimal(entry)
+    stop = Decimal(stop)
+    take_profit = Decimal(take_profit)
+    _validate_geometry(direction=direction, entry=entry, stop=stop, take_profit=take_profit)
+
+    ordered = sorted(bars, key=lambda item: (item.open_time, item.close_time, item.candle_id))
+    previous_close: datetime = window_start
+    for index, item in enumerate(ordered, start=1):
+        _require_aware(item.open_time, "bar.open_time")
+        _require_aware(item.close_time, "bar.close_time")
+        if item.close_time <= item.open_time:
+            raise ValueError("Outcome bar close_time must be later than open_time")
+        if item.open_time < previous_close:
+            raise ValueError("Outcome bars overlap or are out of order")
+        if item.open_time != previous_close:
+            return None
+        previous_close = item.close_time
+        if item.close_time > horizon_end:
+            break
+        if item.high <= 0 or item.low <= 0 or item.close <= 0 or item.high < item.low:
+            raise ValueError("Outcome bar contains invalid prices")
+
+        if direction == "LONG":
+            tp_hit = item.high >= take_profit
+            sl_hit = item.low <= stop
+        else:
+            tp_hit = item.low <= take_profit
+            sl_hit = item.high >= stop
+
+        if tp_hit and sl_hit:
+            return BarrierEvaluation(
+                outcome="SL",
+                exit_price=stop,
+                exit_time=item.close_time,
+                source_candle_id=item.candle_id,
+                bars_evaluated=index,
+                ambiguous=True,
+            )
+        if tp_hit:
+            return BarrierEvaluation(
+                outcome="TP",
+                exit_price=take_profit,
+                exit_time=item.close_time,
+                source_candle_id=item.candle_id,
+                bars_evaluated=index,
+                ambiguous=False,
+            )
+        if sl_hit:
+            return BarrierEvaluation(
+                outcome="SL",
+                exit_price=stop,
+                exit_time=item.close_time,
+                source_candle_id=item.candle_id,
+                bars_evaluated=index,
+                ambiguous=False,
+            )
+
+    completed = [item for item in ordered if item.close_time == horizon_end]
+    if not completed:
+        return None
+    final = completed[-1]
+    return BarrierEvaluation(
+        outcome="TIMEOUT",
+        exit_price=final.close,
+        exit_time=horizon_end,
+        source_candle_id=final.candle_id,
+        bars_evaluated=ordered.index(final) + 1,
+        ambiguous=False,
+    )
+
+
+def estimate_plan_outcome(
+    *,
+    direction: Direction,
+    outcome: Outcome,
+    qty: Decimal,
+    entry_price: Decimal,
+    exit_price: Decimal,
+    actual_stress_loss: Decimal,
+    fee_rate_round_trip: Decimal,
+    slippage_rate: Decimal,
+    stop_gap_reserve_rate: Decimal,
+    funding_rate: Decimal,
+    funding_complete: bool = True,
+) -> PlanOutcomeEstimate:
+    """Estimate a counterfactual plan result from its immutable sizing snapshot.
+
+    This is an evaluation estimate, not actual execution P&L.  It uses the plan's
+    stored fee/slippage/funding assumptions; the stop-gap reserve is charged only
+    for an SL outcome.  An unsized plan receives the market outcome but no fake R.
+    """
+
+    qty = Decimal(qty)
+    entry_price = Decimal(entry_price)
+    exit_price = Decimal(exit_price)
+    actual_stress_loss = Decimal(actual_stress_loss)
+    fee_rate_round_trip = Decimal(fee_rate_round_trip)
+    slippage_rate = Decimal(slippage_rate)
+    stop_gap_reserve_rate = Decimal(stop_gap_reserve_rate)
+    funding_rate = Decimal(funding_rate)
+    if direction not in {"LONG", "SHORT"}:
+        raise ValueError(f"Unsupported direction: {direction}")
+    if outcome not in {"TP", "SL", "TIMEOUT"}:
+        raise ValueError(f"Unsupported outcome: {outcome}")
+    if qty < 0 or entry_price <= 0 or exit_price <= 0 or actual_stress_loss < 0:
+        raise ValueError("Plan outcome inputs must be non-negative and prices positive")
+    for rate in (fee_rate_round_trip, slippage_rate, stop_gap_reserve_rate):
+        if rate < 0:
+            raise ValueError("Cost rates must be non-negative")
+
+    if qty == 0:
+        return PlanOutcomeEstimate(
+            valuation_status="NOT_SIZED",
+            gross_pnl=Decimal("0"),
+            estimated_trading_costs=Decimal("0"),
+            estimated_funding_cash_flow=Decimal("0"),
+            estimated_net_pnl=Decimal("0"),
+            counterfactual_r=None,
+        )
+
+    entry_notional = qty * entry_price
+    exit_notional = qty * exit_price
+    gross = gross_pnl(direction, qty, entry_price, exit_price)
+    # The stored round-trip rate is two equal taker legs in the current plan
+    # contract.  Charge each leg against its own executed notional instead of
+    # applying both fees to the entry notional.
+    fee_rate_per_leg = fee_rate_round_trip / Decimal("2")
+    trading_costs = (entry_notional + exit_notional) * fee_rate_per_leg
+    trading_costs += entry_notional * slippage_rate
+    if outcome == "SL":
+        trading_costs += entry_notional * stop_gap_reserve_rate
+    funding = funding_cash_flow(direction, entry_notional, funding_rate)
+    net = gross - trading_costs + funding
+    counterfactual_r = net / actual_stress_loss if funding_complete and actual_stress_loss > 0 else None
+    return PlanOutcomeEstimate(
+        valuation_status="VALUED" if funding_complete else "FUNDING_UNAVAILABLE",
+        gross_pnl=gross,
+        estimated_trading_costs=trading_costs,
+        estimated_funding_cash_flow=funding,
+        estimated_net_pnl=net,
+        counterfactual_r=counterfactual_r,
+    )
+
+
+def _cost_value(plan: ExecutionPlan, key: str) -> Decimal:
+    costs = (plan.sizing_snapshot or {}).get("costs") or {}
+    return Decimal(str(costs.get(key, "0")))
+
+
+def _funding_rate_for_holding_period(
+    plan: ExecutionPlan, *, start_time: datetime, exit_time: datetime
+) -> tuple[Decimal, bool, dict[str, object]]:
+    """Return only settlements crossed by the hypothetical holding period.
+
+    Version 1.6 plans persist the per-settlement rate, next settlement and
+    interval in their immutable cost snapshot.  Legacy plans cannot safely
+    reconstruct this timeline; they are valued without funding and explicitly
+    marked incomplete instead of charging the full-horizon scenario.
+    """
+
+    costs = (plan.sizing_snapshot or {}).get("costs") or {}
+    required = {
+        "funding_rate_per_settlement",
+        "funding_next_settlement",
+        "funding_interval_minutes",
+    }
+    if not required.issubset(costs):
+        return Decimal("0"), False, {"source": "legacy_plan_snapshot", "settlements": 0}
+
+    raw_next = costs.get("funding_next_settlement")
+    raw_interval = costs.get("funding_interval_minutes")
+    per_settlement = Decimal(str(costs.get("funding_rate_per_settlement") or "0"))
+    if raw_next is None or raw_interval is None:
+        return Decimal("0"), True, {"source": "plan_snapshot", "settlements": 0}
+
+    next_settlement = datetime.fromisoformat(str(raw_next).replace("Z", "+00:00"))
+    _require_aware(next_settlement, "funding_next_settlement")
+    interval_minutes = int(raw_interval)
+    if interval_minutes <= 0:
+        raise ValueError("funding_interval_minutes must be positive")
+    interval = timedelta(minutes=interval_minutes)
+    while next_settlement <= start_time:
+        next_settlement += interval
+    settlements = 0
+    cursor = next_settlement
+    while cursor <= exit_time:
+        settlements += 1
+        cursor += interval
+    return (
+        per_settlement * settlements,
+        True,
+        {
+            "source": "plan_snapshot",
+            "settlements": settlements,
+            "rate_per_settlement": str(per_settlement),
+            "next_settlement": next_settlement.isoformat(),
+            "interval_minutes": interval_minutes,
+        },
+    )
+
+
+async def _record_plan_outcome(
+    session: AsyncSession,
+    *,
+    signal: MarketSignal,
+    signal_outcome: SignalOutcome,
+    plan: ExecutionPlan,
+    actor: str,
+) -> PlanOutcome:
+    funding_rate, funding_complete, funding_details = _funding_rate_for_holding_period(
+        plan, start_time=signal.event_time, exit_time=signal_outcome.exit_time
+    )
+    estimate = estimate_plan_outcome(
+        direction=signal.direction,
+        outcome=signal_outcome.outcome,
+        qty=plan.qty,
+        entry_price=signal.entry_reference,
+        exit_price=signal_outcome.exit_price,
+        actual_stress_loss=plan.actual_stress_loss,
+        fee_rate_round_trip=_cost_value(plan, "fee_rate_round_trip"),
+        slippage_rate=_cost_value(plan, "slippage_rate"),
+        stop_gap_reserve_rate=_cost_value(plan, "stop_gap_reserve_rate"),
+        funding_rate=funding_rate,
+        funding_complete=funding_complete,
+    )
+    row = PlanOutcome(
+        signal_outcome_id=signal_outcome.id,
+        plan_id=plan.id,
+        plan_version=plan.version,
+        outcome=signal_outcome.outcome,
+        valuation_status=estimate.valuation_status,
+        qty=plan.qty,
+        entry_price=signal.entry_reference,
+        exit_price=signal_outcome.exit_price,
+        gross_pnl=estimate.gross_pnl,
+        estimated_trading_costs=estimate.estimated_trading_costs,
+        estimated_funding_cash_flow=estimate.estimated_funding_cash_flow,
+        estimated_net_pnl=estimate.estimated_net_pnl,
+        counterfactual_r=estimate.counterfactual_r,
+        cost_assumptions={
+            "fee_rate_round_trip": str(_cost_value(plan, "fee_rate_round_trip")),
+            "slippage_rate": str(_cost_value(plan, "slippage_rate")),
+            "stop_gap_reserve_rate": str(_cost_value(plan, "stop_gap_reserve_rate")),
+            "funding_rate": str(funding_rate),
+            "funding": funding_details,
+            "fee_valuation": "equal_rate_per_leg_on_entry_and_exit_notional",
+            "source": "execution_plan.sizing_snapshot.costs",
+            "actual_execution_pnl": False,
+        },
+        resolved_at=datetime.now(UTC),
+    )
+    session.add(row)
+    await session.flush()
+    await append_audit_event(
+        session,
+        event_type="COUNTERFACTUAL_PLAN_OUTCOME_RECORDED",
+        entity_type="plan_outcome",
+        entity_id=str(row.id),
+        actor=actor,
+        payload={
+            "signal_id": str(signal.id),
+            "plan_id": str(plan.id),
+            "plan_version": plan.version,
+            "outcome": row.outcome,
+            "valuation_status": row.valuation_status,
+            "estimated_net_pnl": str(row.estimated_net_pnl),
+            "counterfactual_r": str(row.counterfactual_r) if row.counterfactual_r is not None else None,
+        },
+    )
+    return row
+
+
+async def resolve_counterfactual_outcomes(
+    session: AsyncSession,
+    *,
+    market_cutoff: datetime,
+    available_cutoff: datetime | None = None,
+    batch_size: int = 1000,
+    actor: str = "worker",
+) -> dict:
+    """Resolve mature signal outcomes and backfill every execution-plan version.
+
+    Only confirmed last-price hourly candles available by ``available_cutoff`` are
+    eligible.  Missing horizon data remains pending.  Signal and plan rows are
+    append-only and protected by natural uniqueness plus a per-signal transaction
+    advisory lock.
+    """
+
+    _require_aware(market_cutoff, "market_cutoff")
+    available_cutoff = available_cutoff or datetime.now(UTC)
+    _require_aware(available_cutoff, "available_cutoff")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    candidates = (
+        (
+            await session.execute(
+                select(MarketSignal)
+                .outerjoin(SignalOutcome, SignalOutcome.signal_id == MarketSignal.id)
+                .where(
+                    SignalOutcome.id.is_(None),
+                    MarketSignal.event_time < market_cutoff,
+                )
+                .order_by(MarketSignal.event_time, MarketSignal.id)
+                .limit(batch_size)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    resolved_count = 0
+    pending_count = 0
+    invalid: list[dict[str, str]] = []
+
+    for signal in candidates:
+        await acquire_advisory_xact_lock(session, "counterfactual_outcome", str(signal.id))
+        existing = (
+            await session.execute(select(SignalOutcome).where(SignalOutcome.signal_id == signal.id))
+        ).scalar_one_or_none()
+        if existing is not None:
+            continue
+        horizon_end = signal.event_time + timedelta(hours=signal.horizon_hours)
+        candle_cutoff = min(horizon_end, market_cutoff)
+        candle_rows = (
+            (
+                await session.execute(
+                    select(Candle)
+                    .where(
+                        Candle.symbol == signal.symbol,
+                        Candle.interval == "60",
+                        Candle.price_type == "last",
+                        Candle.confirmed.is_(True),
+                        Candle.open_time >= signal.event_time,
+                        Candle.close_time <= candle_cutoff,
+                        Candle.available_at <= available_cutoff,
+                    )
+                    .order_by(Candle.open_time, Candle.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        bars = [
+            OutcomeBar(
+                candle_id=row.id,
+                open_time=row.open_time,
+                close_time=row.close_time,
+                high=row.high,
+                low=row.low,
+                close=row.close,
+            )
+            for row in candle_rows
+        ]
+        try:
+            evaluation = evaluate_barrier_outcome(
+                bars,
+                direction=signal.direction,
+                entry=signal.entry_reference,
+                stop=signal.stop_loss,
+                take_profit=signal.take_profit_1,
+                window_start=signal.event_time,
+                horizon_end=horizon_end,
+            )
+        except ValueError as exc:
+            invalid.append({"signal_id": str(signal.id), "error": str(exc)})
+            continue
+        if evaluation is None:
+            pending_count += 1
+            continue
+
+        signal_outcome = SignalOutcome(
+            signal_id=signal.id,
+            outcome=evaluation.outcome,
+            exit_price=evaluation.exit_price,
+            exit_time=evaluation.exit_time,
+            horizon_end=horizon_end,
+            source_candle_id=evaluation.source_candle_id,
+            bars_evaluated=evaluation.bars_evaluated,
+            ambiguous=evaluation.ambiguous,
+            evaluation_version=EVALUATION_VERSION,
+            resolved_at=datetime.now(UTC),
+            details={
+                "price_type": "last",
+                "interval": "60",
+                "primary_take_profit": "take_profit_1",
+                "same_bar_rule": "SL",
+                "market_cutoff": market_cutoff.isoformat(),
+                "available_cutoff": available_cutoff.isoformat(),
+                "actual_execution_pnl": False,
+            },
+        )
+        session.add(signal_outcome)
+        await session.flush()
+        await append_audit_event(
+            session,
+            event_type="COUNTERFACTUAL_SIGNAL_OUTCOME_RESOLVED",
+            entity_type="signal_outcome",
+            entity_id=str(signal_outcome.id),
+            actor=actor,
+            payload={
+                "signal_id": str(signal.id),
+                "symbol": signal.symbol,
+                "direction": signal.direction,
+                "outcome": signal_outcome.outcome,
+                "exit_price": str(signal_outcome.exit_price),
+                "exit_time": signal_outcome.exit_time.isoformat(),
+                "ambiguous": signal_outcome.ambiguous,
+                "evaluation_version": signal_outcome.evaluation_version,
+            },
+        )
+        await publish_outbox(
+            session,
+            event_type="COUNTERFACTUAL_OUTCOME_RESOLVED",
+            aggregate_type="market_signal",
+            aggregate_id=str(signal.id),
+            payload={"symbol": signal.symbol, "outcome": signal_outcome.outcome},
+        )
+        resolved_count += 1
+
+    # A plan can be created after the signal outcome (for example after a profile
+    # recalculation while the recommendation is still current).  Backfill missing
+    # plan versions on every run instead of assuming all plans existed at first hit.
+    missing_plan_rows = (
+        await session.execute(
+            select(ExecutionPlan, MarketSignal, SignalOutcome)
+            .join(MarketSignal, MarketSignal.id == ExecutionPlan.signal_id)
+            .join(SignalOutcome, SignalOutcome.signal_id == MarketSignal.id)
+            .outerjoin(PlanOutcome, PlanOutcome.plan_id == ExecutionPlan.id)
+            .where(PlanOutcome.id.is_(None))
+            .order_by(SignalOutcome.resolved_at, ExecutionPlan.created_at)
+            .limit(batch_size)
+        )
+    ).all()
+    plan_count = 0
+    for plan, signal, signal_outcome in missing_plan_rows:
+        await acquire_advisory_xact_lock(session, "counterfactual_outcome", str(signal.id))
+        existing_plan = (
+            await session.execute(select(PlanOutcome).where(PlanOutcome.plan_id == plan.id))
+        ).scalar_one_or_none()
+        if existing_plan is not None:
+            continue
+        row = await _record_plan_outcome(
+            session,
+            signal=signal,
+            signal_outcome=signal_outcome,
+            plan=plan,
+            actor=actor,
+        )
+        await publish_outbox(
+            session,
+            event_type="COUNTERFACTUAL_PLAN_OUTCOME_RECORDED",
+            aggregate_type="execution_plan",
+            aggregate_id=str(plan.id),
+            payload={
+                "signal_id": str(signal.id),
+                "outcome": row.outcome,
+                "valuation_status": row.valuation_status,
+            },
+        )
+        plan_count += 1
+
+    return {
+        "candidate_signals": len(candidates),
+        "signals_resolved": resolved_count,
+        "signals_pending": pending_count,
+        "invalid_signals": invalid,
+        "plan_outcomes_recorded": plan_count,
+        "market_cutoff": market_cutoff.isoformat(),
+        "available_cutoff": available_cutoff.isoformat(),
+        "evaluation_version": EVALUATION_VERSION,
+    }

@@ -1,74 +1,77 @@
 # QA report
 
-Дата проверки версии 1.5.0: 28 июня 2026 г.
+Дата проверки версии 1.6.0: 28 июня 2026 г.
 
-## Выполненные проверки
+## Baseline до изменений
+
+Проверки выполнены на исходном архиве `cost_aware_momentum-main(3).zip` в изолированном Python environment:
 
 | Проверка | Результат |
 |---|---|
-| `python -m ruff check .` | пройдена |
-| `python -m compileall -q app scripts tests` | пройдена |
-| полный `python -m pytest -q` | 54 теста пройдено, 2 PostgreSQL integration-теста пропущены |
-| `node --check web/js/app.js` | пройдена |
-| Версия пакета / приложения | `1.5.0` / `1.5.0` |
-| Проверка запрещенных order endpoints | методов создания/изменения/отмены ордеров не обнаружено |
-| Проверка мусора релиза | `*.egg-info`, cache-каталоги и `SHA256SUMS` в итоговый архив не включаются |
+| `python --version` | PASSED — Python 3.13.5 |
+| `python -m pip check` | PASSED — broken requirements не обнаружены |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 54 passed, 2 skipped, 20 warnings |
+| `node --check web/js/app.js` | PASSED |
+| `python manage.py doctor` | NOT RUN — baseline wrapper не нашел project-local `.venv` |
+| `python manage.py test --require-integration` | NOT RUN — baseline wrapper не нашел project-local `.venv`; отдельная PostgreSQL test database отсутствовала |
 
-## Проверка dataset-aware trainer
+Baseline содержал 2 skipped PostgreSQL integration tests. После добавления нового outcome integration test post-check содержит 3 skipped integration tests; все требуют отдельную PostgreSQL test database.
 
-Проверено unit-тестами и статическим анализом:
+## Post-check версии 1.6.0
 
-1. background trainer является отдельным процессом и не выполняет fitting внутри FastAPI или inference worker;
-2. supervisor запускает trainer вместе с API/worker при `AUTO_TRAIN_ENABLED=true`;
-3. каждый цикл создает новый immutable artifact и сохраняет его атомарно;
-4. active artifact и candidate сохраняют полный `training_data_profile`: строки свечей, timestamps, полный состав символов, временные границы, coverage и SHA256-подписи;
-5. trainer использует тот же детерминированный top-N scope, что и ручное обучение;
-6. переобучение запускается не только по новым timestamps, но и после существенного historical row growth, появления новых покрытых символов, изменения top-N universe либо отсутствия profile у legacy-модели;
-7. небольшое несущественное расширение датасета не вызывает лишний цикл обучения;
-8. dataset-change trigger имеет отдельный cooldown и не отменяет обычное недельное расписание;
-9. bootstrap/candidate блокируется, если недостаточная доля символов имеет минимальную глубину истории;
-10. candidate оценивается абсолютным quality gate по holdout size, class balance, log loss, multiclass Brier и ECE;
-11. candidate и incumbent дополнительно сравниваются на одной cost-aware holdout policy по числу сделок, realized mean R, profit factor и drawdown;
-12. материальная ML- или policy-регрессия блокирует автоматическую активацию;
-13. при `AUTO_TRAIN_REQUIRE_IMPROVEMENT=true` отсутствие достаточного улучшения блокирует автоматическую активацию;
-14. activation защищена ожидаемой предыдущей active-version;
-15. session advisory lock предотвращает конкурентный fitting несколькими trainer instances;
-16. ошибка обучения или провал gate не деактивируют текущую модель;
-17. `ACTIVE_MODEL_PATH` отключает registry auto-activation;
-18. trainer heartbeat, phase, wait reason и data profile включены в status/readiness.
+| Проверка | Результат |
+|---|---|
+| `python -m pip check` | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 67 passed, 3 skipped, 20 warnings |
+| `python -m pytest -q tests/unit/test_counterfactual_outcomes.py` | PASSED — 12 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — единственный head `0004_counterfactual_outcomes` |
+| `git diff --check` | PASSED |
+| `python manage.py doctor` | FAILED (environment) — нет `.env`, замененных secrets, PostgreSQL service и native tools |
+| `python manage.py test --require-integration` | UNAVAILABLE — не заданы `POSTGRES_ADMIN_URL`/`TEST_DATABASE_URL` |
+| Версия пакета / приложения | `1.6.0` / `1.6.0` |
 
-## Проверка progressive history backfill
+## Red → green evidence
 
-Проверено, что:
+До production implementation новый acceptance module был запущен отдельно:
 
-- быстрый стартовый backfill не блокирует запуск на полную глубину;
-- отдельный job `history_backfill` расширяет историю активного universe назад малыми пакетами;
-- глубина ограничивается `HISTORY_BACKFILL_TARGET_DAYS` и launch time инструмента;
-- число символов и REST-страниц на цикл ограничивается конфигурацией;
-- ошибка отдельного символа не прерывает весь цикл;
-- прогресс и ошибки сохраняются в `job_runs` и worker heartbeat;
-- trainer оценивает уже фактически сохраненные в PostgreSQL данные, а не предполагаемую глубину lookback.
+```text
+python -m pytest -q tests/unit/test_counterfactual_outcomes.py
+```
 
-## Проверка ML-контракта
+RED: collection завершилась ошибкой `ModuleNotFoundError: No module named 'app.services.outcomes'`.
 
-Проверено, что:
+После реализации тот же module прошел: `12 passed`.
 
-- модель возвращает нормированное распределение `TP`, `SL`, `TIMEOUT`;
-- pooled модель учитывает взаимодействия признаков с LONG/SHORT direction;
-- barrier dataset создает оба сценария на symbol/time;
-- chronological split не разделяет один timestamp между окнами и сохраняет purge gap;
-- runtime отвергает legacy binary-direction artifact;
-- runtime проверяет task, feature list, classes, version и SHA256;
-- unsafe production defaults отклоняются конфигурацией;
-- baseline явно помечается как некалиброванная заглушка;
-- trained model и registry version должны совпадать в readiness;
-- policy evaluation применяет те же пороги net R/R, net EV и базовые cost assumptions, что и live policy;
-- текущие рекомендации API фильтруются по актуальному worker universe;
-- UI обновляет system status, universe и trainer state каждые 30 секунд.
+## Проверенный контракт counterfactual outcome
+
+Unit tests и static analysis подтверждают:
+
+1. LONG и SHORT используют правильную направленную геометрию;
+2. TP1/SL разрешаются только по confirmed contiguous hourly path;
+3. same-bar TP1+SL дает conservative `SL` и `ambiguous=true`;
+4. TIMEOUT не создается до точного confirmed horizon close;
+5. пропуск первой или промежуточной свечи оставляет outcome pending;
+6. invalid prices/directional geometry fail closed;
+7. plan costs используют immutable execution-plan snapshot;
+8. входная и выходная fee legs считаются от соответствующих executed notionals;
+9. stop-gap reserve применяется только к SL;
+10. funding scenario включает только settlement timestamps до outcome exit;
+11. legacy plan без funding timeline помечается `FUNDING_UNAVAILABLE`, R не выдумывается;
+12. qty=0 помечается `NOT_SIZED`, R не выдумывается;
+13. signal/plan uniqueness и transaction advisory lock защищают идемпотентность;
+14. audit и outbox создаются в той же транзакции;
+15. detail API и UI различают counterfactual estimate и actual manual P&L.
 
 ## PostgreSQL integration tests
 
-В текущей среде отдельная PostgreSQL test database не была настроена, поэтому 2 integration-теста пропущены. Перед эксплуатацией выполните:
+В среде сборки отсутствовали `postgres`, `psql`, `initdb`, `pg_dump`, `pg_restore` и отдельная test database. Поэтому migration 0004 не проверялась фактическим upgrade/downgrade на PostgreSQL; 3 integration tests остались skipped.
+
+Перед эксплуатацией выполните на отдельной базе:
 
 ```powershell
 $env:POSTGRES_ADMIN_URL="postgresql+psycopg://postgres:ПАРОЛЬ@localhost:5432/postgres"
@@ -76,33 +79,35 @@ py -3.12 manage.py test --require-integration
 Remove-Item Env:POSTGRES_ADMIN_URL
 ```
 
-Дополнительно требуется эксплуатационный smoke-test на отдельной тестовой базе:
+Затем отдельно проверьте:
 
-1. дождаться нескольких `history_backfill` jobs;
-2. убедиться, что `candle_rows`, `symbol_count` и coverage в status растут;
-3. дождаться dataset-change trigger и события `MODEL_CANDIDATE_TRAINED`;
-4. проверить `ops.job_runs`, heartbeat `trainer`, artifact SHA256 и `training_data_profile`;
-5. при прохождении gate проверить атомарную auto-activation и загрузку новой active-version worker;
-6. подтвердить, что провал gate оставляет прежнюю модель активной.
+1. upgrade существующей схемы 0003 → 0004;
+2. clean install до head;
+3. unique constraints при двух конкурентных worker attempts;
+4. outcome resolution после подтвержденных candles;
+5. backfill новой execution-plan version после уже разрешенного signal outcome;
+6. API detail и SSE refresh на локальном UI;
+7. downgrade только на disposable database.
+
+## Release boundary
+
+Проверено статически:
+
+- Bybit client не содержит order create/amend/cancel методов;
+- advisory-only boundary не изменена;
+- PostgreSQL остается единственной СУБД;
+- bind default остается `127.0.0.1`;
+- `.env`, credentials, model artifacts, caches, `.git`, `.venv`, `*.egg-info` и stale `SHA256SUMS` не должны входить в release ZIP.
 
 ## Не покрыто данной проверкой
 
-- качество модели на реальной накопленной истории конкретной установки;
-- profitability/OOS stability и paper/shadow forward evidence;
-- многократный walk-forward и OOF aggregation;
-- исторический orderbook, partial fills и operator latency;
-- PSI/live calibration drift и realized-performance auto-rollback;
-- нагрузочное обучение на полном динамическом universe;
-- backup/restore на инфраструктуре пользователя.
+- фактический PostgreSQL migration/integration run;
+- длительный worker smoke-test на реальном потоке Bybit;
+- 1–5-минутное восстановление порядка TP/SL;
+- partial TP1/TP2, no-fill, operator latency и historical orderbook impact;
+- сравнение estimated counterfactual P&L с фактическими fills;
+- paper/shadow forward evidence и экономическое преимущество стратегии.
 
-## Обязательная приемка
+## Release recheck
 
-1. `python manage.py migrate` — новых миграций в 1.5.0 нет, но head должен быть актуален.
-2. `python manage.py doctor`.
-3. PostgreSQL integration tests с отдельной базой.
-4. `/health/ready` после появления heartbeat worker и trainer.
-5. Проверка прогресса `history_backfill` и профиля доступного датасета.
-6. Проверка первого автоматически созданного background candidate в `model-registry list`.
-7. Проверка auto-activation только после прохождения ML- и policy-gates.
-8. Backup + restore-check.
-9. Paper/shadow forward period до любого production advisory использования.
+Финальные counts, SHA-256 ZIP и результат повторной распаковки зафиксированы в `docs/ITERATION_REPORT_2026-06-28_counterfactual-outcomes.md` после упаковки.

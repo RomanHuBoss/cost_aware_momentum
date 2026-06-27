@@ -338,6 +338,16 @@ function renderDetail() {
       ['Запас до ликвидации', `${fmt(d.risk.liquidation_buffer_rate * 100, 2)}%`], ['Ограничивающий фактор', d.risk.limiting_cap || 'Риск-бюджет'],
     ])}</section><section class="detail-card"><h3>Предупреждения</h3><ul class="reason-list">${(d.risk.warnings.length ? d.risk.warnings : ['Ограничений не зафиксировано']).map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></section></div>`;
   } else if (state.detailTab === 'economics') {
+    const outcome = d.counterfactual_outcome;
+    const planOutcome = outcome?.plan;
+    const valuationLabels = { VALUED: 'Рассчитано', NOT_SIZED: 'Без безопасного размера', FUNDING_UNAVAILABLE: 'Funding timeline недоступен' };
+    const outcomeCard = outcome ? `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3>${dataList([
+      ['Исход первичного барьера', escapeHtml(outcome.outcome)], ['Цена выхода', fmtPrice(outcome.exit_price)],
+      ['Время исхода', new Date(outcome.exit_time).toLocaleString('ru-RU')], ['Неоднозначный часовой бар', outcome.ambiguous ? 'Да, консервативно SL' : 'Нет'],
+      ['Оценка плана', planOutcome ? escapeHtml(valuationLabels[planOutcome.valuation_status] || planOutcome.valuation_status) : 'Ожидает расчета'],
+      ['Оценочный net P&L', planOutcome ? `${fmt(planOutcome.estimated_net_pnl, 4)} USDT` : '—'],
+      ['Контрфактический результат', planOutcome?.counterfactual_r === null || planOutcome?.counterfactual_r === undefined ? '—' : `${fmt(planOutcome.counterfactual_r, 4)}R`],
+    ])}<p class="section-note">Это автоматическая оценка TP1/SL/TIMEOUT по подтвержденным часовым свечам и сохраненным предположениям плана, а не фактический P&L ручного исполнения.</p></section>` : `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3><p>Еще не определен: горизонт не завершен, барьер не достигнут либо не хватает подтвержденной свечи.</p></section>`;
     html = `<div class="detail-grid"><section class="detail-card"><h3>Доход и риск</h3>${dataList([
       ['Gross R/R', fmt(d.economics.gross_rr, 2)], ['Net R/R', fmt(d.economics.net_rr, 2)],
       ['Net EV', `${d.economics.net_ev_r >= 0 ? '+' : ''}${fmt(d.economics.net_ev_r, 3)}R`], ['Break-even вероятность', `${fmt(d.economics.break_even_probability * 100, 1)}%`],
@@ -345,7 +355,7 @@ function renderDetail() {
     ])}</section><section class="detail-card"><h3>Издержки</h3>${dataList([
       ['Комиссии round-trip', `${fmt(d.economics.fee_rate_round_trip * 100, 4)}%`], ['Slippage', `${fmt(d.economics.slippage_rate * 100, 4)}%`],
       ['Funding-сценарий', `${fmt(d.economics.funding_rate_scenario * 100, 4)}%`], ['Gross edge', `${fmt(d.economics.gross_edge_rate * 100, 3)}%`],
-    ])}<p class="section-note">Spread не прибавляется повторно, когда он уже отражен в исполнимой цене.</p></section></div>`;
+    ])}<p class="section-note">Spread не прибавляется повторно, когда он уже отражен в исполнимой цене.</p></section>${outcomeCard}</div>`;
   } else if (state.detailTab === 'why') {
     html = `<section class="detail-card"><h3>Факторы рекомендации</h3><ul class="reason-list">${d.model.reasons.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul><p class="section-note">Факторы описывают вклад в решение модели и не доказывают причинность.</p></section>`;
   } else if (state.detailTab === 'reliability') {
@@ -530,7 +540,7 @@ function connectEvents() {
   const source = new EventSource('/api/v1/events'); state.eventSource = source;
   let timer;
   source.onmessage = () => { clearTimeout(timer); timer = setTimeout(() => { loadStatus(); loadRecommendations(); }, 400); };
-  ['MARKET_SIGNAL_PUBLISHED','EXECUTION_PLAN_UPDATED','ACTIVE_PROFILE_CHANGED','MANUAL_TRADE_UPDATED'].forEach(type => source.addEventListener(type, source.onmessage));
+  ['MARKET_SIGNAL_PUBLISHED','EXECUTION_PLAN_UPDATED','ACTIVE_PROFILE_CHANGED','MANUAL_TRADE_UPDATED','COUNTERFACTUAL_OUTCOME_RESOLVED','COUNTERFACTUAL_PLAN_OUTCOME_RECORDED'].forEach(type => source.addEventListener(type, source.onmessage));
   source.onerror = () => { $('#system-dot').className = 'status-dot'; };
 }
 

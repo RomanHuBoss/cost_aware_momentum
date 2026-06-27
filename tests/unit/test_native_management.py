@@ -93,3 +93,11 @@ def test_worker_contains_dynamic_universe_catchup_inference() -> None:
     assert "catchup_inference_job" in runner
     assert "startup_backfill" in runner
     assert "universe_expanded" in runner
+
+
+def test_worker_and_ui_expose_counterfactual_outcomes() -> None:
+    runner = Path("app/workers/runner.py").read_text(encoding="utf-8")
+    js = Path("web/js/app.js").read_text(encoding="utf-8")
+    assert "counterfactual_outcome_job" in runner
+    assert "COUNTERFACTUAL_OUTCOME_RESOLVED" in js
+    assert "Контрфактический исход" in js

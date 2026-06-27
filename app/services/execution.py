@@ -279,6 +279,13 @@ async def create_execution_plan(
                 "slippage_rate": str(costs.slippage_rate),
                 "stop_gap_reserve_rate": str(costs.stop_gap_reserve_rate),
                 "funding_rate": str(costs.funding_rate),
+                "funding_rate_per_settlement": str(ticker.funding_rate or Decimal("0"))
+                if ticker is not None
+                else "0",
+                "funding_next_settlement": ticker.next_funding_time.isoformat()
+                if ticker is not None and ticker.next_funding_time is not None
+                else None,
+                "funding_interval_minutes": spec.funding_interval_minutes if spec is not None else None,
             },
         },
     )

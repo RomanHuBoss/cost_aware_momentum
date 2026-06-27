@@ -27,6 +27,7 @@ from app.services.market_data import (
     sync_read_only_account,
     sync_tickers,
 )
+from app.services.outcomes import resolve_counterfactual_outcomes
 from app.services.signals import expire_old_signals, publish_hourly_signals
 from app.services.universe import UniverseSelection, resolve_universe
 
@@ -403,6 +404,17 @@ class Worker:
 
         return await self.run_job("universe_catchup_inference", scheduled, task)
 
+    async def counterfactual_outcome_job(self, event_time: datetime) -> dict:
+        async def task(session):
+            return await resolve_counterfactual_outcomes(
+                session,
+                market_cutoff=event_time,
+                available_cutoff=datetime.now(UTC),
+                actor="worker",
+            )
+
+        return await self.run_job("counterfactual_outcomes", event_time, task)
+
     async def retention_job(self, event_time: datetime) -> dict:
         async def task(session):
             cutoff = datetime.now(UTC) - timedelta(hours=max(1, settings.ticker_retention_hours))
@@ -434,6 +446,8 @@ class Worker:
             self.last_market_sync = datetime.now(UTC)
             if settings.history_backfill_enabled and self.active_symbols:
                 await self.history_backfill_job()
+            startup_event_time = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+            await self.counterfactual_outcome_job(startup_event_time)
             if self.active_symbols and not market_result.get("skipped"):
                 await self.catchup_inference_job("startup_backfill")
             if settings.bybit_read_only_account:
@@ -478,6 +492,7 @@ class Worker:
                 run_after = event_time + timedelta(seconds=settings.inference_delay_seconds)
                 if now >= run_after:
                     await self.hourly_market_close_job(event_time)
+                    await self.counterfactual_outcome_job(event_time)
                     await self.inference_job(event_time)
                     await self.retention_job(event_time)
                 await self.expiry_job()

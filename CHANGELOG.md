@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0 — 2026-06-28
+
+- Добавлен автоматический counterfactual outcome для каждого market signal независимо от accept/reject.
+- Исход TP1/SL/TIMEOUT определяется по непрерывной последовательности confirmed hourly candles; пропуски оставляют outcome pending.
+- Одновременное касание TP и SL внутри часа разрешается консервативно как SL с `ambiguous=true`.
+- Для каждой execution-plan version сохраняются оценочные gross/net P&L и результат в R по immutable sizing/cost snapshot.
+- Добавлены таблицы `advisory.signal_outcomes` и `advisory.plan_outcomes`, migration `0004_counterfactual_outcomes`.
+- Outcome доступен в API detail, вкладке «Экономика», audit/outbox и hourly worker job.
+- Добавлены regression tests для LONG/SHORT, ambiguity, missing bars, TIMEOUT, costs и unsized plans.
+
 ## 1.5.0 — 2026-06-28
 
 - Добавлен dataset-aware trigger фонового переобучения: historical row growth, symbol coverage и universe change.

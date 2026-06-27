@@ -9,14 +9,16 @@ from sqlalchemy import desc, func, select
 
 from app.api.deps import MutatingOperatorDep, SessionDep, SettingsDep
 from app.api.schemas import DecisionRequest
-from app.api.serializers import detail_dict, tile_dict
+from app.api.serializers import counterfactual_outcome_dict, detail_dict, tile_dict
 from app.db.models import (
     AuditEvent,
     CapitalProfile,
     ExecutionPlan,
     MarketSignal,
     OperatorDecision,
+    PlanOutcome,
     ServiceHeartbeat,
+    SignalOutcome,
     TickerSnapshot,
 )
 from app.services.audit import append_audit_event, publish_outbox
@@ -197,7 +199,14 @@ async def recommendation_detail(
         .scalars()
         .all()
     )
+    signal_outcome = (
+        await session.execute(select(SignalOutcome).where(SignalOutcome.signal_id == signal.id))
+    ).scalar_one_or_none()
+    plan_outcome = (
+        await session.execute(select(PlanOutcome).where(PlanOutcome.plan_id == plan.id))
+    ).scalar_one_or_none()
     payload = detail_dict(signal, plan, profile, ticker)
+    payload["counterfactual_outcome"] = counterfactual_outcome_dict(signal_outcome, plan_outcome)
     payload["audit"]["events"] = [
         {
             "time": row.event_time.isoformat(),

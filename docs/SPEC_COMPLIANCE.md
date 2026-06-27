@@ -2,15 +2,15 @@
 
 Дата проверки: 2026-06-28
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.5.0
+Версия проекта после коррекции: 1.6.0
 
 ## Итог
 
 Проект соответствует спецификации **частично**. Архитектурный и операторский контур реализован существенно лучше исследовательского контура: FastAPI/Uvicorn, PostgreSQL-only, отдельные worker и trainer, ручное исполнение, профили капитала, cost/risk engine, UI, audit и жизненный цикл рекомендаций присутствуют.
 
-Версии 1.3.0–1.4.0 исправили основную постановку ML и добавили автоматический train → compare → activate pipeline. Версия 1.5.0 закрывает обнаруженный эксплуатационный дефект: trainer больше не считает датасет изменившимся только по максимальному timestamp. Массовый historical backfill, расширение состава символов и изменение покрытия теперь являются самостоятельными причинами досрочного переобучения. Worker постепенно загружает реальную историю до целевой глубины, а auto-activation учитывает не только классификационные метрики, но и cost-aware policy на общем holdout.
+Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрывает отдельный audit/research gap: worker теперь автоматически сохраняет исход исходного market signal и оценку каждой execution-plan version независимо от accept/reject.
 
-Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, counterfactual outcomes и forward evidence остаются отдельными этапами.
+Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, 1–5-минутное восстановление пути и forward evidence остаются отдельными этапами.
 
 ## Реализовано и приведено в соответствие
 
@@ -36,6 +36,7 @@
 | Фактическое накопление глубокой истории | Реализовано в 1.5.0 | progressive `history_backfill` до target days с batch/page limits и учетом launch time |
 | Экономический gate auto-activation | Реализовано в 1.5.0 | policy trades, realized mean R, profit factor, drawdown и incumbent-relative limits |
 | Актуальный universe в UI/API | Исправлено в 1.5.0 | текущие карточки фильтруются по worker universe; status обновляется автоматически |
+| Counterfactual outcome journal | Реализовано базово в 1.6.0 | confirmed hourly TP1/SL/TIMEOUT для signal; отдельная оценка каждой plan version, audit/outbox/API/UI; legacy funding timeline fail-closed |
 
 ## Частичное соответствие
 
@@ -49,7 +50,6 @@
 | Fees | настраиваемая taker fee | автоматическое использование account fee-rate snapshot в обучении/backtest и live расчетах |
 | Portfolio risk | общий риск, single-name/directional ограничения | устойчивые correlation clusters и factor/beta exposure |
 | Надежность модели в UI | вероятности, version/calibration, training profile и причины | calibration bin, OOS analog count, confidence interval, regime statistics, live drift status |
-| Counterfactual outcome | сигналы сохраняются независимо от решения | автоматический post-event outcome для каждого сигнала и каждой plan version |
 | Автоматическая эксплуатационная защита | pre-activation ML/policy gate, сохранение incumbent | live realized-performance gate и автоматический rollback после production degradation |
 
 ## Не реализовано
@@ -61,7 +61,7 @@
 - историческая модель фактического исполнения по стакану;
 - завершенный paper/shadow forward evidence и доказательство экономического преимущества.
 
-## Состояние машинного обучения после коррекции 1.5.0
+## Состояние машинного обучения и post-event журнала после коррекции 1.6.0
 
 Технический ML-путь работает end-to-end:
 
@@ -77,6 +77,7 @@
 10. Candidate и incumbent оцениваются на одном holdout; кандидат активируется автоматически только после абсолютных и относительных ML- и policy-gates.
 11. Worker проверяет artifact hash/version/schema/horizon и загружает новую active-версию без перезапуска.
 12. Провал обучения/gate не влияет на текущий inference; предыдущая модель остается доступна для rollback.
+13. Отдельный worker job разрешает primary-barrier outcome по непрерывному confirmed hourly path и создает immutable plan-version estimates; отсутствующая свеча оставляет outcome pending.
 
 Это означает техническую работоспособность автоматического pipeline, но не подтвержденную прибыльность. Legacy active-модель без `training_data_profile` рассматривается как требующая обновления, однако остается действующей до появления кандидата, прошедшего проверки.
 

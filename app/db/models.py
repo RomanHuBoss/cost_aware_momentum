@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -288,6 +289,66 @@ class ExecutionPlan(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     signal: Mapped[MarketSignal] = relationship(back_populates="plans")
     profile: Mapped[CapitalProfile] = relationship()
+
+
+class SignalOutcome(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "signal_outcomes"
+    __table_args__ = (
+        UniqueConstraint("signal_id", name="uq_signal_outcome_signal"),
+        CheckConstraint("outcome IN ('TP', 'SL', 'TIMEOUT')", name="signal_outcome_value"),
+        CheckConstraint("exit_price > 0", name="signal_outcome_exit_price_positive"),
+        CheckConstraint("bars_evaluated > 0", name="signal_outcome_bars_positive"),
+        Index("ix_signal_outcome_resolved", "resolved_at"),
+        {"schema": "advisory"},
+    )
+
+    signal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.market_signals.id"), nullable=False, index=True
+    )
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    exit_price: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    exit_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    horizon_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_candle_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bars_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
+    ambiguous: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    evaluation_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    details: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class PlanOutcome(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "plan_outcomes"
+    __table_args__ = (
+        UniqueConstraint("plan_id", name="uq_plan_outcome_plan"),
+        CheckConstraint("outcome IN ('TP', 'SL', 'TIMEOUT')", name="plan_outcome_value"),
+        CheckConstraint(
+            "valuation_status IN ('VALUED', 'NOT_SIZED', 'FUNDING_UNAVAILABLE')",
+            name="plan_outcome_valuation_status",
+        ),
+        CheckConstraint("qty >= 0", name="plan_outcome_qty_non_negative"),
+        CheckConstraint("entry_price > 0 AND exit_price > 0", name="plan_outcome_prices_positive"),
+        Index("ix_plan_outcome_signal_outcome", "signal_outcome_id"),
+        {"schema": "advisory"},
+    )
+
+    signal_outcome_id: Mapped[UUID] = mapped_column(ForeignKey("advisory.signal_outcomes.id"), nullable=False)
+    plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.execution_plans.id"), nullable=False, index=True
+    )
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    valuation_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    exit_price: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    gross_pnl: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    estimated_trading_costs: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    estimated_funding_cash_flow: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    estimated_net_pnl: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    counterfactual_r: Mapped[Decimal | None] = mapped_column(RATE)
+    cost_assumptions: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class OperatorDecision(Base, UUIDPrimaryKeyMixin):

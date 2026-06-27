@@ -30,7 +30,7 @@
 | Versioned glossary и доступность | Да | DB glossary, hover/focus/tap tooltips |
 | Одна текущая рекомендация на символ | Да | supersede transaction + PostgreSQL partial unique index |
 | Audit/idempotency/outbox | Да | append-only hash chain, idempotency keys, outbox events, job runs и heartbeats |
-| Counterfactual outcome | Нет | сохраняется сигнал, но итог исхода автоматически не рассчитывается |
+| Counterfactual outcome | Да, базовый TP1/SL/TIMEOUT с 1.6.0 | immutable signal outcome и отдельный result для каждой plan version; confirmed hourly path, conservative same-bar SL, legacy funding fail-closed, API/UI/audit |
 | Event-driven portfolio backtest | Частично | barrier-policy test есть; нет no-fill/partial fills/operator latency/full portfolio simulator |
 | Drift monitoring/fallback | Частично | pre-activation ML/policy gate есть; PSI/live calibration drift и realized-performance auto-rollback остаются roadmap |
 | Historical orderbook impact | Нет | требуется собственный архив snapshots |

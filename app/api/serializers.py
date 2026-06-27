@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.db.models import CapitalProfile, ExecutionPlan, MarketSignal, TickerSnapshot
+from app.db.models import (
+    CapitalProfile,
+    ExecutionPlan,
+    MarketSignal,
+    PlanOutcome,
+    SignalOutcome,
+    TickerSnapshot,
+)
 
 
 def number(value):
@@ -179,3 +186,38 @@ def detail_dict(
     )
     tile["trading_plan"]["take_profits"] = [x for x in tile["trading_plan"]["take_profits"] if x]
     return tile
+
+
+def counterfactual_outcome_dict(
+    signal_outcome: SignalOutcome | None, plan_outcome: PlanOutcome | None
+) -> dict | None:
+    if signal_outcome is None:
+        return None
+    payload = {
+        "outcome": signal_outcome.outcome,
+        "exit_price": number(signal_outcome.exit_price),
+        "exit_time": signal_outcome.exit_time.isoformat(),
+        "horizon_end": signal_outcome.horizon_end.isoformat(),
+        "bars_evaluated": signal_outcome.bars_evaluated,
+        "ambiguous": signal_outcome.ambiguous,
+        "evaluation_version": signal_outcome.evaluation_version,
+        "resolved_at": signal_outcome.resolved_at.isoformat(),
+        "details": signal_outcome.details,
+        "plan": None,
+    }
+    if plan_outcome is not None:
+        payload["plan"] = {
+            "plan_id": str(plan_outcome.plan_id),
+            "plan_version": plan_outcome.plan_version,
+            "valuation_status": plan_outcome.valuation_status,
+            "qty": number(plan_outcome.qty),
+            "entry_price": number(plan_outcome.entry_price),
+            "exit_price": number(plan_outcome.exit_price),
+            "gross_pnl": number(plan_outcome.gross_pnl),
+            "estimated_trading_costs": number(plan_outcome.estimated_trading_costs),
+            "estimated_funding_cash_flow": number(plan_outcome.estimated_funding_cash_flow),
+            "estimated_net_pnl": number(plan_outcome.estimated_net_pnl),
+            "counterfactual_r": number(plan_outcome.counterfactual_r),
+            "cost_assumptions": plan_outcome.cost_assumptions,
+        }
+    return payload
