@@ -1,36 +1,77 @@
-# Model card
+# Model card — barrier outcome model v1
 
 ## Назначение
 
-Прогноз вероятностей `TP first`, `SL first`, `timeout` для условного LONG/SHORT сценария на горизонте нескольких часов. Решение `NO TRADE` принимает policy engine после учета издержек и риска.
+Модель оценивает распределение исходов `TP first`, `SL first`, `TIMEOUT` отдельно для условного LONG и SHORT на фиксированном горизонте. Она не прогнозирует `NO TRADE`: это решение последующего cost/risk policy engine.
 
-## Текущая поставка
+## Доступные модели
 
-В репозитории присутствует детерминированный momentum baseline. Он нужен для проверки ingestion → features → recommendation → UI → audit и не должен использоваться как доказательство экономического преимущества.
+- `logistic`: интерпретируемый pooled baseline с масштабированием и feature×direction interactions;
+- `hist_gradient_boosting`: нелинейный кандидат scikit-learn;
+- `deterministic_baseline`: только операционная заглушка для проверки контура, не калиброванная ML-модель.
 
-## Обучаемый pipeline
+## Данные и метки
 
-- point-in-time universe и contract specs;
-- только confirmed свечи и `available_at` timestamps;
-- direction-specific triple-barrier labels;
-- консервативное разрешение свечей, где TP и SL касаются внутри одного часа;
-- temporal folds с purging/embargo;
-- отдельная probability calibration;
-- final holdout, не используемый при выборе признаков/порогов;
-- cost-aware event backtest с no-fill, latency и portfolio constraints.
+- confirmed hourly last-price candles из PostgreSQL;
+- rolling point-in-time features без использования будущих строк;
+- два сценария на каждый symbol/time: LONG и SHORT;
+- ATR-based stop/TP barriers;
+- при одновременном касании TP и SL внутри часовой свечи используется консервативный исход SL;
+- TIMEOUT закрывается по последнему close горизонта.
 
-## Метрики допуска
+Ограничение: обучение пока не использует 1–5-минутный путь, исторический orderbook, исторические membership snapshots universe и publish-lag для всех внешних рядов.
 
-Brier score, log loss, calibration error, net EV/trade, drawdown, cost/gross-profit ratio, turnover, stability по времени/symbol/liquidity/direction/horizon/regime. Результат должен переживать cost x1.5/x2, operator delays и удаление лучших сделок/монет.
+## Разбиение и калибровка
 
-## Известные ограничения
+Данные делятся хронологически на train, более позднее calibration window и final holdout. Между окнами создается purge gap не меньше горизонта. В каждой calibration class должна присутствовать TP/SL/TIMEOUT. Вероятности калибруются one-vs-rest sigmoid и затем нормируются.
 
-- историческая глубина стакана не предоставляется текущим snapshot API автоматически; impact-модель уточняется после накопления snapshots;
-- часовой OHLC не определяет порядок внутрисвечных касаний;
+Текущая поставка не реализует многооконный expanding/rolling walk-forward и OOF aggregation; поэтому final holdout является необходимой, но недостаточной проверкой.
+
+## Метрики
+
+Artifact хранит:
+
+- multiclass log loss и Brier score;
+- Brier и ECE для каждого исхода;
+- macro OVR AUC;
+- accuracy только как вспомогательную метрику;
+- распределение классов и долю ambiguous labels;
+- barrier-policy net return, win rate, max drawdown, no-trade rate и cost stress x1.5/x2 в backtest report.
+
+Порог сделки не должен выбираться по accuracy.
+
+## Artifact contract
+
+Joblib bundle обязан содержать:
+
+- `task=barrier_outcome_v1`;
+- model/version/model_type;
+- точный список feature names и `feature_schema_version=hourly-barrier-v1`;
+- outcome classes `TP`, `SL`, `TIMEOUT`;
+- horizon и параметры barriers;
+- calibration version и holdout metrics.
+
+При активации и загрузке проверяются version, SHA256, task, feature schema, classes и соответствие `DEFAULT_HORIZON_HOURS`. Legacy binary-direction artifacts отвергаются.
+
+## Активация и rollback
+
+Обучение по умолчанию регистрирует artifact как неактивный. После review:
+
+```bash
+python manage.py model-registry activate --version <version>
+```
+
+Одновременно допускается только одна active-модель. Worker перечитывает registry каждые `MODEL_REFRESH_SECONDS`. Активация предыдущей версии выполняет rollback и создает audit/outbox event.
+
+## Baseline policy
+
+В paper/development baseline может быть разрешен через `ALLOW_BASELINE_MODEL=true`, но каждая рекомендация получает предупреждение. В production validator требует `ALLOW_BASELINE_MODEL=false`; отсутствие валидной active-модели делает запуск/readiness неуспешным.
+
+## Известные риски
+
+- калибровка и costs деградируют при смене режима;
 - cross-sectional dependence уменьшает эффективный размер выборки;
-- ручной выбор оператора создает selection bias, поэтому сохраняется counterfactual outcome всех сигналов;
-- крипторынок нестационарен, calibration и costs могут деградировать.
-
-## Активация
-
-Новая версия активируется только после воспроизводимого артефакта, SHA256, сохраненного dataset snapshot, fold metrics, final holdout, paper/shadow evidence и rollback-плана. Одновременно активна одна production-модель на конкретную feature/calibration schema.
+- hourly ambiguity создает консервативную, но грубую метку;
+- операторский выбор создает selection bias;
+- backtest не является доказательством прибыли и не заменяет paper/shadow forward test;
+- drift monitoring и автоматический fallback еще не реализованы.

@@ -74,4 +74,17 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 
 ## Model runtime
 
-`MODEL_DIR` по умолчанию равен относительному каталогу `models`. `ACTIVE_MODEL_PATH` указывает на joblib-артефакт. SHA256 сохраняется при обучении. При отсутствии артефакта и `ALLOW_BASELINE_MODEL=true` запускается детерминированный baseline с явным предупреждением. Для production рекомендуется `ALLOW_BASELINE_MODEL=false`.
+| Переменная | Назначение |
+|---|---|
+| `MODEL_DIR` | каталог immutable joblib artifacts |
+| `ACTIVE_MODEL_PATH` | аварийный явный override; обычно оставляется пустым |
+| `ALLOW_BASELINE_MODEL` | разрешить некалиброванную операционную заглушку |
+| `MODEL_REFRESH_SECONDS` | период перечитывания active model registry worker |
+| `HORIZONS_HOURS` | разрешенные горизонты обучения |
+| `DEFAULT_HORIZON_HOURS` | горизонт, которому должна соответствовать active live-модель |
+
+Нормальный источник active model — таблица `model.model_registry`. Обучение сохраняет SHA256 и регистрирует artifact inactive. Команда `model-registry activate` проверяет file/hash/version/task/schema/classes/horizon, деактивирует предыдущую версию и создает audit/outbox event. Worker повторяет проверку при загрузке.
+
+`ACTIVE_MODEL_PATH` сохранен только как явный operational override и также проходит строгую проверку. Он не должен скрытно расходиться с registry в штатной эксплуатации.
+
+В `production` validator требует `ALLOW_BASELINE_MODEL=false`, `ALLOW_DEMO_SEED=false`, измененные `SECRET_KEY` и `OPERATOR_PASSWORD`. При отсутствии валидной active-модели worker не стартует корректно, а readiness остается false.

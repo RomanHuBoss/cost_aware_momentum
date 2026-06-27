@@ -1,11 +1,14 @@
 from pathlib import Path
 
+import joblib
+import numpy as np
 import pytest
 
 from app.api.deps import sign_session, verify_session
 from app.bybit.client import BybitClient
 from app.config import Settings
 from app.ml.runtime import ModelRuntime
+from app.ml.training import MODEL_FEATURE_NAMES, TemporalCalibratedBarrierModel
 
 
 def test_postgresql_is_mandatory() -> None:
@@ -43,3 +46,61 @@ def test_empty_active_model_path_is_none() -> None:
         database_url="postgresql+psycopg://u:p@localhost/db",
     )
     assert settings.active_model_path is None
+
+
+def test_production_rejects_demo_and_baseline_defaults() -> None:
+    with pytest.raises(ValueError, match="Unsafe production configuration"):
+        Settings(
+            app_mode="production",
+            database_url="postgresql+psycopg://u:p@localhost/db",
+        )
+
+
+def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
+    rng = np.random.default_rng(7)
+    width = len(MODEL_FEATURE_NAMES)
+    x_train = rng.normal(size=(1200, width))
+    x_train[:, -1] = rng.choice([-1.0, 1.0], size=len(x_train))
+    signal = x_train[:, 0] * x_train[:, -1]
+    y_train = np.where(signal > 0.4, "TP", np.where(signal < -0.4, "SL", "TIMEOUT"))
+    x_cal = rng.normal(size=(600, width))
+    x_cal[:, -1] = rng.choice([-1.0, 1.0], size=len(x_cal))
+    signal_cal = x_cal[:, 0] * x_cal[:, -1]
+    y_cal = np.where(signal_cal > 0.4, "TP", np.where(signal_cal < -0.4, "SL", "TIMEOUT"))
+    model = TemporalCalibratedBarrierModel().fit(x_train, y_train, x_cal, y_cal)
+    path = tmp_path / "barrier.joblib"
+    joblib.dump(
+        {
+            "task": "barrier_outcome_v1",
+            "model": model,
+            "model_type": "logistic",
+            "version": "test-barrier-v1",
+            "calibration_version": "test-cal-v1",
+            "feature_names": MODEL_FEATURE_NAMES,
+            "horizon_hours": 8,
+        },
+        path,
+    )
+
+    runtime = ModelRuntime(path, allow_baseline=False)
+    runtime.load(expected_version="test-barrier-v1")
+    prediction = runtime.predict({"ret_1h": 0.03, "atr_pct_14": 0.01})
+
+    assert runtime.is_baseline is False
+    assert prediction.p_tp + prediction.p_sl + prediction.p_timeout == pytest.approx(1.0)
+    assert prediction.model_version == "test-barrier-v1"
+
+
+def test_runtime_rejects_legacy_direction_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.joblib"
+    joblib.dump(
+        {
+            "model": object(),
+            "version": "legacy",
+            "feature_names": MODEL_FEATURE_NAMES[:-1],
+        },
+        path,
+    )
+    runtime = ModelRuntime(path, allow_baseline=False)
+    with pytest.raises(ValueError, match="legacy model task"):
+        runtime.load()

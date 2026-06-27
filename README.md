@@ -1,7 +1,7 @@
 # Cost-aware hourly ML momentum
 
 
-> Версия 1.2.2: операторская панель показывает не более одной текущей рекомендации на символ; более старый часовой сигнал автоматически заменяется новым.
+> Версия 1.3.0: ML-контур приведен к direction-specific TP/SL/TIMEOUT постановке, active model связан с PostgreSQL registry и проверяется worker/readiness. Полное соответствие исследовательской части спецификации пока не заявляется.
 
 Локальная рекомендательная система для линейных USDT-фьючерсов Bybit. Система получает рыночные данные, строит часовые признаки, формирует LONG/SHORT-кандидаты, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения, а затем показывает оператору исполнимый план. Ордеры на биржу приложение **не отправляет**.
 
@@ -12,7 +12,7 @@
 - FastAPI/Uvicorn: versioned REST API, аутентификация, CSRF, SSE, health/readiness.
 - PostgreSQL: единственный источник истины во всех режимах.
 - Worker: справочники Bybit, свечи, tickers, funding/OI, read-only account snapshots, часовой inference, expiry/reconciliation.
-- ML/research: воспроизводимая baseline-модель, обучение, калибровка, temporal split и backtest CLI.
+- ML/research: direction-conditional TP/SL/TIMEOUT модели, отдельная временная калибровка, purge/final holdout, registry activation и barrier-policy backtest CLI.
 - Risk engine: net R/R, net EV, комиссии, funding, stress-downside, sizing, margin/liquidity/portfolio/min-order checks.
 - Operator UI: компактные плитки, профиль капитала, подробный диалог, словарь подсказок, accept/reject и журнал ручных сделок.
 - Audit: append-only hash chain, idempotency keys, outbox events, job runs и service heartbeats.
@@ -144,6 +144,8 @@ python manage.py lint           выполнить Ruff
 python manage.py backup         создать pg_dump в backups/
 python manage.py restore-check  восстановить dump во временную базу и проверить данные
 python manage.py report         сформировать ежедневный отчет
+python manage.py model-registry list                         список моделей
+python manage.py model-registry activate --version VERSION   активация или rollback
 ```
 
 На Linux/macOS эти же команды доступны как цели `make`, но `make` не является обязательным.
@@ -171,16 +173,22 @@ Remove-Item Env:POSTGRES_ADMIN_URL
 - `production`: advisory-only; отправка ордеров не реализована и не разрешена архитектурой клиента.
 - `backtest`: исследовательские CLI-процессы с PostgreSQL.
 
-## Обучение и backtest
+## Обучение, проверка и активация модели
 
 ```bash
-python manage.py train --output models/hourly_model.joblib
-python manage.py backtest --model models/hourly_model.joblib --output reports/backtest.json
+python manage.py train --horizon 8 --model-type logistic
+python manage.py model-registry list
+python manage.py backtest --model models/<artifact>.joblib --output reports/backtest.json
+python manage.py model-registry activate --version <model-version>
 python manage.py report --output reports/daily_report.json
 python manage.py replay --signal-id <UUID> --output reports/replay.json
 ```
 
-Baseline-модель включена только как операционная заглушка. Она не является доказательством прибыльности. Активация обученного артефакта выполняется через `ACTIVE_MODEL_PATH` после проверки OOS/holdout и model card.
+Обучение создает direction-specific метки `TP`, `SL`, `TIMEOUT` для условных LONG/SHORT сценариев, использует хронологические train/calibration/final-holdout окна и регистрирует artifact неактивным. После проверки метрик активируйте конкретную immutable-версию. Worker проверяет SHA256, task/schema/classes/horizon и загружает ее без перезапуска. Активация предыдущей версии является rollback.
+
+Baseline остается только операционной заглушкой для paper/development. Его вероятности не калиброваны. В `production` конфигурация требует `ALLOW_BASELINE_MODEL=false`, безопасные credentials и отключенный demo seed.
+
+Текущий backtest еще не моделирует исторический стакан, partial fills, полноценный портфель и задержки оператора. Поэтому работающий ML pipeline и положительный отчет не являются доказательством прибыльности. Полная матрица соответствия: [SPEC_COMPLIANCE](docs/SPEC_COMPLIANCE.md).
 
 ## Безопасность
 

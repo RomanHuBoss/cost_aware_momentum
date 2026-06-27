@@ -41,7 +41,9 @@ def decimal(value: float | str | Decimal) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
-async def _candles_frame(session: AsyncSession, symbol: str, limit: int = 300) -> pd.DataFrame:
+async def _candles_frame(
+    session: AsyncSession, symbol: str, *, cutoff: datetime, limit: int = 300
+) -> pd.DataFrame:
     rows = (
         (
             await session.execute(
@@ -51,6 +53,8 @@ async def _candles_frame(session: AsyncSession, symbol: str, limit: int = 300) -
                     Candle.interval == "60",
                     Candle.price_type == "last",
                     Candle.confirmed.is_(True),
+                    Candle.close_time <= cutoff,
+                    Candle.available_at <= cutoff,
                 )
                 .order_by(desc(Candle.open_time))
                 .limit(limit)
@@ -63,6 +67,7 @@ async def _candles_frame(session: AsyncSession, symbol: str, limit: int = 300) -
         {
             "symbol": row.symbol,
             "open_time": row.open_time,
+            "close_time": row.close_time,
             "open": float(row.open),
             "high": float(row.high),
             "low": float(row.low),
@@ -86,20 +91,25 @@ async def _latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot |
     ).scalar_one_or_none()
 
 
-async def _latest_spec(session: AsyncSession, symbol: str) -> InstrumentSpecHistory | None:
+async def _latest_spec(
+    session: AsyncSession, symbol: str, *, cutoff: datetime
+) -> InstrumentSpecHistory | None:
     return (
         await session.execute(
             select(InstrumentSpecHistory)
-            .where(InstrumentSpecHistory.symbol == symbol)
+            .where(
+                InstrumentSpecHistory.symbol == symbol,
+                InstrumentSpecHistory.valid_from <= cutoff,
+            )
             .order_by(desc(InstrumentSpecHistory.valid_from))
             .limit(1)
         )
     ).scalar_one_or_none()
 
 
-def _spread_bps(ticker: TickerSnapshot) -> float:
+def _spread_bps(ticker: TickerSnapshot) -> float | None:
     if not ticker.bid_price or not ticker.ask_price or ticker.bid_price <= 0 or ticker.ask_price <= 0:
-        return 0.0
+        return None
     mid = (ticker.bid_price + ticker.ask_price) / Decimal("2")
     return float((ticker.ask_price - ticker.bid_price) / mid * Decimal("10000"))
 
@@ -191,8 +201,23 @@ async def publish_hourly_signals(
         if ticker is None:
             logger.warning("Skipping symbol without ticker", extra={"symbol": symbol})
             continue
-        spec = await _latest_spec(session, symbol)
-        frame = await _candles_frame(session, symbol, limit=max(100, settings.initial_backfill_bars))
+        ticker_age = (now - ticker.source_time).total_seconds()
+        if ticker_age < 0 or ticker_age > settings.max_ticker_age_seconds:
+            logger.warning(
+                "Skipping symbol with stale ticker",
+                extra={"symbol": symbol, "ticker_age_seconds": ticker_age},
+            )
+            continue
+        spec = await _latest_spec(session, symbol, cutoff=event_time)
+        if spec is None:
+            logger.warning("Skipping symbol without point-in-time instrument spec", extra={"symbol": symbol})
+            continue
+        frame = await _candles_frame(
+            session,
+            symbol,
+            cutoff=event_time,
+            limit=max(100, settings.initial_backfill_bars),
+        )
         if len(frame) < settings.universe_min_history_bars:
             logger.warning(
                 "Skipping symbol with insufficient candle history",
@@ -200,15 +225,47 @@ async def publish_hourly_signals(
             )
             continue
         snapshot = latest_feature_snapshot(frame)
-        if not snapshot.values:
-            logger.warning("Skipping symbol without feature data", extra={"symbol": symbol})
+        missing_flags = [flag for flag in snapshot.quality_flags if flag.startswith("MISSING_")]
+        if not snapshot.values or missing_flags:
+            logger.warning(
+                "Skipping symbol with incomplete feature vector",
+                extra={"symbol": symbol, "quality_flags": list(snapshot.quality_flags)},
+            )
             continue
-        latest_candle_time = frame.iloc[-1]["open_time"]
-        if hasattr(latest_candle_time, "to_pydatetime"):
-            latest_candle_time = latest_candle_time.to_pydatetime()
-        if latest_candle_time.tzinfo is None:
-            latest_candle_time = latest_candle_time.replace(tzinfo=UTC)
-        data_age = (now - (latest_candle_time + timedelta(hours=1))).total_seconds()
+        latest_candle_close = frame.iloc[-1]["close_time"]
+        if hasattr(latest_candle_close, "to_pydatetime"):
+            latest_candle_close = latest_candle_close.to_pydatetime()
+        if latest_candle_close.tzinfo is None:
+            latest_candle_close = latest_candle_close.replace(tzinfo=UTC)
+        data_age = (event_time - latest_candle_close).total_seconds()
+        if data_age < 0 or data_age > settings.max_candle_age_seconds:
+            logger.warning(
+                "Skipping symbol with stale candle cutoff",
+                extra={"symbol": symbol, "data_age_seconds": data_age, "event_time": event_time.isoformat()},
+            )
+            continue
+
+        spread_bps = _spread_bps(ticker)
+        if spread_bps is None:
+            logger.warning("Skipping symbol without executable bid/ask", extra={"symbol": symbol})
+            continue
+        if spread_bps > settings.max_spread_bps:
+            logger.info(
+                "Skipping symbol above executable spread limit",
+                extra={"symbol": symbol, "spread_bps": spread_bps},
+            )
+            continue
+        if (
+            ticker.funding_rate
+            and ticker.next_funding_time
+            and ticker.next_funding_time <= now + timedelta(hours=settings.default_horizon_hours)
+            and spec.funding_interval_minutes is None
+        ):
+            logger.warning(
+                "Skipping symbol because funding settlement is in horizon but interval is unknown",
+                extra={"symbol": symbol},
+            )
+            continue
 
         prediction = runtime.predict(snapshot.values)
         direction = prediction.direction
@@ -228,7 +285,6 @@ async def publish_hourly_signals(
             entry_low, entry_high = reference - zone_half, reference + zone_half
             stop, tp1, tp2 = reference + stop_distance, reference - tp_distance, reference - tp2_distance
 
-        spread_bps = _spread_bps(ticker)
         # Entry reference already uses executable ask/bid; residual slippage must not add the spread again.
         slippage_bps = settings.base_slippage_bps
         fee_round_trip = settings.fee_rate_taker * 2
@@ -237,7 +293,7 @@ async def publish_hourly_signals(
                 start_time=now,
                 horizon_hours=settings.default_horizon_hours,
                 next_settlement=ticker.next_funding_time,
-                interval_minutes=spec.funding_interval_minutes if spec else None,
+                interval_minutes=spec.funding_interval_minutes,
                 current_rate=ticker.funding_rate or Decimal("0"),
             )
         )
@@ -258,7 +314,10 @@ async def publish_hourly_signals(
             p_timeout=prediction.p_timeout,
         )
         gross_rr = abs(tp1 - reference) / abs(reference - stop)
-        natural_key = f"{symbol}-{event_time:%Y%m%dT%H0000Z}-{direction}-h{settings.default_horizon_hours}-{prediction.model_version}"
+        natural_key = (
+            f"{symbol}-{event_time:%Y%m%dT%H0000Z}-h{settings.default_horizon_hours}-"
+            f"{prediction.model_version}"
+        )
         # Different worker job types can overlap during startup/catch-up.  Lock
         # by symbol before the idempotency check so two transactions cannot both
         # publish a current recommendation for the same instrument.
@@ -276,16 +335,8 @@ async def publish_hourly_signals(
         )
 
         warnings: list[str] = []
-        if data_age > settings.max_candle_age_seconds:
-            warnings.append("Последняя подтвержденная часовая свеча устарела")
-        if spread_bps > settings.max_spread_bps:
-            warnings.append(f"Спред {spread_bps:.1f} б.п. превышает базовый лимит")
-        if (
-            ticker.funding_rate
-            and ticker.next_funding_time
-            and (spec is None or spec.funding_interval_minutes is None)
-        ):
-            warnings.append("Интервал funding недоступен; funding не включен в сценарий")
+        if runtime.is_baseline:
+            warnings.append("Используется некалиброванный baseline, а не обученная ML-модель")
         warnings.extend(f"Качество данных: {flag}" for flag in snapshot.quality_flags)
 
         signal = MarketSignal(
@@ -317,8 +368,10 @@ async def publish_hourly_signals(
             stress_downside_rate=float(downside),
             model_version=prediction.model_version,
             calibration_version=prediction.calibration_version,
-            feature_schema_version="hourly-core-v1",
-            data_cutoff=latest_candle_time + timedelta(hours=1),
+            feature_schema_version=(
+                "hourly-core-v1" if runtime.is_baseline else "hourly-barrier-v1"
+            ),
+            data_cutoff=event_time,
             reasons=list(prediction.reasons),
             warnings=warnings,
             feature_snapshot={**snapshot.values, "score": prediction.score, "spread_bps": spread_bps},

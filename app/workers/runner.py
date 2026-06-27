@@ -5,6 +5,7 @@ import logging
 import signal
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
@@ -14,7 +15,7 @@ from app.bybit.client import BybitClient
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.locks import advisory_lock
-from app.db.models import JobRun, ServiceHeartbeat, TickerSnapshot
+from app.db.models import JobRun, ModelRegistry, ServiceHeartbeat, TickerSnapshot
 from app.logging import configure_logging
 from app.ml.runtime import ModelRuntime
 from app.services.market_data import (
@@ -41,11 +42,13 @@ class Worker:
             api_secret=settings.bybit_api_secret,
             recv_window=settings.bybit_recv_window,
         )
-        self.runtime = ModelRuntime(settings.active_model_path, settings.allow_baseline_model)
+        self.runtime = ModelRuntime(None, settings.allow_baseline_model)
         self.last_instrument_sync: datetime | None = None
         self.last_market_sync: datetime | None = None
         self.last_account_sync: datetime | None = None
         self.last_universe_refresh: datetime | None = None
+        self.last_model_refresh: datetime | None = None
+        self.active_model_registry_id: str | None = None
         self.active_symbols: tuple[str, ...] = tuple(settings.symbols)
         self.universe_summary: dict = {
             "mode": settings.universe_mode,
@@ -55,6 +58,68 @@ class Worker:
 
     def request_stop(self) -> None:
         self.stop_event.set()
+
+    async def refresh_model_runtime(self, *, force: bool = False) -> bool:
+        now = datetime.now(UTC)
+        if (
+            not force
+            and self.last_model_refresh is not None
+            and (now - self.last_model_refresh).total_seconds() < settings.model_refresh_seconds
+        ):
+            return False
+
+        async with SessionFactory() as session:
+            registry = (
+                await session.execute(
+                    select(ModelRegistry)
+                    .where(ModelRegistry.active.is_(True))
+                    .order_by(ModelRegistry.updated_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        if settings.active_model_path is not None:
+            candidate = ModelRuntime(Path(settings.active_model_path), allow_baseline=False)
+            candidate.load(source="environment_override")
+            if candidate.horizon_hours != settings.default_horizon_hours:
+                raise RuntimeError(
+                    f"Model override horizon {candidate.horizon_hours} does not match "
+                    f"DEFAULT_HORIZON_HOURS={settings.default_horizon_hours}"
+                )
+            registry_id = None
+        elif registry is None:
+            candidate = ModelRuntime(None, allow_baseline=settings.allow_baseline_model)
+            candidate.load(source="baseline")
+            registry_id = None
+        elif registry.model_type == "deterministic_baseline":
+            candidate = ModelRuntime(None, allow_baseline=settings.allow_baseline_model)
+            candidate.load(source="registry_baseline")
+            candidate.version = registry.version
+            candidate.calibration_version = registry.calibration_version or "uncalibrated-baseline-v1"
+            registry_id = str(registry.id)
+        else:
+            if not registry.artifact_path:
+                raise RuntimeError(f"Active model {registry.version} has no artifact_path")
+            candidate = ModelRuntime(Path(registry.artifact_path), allow_baseline=False)
+            candidate.load(
+                expected_sha256=registry.artifact_sha256,
+                expected_version=registry.version,
+                source="model_registry",
+            )
+            if candidate.horizon_hours != settings.default_horizon_hours:
+                raise RuntimeError(
+                    f"Active model horizon {candidate.horizon_hours} does not match "
+                    f"DEFAULT_HORIZON_HOURS={settings.default_horizon_hours}"
+                )
+            registry_id = str(registry.id)
+
+        changed = candidate.metadata() != self.runtime.metadata()
+        self.runtime = candidate
+        self.active_model_registry_id = registry_id
+        self.last_model_refresh = now
+        if changed:
+            logger.info("Model runtime loaded", extra={"model": self.runtime.metadata()})
+        return changed
 
     async def heartbeat(self, status: str = "RUNNING", details: dict | None = None) -> None:
         async with SessionFactory() as session:
@@ -307,10 +372,14 @@ class Worker:
                 await session.commit()
 
     async def run(self) -> None:
-        self.runtime.load()
+        await self.refresh_model_runtime(force=True)
         await self.heartbeat(
             "STARTING",
-            {"model_version": self.runtime.version, "universe": self.universe_summary},
+            {
+                "model": self.runtime.metadata(),
+                "model_registry_id": self.active_model_registry_id,
+                "universe": self.universe_summary,
+            },
         )
         try:
             await self.instrument_job()
@@ -328,6 +397,7 @@ class Worker:
         while not self.stop_event.is_set():
             now = datetime.now(UTC)
             try:
+                await self.refresh_model_runtime()
                 if (
                     self.last_instrument_sync is None
                     or (now - self.last_instrument_sync).total_seconds()
@@ -360,7 +430,8 @@ class Worker:
                 await self.heartbeat(
                     "RUNNING",
                     {
-                        "model_version": self.runtime.version,
+                        "model": self.runtime.metadata(),
+                        "model_registry_id": self.active_model_registry_id,
                         "last_market_sync": self.last_market_sync.isoformat()
                         if self.last_market_sync
                         else None,
@@ -371,7 +442,12 @@ class Worker:
                 logger.exception("Worker loop iteration failed")
                 await self.heartbeat(
                     "DEGRADED",
-                    {"error": str(exc), "universe": self.universe_summary},
+                    {
+                        "error": str(exc),
+                        "model": self.runtime.metadata(),
+                        "model_registry_id": self.active_model_registry_id,
+                        "universe": self.universe_summary,
+                    },
                 )
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.stop_event.wait(), timeout=settings.heartbeat_seconds)

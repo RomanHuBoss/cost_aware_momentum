@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.0 — 2026-06-27
+
+- ML-задача заменена с бинарного направления на direction-specific `TP` / `SL` / `TIMEOUT`; `NO TRADE` остается решением policy engine.
+- Добавлены pooled logistic baseline с feature×direction interactions и нелинейный HistGradientBoosting candidate.
+- Реализованы отдельное temporal calibration window, sigmoid calibration и final holdout метрики Brier/log loss/ECE/AUC.
+- Backtest переведен на barrier-policy outcomes и cost stress x1.5/x2; ограничения симулятора документированы явно.
+- Legacy binary-direction artifacts отвергаются runtime.
+- PostgreSQL model registry стал штатным источником active model: SHA/version/schema/classes/horizon проверяются worker.
+- Добавлена явная activation/rollback CLI, audit/outbox event и уникальный индекс для одной active-модели.
+- Worker периодически перечитывает registry и загружает модель без перезапуска; readiness сверяет registry/runtime/hash и свежесть market sync.
+- Live inference использует point-in-time candle/spec cutoff и fail-closed блокировку при stale/missing обязательных данных.
+- Production config запрещает baseline, demo seed и стандартные credentials.
+- Добавлена честная матрица соответствия спецификации и перечень оставшихся исследовательских задач.
+
 ## 1.2.2 — 2026-06-27
 
 - Для каждого символа в операторской панели остается только одна текущая рекомендация — самая свежая.

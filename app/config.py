@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     model_dir: Path = Path("models")
     active_model_path: Path | None = None
     allow_baseline_model: bool = True
+    model_refresh_seconds: int = 300
 
     worker_id: str = "worker-1"
     heartbeat_seconds: int = 15
@@ -153,6 +154,31 @@ class Settings(BaseSettings):
         if not value.startswith(("postgresql+psycopg://", "postgresql://")):
             raise ValueError("PostgreSQL URLs must use a PostgreSQL scheme")
         return value
+
+
+    @model_validator(mode="after")
+    def validate_cross_field_policy(self) -> Settings:
+        if not self.horizons_hours:
+            raise ValueError("HORIZONS_HOURS must contain at least one horizon")
+        if any(item <= 0 for item in self.horizons_hours):
+            raise ValueError("All HORIZONS_HOURS values must be positive")
+        if self.default_leverage < 1 or self.max_leverage < self.default_leverage:
+            raise ValueError("Leverage policy is inconsistent")
+        if self.model_refresh_seconds < 30:
+            raise ValueError("MODEL_REFRESH_SECONDS must be at least 30")
+        if self.app_mode == "production":
+            errors: list[str] = []
+            if self.allow_demo_seed:
+                errors.append("ALLOW_DEMO_SEED must be false")
+            if self.allow_baseline_model:
+                errors.append("ALLOW_BASELINE_MODEL must be false")
+            if self.secret_key.startswith("replace-with") or len(self.secret_key) < 32:
+                errors.append("SECRET_KEY must be a non-default value of at least 32 characters")
+            if self.operator_password == "change-me-now" or len(self.operator_password) < 12:
+                errors.append("OPERATOR_PASSWORD must be changed and contain at least 12 characters")
+            if errors:
+                raise ValueError("Unsafe production configuration: " + "; ".join(errors))
+        return self
 
     @property
     def mutating_auth_configured(self) -> bool:

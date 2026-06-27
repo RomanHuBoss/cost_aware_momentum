@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
+from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -34,12 +36,13 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
         expected = expected_revision()
         checks["migration"] = {"current": current, "expected": expected, "ok": current == expected}
         active_model = (
-            await session.execute(select(ModelRegistry).where(ModelRegistry.active.is_(True)).limit(1))
+            await session.execute(
+                select(ModelRegistry)
+                .where(ModelRegistry.active.is_(True))
+                .order_by(ModelRegistry.updated_at.desc())
+                .limit(1)
+            )
         ).scalar_one_or_none()
-        checks["model"] = {
-            "ok": bool(active_model) or settings.allow_baseline_model,
-            "version": active_model.version if active_model else "baseline-momentum-v1",
-        }
         worker = (
             await session.execute(
                 select(ServiceHeartbeat)
@@ -49,10 +52,60 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
             )
         ).scalar_one_or_none()
         max_age = max(settings.heartbeat_seconds * 4, 90)
+        worker_fresh = bool(
+            worker and (datetime.now(UTC) - worker.last_seen_at).total_seconds() <= max_age
+        )
+        worker_details = (worker.details or {}) if worker else {}
+        worker_model = worker_details.get("model", {})
+        market_sync_text = worker_details.get("last_market_sync")
+        market_sync_time: datetime | None = None
+        if isinstance(market_sync_text, str):
+            try:
+                market_sync_time = datetime.fromisoformat(market_sync_text)
+            except ValueError:
+                market_sync_time = None
+        market_max_age = max(settings.market_poll_seconds * 3, 300)
+        market_fresh = bool(
+            market_sync_time
+            and (datetime.now(UTC) - market_sync_time).total_seconds() <= market_max_age
+        )
         checks["worker"] = {
-            "ok": bool(worker and (datetime.now(UTC) - worker.last_seen_at).total_seconds() <= max_age),
+            "ok": worker_fresh and market_fresh and worker.status == "RUNNING",
             "last_seen_at": worker.last_seen_at.isoformat() if worker else None,
             "instance_id": worker.instance_id if worker else None,
+            "status": worker.status if worker else None,
+            "last_market_sync": market_sync_time.isoformat() if market_sync_time else None,
+            "market_data_fresh": market_fresh,
+        }
+
+        expected_version = active_model.version if active_model else "baseline-momentum-v1"
+        artifact_ok = True
+        artifact_detail: dict[str, object] = {}
+        if active_model and active_model.model_type != "deterministic_baseline":
+            artifact_path = Path(active_model.artifact_path) if active_model.artifact_path else None
+            artifact_ok = bool(artifact_path and artifact_path.is_file())
+            artifact_detail["path"] = str(artifact_path) if artifact_path else None
+            if artifact_ok and active_model.artifact_sha256:
+                actual_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+                artifact_detail["sha256"] = actual_hash
+                artifact_ok = actual_hash.lower() == active_model.artifact_sha256.lower()
+        baseline_allowed = not (
+            active_model
+            and active_model.model_type == "deterministic_baseline"
+            and not settings.allow_baseline_model
+        )
+        runtime_matches = bool(worker_model and worker_model.get("version") == expected_version)
+        checks["model"] = {
+            "ok": bool(active_model)
+            and artifact_ok
+            and baseline_allowed
+            and worker_fresh
+            and runtime_matches,
+            "registry_version": active_model.version if active_model else None,
+            "registry_type": active_model.model_type if active_model else None,
+            "worker_runtime": worker_model or None,
+            "runtime_matches_registry": runtime_matches,
+            "artifact": artifact_detail or None,
         }
         blocking_issues = (
             await session.execute(
@@ -77,7 +130,12 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
     heartbeats = (await session.execute(select(ServiceHeartbeat))).scalars().all()
     jobs = (await session.execute(select(JobRun).order_by(desc(JobRun.started_at)).limit(20))).scalars().all()
     model = (
-        await session.execute(select(ModelRegistry).where(ModelRegistry.active.is_(True)).limit(1))
+        await session.execute(
+            select(ModelRegistry)
+            .where(ModelRegistry.active.is_(True))
+            .order_by(ModelRegistry.updated_at.desc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
     issues = (
         (
@@ -106,9 +164,20 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
         "database_revision": await current_revision(session),
         "expected_revision": expected_revision(),
         "active_model": {
-            "version": model.version if model else "baseline-momentum-v1",
-            "type": model.model_type if model else "deterministic_baseline",
-            "feature_schema": model.feature_schema_version if model else "hourly-core-v1",
+            "version": model.version if model else None,
+            "type": model.model_type if model else None,
+            "feature_schema": model.feature_schema_version if model else None,
+            "artifact_path": model.artifact_path if model else None,
+            "artifact_sha256": model.artifact_sha256 if model else None,
+            "metrics": model.metrics if model else None,
+            "worker_runtime": next(
+                (
+                    heartbeat.details.get("model")
+                    for heartbeat in heartbeats
+                    if heartbeat.service_name == "worker" and heartbeat.details.get("model")
+                ),
+                None,
+            ),
         },
         "heartbeats": [
             {

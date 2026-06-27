@@ -14,7 +14,7 @@ from app.asyncio_compat import run_with_compatible_event_loop
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import BacktestRun, Candle
-from app.ml.training import chronological_split, evaluate_model, make_direction_dataset
+from app.ml.training import chronological_split, evaluate_model, make_barrier_dataset
 
 
 async def load_frame() -> pd.DataFrame:
@@ -45,61 +45,145 @@ async def load_frame() -> pd.DataFrame:
     )
 
 
+def policy_backtest(
+    model,
+    split,
+    *,
+    round_trip_cost_bps: float,
+    stop_gap_reserve_bps: float,
+    minimum_predicted_edge: float,
+) -> dict:
+    probabilities = model.predict_proba(split.x_test)
+    classes = [str(item) for item in model.classes_]
+    indexes = {label: classes.index(label) for label in ("TP", "SL", "TIMEOUT")}
+    meta = split.test_meta.copy()
+    meta["p_tp"] = probabilities[:, indexes["TP"]]
+    meta["p_sl"] = probabilities[:, indexes["SL"]]
+    meta["p_timeout"] = probabilities[:, indexes["TIMEOUT"]]
+    cost_rate = round_trip_cost_bps / 10000.0
+    gap_rate = stop_gap_reserve_bps / 10000.0
+    meta["predicted_net_edge"] = (
+        meta["p_tp"] * (meta["barrier_upside_rate"] - cost_rate)
+        - meta["p_sl"] * (meta["barrier_downside_rate"] + cost_rate + gap_rate)
+        + meta["p_timeout"] * (-cost_rate)
+    )
+
+    chosen = (
+        meta.sort_values(
+            ["open_time", "symbol", "predicted_net_edge"],
+            ascending=[True, True, False],
+        )
+        .groupby(["open_time", "symbol"], as_index=False)
+        .head(1)
+        .reset_index(drop=True)
+    )
+    chosen["traded"] = chosen["predicted_net_edge"] >= minimum_predicted_edge
+    chosen["net_return"] = np.where(
+        chosen["traded"],
+        chosen["realized_gross_return"]
+        - cost_rate
+        - np.where(chosen["target"] == "SL", gap_rate, 0.0),
+        0.0,
+    )
+    equity = np.cumprod(1.0 + chosen["net_return"].to_numpy(float))
+    peaks = np.maximum.accumulate(equity) if len(equity) else np.array([])
+    drawdowns = equity / peaks - 1.0 if len(equity) else np.array([])
+    traded = chosen[chosen["traded"]]
+
+    def stressed(multiplier: float) -> float:
+        net = np.where(
+            chosen["traded"],
+            chosen["realized_gross_return"]
+            - cost_rate * multiplier
+            - np.where(chosen["target"] == "SL", gap_rate * multiplier, 0.0),
+            0.0,
+        )
+        return float(np.cumprod(1.0 + net)[-1] - 1.0) if len(net) else 0.0
+
+    return {
+        "candidate_rows": int(len(chosen)),
+        "trades": int(chosen["traded"].sum()),
+        "no_trade_rate": float(1.0 - chosen["traded"].mean()) if len(chosen) else 1.0,
+        "net_return": float(equity[-1] - 1.0) if len(equity) else 0.0,
+        "mean_net_return_per_trade": float(traded["net_return"].mean()) if len(traded) else 0.0,
+        "win_rate": float((traded["net_return"] > 0).mean()) if len(traded) else 0.0,
+        "max_drawdown": float(drawdowns.min()) if len(drawdowns) else 0.0,
+        "cost_bps": round_trip_cost_bps,
+        "stop_gap_reserve_bps": stop_gap_reserve_bps,
+        "minimum_predicted_edge": minimum_predicted_edge,
+        "stress_net_return_cost_x1_5": stressed(1.5),
+        "stress_net_return_cost_x2": stressed(2.0),
+        "warning": (
+            "Barrier-policy research backtest with conservative hourly ambiguity. "
+            "It still does not model historical orderbook impact, partial fills or operator latency and is not evidence of profitability."
+        ),
+    }
+
+
 async def run(args) -> None:
     started = datetime.now(UTC)
     frame = await load_frame()
-    dataset = make_direction_dataset(frame, horizon=args.horizon)
-    split = chronological_split(dataset, purge_rows=args.horizon)
     bundle = joblib.load(args.model)
+    if not isinstance(bundle, dict) or bundle.get("task") != "barrier_outcome_v1":
+        raise ValueError("Model must be a version 1.3.0 barrier_outcome_v1 artifact")
+    artifact_horizon = int(bundle["horizon_hours"])
+    if args.horizon is not None and args.horizon != artifact_horizon:
+        raise ValueError(
+            f"Requested horizon {args.horizon} does not match artifact horizon {artifact_horizon}"
+        )
+    horizon = artifact_horizon
+    dataset = make_barrier_dataset(
+        frame,
+        horizon=horizon,
+        stop_atr_multiplier=float(bundle.get("stop_atr_multiplier", 1.15)),
+        tp_atr_multiplier=float(bundle.get("tp_atr_multiplier", 2.20)),
+    )
+    split = chronological_split(dataset, purge_rows=horizon)
     model = bundle["model"]
-    metrics = evaluate_model(model, split)
-    proba = model.predict_proba(split.x_test)[:, 1]
-    direction = np.where(proba >= 0.5, 1.0, -1.0)
-    gross = direction * split.test_meta["future_return"].to_numpy(float)
-    costs = np.full_like(gross, args.round_trip_cost_bps / 10000.0)
-    net = gross - costs
-    equity = np.cumprod(1 + net)
-    peaks = np.maximum.accumulate(equity)
-    drawdowns = equity / peaks - 1
-    trade_metrics = {
-        **metrics,
-        "net_return": float(equity[-1] - 1) if len(equity) else 0.0,
-        "mean_net_return": float(net.mean()) if len(net) else 0.0,
-        "win_rate": float((net > 0).mean()) if len(net) else 0.0,
-        "max_drawdown": float(drawdowns.min()) if len(drawdowns) else 0.0,
-        "cost_bps": args.round_trip_cost_bps,
-        "warning": "Research baseline; not an event-driven production backtest and not evidence of profitability.",
-    }
+    prediction_metrics = evaluate_model(model, split)
+    trade_metrics = policy_backtest(
+        model,
+        split,
+        round_trip_cost_bps=args.round_trip_cost_bps,
+        stop_gap_reserve_bps=args.stop_gap_reserve_bps,
+        minimum_predicted_edge=args.minimum_predicted_edge,
+    )
+    metrics = {"prediction": prediction_metrics, "policy": trade_metrics}
     output = Path(args.output or f"reports/backtest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(trade_metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+    output.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
     async with SessionFactory() as session:
         session.add(
             BacktestRun(
-                name=f"direction-baseline-h{args.horizon}",
+                name=f"barrier-policy-{bundle.get('model_type', 'model')}-h{horizon}",
                 configuration={
                     "model": args.model,
-                    "horizon": args.horizon,
+                    "model_version": bundle.get("version"),
+                    "horizon": horizon,
                     "round_trip_cost_bps": args.round_trip_cost_bps,
-                    "purge_rows": args.horizon,
+                    "stop_gap_reserve_bps": args.stop_gap_reserve_bps,
+                    "minimum_predicted_edge": args.minimum_predicted_edge,
+                    "purge_hours": horizon,
                 },
                 started_at=started,
                 finished_at=datetime.now(UTC),
                 status="SUCCESS",
-                metrics=trade_metrics,
+                metrics=metrics,
                 artifact_path=str(output),
             )
         )
         await session.commit()
-    print(json.dumps({"output": str(output), "metrics": trade_metrics}, indent=2, ensure_ascii=False))
+    print(json.dumps({"output": str(output), "metrics": metrics}, indent=2, ensure_ascii=False))
     await dispose_engine()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--horizon", type=int, default=8)
+    parser.add_argument("--horizon", type=int)
     parser.add_argument("--round-trip-cost-bps", type=float, default=14.0)
+    parser.add_argument("--stop-gap-reserve-bps", type=float, default=10.0)
+    parser.add_argument("--minimum-predicted-edge", type=float, default=0.0)
     parser.add_argument("--output")
     run_with_compatible_event_loop(run(parser.parse_args()))
 

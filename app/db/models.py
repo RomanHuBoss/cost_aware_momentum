@@ -142,7 +142,15 @@ class OpenInterest(Base):
 
 class ModelRegistry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "model_registry"
-    __table_args__ = ({"schema": "model"},)
+    __table_args__ = (
+        Index(
+            "uq_model_registry_single_active",
+            "active",
+            unique=True,
+            postgresql_where=text("active = true"),
+        ),
+        {"schema": "model"},
+    )
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     version: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)

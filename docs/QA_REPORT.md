@@ -1,84 +1,53 @@
 # QA report
 
-Дата повторной проверки нативной версии 1.2.2: 27 июня 2026 г.
+Дата проверки версии 1.3.0: 27 июня 2026 г.
 
 ## Выполненные проверки
 
 | Проверка | Результат |
 |---|---|
-| `ruff check app scripts tests migrations manage.py` | Пройдена без замечаний |
-| `python -m compileall -q app scripts migrations tests manage.py` | Пройдена |
-| `pytest tests/unit -q` | 39 unit-тестов пройдены |
-| Проверка версии пакета | `1.2.2` |
-| Поиск Docker/Compose-файлов | Запрещенная контейнерная конфигурация отсутствует |
+| `ruff check app scripts tests migrations manage.py` | пройдена |
+| `python -m compileall -q app scripts migrations tests manage.py` | пройдена |
+| `pytest tests/unit -q` | 43 unit-теста пройдены |
+| `node --check web/js/app.js` | пройдена |
+| Версия пакета / приложения | `1.3.0` / `1.3.0` |
+| Проверка запрещенных order endpoints | методов создания/изменения/отмены ордеров не обнаружено |
+| Проверка мусора релиза | `*.egg-info` и `SHA256SUMS` в проект не включены |
 
-## Единственная текущая рекомендация 1.2.2
+## Проверка ML-контракта 1.3.0
 
-Проверено, что:
+Проверено unit-тестами и статическим анализом:
 
-1. API использует оконное ранжирование `row_number() over (partition by symbol ...)` и по умолчанию возвращает только самый свежий сигнал символа;
-2. модель БД содержит частичный уникальный индекс для `status = 'PUBLISHED'`;
-3. миграция 0002 переводит накопившиеся старые сигналы и ожидающие планы в `SUPERSEDED`;
-4. worker блокирует конкурентную публикацию по символу транзакционным advisory lock;
-5. новый сигнал атомарно замещает предыдущий, не затрагивая уже принятые или исполняемые планы;
-6. frontend имеет дополнительную временную дедупликацию для rolling upgrade;
-7. Python unit-тесты, Ruff, compileall и `node --check web/js/app.js` проходят без замечаний.
+1. модель возвращает нормированное распределение `TP`, `SL`, `TIMEOUT`;
+2. pooled модель учитывает взаимодействия признаков с LONG/SHORT direction;
+3. barrier dataset создает оба сценария на symbol/time;
+4. chronological split не разделяет один timestamp между окнами и сохраняет purge gap;
+5. runtime отвергает legacy binary-direction artifact;
+6. runtime проверяет task, feature list, classes, version и SHA256;
+7. unsafe production defaults отклоняются конфигурацией;
+8. baseline явно помечается как некалиброванная заглушка;
+9. trained model и registry version должны совпадать в readiness.
 
+## Проверка данных и публикации
 
-## Динамический universe 1.2.1
+Проверено, что live inference:
 
-Проверено, что dynamic mode:
+- выбирает только confirmed candles с `close_time <= event_time` и `available_at <= event_time`;
+- использует instrument spec, действовавший на cutoff;
+- не публикует сигнал при stale candle/ticker;
+- не подставляет нулевой spread при отсутствующих bid/ask;
+- блокирует missing features, missing spec, excessive spread и неизвестный funding interval при пересечении settlement;
+- атомарно заменяет предыдущий `PUBLISHED` signal того же символа;
+- сохраняет audit/outbox events и versioned execution plans.
 
-1. загружает полный список `linear` инструментов с пагинацией;
-2. допускает только `Trading`, `LinearPerpetual`, USDT-settled и не pre-listing контракты;
-3. применяет возраст, turnover и spread filters;
-4. исключает stablecoin-base и только явно идентифицированные xStocks; региональное поле `symbolType` больше не трактуется как crypto/non-crypto classifier;
-5. ранжирует по 24h turnover и корректно обрабатывает `UNIVERSE_MAX_SYMBOLS=0` как отсутствие top-N cap;
-6. выполняет backfill только для новых участников и часовое обновление свечей перед inference;
-7. передает активный состав в inference, train и backtest;
-8. публикует counts и причины исключения в status/job metadata;
-9. выполняет catch-up inference после стартового backfill и при расширении universe;
-10. UI запрашивает до 2000 рекомендаций и показывает selected/eligible/card counts.
+## Миграции
 
-## Регрессия Windows/Python 3.12
-
-Исправлен точный класс сбоя:
-
-```text
-Psycopg cannot use the 'ProactorEventLoop' to run in async mode
-```
-
-Причина повторного сбоя версии 1.1.2: одной установки `WindowsSelectorEventLoopPolicy` оказалось недостаточно. Новые версии Uvicorn могут явно создавать `ProactorEventLoop` в собственном runner и тем самым обходить глобальную policy.
-
-Версия 1.1.3 применяет более жесткое решение:
-
-1. Alembic выполняет online migrations через синхронный SQLAlchemy engine с драйвером psycopg.
-2. FastAPI запускается через `uvicorn.Server(...).serve()`, но asyncio runner принадлежит проекту, а не Uvicorn.
-3. На Windows runner напрямую создает `SelectorEventLoop` через `loop_factory`.
-4. Worker, train, backtest, replay и daily report используют тот же совместимый runner.
-5. Глобальная selector policy сохранена как дополнительный слой совместимости для стороннего кода.
-
-Добавлены пять тестов платформенной совместимости: no-op вне Windows, замена policy, идемпотентность, прямое создание selector loop и передача явной loop factory в runner.
-
-## Регрессия конфигурации версии 1.1.1
-
-Сохранена поддержка обоих форматов списков в `.env`:
-
-```env
-SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
-HORIZONS_HOURS=4,8,12
-```
-
-и:
-
-```env
-SYMBOLS=["BTCUSDT","ETHUSDT","SOLUSDT"]
-HORIZONS_HOURS=[4,8,12]
-```
+- `0002_one_signal_per_symbol` очищает дубли активных рекомендаций и вводит частичный уникальный индекс.
+- `0003_single_active_model` устраняет возможные множественные active model rows и вводит частичный уникальный индекс `model.uq_model_registry_single_active`.
 
 ## PostgreSQL integration tests
 
-Два теста требуют работающей PostgreSQL и отдельной тестовой базы. Строгая локальная приемка:
+В текущем контейнере отдельная PostgreSQL test database не была доступна, поэтому integration tests не запускались. Они обновлены для migration head `0003_single_active_model` и должны быть выполнены перед эксплуатацией:
 
 ```powershell
 $env:POSTGRES_ADMIN_URL="postgresql+psycopg://postgres:ПАРОЛЬ@localhost:5432/postgres"
@@ -86,16 +55,21 @@ py -3.12 manage.py test --require-integration
 Remove-Item Env:POSTGRES_ADMIN_URL
 ```
 
-## Обязательная приемка перед эксплуатацией
+## Не покрыто данной проверкой
 
-1. Выполнить `py -3.12 manage.py migrate`.
-2. Выполнить `py -3.12 manage.py doctor`.
-3. Выполнить строгие integration-тесты с отдельной тестовой базой.
-4. Запустить `py -3.12 manage.py run` и проверить `/health/ready`.
-5. Проверить worker heartbeat и public Bybit ingestion.
-6. Выполнить backup и restore-check.
-7. Провести paper/shadow период; наличие работающего кода не доказывает прибыльность стратегии.
+- качество модели на реальной накопленной истории конкретной установки;
+- profitability/OOS stability и paper/shadow forward evidence;
+- полный event-driven execution с historical orderbook, partial fills и operator latency;
+- drift monitoring и автоматический fallback;
+- нагрузочное тестирование полного динамического universe;
+- backup/restore на инфраструктуре пользователя.
 
-## Граница безопасности
+## Обязательная приемка
 
-Bybit-клиент содержит только public и private read-only запросы. Endpoint создания, изменения, отмены ордеров и вывода средств отсутствуют.
+1. `python manage.py migrate`.
+2. `python manage.py doctor`.
+3. PostgreSQL integration tests с отдельной базой.
+4. `/health/ready` после успешного market sync.
+5. Обучение, review holdout/backtest и явная activation модели.
+6. Backup + restore-check.
+7. Paper/shadow forward period до любого production advisory использования.

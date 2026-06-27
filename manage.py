@@ -72,6 +72,7 @@ def command_tool(args: argparse.Namespace, extras: list[str]) -> int:
         "train": "scripts.train",
         "backtest": "scripts.backtest",
         "replay": "scripts.replay",
+        "model-registry": "scripts.model_registry",
     }
     if args.command == "migrate":
         python = ensure_venv()
@@ -105,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
             "train",
             "backtest",
             "replay",
+            "model-registry",
         ],
     )
     return parser
