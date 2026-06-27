@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pandas as pd
+from sqlalchemy import desc, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings
+from app.db.models import Candle, CapitalProfile, InstrumentSpecHistory, MarketSignal, TickerSnapshot
+from app.ml.features import latest_feature_snapshot
+from app.ml.runtime import ModelRuntime
+from app.risk.math import CostScenario, net_rr_and_ev, projected_funding_rate
+from app.services.audit import append_audit_event, publish_outbox
+from app.services.execution import create_execution_plan
+
+logger = logging.getLogger(__name__)
+
+
+def decimal(value: float | str | Decimal) -> Decimal:
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+async def _candles_frame(session: AsyncSession, symbol: str, limit: int = 300) -> pd.DataFrame:
+    rows = (
+        (
+            await session.execute(
+                select(Candle)
+                .where(
+                    Candle.symbol == symbol,
+                    Candle.interval == "60",
+                    Candle.price_type == "last",
+                    Candle.confirmed.is_(True),
+                )
+                .order_by(desc(Candle.open_time))
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    records = [
+        {
+            "symbol": row.symbol,
+            "open_time": row.open_time,
+            "open": float(row.open),
+            "high": float(row.high),
+            "low": float(row.low),
+            "close": float(row.close),
+            "volume": float(row.volume),
+            "turnover": float(row.turnover),
+        }
+        for row in reversed(rows)
+    ]
+    return pd.DataFrame.from_records(records)
+
+
+async def _latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | None:
+    return (
+        await session.execute(
+            select(TickerSnapshot)
+            .where(TickerSnapshot.symbol == symbol)
+            .order_by(desc(TickerSnapshot.source_time))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _latest_spec(session: AsyncSession, symbol: str) -> InstrumentSpecHistory | None:
+    return (
+        await session.execute(
+            select(InstrumentSpecHistory)
+            .where(InstrumentSpecHistory.symbol == symbol)
+            .order_by(desc(InstrumentSpecHistory.valid_from))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _spread_bps(ticker: TickerSnapshot) -> float:
+    if not ticker.bid_price or not ticker.ask_price or ticker.bid_price <= 0 or ticker.ask_price <= 0:
+        return 0.0
+    mid = (ticker.bid_price + ticker.ask_price) / Decimal("2")
+    return float((ticker.ask_price - ticker.bid_price) / mid * Decimal("10000"))
+
+
+async def expire_old_signals(session: AsyncSession) -> int:
+    now = datetime.now(UTC)
+    result = await session.execute(
+        update(MarketSignal)
+        .where(MarketSignal.status == "PUBLISHED", MarketSignal.expires_at <= now)
+        .values(status="EXPIRED", updated_at=now)
+    )
+    return int(result.rowcount or 0)
+
+
+async def publish_hourly_signals(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    runtime: ModelRuntime,
+    event_time: datetime | None = None,
+    symbols: Iterable[str] | None = None,
+) -> list[MarketSignal]:
+    now = datetime.now(UTC)
+    event_time = event_time or now.replace(minute=0, second=0, microsecond=0)
+    published: list[MarketSignal] = []
+    profiles = (await session.execute(select(CapitalProfile))).scalars().all()
+
+    await expire_old_signals(session)
+    selected_symbols = list(symbols if symbols is not None else settings.symbols)
+
+    for symbol in selected_symbols:
+        ticker = await _latest_ticker(session, symbol)
+        if ticker is None:
+            logger.warning("Skipping symbol without ticker", extra={"symbol": symbol})
+            continue
+        spec = await _latest_spec(session, symbol)
+        frame = await _candles_frame(session, symbol, limit=max(100, settings.initial_backfill_bars))
+        if len(frame) < settings.universe_min_history_bars:
+            logger.warning(
+                "Skipping symbol with insufficient candle history",
+                extra={"symbol": symbol, "bars": len(frame)},
+            )
+            continue
+        snapshot = latest_feature_snapshot(frame)
+        if not snapshot.values:
+            logger.warning("Skipping symbol without feature data", extra={"symbol": symbol})
+            continue
+        latest_candle_time = frame.iloc[-1]["open_time"]
+        if hasattr(latest_candle_time, "to_pydatetime"):
+            latest_candle_time = latest_candle_time.to_pydatetime()
+        if latest_candle_time.tzinfo is None:
+            latest_candle_time = latest_candle_time.replace(tzinfo=UTC)
+        data_age = (now - (latest_candle_time + timedelta(hours=1))).total_seconds()
+
+        prediction = runtime.predict(snapshot.values)
+        direction = prediction.direction
+        reference = ticker.ask_price if direction == "LONG" else ticker.bid_price
+        reference = reference or ticker.last_price
+        atr_pct = max(0.004, min(0.08, snapshot.values.get("atr_pct_14", 0.02)))
+        atr = reference * decimal(atr_pct)
+        zone_half = atr * Decimal("0.12")
+        stop_distance = atr * Decimal("1.15")
+        tp_distance = atr * Decimal("2.20")
+        tp2_distance = atr * Decimal("3.10")
+
+        if direction == "LONG":
+            entry_low, entry_high = reference - zone_half, reference + zone_half
+            stop, tp1, tp2 = reference - stop_distance, reference + tp_distance, reference + tp2_distance
+        else:
+            entry_low, entry_high = reference - zone_half, reference + zone_half
+            stop, tp1, tp2 = reference + stop_distance, reference - tp_distance, reference - tp2_distance
+
+        spread_bps = _spread_bps(ticker)
+        # Entry reference already uses executable ask/bid; residual slippage must not add the spread again.
+        slippage_bps = settings.base_slippage_bps
+        fee_round_trip = settings.fee_rate_taker * 2
+        funding_scenario = float(
+            projected_funding_rate(
+                start_time=now,
+                horizon_hours=settings.default_horizon_hours,
+                next_settlement=ticker.next_funding_time,
+                interval_minutes=spec.funding_interval_minutes if spec else None,
+                current_rate=ticker.funding_rate or Decimal("0"),
+            )
+        )
+        costs = CostScenario(
+            fee_rate_round_trip=decimal(fee_round_trip),
+            slippage_rate=decimal(slippage_bps / 10000),
+            stop_gap_reserve_rate=decimal(settings.stop_gap_reserve_bps / 10000),
+            funding_rate=decimal(funding_scenario),
+        )
+        net_rr, ev_r, downside, upside = net_rr_and_ev(
+            entry=reference,
+            stop=stop,
+            take_profit=tp1,
+            direction=direction,
+            costs=costs,
+            p_tp=prediction.p_tp,
+            p_sl=prediction.p_sl,
+            p_timeout=prediction.p_timeout,
+        )
+        gross_rr = abs(tp1 - reference) / abs(reference - stop)
+        natural_key = f"{symbol}-{event_time:%Y%m%dT%H0000Z}-{direction}-h{settings.default_horizon_hours}-{prediction.model_version}"
+        existing = (
+            await session.execute(select(MarketSignal).where(MarketSignal.natural_key == natural_key))
+        ).scalar_one_or_none()
+        if existing:
+            continue
+
+        warnings: list[str] = []
+        if data_age > settings.max_candle_age_seconds:
+            warnings.append("Последняя подтвержденная часовая свеча устарела")
+        if spread_bps > settings.max_spread_bps:
+            warnings.append(f"Спред {spread_bps:.1f} б.п. превышает базовый лимит")
+        if (
+            ticker.funding_rate
+            and ticker.next_funding_time
+            and (spec is None or spec.funding_interval_minutes is None)
+        ):
+            warnings.append("Интервал funding недоступен; funding не включен в сценарий")
+        warnings.extend(f"Качество данных: {flag}" for flag in snapshot.quality_flags)
+
+        signal = MarketSignal(
+            natural_key=natural_key,
+            symbol=symbol,
+            direction=direction,
+            status="PUBLISHED",
+            event_time=event_time,
+            publish_time=now,
+            expires_at=now + timedelta(minutes=settings.signal_ttl_minutes),
+            horizon_hours=settings.default_horizon_hours,
+            entry_reference=reference,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            stop_loss=stop,
+            take_profit_1=tp1,
+            take_profit_2=tp2,
+            tp1_weight=Decimal("0.7"),
+            p_tp=prediction.p_tp,
+            p_sl=prediction.p_sl,
+            p_timeout=prediction.p_timeout,
+            gross_rr=float(gross_rr),
+            net_rr=float(net_rr),
+            net_ev_r=float(ev_r),
+            gross_edge_rate=float(abs(tp1 - reference) / reference),
+            fee_rate_round_trip=fee_round_trip,
+            slippage_rate=slippage_bps / 10000,
+            funding_rate_scenario=funding_scenario,
+            stress_downside_rate=float(downside),
+            model_version=prediction.model_version,
+            calibration_version=prediction.calibration_version,
+            feature_schema_version="hourly-core-v1",
+            data_cutoff=latest_candle_time + timedelta(hours=1),
+            reasons=list(prediction.reasons),
+            warnings=warnings,
+            feature_snapshot={**snapshot.values, "score": prediction.score, "spread_bps": spread_bps},
+        )
+        session.add(signal)
+        await session.flush()
+        await append_audit_event(
+            session,
+            event_type="MARKET_SIGNAL_PUBLISHED",
+            entity_type="market_signal",
+            entity_id=str(signal.id),
+            actor="worker",
+            payload={
+                "natural_key": natural_key,
+                "symbol": symbol,
+                "direction": direction,
+                "p_tp": signal.p_tp,
+                "p_sl": signal.p_sl,
+                "p_timeout": signal.p_timeout,
+                "net_rr": signal.net_rr,
+                "net_ev_r": signal.net_ev_r,
+                "model_version": signal.model_version,
+                "data_cutoff": signal.data_cutoff.isoformat(),
+            },
+        )
+        await publish_outbox(
+            session,
+            event_type="MARKET_SIGNAL_PUBLISHED",
+            aggregate_type="market_signal",
+            aggregate_id=str(signal.id),
+            payload={"symbol": symbol, "direction": direction},
+        )
+        for profile in profiles:
+            await create_execution_plan(session, signal=signal, profile=profile, settings=settings)
+        published.append(signal)
+    return published

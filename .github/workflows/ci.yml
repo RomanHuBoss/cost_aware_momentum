@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql+psycopg://cost_momentum:cost_momentum@localhost:5432/cost_momentum_test
+      TEST_DATABASE_URL: postgresql+psycopg://cost_momentum:cost_momentum@localhost:5432/cost_momentum_test
+      SECRET_KEY: ci-secret-ci-secret-ci-secret-ci-secret
+      OPERATOR_PASSWORD: ci-password-ci-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-client
+          sudo service postgresql start
+          sudo -u postgres psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE cost_momentum LOGIN PASSWORD 'cost_momentum';
+          CREATE DATABASE cost_momentum_test OWNER cost_momentum;
+          SQL
+      - run: pip install -e '.[dev]'
+      - run: ruff check app scripts tests migrations manage.py
+      - run: python -m compileall -q app scripts migrations manage.py
+      - run: node --check web/js/app.js
+      - run: alembic upgrade head --sql > /tmp/migration.sql
+      - run: pytest -q

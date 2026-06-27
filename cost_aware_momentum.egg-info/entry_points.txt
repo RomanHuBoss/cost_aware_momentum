@@ -1,0 +1,12 @@
+[console_scripts]
+cam-api = app.main:run
+cam-backtest = scripts.backtest:main
+cam-backup = scripts.backup:main
+cam-daily-report = scripts.daily_report:main
+cam-db-init = scripts.db_init:main
+cam-doctor = scripts.doctor:main
+cam-replay = scripts.replay:main
+cam-restore-check = scripts.restore_check:main
+cam-run = scripts.run_local:main
+cam-train = scripts.train:main
+cam-worker = app.workers.runner:run

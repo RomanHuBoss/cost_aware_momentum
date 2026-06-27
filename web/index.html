@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Cost-aware ML Momentum</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div id="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">CM</div>
+        <div>
+          <h1>Cost-aware ML Momentum</h1>
+          <p>Bybit linear USDT · ручное исполнение</p>
+        </div>
+      </div>
+      <div class="topbar-controls">
+        <label class="profile-control">
+          <span>Профиль капитала</span>
+          <select id="profile-select" aria-label="Активный профиль капитала"></select>
+        </label>
+        <div id="profile-summary" class="profile-summary"></div>
+        <button id="profiles-button" class="button secondary" type="button">Профили</button>
+        <button id="help-button" class="button secondary" type="button">Справка</button>
+        <button id="refresh-button" class="button secondary" type="button">Обновить</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="system-strip" aria-label="Состояние системы">
+        <div><span id="system-dot" class="status-dot"></span><strong id="system-state">Проверка…</strong></div>
+        <div id="last-update">Последнее обновление: —</div>
+        <div id="model-state">Модель: —</div>
+        <div class="system-actions">
+          <button id="demo-button" class="text-button" type="button">Создать демонстрационные данные</button>
+          <a href="/docs" target="_blank" rel="noopener">OpenAPI</a>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="Фильтры рекомендаций">
+        <label>Поиск <input id="symbol-filter" type="search" placeholder="BTCUSDT"></label>
+        <label>Сортировка
+          <select id="sort-select">
+            <option value="utility">По ожидаемому результату</option>
+            <option value="expiry">По сроку действия</option>
+            <option value="symbol">По инструменту</option>
+          </select>
+        </label>
+        <label class="checkbox"><input id="show-all" type="checkbox"> Показывать просроченные</label>
+      </section>
+
+      <section class="recommendation-section" id="active-section">
+        <div class="section-heading">
+          <div><h2>Активные рекомендации</h2><p>Можно рассмотреть после проверки подробного плана.</p></div>
+          <span class="count" id="active-count">0</span>
+        </div>
+        <div id="active-grid" class="tile-grid"></div>
+        <div class="empty-state" id="active-empty">Активных рекомендаций нет.</div>
+      </section>
+
+      <section class="recommendation-section compact-section" id="watch-section">
+        <div class="section-heading">
+          <div><h2>Наблюдение</h2><p>Сигнал близок к условию, но вход пока не разрешен.</p></div>
+          <span class="count" id="watch-count">0</span>
+        </div>
+        <div id="watch-grid" class="tile-grid compact-grid"></div>
+        <div class="empty-state" id="watch-empty">Кандидатов для наблюдения нет.</div>
+      </section>
+
+      <details class="recommendation-section collapsed-section" id="blocked-section" open>
+        <summary><span>Заблокированные</span><span class="count" id="blocked-count">0</span></summary>
+        <p class="section-note">Рыночный сигнал может быть валидным, но исполнение запрещено для выбранного профиля.</p>
+        <div id="blocked-grid" class="tile-grid compact-grid"></div>
+        <div class="empty-state" id="blocked-empty">Заблокированных рекомендаций нет.</div>
+      </details>
+
+      <details class="recommendation-section collapsed-section" id="no-trade-section">
+        <summary><span>Без сделки</span><span class="count" id="no-trade-count">0</span></summary>
+        <p class="section-note">После издержек и риск-фильтров достаточного преимущества не найдено.</p>
+        <div id="no-trade-grid" class="tile-grid compact-grid"></div>
+        <div class="empty-state" id="no-trade-empty">Решений NO TRADE нет.</div>
+      </details>
+    </main>
+  </div>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <div id="tooltip" role="tooltip" class="tooltip" hidden></div>
+
+  <dialog id="login-dialog" class="dialog login-dialog">
+    <form id="login-form" method="dialog">
+      <h2>Вход оператора</h2>
+      <p>Авторизация требуется только для действий, изменяющих журнал и рекомендации.</p>
+      <label>Пароль оператора<input id="login-password" type="password" autocomplete="current-password" required></label>
+      <div id="login-error" class="form-error" aria-live="polite"></div>
+      <div class="dialog-actions"><button class="button primary" value="default">Войти</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="detail-dialog" class="dialog detail-dialog">
+    <div class="dialog-header">
+      <div><h2 id="detail-title">Рекомендация</h2><p id="detail-subtitle"></p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Закрыть">×</button>
+    </div>
+    <nav id="detail-tabs" class="tabs" aria-label="Разделы подробной карточки">
+      <button class="tab active" data-tab="plan" type="button">Торговый план</button>
+      <button class="tab" data-tab="risk" type="button">Риск и капитал</button>
+      <button class="tab" data-tab="economics" type="button">Экономика</button>
+      <button class="tab" data-tab="why" type="button">Почему</button>
+      <button class="tab" data-tab="reliability" type="button">Надежность</button>
+      <button class="tab" data-tab="audit" type="button">Аудит</button>
+    </nav>
+    <div id="detail-content" class="detail-content"></div>
+    <div class="dialog-actions detail-actions">
+      <button id="copy-plan-button" class="button secondary" type="button">Скопировать параметры</button>
+      <button id="open-bybit-button" class="button secondary" type="button">Открыть Bybit</button>
+      <span class="action-spacer"></span>
+      <button id="reject-button" class="button danger" type="button">Отклонить</button>
+      <button id="accept-button" class="button primary" type="button">Принять</button>
+    </div>
+  </dialog>
+
+  <dialog id="decision-dialog" class="dialog small-dialog">
+    <form id="decision-form">
+      <div class="dialog-header"><h2 id="decision-title">Решение оператора</h2><button class="icon-button close-dialog" type="button" aria-label="Закрыть">×</button></div>
+      <label>Причина
+        <select id="decision-reason">
+          <option value="">Не указана</option>
+          <option value="PLAN_ACCEPTED">План проверен и принят</option>
+          <option value="RISK_TOO_HIGH">Риск неприемлем</option>
+          <option value="MARKET_CHANGED">Рынок изменился</option>
+          <option value="PORTFOLIO_CONFLICT">Конфликт с портфелем</option>
+          <option value="OPERATOR_DISCRETION">Решение оператора</option>
+        </select>
+      </label>
+      <label>Комментарий<textarea id="decision-comment" rows="4" maxlength="2000"></textarea></label>
+      <div class="dialog-actions"><button class="button secondary close-dialog" type="button">Отмена</button><button id="decision-submit" class="button primary" type="submit">Подтвердить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="entry-dialog" class="dialog small-dialog">
+    <form id="entry-form">
+      <div class="dialog-header"><h2>Зафиксировать ручной вход</h2><button class="icon-button close-dialog" type="button" aria-label="Закрыть">×</button></div>
+      <p class="warning-banner">Система только записывает фактические параметры. Ордер на биржу не отправляется.</p>
+      <div class="form-grid">
+        <label>Цена входа<input id="entry-price" type="number" step="any" required></label>
+        <label>Количество<input id="entry-qty" type="number" step="any" required></label>
+        <label>Плечо<input id="entry-leverage" type="number" min="1" max="5" required></label>
+        <label>Комиссия<input id="entry-fee" type="number" min="0" step="any" value="0"></label>
+      </div>
+      <label>Примечание<textarea id="entry-notes" rows="3"></textarea></label>
+      <div class="dialog-actions"><button class="button secondary close-dialog" type="button">Позже</button><button class="button primary" type="submit">Сохранить вход</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="profiles-dialog" class="dialog profiles-dialog">
+    <div class="dialog-header"><div><h2>Профили капитала</h2><p>Смена профиля пересчитывает размер и исполнимость, но не меняет рыночный сигнал.</p></div><button class="icon-button close-dialog" type="button" aria-label="Закрыть">×</button></div>
+    <div id="profiles-list" class="profiles-list"></div>
+    <details class="new-profile-panel">
+      <summary>Добавить профиль</summary>
+      <form id="profile-form" class="form-grid">
+        <label>Название<input id="profile-name" required maxlength="120" placeholder="Личный 1 000"></label>
+        <label>Режим<select id="profile-mode"><option value="manual">Ручной капитал</option><option value="paper">Paper</option><option value="bybit_read_only">Read-only Bybit</option></select></label>
+        <label>Выделенный капитал, USDT<input id="profile-capital" type="number" min="1" step="0.01" required></label>
+        <label>Риск на сделку, %<input id="profile-risk" type="number" min="0.01" max="2" step="0.01" value="0.35" required></label>
+        <label>Плечо по умолчанию<input id="profile-leverage" type="number" min="1" max="5" value="3" required></label>
+        <label>Максимальное плечо<input id="profile-max-leverage" type="number" min="1" max="5" value="5" required></label>
+        <div class="form-full"><button class="button primary" type="submit">Создать профиль</button></div>
+      </form>
+    </details>
+  </dialog>
+
+  <dialog id="help-dialog" class="dialog help-dialog">
+    <div class="dialog-header"><div><h2>Справка</h2><p id="glossary-version">Версия словаря: —</p></div><button class="icon-button close-dialog" type="button" aria-label="Закрыть">×</button></div>
+    <label class="help-search">Поиск<input id="help-search" type="search" placeholder="R/R, funding, маржа…"></label>
+    <div id="help-list" class="help-list"></div>
+  </dialog>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
