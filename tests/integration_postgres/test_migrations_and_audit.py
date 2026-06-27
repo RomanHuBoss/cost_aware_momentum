@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -39,8 +40,19 @@ def database_url() -> str:
 @pytest.fixture(scope="session", autouse=True)
 def migrate(database_url: str) -> None:
     env = {**os.environ, "DATABASE_URL": database_url}
-    subprocess.run(["alembic", "downgrade", "base"], cwd=Path(__file__).parents[2], env=env, check=False)
-    subprocess.run(["alembic", "upgrade", "head"], cwd=Path(__file__).parents[2], env=env, check=True)
+    project_root = Path(__file__).parents[2]
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "base"],
+        cwd=project_root,
+        env=env,
+        check=False,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=project_root,
+        env=env,
+        check=True,
+    )
 
 
 @pytest.mark.asyncio
