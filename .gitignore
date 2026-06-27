@@ -1,13 +1,115 @@
+# Local configuration and secrets
 .env
-.idea
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+.direnv/
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python virtual environments
 .venv/
+venv/
+env/
+ENV/
+__pypackages__/
+
+# Python bytecode and tool caches
 __pycache__/
 *.py[cod]
+*$py.class
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.pyright/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.cache/
+.ipynb_checkpoints/
+
+# Test and coverage output
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
-models/*.joblib
-reports/*.json
-backups/*.dump
+pytestdebug.log
+
+# Packaging and build output
+build/
+dist/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+*.whl
+MANIFEST
+
+# Runtime artifacts. Keep only directory placeholders in Git.
+models/*
+!models/.gitkeep
+reports/*
+!reports/.gitkeep
+backups/*
+!backups/.gitkeep
+logs/
+*.log
+*.log.*
+*.pid
+*.pid.lock
+*.sock
+nohup.out
+
+# Model, database and backup artifacts written outside standard directories
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+*.dump
+*.backup
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Temporary/editor files
+.tmp/
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# IDE settings
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+
+# Operating-system metadata
 .DS_Store
+._*
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Locally generated release/patch artifacts
+/SHA256SUMS
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.patch
+*.changed-files.txt
