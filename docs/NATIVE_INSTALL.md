@@ -78,7 +78,7 @@ CREATE DATABASE cost_momentum OWNER cost_momentum;
 
 ### Windows Task Scheduler
 
-Создайте две задачи с действием:
+Создайте три задачи с действием:
 
 ```text
 <PROJECT>\.venv\Scripts\python.exe -m app.main
@@ -88,21 +88,25 @@ CREATE DATABASE cost_momentum OWNER cost_momentum;
 <PROJECT>\.venv\Scripts\python.exe -m app.workers.runner
 ```
 
-Рабочий каталог обеих задач должен быть равен корню проекта. Запускайте задачи от отдельной локальной учетной записи с минимальными правами.
+```text
+<PROJECT>\.venv\Scripts\python.exe -m app.workers.trainer
+```
+
+Рабочий каталог всех задач должен быть равен корню проекта. Trainer можно не создавать, если `AUTO_TRAIN_ENABLED=false`. Запускайте задачи от отдельной локальной учетной записи с минимальными правами.
 
 ### systemd
 
-Создайте отдельные unit-файлы для `app.main` и `app.workers.runner`. Укажите `WorkingDirectory`, путь к Python из `.venv`, автоматический restart при ошибке и зависимость от `postgresql.service` и сети.
+Создайте отдельные unit-файлы для `app.main`, `app.workers.runner` и `app.workers.trainer`. Укажите `WorkingDirectory`, путь к Python из `.venv`, автоматический restart при ошибке и зависимость от `postgresql.service` и сети.
 
 ## 6. Обновление
 
-1. Остановить API и worker.
+1. Остановить API, worker и trainer.
 2. Создать резервную копию: `python manage.py backup`.
 3. Обновить файлы проекта.
 4. Выполнить `python manage.py setup` для синхронизации зависимостей.
 5. Выполнить `python manage.py migrate`.
 6. Выполнить `python manage.py doctor`.
-7. Запустить API и worker.
+7. Запустить API, worker и trainer.
 
 ## 7. Резервное копирование
 

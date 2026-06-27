@@ -51,6 +51,14 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        trainer = (
+            await session.execute(
+                select(ServiceHeartbeat)
+                .where(ServiceHeartbeat.service_name == "trainer")
+                .order_by(desc(ServiceHeartbeat.last_seen_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         max_age = max(settings.heartbeat_seconds * 4, 90)
         worker_fresh = bool(
             worker and (datetime.now(UTC) - worker.last_seen_at).total_seconds() <= max_age
@@ -76,6 +84,20 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
             "status": worker.status if worker else None,
             "last_market_sync": market_sync_time.isoformat() if market_sync_time else None,
             "market_data_fresh": market_fresh,
+        }
+        trainer_fresh = bool(
+            trainer and (datetime.now(UTC) - trainer.last_seen_at).total_seconds() <= max_age
+        )
+        trainer_details = (trainer.details or {}) if trainer else {}
+        checks["trainer"] = {
+            "ok": (not settings.auto_train_enabled)
+            or (trainer_fresh and trainer.status == "RUNNING" and trainer_details.get("healthy", True)),
+            "enabled": settings.auto_train_enabled,
+            "last_seen_at": trainer.last_seen_at.isoformat() if trainer else None,
+            "instance_id": trainer.instance_id if trainer else None,
+            "status": trainer.status if trainer else None,
+            "phase": trainer_details.get("phase"),
+            "details": trainer_details or None,
         }
 
         expected_version = active_model.version if active_model else "baseline-momentum-v1"
@@ -160,6 +182,16 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "max_symbols": settings.universe_max_symbols,
             "refresh_seconds": settings.universe_refresh_seconds,
             "min_history_bars": settings.universe_min_history_bars,
+        },
+        "auto_training": {
+            "enabled": settings.auto_train_enabled,
+            "auto_activate": settings.auto_train_auto_activate,
+            "model_type": settings.auto_train_model_type,
+            "interval_hours": settings.auto_train_interval_hours,
+            "minimum_new_timestamps": settings.auto_train_min_new_timestamps,
+            "lookback_days": settings.auto_train_lookback_days,
+            "max_symbols": settings.auto_train_max_symbols,
+            "require_improvement": settings.auto_train_require_improvement,
         },
         "database_revision": await current_revision(session),
         "expected_revision": expected_revision(),

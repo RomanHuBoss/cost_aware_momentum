@@ -14,6 +14,8 @@
 | Purging и final holdout | Частично | один chronological split с purge gap; нет полноценного multi-fold walk-forward |
 | Model registry/hash/activation/rollback | Да с 1.3.0 | SHA256 validation, activation CLI, unique active index, audit/outbox |
 | Worker использует active registry model | Да с 1.3.0 | periodic reload и runtime/registry readiness match |
+| Фоновое периодическое переобучение | Да с 1.4.0 | отдельный trainer process, minimum-new-data gate, rolling lookback и job heartbeat |
+| Безопасное продвижение новой модели | Да с 1.4.0 | same-holdout incumbent comparison, absolute/relative quality gate, immutable artifact и guarded activation |
 | Fail-closed при stale/missing data | Да для live inference | stale candle/ticker, missing features/bid-ask/spec и high spread блокируют публикацию |
 | Dynamic universe | Частично | live selection есть; historical point-in-time membership snapshots отсутствуют |
 | Издержки, net R/R, EV | Да, базовая модель | fee/slippage/funding scenario/stop reserve; account fee-rate и depth impact пока не подключены полностью |
@@ -24,7 +26,7 @@
 | Audit/idempotency/outbox | Да | append-only hash chain, idempotency keys, outbox events |
 | Counterfactual outcome | Нет | сохраняется сигнал, но итог исхода автоматически не рассчитывается |
 | Event-driven portfolio backtest | Частично | barrier-policy test есть; нет no-fill/partial fills/operator latency/full portfolio simulator |
-| Drift monitoring/fallback | Нет | roadmap |
+| Drift monitoring/fallback | Частично | pre-activation holdout gate есть; PSI/live calibration drift и realized-performance auto-rollback остаются roadmap |
 | Historical orderbook impact | Нет | требуется собственный архив snapshots |
 | Production evidence | Нет | требуется paper/shadow forward period и go/no-go evidence |
 

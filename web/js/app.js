@@ -178,7 +178,24 @@ async function loadStatus() {
     const status = await api('/api/v1/status');
     $('#system-dot').className = 'status-dot ok';
     $('#system-state').textContent = 'Система доступна';
-    $('#model-state').textContent = `Модель: ${status.active_model.version}`;
+    const trainer = status.heartbeats.find(item => item.service === 'trainer');
+    const phaseLabels = {
+      STARTING: 'запуск',
+      INITIAL_DELAY: 'ожидание запуска',
+      LOADING_DATA: 'загрузка данных',
+      FITTING: 'обучение',
+      REGISTERING: 'регистрация модели',
+      ACTIVATING: 'активация модели',
+      WAITING: 'ожидание новых данных',
+      ERROR: 'ошибка',
+      STOPPED: 'остановлено',
+      DISABLED: 'отключено',
+    };
+    const trainerPhase = trainer?.details?.phase;
+    const trainingState = status.auto_training?.enabled
+      ? (phaseLabels[trainerPhase] || 'ожидание trainer')
+      : 'отключено';
+    $('#model-state').textContent = `Модель: ${status.active_model.version || '—'} · дообучение: ${trainingState}`;
     const worker = status.heartbeats.find(item => item.service === 'worker');
     state.universeStatus = worker?.details?.universe || null;
     updateUniverseState();

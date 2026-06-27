@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.0 — 2026-06-27
+
+- Добавлен отдельный `trainer` process для фонового переобучения без блокировки API и inference worker.
+- Trainer запускается вместе с `manage.py run`, имеет отдельные heartbeat, job history и команду `manage.py trainer`.
+- Переобучение выполняется на rolling-окне подтвержденных часовых свечей после накопления минимального числа новых timestamps.
+- Каждый цикл создает новый immutable joblib artifact; действующий файл модели не изменяется на месте.
+- Candidate и incumbent сравниваются на одном новом final holdout по log loss, multiclass Brier и ECE.
+- Добавлены абсолютные и относительные quality gates, минимальный размер holdout и контроль представленности TP/SL/TIMEOUT.
+- Автоматическая activation выполняется только для прошедшего gate кандидата и только если active-version не изменилась во время обучения.
+- При ошибке или провале gate текущая active-модель продолжает обслуживать inference; candidate остается неактивным для анализа.
+- `ACTIVE_MODEL_PATH` блокирует auto-activation registry candidate, чтобы override не расходился со штатным runtime.
+- Status/readiness показывают trainer heartbeat, фазу, последнюю попытку и конфигурацию auto-training.
+- Ручные `train`, review, backtest, activation и rollback сохранены.
+
 ## 1.3.0 — 2026-06-27
 
 - ML-задача заменена с бинарного направления на direction-specific `TP` / `SL` / `TIMEOUT`; `NO TRADE` остается решением policy engine.

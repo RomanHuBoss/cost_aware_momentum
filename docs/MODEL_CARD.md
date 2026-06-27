@@ -53,6 +53,19 @@ Joblib bundle обязан содержать:
 
 При активации и загрузке проверяются version, SHA256, task, feature schema, classes и соответствие `DEFAULT_HORIZON_HOURS`. Legacy binary-direction artifacts отвергаются.
 
+
+## Фоновое переобучение
+
+Версия 1.4.0 добавляет отдельный `trainer` process. Он не выполняет online `partial_fit` и не перезаписывает действующую модель. По расписанию строится новый candidate на rolling-окне подтвержденных данных, после чего:
+
+1. candidate и active artifact оцениваются на одном новом final holdout;
+2. проверяются минимальный размер holdout, представленность TP/SL/TIMEOUT, log loss, multiclass Brier и ECE;
+3. проверяется допустимое ухудшение и требуемое улучшение относительно incumbent;
+4. artifact регистрируется с SHA256, metrics, quality-gate decision и ссылкой на incumbent;
+5. auto-activation выполняется только при успешном gate и неизменившейся active-version.
+
+Обучение запускается отдельным процессом, поэтому fitting scikit-learn не блокирует FastAPI и hourly inference. Не прошедший gate candidate остается в registry неактивным и может быть изучен вручную.
+
 ## Активация и rollback
 
 Обучение по умолчанию регистрирует artifact как неактивный. После review:
@@ -74,4 +87,4 @@ python manage.py model-registry activate --version <version>
 - hourly ambiguity создает консервативную, но грубую метку;
 - операторский выбор создает selection bias;
 - backtest не является доказательством прибыли и не заменяет paper/shadow forward test;
-- drift monitoring и автоматический fallback еще не реализованы.
+- полноценные PSI/feature/probability drift gates и автоматический rollback по realized performance еще не реализованы; текущий trainer использует holdout quality gate до активации.

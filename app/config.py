@@ -95,7 +95,30 @@ class Settings(BaseSettings):
     allow_baseline_model: bool = True
     model_refresh_seconds: int = 300
 
+    # Background model lifecycle. The trainer creates immutable candidates in a
+    # separate process so CPU-heavy fitting never blocks API or inference work.
+    auto_train_enabled: bool = True
+    auto_train_auto_activate: bool = True
+    auto_train_model_type: Literal["logistic", "hist_gradient_boosting"] = "logistic"
+    auto_train_interval_hours: int = 168
+    auto_train_retry_hours: int = 6
+    auto_train_check_seconds: int = 300
+    auto_train_initial_delay_seconds: int = 120
+    auto_train_lookback_days: int = 365
+    auto_train_max_symbols: int = 100
+    auto_train_min_new_timestamps: int = 168
+    auto_train_min_holdout_rows: int = 180
+    auto_train_min_class_fraction: float = 0.02
+    auto_train_max_log_loss: float = 1.20
+    auto_train_max_multiclass_brier: float = 0.75
+    auto_train_max_ece: float = 0.15
+    auto_train_max_log_loss_regression: float = 0.01
+    auto_train_max_brier_regression: float = 0.01
+    auto_train_min_metric_improvement: float = 0.002
+    auto_train_require_improvement: bool = True
+
     worker_id: str = "worker-1"
+    trainer_id: str = "trainer-1"
     heartbeat_seconds: int = 15
 
     @staticmethod
@@ -166,6 +189,32 @@ class Settings(BaseSettings):
             raise ValueError("Leverage policy is inconsistent")
         if self.model_refresh_seconds < 30:
             raise ValueError("MODEL_REFRESH_SECONDS must be at least 30")
+        if self.auto_train_interval_hours < 1:
+            raise ValueError("AUTO_TRAIN_INTERVAL_HOURS must be at least 1")
+        if self.auto_train_retry_hours < 1:
+            raise ValueError("AUTO_TRAIN_RETRY_HOURS must be at least 1")
+        if self.auto_train_check_seconds < 30:
+            raise ValueError("AUTO_TRAIN_CHECK_SECONDS must be at least 30")
+        if self.auto_train_initial_delay_seconds < 0:
+            raise ValueError("AUTO_TRAIN_INITIAL_DELAY_SECONDS cannot be negative")
+        if self.auto_train_lookback_days < 30:
+            raise ValueError("AUTO_TRAIN_LOOKBACK_DAYS must be at least 30")
+        if self.auto_train_max_symbols < 0:
+            raise ValueError("AUTO_TRAIN_MAX_SYMBOLS cannot be negative")
+        if self.auto_train_min_new_timestamps < 1:
+            raise ValueError("AUTO_TRAIN_MIN_NEW_TIMESTAMPS must be positive")
+        if self.auto_train_min_holdout_rows < 90:
+            raise ValueError("AUTO_TRAIN_MIN_HOLDOUT_ROWS must be at least 90")
+        if not 0 < self.auto_train_min_class_fraction < 1 / 3:
+            raise ValueError("AUTO_TRAIN_MIN_CLASS_FRACTION must be between 0 and 1/3")
+        if self.auto_train_max_log_loss <= 0 or self.auto_train_max_multiclass_brier <= 0:
+            raise ValueError("Automatic training quality limits must be positive")
+        if not 0 < self.auto_train_max_ece < 1:
+            raise ValueError("AUTO_TRAIN_MAX_ECE must be between 0 and 1")
+        if self.auto_train_max_log_loss_regression < 0 or self.auto_train_max_brier_regression < 0:
+            raise ValueError("Automatic training regression tolerances cannot be negative")
+        if self.auto_train_min_metric_improvement < 0:
+            raise ValueError("AUTO_TRAIN_MIN_METRIC_IMPROVEMENT cannot be negative")
         if self.app_mode == "production":
             errors: list[str] = []
             if self.allow_demo_seed:
@@ -176,6 +225,14 @@ class Settings(BaseSettings):
                 errors.append("SECRET_KEY must be a non-default value of at least 32 characters")
             if self.operator_password == "change-me-now" or len(self.operator_password) < 12:
                 errors.append("OPERATOR_PASSWORD must be changed and contain at least 12 characters")
+            if (
+                self.auto_train_enabled
+                and self.auto_train_auto_activate
+                and not self.auto_train_require_improvement
+            ):
+                errors.append(
+                    "AUTO_TRAIN_REQUIRE_IMPROVEMENT must be true when production auto-activation is enabled"
+                )
             if errors:
                 raise ValueError("Unsafe production configuration: " + "; ".join(errors))
         return self

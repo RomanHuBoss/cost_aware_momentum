@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cost-aware-momentum"
-version = "1.3.0"
+version = "1.4.0"
 description = "Human-in-the-loop cost-aware hourly ML momentum advisory terminal for Bybit linear USDT perpetuals"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -37,6 +37,7 @@ dev = [
 [project.scripts]
 cam-api = "app.main:run"
 cam-worker = "app.workers.runner:run"
+cam-trainer = "app.workers.trainer:run"
 cam-train = "scripts.train:main"
 cam-backtest = "scripts.backtest:main"
 cam-daily-report = "scripts.daily_report:main"

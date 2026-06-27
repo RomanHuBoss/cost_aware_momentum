@@ -88,3 +88,34 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 `ACTIVE_MODEL_PATH` сохранен только как явный operational override и также проходит строгую проверку. Он не должен скрытно расходиться с registry в штатной эксплуатации.
 
 В `production` validator требует `ALLOW_BASELINE_MODEL=false`, `ALLOW_DEMO_SEED=false`, измененные `SECRET_KEY` и `OPERATOR_PASSWORD`. При отсутствии валидной active-модели worker не стартует корректно, а readiness остается false.
+
+## Background trainer
+
+`python manage.py run` запускает trainer отдельным процессом рядом с API и inference worker. Тяжелое обучение выполняется вне request path и не задерживает публикацию часовых рекомендаций.
+
+| Переменная | Назначение |
+|---|---|
+| `AUTO_TRAIN_ENABLED` | запускать ли фоновый trainer |
+| `AUTO_TRAIN_AUTO_ACTIVATE` | автоматически активировать только кандидата, прошедшего quality gate |
+| `AUTO_TRAIN_MODEL_TYPE` | `logistic` или `hist_gradient_boosting` |
+| `AUTO_TRAIN_INTERVAL_HOURS` | минимальный интервал между успешными циклами обучения; default 168 часов |
+| `AUTO_TRAIN_RETRY_HOURS` | пауза после ошибки обучения |
+| `AUTO_TRAIN_CHECK_SECONDS` | частота проверки расписания и достаточности данных |
+| `AUTO_TRAIN_INITIAL_DELAY_SECONDS` | задержка первого фонового запуска после старта системы |
+| `AUTO_TRAIN_LOOKBACK_DAYS` | rolling-окно подтвержденных свечей, используемое для переобучения |
+| `AUTO_TRAIN_MAX_SYMBOLS` | top-N символов по последнему 24h turnover для ограничения памяти; `0` использует все сохраненные символы |
+| `AUTO_TRAIN_MIN_NEW_TIMESTAMPS` | сколько новых часовых timestamps требуется после `training_end` active-модели |
+| `AUTO_TRAIN_MIN_HOLDOUT_ROWS` | минимальный размер нового final holdout |
+| `AUTO_TRAIN_MIN_CLASS_FRACTION` | минимальная доля каждого исхода TP/SL/TIMEOUT в holdout |
+| `AUTO_TRAIN_MAX_LOG_LOSS` | абсолютный верхний предел log loss кандидата |
+| `AUTO_TRAIN_MAX_MULTICLASS_BRIER` | абсолютный верхний предел multiclass Brier |
+| `AUTO_TRAIN_MAX_ECE` | верхний предел ECE по каждому outcome |
+| `AUTO_TRAIN_MAX_LOG_LOSS_REGRESSION` | допустимое ухудшение log loss относительно active-модели на том же holdout |
+| `AUTO_TRAIN_MAX_BRIER_REGRESSION` | допустимое ухудшение Brier относительно active-модели |
+| `AUTO_TRAIN_MIN_METRIC_IMPROVEMENT` | минимальное улучшение хотя бы одной основной метрики |
+| `AUTO_TRAIN_REQUIRE_IMPROVEMENT` | требовать ли улучшение перед автоматической активацией |
+| `TRAINER_ID` | идентификатор trainer heartbeat и job actor |
+
+Trainer не изменяет существующий artifact на месте. Он полностью переобучает candidate на актуальном rolling-окне, сохраняет его атомарно, регистрирует SHA256 и сравнивает candidate с incumbent на одном и том же новом holdout. Не прошедший quality gate artifact остается неактивным. При конкурентном запуске используется PostgreSQL session advisory lock; при смене active-модели во время оценки auto-activation отменяется.
+
+`ACTIVE_MODEL_PATH` считается аварийным override. При его наличии trainer продолжает формировать candidates, но не выполняет автоматическую активацию registry-модели, поскольку inference worker все равно предпочитает override.

@@ -42,7 +42,12 @@ def validate_registry_artifact(model: ModelRegistry) -> dict[str, object]:
     return runtime.metadata()
 
 
-async def activate_registered_model(version: str, *, actor: str = "operator-cli") -> dict[str, object]:
+async def activate_registered_model(
+    version: str,
+    *,
+    actor: str = "operator-cli",
+    expected_previous_version: str | None = None,
+) -> dict[str, object]:
     async with SessionFactory() as session, session.begin():
         target = (
             await session.execute(
@@ -61,6 +66,12 @@ async def activate_registered_model(version: str, *, actor: str = "operator-cli"
                 .limit(1)
             )
         ).scalar_one_or_none()
+        previous_version = previous.version if previous else None
+        if expected_previous_version is not None and previous_version != expected_previous_version:
+            raise RuntimeError(
+                "Active model changed while the candidate was being evaluated: "
+                f"expected={expected_previous_version}, actual={previous_version}"
+            )
         await session.execute(
             update(ModelRegistry)
             .where(ModelRegistry.active.is_(True), ModelRegistry.id != target.id)
@@ -72,6 +83,7 @@ async def activate_registered_model(version: str, *, actor: str = "operator-cli"
             "version": target.version,
             "model_type": target.model_type,
             "previous_version": previous.version if previous and previous.id != target.id else None,
+            "expected_previous_version": expected_previous_version,
             "runtime": runtime_metadata,
         }
         await append_audit_event(

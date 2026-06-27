@@ -7,7 +7,12 @@ Bybit public REST/WebSocket/read-only GET
         |
         v
 market-data worker -> PostgreSQL market/reference
-        |
+        |                         |
+        |                         v
+        |               background trainer -> immutable candidate -> quality gate
+        |                                      |                         |
+        |                                      v                         v
+        |                              PostgreSQL model registry <- safe activation
         v
 hourly feature snapshot -> ModelRuntime -> MarketSignal
         |
@@ -27,11 +32,14 @@ Market signal не зависит от профиля капитала. Executio
 
 - `api`: HTTP/SSE, UI, validation и operator actions; запускается через `python manage.py api`.
 - `worker`: ingestion, heartbeats, hourly inference и expiry; запускается через `python manage.py worker`.
+- `trainer`: периодическое переобучение, same-holdout comparison, quality gate и безопасная activation; запускается через `python manage.py trainer`.
 - `migrate`: Alembic до первого запуска и после обновлений.
-- `train/backtest`: отдельные CLI-процессы, не request-bound background tasks.
+- `train/backtest`: ручные исследовательские CLI-процессы, не request-bound background tasks.
 - PostgreSQL: отдельная системная служба и единый state store.
 
-`python manage.py run` является локальным supervisor: запускает API и worker как дочерние процессы, контролирует их завершение и останавливает оба по `Ctrl+C`. Для постоянной эксплуатации процессы следует зарегистрировать как независимые службы ОС.
+`python manage.py run` является локальным supervisor: запускает API, inference worker и, если `AUTO_TRAIN_ENABLED=true`, trainer как дочерние процессы, контролирует их завершение и останавливает все по `Ctrl+C`. Для постоянной эксплуатации процессы следует зарегистрировать как независимые службы ОС.
+
+Trainer не модифицирует active artifact. Каждый цикл создает новую immutable-версию, сравнивает ее с incumbent на одном final holdout, сохраняет решение в `model_registry`, `job_runs`, audit и outbox. Автоматическая activation использует optimistic guard по предыдущей active-version, поэтому конкурентное изменение registry не может быть незаметно перезаписано.
 
 ## Схемы PostgreSQL
 
@@ -46,7 +54,7 @@ Market signal не зависит от профиля капитала. Executio
 ## Надежность
 
 - natural unique keys и upsert ingestion;
-- transaction-scoped advisory locks для jobs;
+- transaction-scoped advisory locks для коротких jobs и session advisory lock для длительного обучения;
 - idempotency keys для operator mutations;
 - transactional outbox для SSE/catch-up;
 - Alembic head check до readiness;

@@ -1,4 +1,4 @@
-.PHONY: setup configure db-init migrate doctor up api worker test lint backup restore-check report
+.PHONY: setup configure db-init migrate doctor up api worker trainer test lint backup restore-check report
 
 PYTHON ?= python
 
@@ -25,6 +25,9 @@ api:
 
 worker:
 	$(PYTHON) manage.py worker
+
+trainer:
+	$(PYTHON) manage.py trainer
 
 test:
 	$(PYTHON) manage.py test

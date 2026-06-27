@@ -84,7 +84,7 @@ class ModelRuntime:
                 raise ValueError("Invalid model bundle")
             if bundle.get("task") != "barrier_outcome_v1":
                 raise ValueError(
-                    "Unsupported or legacy model task. Retrain with version 1.3.0; "
+                    "Unsupported or legacy model task. Retrain with version 1.3.0 or newer; "
                     "binary direction artifacts do not provide calibrated TP/SL/TIMEOUT probabilities."
                 )
             artifact_features = list(bundle.get("feature_names") or [])
