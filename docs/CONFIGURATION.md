@@ -61,10 +61,14 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 | `HISTORY_BACKFILL_SYMBOLS_PER_CYCLE` | сколько символов углублять за один цикл |
 | `HISTORY_BACKFILL_PAGES_PER_SYMBOL` | максимум страниц Bybit за символ и цикл |
 | `HISTORY_BACKFILL_PAGE_SIZE` | размер страницы Bybit, не более 1000 |
+| `OUTCOME_INTRABAR_INTERVAL` | интервал `1`, `3` или `5` минут для разрешения hourly TP/SL ambiguity; default `5` |
+| `OUTCOME_INTRABAR_MAX_WINDOWS_PER_CYCLE` | максимум точечных intrabar windows за один outcome cycle; default `100` |
 
 `UNIVERSE_MAX_SYMBOLS=0` не означает отсутствие фильтра качества: система сканирует полный биржевой каталог, но анализирует только контракты, прошедшие статус, тип, возраст, ликвидность, spread и data-quality checks. Это предотвращает смешивание «всех существующих тикеров» с реально исполнимым торговым universe.
 
 При первом включении dynamic mode worker загружает быстрый стартовый срез для всех отобранных символов. Затем отдельный job `history_backfill` постепенно запрашивает более старые страницы до целевой глубины, не блокируя API и часовой inference на длительное время. Для молодых контрактов целевая дата автоматически ограничивается временем листинга. Далее tickers обновляются с частотой `MARKET_POLL_SECONDS`, состав universe — с частотой `UNIVERSE_REFRESH_SECONDS`, а свечи всех активных символов обновляются один раз после закрытия часа перед inference. Незакрытая REST-свеча сохраняется с `confirmed=false` и не входит в признаки.
+
+Для counterfactual evaluation 1/3/5-минутные свечи не загружаются по всему universe. Worker сначала обнаруживает конкретный час, где hourly high/low одновременно пересекли TP1 и SL, затем выполняет один ограниченный public/read-only запрос только для этого symbol/time window. Неполный ответ не заменяется предположением: outcome остается pending до получения непрерывного intrabar path. Лимит windows на цикл защищает worker от большого backlog и API burst.
 
 ## Risk policy
 

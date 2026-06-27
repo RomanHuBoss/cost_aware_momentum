@@ -1,10 +1,12 @@
 # QA report
 
-Дата проверки версии 1.6.0: 28 июня 2026 г.
+Дата проверки версии 1.7.0: 28 июня 2026 г.
 
 ## Baseline до изменений
 
-Проверки выполнены на исходном архиве `cost_aware_momentum-main(3).zip` в изолированном Python environment:
+Входной архив: `cost_aware_momentum-main(4).zip`, SHA-256 `4653f12d4d99311a3303797535d541b696610e3118b9a677fdb08666c337bac7`.
+
+Проверки исходной версии 1.6.0 выполнены в изолированном Python environment после установки declared dependencies:
 
 | Проверка | Результат |
 |---|---|
@@ -12,66 +14,67 @@
 | `python -m pip check` | PASSED — broken requirements не обнаружены |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED — 54 passed, 2 skipped, 20 warnings |
+| `python -m pytest -q` | PASSED — 67 passed, 3 skipped, 20 warnings |
 | `node --check web/js/app.js` | PASSED |
-| `python manage.py doctor` | NOT RUN — baseline wrapper не нашел project-local `.venv` |
-| `python manage.py test --require-integration` | NOT RUN — baseline wrapper не нашел project-local `.venv`; отдельная PostgreSQL test database отсутствовала |
+| `python manage.py doctor` | FAILED (environment) — нет `.env`, native PostgreSQL tools/service и безопасных credentials |
+| `python manage.py test --require-integration` | NOT RUN — отсутствуют `POSTGRES_ADMIN_URL`/`TEST_DATABASE_URL` и отдельная PostgreSQL test database |
 
-Baseline содержал 2 skipped PostgreSQL integration tests. После добавления нового outcome integration test post-check содержит 3 skipped integration tests; все требуют отдельную PostgreSQL test database.
+Первый запуск в host environment без declared dev/runtime dependencies был также зафиксирован: Ruff и psycopg отсутствовали, поэтому он не использовался как доказательство качества проекта.
 
-## Post-check версии 1.6.0
+## Post-check версии 1.7.0
 
 | Проверка | Результат |
 |---|---|
+| `python --version` | PASSED — Python 3.13.5 |
 | `python -m pip check` | PASSED |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED — 67 passed, 3 skipped, 20 warnings |
-| `python -m pytest -q tests/unit/test_counterfactual_outcomes.py` | PASSED — 12 passed |
+| `python -m pytest -q` | PASSED — 74 passed, 3 skipped, 20 warnings |
+| `python -m pytest -q tests/unit/test_intrabar_outcomes.py` | PASSED — 7 passed |
 | `node --check web/js/app.js` | PASSED |
 | `alembic heads` | PASSED — единственный head `0004_counterfactual_outcomes` |
-| `git diff --check` | PASSED |
-| `python manage.py doctor` | FAILED (environment) — нет `.env`, замененных secrets, PostgreSQL service и native tools |
-| `python manage.py test --require-integration` | UNAVAILABLE — не заданы `POSTGRES_ADMIN_URL`/`TEST_DATABASE_URL` |
-| Версия пакета / приложения | `1.6.0` / `1.6.0` |
+| Версия пакета / приложения | `1.7.0` / `1.7.0` |
+| `python manage.py doctor` | FAILED (environment) — нет `.env`, замененных secrets, PostgreSQL service и `psql`/`pg_dump`/`pg_restore` |
+| `python manage.py test --require-integration` | UNAVAILABLE — отдельная PostgreSQL test database не настроена |
+
+3 skipped tests являются PostgreSQL integration tests и не заменены SQLite/fake database.
 
 ## Red → green evidence
 
-До production implementation новый acceptance module был запущен отдельно:
+До production implementation создан и запущен новый module:
 
 ```text
-python -m pytest -q tests/unit/test_counterfactual_outcomes.py
+python -m pytest -q tests/unit/test_intrabar_outcomes.py
 ```
 
-RED: collection завершилась ошибкой `ModuleNotFoundError: No module named 'app.services.outcomes'`.
+RED: collection завершилась `ImportError: cannot import name 'CandleWindow' from 'app.services.market_data'`.
 
-После реализации тот же module прошел: `12 passed`.
+GREEN: тот же module прошел — `7 passed`.
 
-## Проверенный контракт counterfactual outcome
+## Проверенный контракт intrabar outcome
 
 Unit tests и static analysis подтверждают:
 
-1. LONG и SHORT используют правильную направленную геометрию;
-2. TP1/SL разрешаются только по confirmed contiguous hourly path;
-3. same-bar TP1+SL дает conservative `SL` и `ambiguous=true`;
-4. TIMEOUT не создается до точного confirmed horizon close;
-5. пропуск первой или промежуточной свечи оставляет outcome pending;
-6. invalid prices/directional geometry fail closed;
-7. plan costs используют immutable execution-plan snapshot;
-8. входная и выходная fee legs считаются от соответствующих executed notionals;
-9. stop-gap reserve применяется только к SL;
-10. funding scenario включает только settlement timestamps до outcome exit;
-11. legacy plan без funding timeline помечается `FUNDING_UNAVAILABLE`, R не выдумывается;
-12. qty=0 помечается `NOT_SIZED`, R не выдумывается;
-13. signal/plan uniqueness и transaction advisory lock защищают идемпотентность;
-14. audit и outbox создаются в той же транзакции;
-15. detail API и UI различают counterfactual estimate и actual manual P&L.
+1. hourly non-ambiguous TP/SL/TIMEOUT behavior сохранено;
+2. LONG и SHORT используют правильную directional geometry;
+3. hourly TP+SL разрешается по первому касанию в complete 1/3/5-minute path;
+4. source candle и exit time получают intrabar precision;
+5. missing intermediate intrabar оставляет outcome pending;
+6. TP+SL внутри одного finest bar дает conservative SL и `ambiguous=true`;
+7. точечный fetch использует только public/read-only kline window с exact `start`, `end`, `interval`, `limit`;
+8. запросы дедуплицируются по symbol/start/end и ограничиваются конфигурацией;
+9. fetch error не создает выдуманный outcome;
+10. existing immutable outcome, plan valuation, audit/outbox и advisory-only границы не изменены.
+
+## Проверка внешнего контракта Bybit
+
+28 июня 2026 г. проверена официальная документация Bybit V5 `Get Kline`: endpoint является `GET /v5/market/kline`, принимает `start`, `end`, `limit` и интервалы `1`, `3`, `5` среди поддерживаемых. Production tests используют mock/fake client и не выполняют торговых операций.
 
 ## PostgreSQL integration tests
 
-В среде сборки отсутствовали `postgres`, `psql`, `initdb`, `pg_dump`, `pg_restore` и отдельная test database. Поэтому migration 0004 не проверялась фактическим upgrade/downgrade на PostgreSQL; 3 integration tests остались skipped.
+В среде сборки отсутствовали PostgreSQL server/native utilities и отдельная test database. Миграция не менялась, но DB flow с existing `market.candles` и `advisory.signal_outcomes` не проверялся фактической concurrent integration с PostgreSQL.
 
-Перед эксплуатацией выполните на отдельной базе:
+Перед эксплуатацией выполнить:
 
 ```powershell
 $env:POSTGRES_ADMIN_URL="postgresql+psycopg://postgres:ПАРОЛЬ@localhost:5432/postgres"
@@ -79,35 +82,30 @@ py -3.12 manage.py test --require-integration
 Remove-Item Env:POSTGRES_ADMIN_URL
 ```
 
-Затем отдельно проверьте:
+Дополнительно проверить worker smoke-test на paper/shadow:
 
-1. upgrade существующей схемы 0003 → 0004;
-2. clean install до head;
-3. unique constraints при двух конкурентных worker attempts;
-4. outcome resolution после подтвержденных candles;
-5. backfill новой execution-plan version после уже разрешенного signal outcome;
-6. API detail и SSE refresh на локальном UI;
-7. downgrade только на disposable database.
+1. hourly bar с TP1+SL;
+2. загрузку 12 пяти-минутных candles для одного часа;
+3. pending при неполном path;
+4. повторный cycle после восстановления API;
+5. audit/outbox/API detail для intrabar-resolved outcome.
 
 ## Release boundary
 
-Проверено статически:
+Проверяется перед упаковкой:
 
-- Bybit client не содержит order create/amend/cancel методов;
-- advisory-only boundary не изменена;
-- PostgreSQL остается единственной СУБД;
-- bind default остается `127.0.0.1`;
-- `.env`, credentials, model artifacts, caches, `.git`, `.venv`, `*.egg-info` и stale `SHA256SUMS` не должны входить в release ZIP.
+- Bybit client содержит только GET/public/read-only methods;
+- PostgreSQL-only и advisory-only границы сохранены;
+- release исключает `.env`, credentials, `.venv`, caches, `*.egg-info`, dumps и real model artifacts;
+- `SHA256SUMS` пересчитывается после финального состава release.
 
 ## Не покрыто данной проверкой
 
-- фактический PostgreSQL migration/integration run;
+- фактический PostgreSQL integration/concurrency run;
 - длительный worker smoke-test на реальном потоке Bybit;
-- 1–5-минутное восстановление порядка TP/SL;
-- partial TP1/TP2, no-fill, operator latency и historical orderbook impact;
-- сравнение estimated counterfactual P&L с фактическими fills;
+- intrabar reconstruction в training labels и backtest;
+- TP2/partial exits, no-fill, operator latency и historical orderbook impact;
+- comparison counterfactual estimate с manual fills;
 - paper/shadow forward evidence и экономическое преимущество стратегии.
 
-## Release recheck
-
-Финальные counts, SHA-256 ZIP и результат повторной распаковки зафиксированы в `docs/ITERATION_REPORT_2026-06-28_counterfactual-outcomes.md` после упаковки.
+Финальные release hash и повторная распаковка фиксируются в `docs/ITERATION_REPORT_2026-06-28_intrabar-outcomes.md`.

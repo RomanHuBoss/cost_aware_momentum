@@ -21,13 +21,14 @@ from app.ml.runtime import ModelRuntime
 from app.services.market_data import (
     symbols_needing_history_backfill,
     sync_candle_history,
+    sync_candle_windows,
     sync_candles,
     sync_funding_and_oi,
     sync_instruments,
     sync_read_only_account,
     sync_tickers,
 )
-from app.services.outcomes import resolve_counterfactual_outcomes
+from app.services.outcomes import find_ambiguous_intrabar_windows, resolve_counterfactual_outcomes
 from app.services.signals import expire_old_signals, publish_hourly_signals
 from app.services.universe import UniverseSelection, resolve_universe
 
@@ -406,12 +407,28 @@ class Worker:
 
     async def counterfactual_outcome_job(self, event_time: datetime) -> dict:
         async def task(session):
-            return await resolve_counterfactual_outcomes(
+            available_cutoff = datetime.now(UTC)
+            windows = await find_ambiguous_intrabar_windows(
                 session,
                 market_cutoff=event_time,
-                available_cutoff=datetime.now(UTC),
+                available_cutoff=available_cutoff,
+                max_windows=settings.outcome_intrabar_max_windows_per_cycle,
+            )
+            intrabar_sync = await sync_candle_windows(
+                session,
+                self.client,
+                windows,
+                interval=settings.outcome_intrabar_interval,
+                now=available_cutoff,
+            )
+            result = await resolve_counterfactual_outcomes(
+                session,
+                market_cutoff=event_time,
+                available_cutoff=available_cutoff,
+                intrabar_interval=settings.outcome_intrabar_interval,
                 actor="worker",
             )
+            return {**result, "intrabar_sync": intrabar_sync}
 
         return await self.run_job("counterfactual_outcomes", event_time, task)
 

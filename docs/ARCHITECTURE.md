@@ -25,9 +25,11 @@ ExecutionPlan(versioned) -> FastAPI -> Vanilla JS UI
         v
 operator accept/reject -> manual fill journal -> P&L/audit/reconciliation
 
-confirmed future candles + MarketSignal
+confirmed hourly candles + MarketSignal
         |
-        v
+        +-- same-hour TP/SL --> exact 1/3/5m read-only kline window
+        |                              |
+        v                              v
 SignalOutcome -> PlanOutcome(each version) -> API/UI/audit/outbox
 ```
 
@@ -36,7 +38,7 @@ Market signal не зависит от профиля капитала. Executio
 ## Нативные процессы
 
 - `api`: HTTP/SSE, UI, validation и operator actions; запускается через `python manage.py api`.
-- `worker`: ingestion, heartbeats, hourly inference, expiry и counterfactual outcome resolution; запускается через `python manage.py worker`.
+- `worker`: ingestion, heartbeats, hourly inference, expiry и counterfactual outcome resolution с точечным intrabar backfill; запускается через `python manage.py worker`.
 - `trainer`: периодическое переобучение, same-holdout comparison, quality gate и безопасная activation; запускается через `python manage.py trainer`.
 - `migrate`: Alembic до первого запуска и после обновлений.
 - `train/backtest`: ручные исследовательские CLI-процессы, не request-bound background tasks.
@@ -64,7 +66,7 @@ Trainer не модифицирует active artifact. Каждый цикл с�
 - transactional outbox для SSE/catch-up;
 - Alembic head check до readiness;
 - audit chain с сериализацией chain-head через PostgreSQL advisory lock;
-- fail-closed при stale/missing data и migration mismatch; counterfactual TIMEOUT не создается при разрыве hourly path;
+- fail-closed при stale/missing data и migration mismatch; counterfactual outcome не создается при разрыве hourly path или неполном обязательном intrabar window;
 - нативные `pg_dump`/`pg_restore` для резервирования и проверки восстановления.
 
 ## Security boundary

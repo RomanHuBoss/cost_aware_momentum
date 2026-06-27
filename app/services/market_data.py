@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -26,6 +27,13 @@ from app.db.models import (
 from app.services.audit import append_audit_event, publish_outbox
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CandleWindow:
+    symbol: str
+    start_time: datetime
+    end_time: datetime
 
 
 def _dt_ms(value: str | int | None) -> datetime | None:
@@ -178,6 +186,108 @@ async def sync_candles(
             await _upsert_candle_values(session, values_list)
             count += len(values_list)
     return count
+
+
+async def sync_candle_windows(
+    session: AsyncSession,
+    client: BybitClient,
+    windows: Iterable[CandleWindow],
+    *,
+    interval: str,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Fetch exact last-price candle windows without broad universe backfill.
+
+    This helper is used for post-event intrabar reconstruction.  Every request is
+    public/read-only, bounded to one explicit time window and independently
+    fail-closed: a failed or partial fetch is reported and the outcome resolver
+    keeps the corresponding signal pending.
+    """
+
+    interval_minutes = int(interval)
+    if interval_minutes <= 0:
+        raise ValueError("interval must be a positive minute value")
+    current_time = now or datetime.now(UTC)
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+
+    unique_windows = sorted(
+        {
+            (item.symbol, item.start_time, item.end_time)
+            for item in windows
+        },
+        key=lambda item: (item[1], item[0], item[2]),
+    )
+    rows_received = 0
+    succeeded = 0
+    errors: list[dict[str, str]] = []
+    interval_delta = timedelta(minutes=interval_minutes)
+
+    for symbol, start_time, end_time in unique_windows:
+        if start_time.tzinfo is None or start_time.utcoffset() is None:
+            raise ValueError("window.start_time must be timezone-aware")
+        if end_time.tzinfo is None or end_time.utcoffset() is None:
+            raise ValueError("window.end_time must be timezone-aware")
+        if end_time <= start_time:
+            raise ValueError("window.end_time must be later than start_time")
+        duration = end_time - start_time
+        if duration % interval_delta != timedelta(0):
+            raise ValueError("window duration must be divisible by interval")
+        limit = int(duration / interval_delta)
+        if not 1 <= limit <= 1000:
+            raise ValueError("window requires between 1 and 1000 candles")
+
+        try:
+            rows = await client.get_kline(
+                symbol,
+                interval=interval,
+                limit=limit,
+                start_ms=int(start_time.timestamp() * 1000),
+                end_ms=int(end_time.timestamp() * 1000) - 1,
+                price_type="last",
+            )
+            values = _candle_values(
+                symbol=symbol,
+                interval=interval,
+                price_type="last",
+                rows=rows,
+                now=current_time,
+                interval_minutes=interval_minutes,
+            )
+            values = [
+                item
+                for item in values
+                if item["open_time"] >= start_time and item["close_time"] <= end_time
+            ]
+            await _upsert_candle_values(session, values)
+            rows_received += len(values)
+            succeeded += 1
+        except Exception as exc:
+            logger.exception(
+                "Failed to fetch bounded candle window",
+                extra={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "event": "candle_window_fetch_failed",
+                },
+            )
+            errors.append(
+                {
+                    "symbol": symbol,
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "windows_requested": len(unique_windows),
+        "windows_succeeded": succeeded,
+        "rows_received": rows_received,
+        "errors": errors,
+    }
 
 
 def _candle_values(

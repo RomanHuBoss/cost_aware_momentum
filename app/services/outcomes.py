@@ -12,10 +12,11 @@ from app.db.locks import acquire_advisory_xact_lock
 from app.db.models import Candle, ExecutionPlan, MarketSignal, PlanOutcome, SignalOutcome
 from app.risk.math import funding_cash_flow, gross_pnl
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.market_data import CandleWindow
 
 Direction = Literal["LONG", "SHORT"]
 Outcome = Literal["TP", "SL", "TIMEOUT"]
-EVALUATION_VERSION = "primary-barrier-hourly-v1"
+EVALUATION_VERSION = "primary-barrier-intrabar-v2"
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,9 @@ class BarrierEvaluation:
     source_candle_id: int
     bars_evaluated: int
     ambiguous: bool
+    resolution_interval: str = "60"
+    intrabar_bars_evaluated: int = 0
+    hourly_ambiguous: bool = False
 
 
 @dataclass(frozen=True)
@@ -156,6 +160,92 @@ def evaluate_barrier_outcome(
         source_candle_id=final.candle_id,
         bars_evaluated=ordered.index(final) + 1,
         ambiguous=False,
+    )
+
+
+def evaluate_barrier_outcome_with_intrabar(
+    hourly_bars: list[OutcomeBar],
+    intrabar_bars: list[OutcomeBar],
+    *,
+    direction: Direction,
+    entry: Decimal,
+    stop: Decimal,
+    take_profit: Decimal,
+    window_start: datetime,
+    horizon_end: datetime,
+    intrabar_interval_minutes: int,
+) -> BarrierEvaluation | None:
+    """Resolve an hourly same-bar ambiguity from a complete finer-grained path.
+
+    Non-ambiguous hourly outcomes retain their existing behavior.  When an hourly
+    candle touches both TP and SL, the finer path must cover that entire hour with
+    contiguous confirmed bars.  Missing data keeps the outcome pending.  If TP and
+    SL still occur inside the same finest available bar, the established
+    conservative SL rule remains in force.
+    """
+
+    if intrabar_interval_minutes <= 0 or 60 % intrabar_interval_minutes != 0:
+        raise ValueError("intrabar_interval_minutes must be a positive divisor of 60")
+    hourly = evaluate_barrier_outcome(
+        hourly_bars,
+        direction=direction,
+        entry=entry,
+        stop=stop,
+        take_profit=take_profit,
+        window_start=window_start,
+        horizon_end=horizon_end,
+    )
+    if hourly is None or not hourly.ambiguous:
+        return hourly
+
+    source_hour = next(
+        (item for item in hourly_bars if item.candle_id == hourly.source_candle_id),
+        None,
+    )
+    if source_hour is None:
+        raise ValueError("Hourly ambiguity source candle is missing")
+
+    interval = timedelta(minutes=intrabar_interval_minutes)
+    ordered = sorted(intrabar_bars, key=lambda item: (item.open_time, item.close_time, item.candle_id))
+    previous_close = source_hour.open_time
+    selected: list[OutcomeBar] = []
+    for item in ordered:
+        _require_aware(item.open_time, "intrabar.open_time")
+        _require_aware(item.close_time, "intrabar.close_time")
+        if item.open_time < source_hour.open_time or item.close_time > source_hour.close_time:
+            continue
+        if item.close_time - item.open_time != interval:
+            raise ValueError("Intrabar duration does not match configured interval")
+        if item.open_time != previous_close:
+            return None
+        selected.append(item)
+        previous_close = item.close_time
+    if previous_close != source_hour.close_time:
+        return None
+
+    intrabar = evaluate_barrier_outcome(
+        selected,
+        direction=direction,
+        entry=entry,
+        stop=stop,
+        take_profit=take_profit,
+        window_start=source_hour.open_time,
+        horizon_end=source_hour.close_time,
+    )
+    if intrabar is None:
+        return None
+    if intrabar.outcome == "TIMEOUT":
+        raise ValueError("Complete intrabar path contradicts hourly TP/SL ambiguity")
+    return BarrierEvaluation(
+        outcome=intrabar.outcome,
+        exit_price=intrabar.exit_price,
+        exit_time=intrabar.exit_time,
+        source_candle_id=intrabar.source_candle_id,
+        bars_evaluated=hourly.bars_evaluated,
+        ambiguous=intrabar.ambiguous,
+        resolution_interval=str(intrabar_interval_minutes),
+        intrabar_bars_evaluated=intrabar.bars_evaluated,
+        hourly_ambiguous=True,
     )
 
 
@@ -360,12 +450,107 @@ async def _record_plan_outcome(
     return row
 
 
+async def find_ambiguous_intrabar_windows(
+    session: AsyncSession,
+    *,
+    market_cutoff: datetime,
+    available_cutoff: datetime | None = None,
+    batch_size: int = 1000,
+    max_windows: int = 100,
+) -> list[CandleWindow]:
+    """Identify exact hourly windows that require finer-grained reconstruction."""
+
+    _require_aware(market_cutoff, "market_cutoff")
+    available_cutoff = available_cutoff or datetime.now(UTC)
+    _require_aware(available_cutoff, "available_cutoff")
+    if batch_size <= 0 or max_windows <= 0:
+        raise ValueError("batch_size and max_windows must be positive")
+
+    candidates = (
+        (
+            await session.execute(
+                select(MarketSignal)
+                .outerjoin(SignalOutcome, SignalOutcome.signal_id == MarketSignal.id)
+                .where(
+                    SignalOutcome.id.is_(None),
+                    MarketSignal.event_time < market_cutoff,
+                )
+                .order_by(MarketSignal.event_time, MarketSignal.id)
+                .limit(batch_size)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    unique: dict[tuple[str, datetime, datetime], CandleWindow] = {}
+    for signal in candidates:
+        horizon_end = signal.event_time + timedelta(hours=signal.horizon_hours)
+        candle_cutoff = min(horizon_end, market_cutoff)
+        candle_rows = (
+            (
+                await session.execute(
+                    select(Candle)
+                    .where(
+                        Candle.symbol == signal.symbol,
+                        Candle.interval == "60",
+                        Candle.price_type == "last",
+                        Candle.confirmed.is_(True),
+                        Candle.open_time >= signal.event_time,
+                        Candle.close_time <= candle_cutoff,
+                        Candle.available_at <= available_cutoff,
+                    )
+                    .order_by(Candle.open_time, Candle.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        bars = [
+            OutcomeBar(
+                candle_id=row.id,
+                open_time=row.open_time,
+                close_time=row.close_time,
+                high=row.high,
+                low=row.low,
+                close=row.close,
+            )
+            for row in candle_rows
+        ]
+        try:
+            evaluation = evaluate_barrier_outcome(
+                bars,
+                direction=signal.direction,
+                entry=signal.entry_reference,
+                stop=signal.stop_loss,
+                take_profit=signal.take_profit_1,
+                window_start=signal.event_time,
+                horizon_end=horizon_end,
+            )
+        except ValueError:
+            continue
+        if evaluation is None or not evaluation.ambiguous:
+            continue
+        source = next((row for row in candle_rows if row.id == evaluation.source_candle_id), None)
+        if source is None:
+            continue
+        key = (signal.symbol, source.open_time, source.close_time)
+        unique[key] = CandleWindow(
+            symbol=signal.symbol,
+            start_time=source.open_time,
+            end_time=source.close_time,
+        )
+        if len(unique) >= max_windows:
+            break
+    return list(unique.values())
+
+
 async def resolve_counterfactual_outcomes(
     session: AsyncSession,
     *,
     market_cutoff: datetime,
     available_cutoff: datetime | None = None,
     batch_size: int = 1000,
+    intrabar_interval: str = "5",
     actor: str = "worker",
 ) -> dict:
     """Resolve mature signal outcomes and backfill every execution-plan version.
@@ -381,6 +566,9 @@ async def resolve_counterfactual_outcomes(
     _require_aware(available_cutoff, "available_cutoff")
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    intrabar_interval_minutes = int(intrabar_interval)
+    if intrabar_interval_minutes <= 0 or 60 % intrabar_interval_minutes != 0:
+        raise ValueError("intrabar_interval must be a positive divisor of 60")
 
     candidates = (
         (
@@ -442,7 +630,7 @@ async def resolve_counterfactual_outcomes(
             for row in candle_rows
         ]
         try:
-            evaluation = evaluate_barrier_outcome(
+            hourly_evaluation = evaluate_barrier_outcome(
                 bars,
                 direction=signal.direction,
                 entry=signal.entry_reference,
@@ -451,6 +639,54 @@ async def resolve_counterfactual_outcomes(
                 window_start=signal.event_time,
                 horizon_end=horizon_end,
             )
+            evaluation = hourly_evaluation
+            if hourly_evaluation is not None and hourly_evaluation.ambiguous:
+                source_hour = next(
+                    (row for row in candle_rows if row.id == hourly_evaluation.source_candle_id),
+                    None,
+                )
+                if source_hour is None:
+                    raise ValueError("Hourly ambiguity source candle is missing")
+                intrabar_rows = (
+                    (
+                        await session.execute(
+                            select(Candle)
+                            .where(
+                                Candle.symbol == signal.symbol,
+                                Candle.interval == intrabar_interval,
+                                Candle.price_type == "last",
+                                Candle.confirmed.is_(True),
+                                Candle.open_time >= source_hour.open_time,
+                                Candle.close_time <= source_hour.close_time,
+                                Candle.available_at <= available_cutoff,
+                            )
+                            .order_by(Candle.open_time, Candle.id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                evaluation = evaluate_barrier_outcome_with_intrabar(
+                    bars,
+                    [
+                        OutcomeBar(
+                            candle_id=row.id,
+                            open_time=row.open_time,
+                            close_time=row.close_time,
+                            high=row.high,
+                            low=row.low,
+                            close=row.close,
+                        )
+                        for row in intrabar_rows
+                    ],
+                    direction=signal.direction,
+                    entry=signal.entry_reference,
+                    stop=signal.stop_loss,
+                    take_profit=signal.take_profit_1,
+                    window_start=signal.event_time,
+                    horizon_end=horizon_end,
+                    intrabar_interval_minutes=intrabar_interval_minutes,
+                )
         except ValueError as exc:
             invalid.append({"signal_id": str(signal.id), "error": str(exc)})
             continue
@@ -471,9 +707,12 @@ async def resolve_counterfactual_outcomes(
             resolved_at=datetime.now(UTC),
             details={
                 "price_type": "last",
-                "interval": "60",
+                "interval": evaluation.resolution_interval,
+                "hourly_interval": "60",
                 "primary_take_profit": "take_profit_1",
-                "same_bar_rule": "SL",
+                "same_bar_rule": "SL_within_finest_available_bar",
+                "hourly_ambiguous": evaluation.hourly_ambiguous,
+                "intrabar_bars_evaluated": evaluation.intrabar_bars_evaluated,
                 "market_cutoff": market_cutoff.isoformat(),
                 "available_cutoff": available_cutoff.isoformat(),
                 "actual_execution_pnl": False,
@@ -557,5 +796,6 @@ async def resolve_counterfactual_outcomes(
         "plan_outcomes_recorded": plan_count,
         "market_cutoff": market_cutoff.isoformat(),
         "available_cutoff": available_cutoff.isoformat(),
+        "intrabar_interval": intrabar_interval,
         "evaluation_version": EVALUATION_VERSION,
     }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.0 — 2026-06-28
+
+- Добавлено автоматическое 1/3/5-минутное восстановление порядка TP1/SL для неоднозначных часовых свечей.
+- Worker запрашивает только точные public/read-only kline windows, необходимые нерешенным сигналам, с лимитом на цикл.
+- Outcome остается pending при неполном intrabar path; часовой консервативный SL больше не записывается до попытки реконструкции.
+- Если TP и SL остаются внутри одного самого мелкого доступного бара, сохраняется консервативный SL с `ambiguous=true`.
+- `SignalOutcome.details` фиксирует hourly ambiguity, фактический resolution interval и число проверенных intrabar bars.
+- Добавлены настройки `OUTCOME_INTRABAR_INTERVAL` и `OUTCOME_INTRABAR_MAX_WINDOWS_PER_CYCLE`.
+- Добавлены regression tests для LONG/SHORT, TP-first/SL-first, неполного пути, finest-bar ambiguity и bounded Bybit request.
+
 ## 1.6.0 — 2026-06-28
 
 - Добавлен автоматический counterfactual outcome для каждого market signal независимо от accept/reject.

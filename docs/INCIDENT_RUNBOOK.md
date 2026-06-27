@@ -32,6 +32,14 @@ API завершится до readiness. Не использовать `stamp he
 3. Сравнить последнюю confirmed candle и ticker source time.
 4. После восстановления дождаться успешного market job и нового plan version.
 
+## Counterfactual outcome остается pending
+
+1. Проверить `ops.job_runs` для job `counterfactual_outcomes` и поле `intrabar_sync.errors`.
+2. Убедиться, что hourly path непрерывен и требуемый 1/3/5-минутный window полностью сохранен в `market.candles` с `confirmed=true`.
+3. Проверить доступность public Bybit kline endpoint и отсутствие rate-limit/timeout ошибок.
+4. Не записывать TP/SL вручную и не менять существующие outcome rows: после восстановления worker повторит точечную загрузку на следующем cycle.
+5. При большом backlog временно увеличить `OUTCOME_INTRABAR_MAX_WINDOWS_PER_CYCLE`, контролируя API rate limits и время job.
+
 ## Ошибка модели или drift
 
 1. Деактивировать артефакт: очистить `ACTIVE_MODEL_PATH` и, только для paper/shadow, разрешить baseline.

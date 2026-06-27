@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     market_poll_seconds: int = 60
     instrument_refresh_seconds: int = 21600
     inference_delay_seconds: int = 75
+    outcome_intrabar_interval: Literal["1", "3", "5"] = "5"
+    outcome_intrabar_max_windows_per_cycle: int = 100
 
     horizons_hours: Annotated[list[int], NoDecode] = Field(default_factory=lambda: [4, 8, 12])
     default_horizon_hours: int = 8
@@ -221,6 +223,8 @@ class Settings(BaseSettings):
             raise ValueError("HISTORY_BACKFILL_PAGES_PER_SYMBOL must be positive")
         if not 50 <= self.history_backfill_page_size <= 1000:
             raise ValueError("HISTORY_BACKFILL_PAGE_SIZE must be between 50 and 1000")
+        if self.outcome_intrabar_max_windows_per_cycle < 1:
+            raise ValueError("OUTCOME_INTRABAR_MAX_WINDOWS_PER_CYCLE must be positive")
         if self.auto_train_interval_hours < 1:
             raise ValueError("AUTO_TRAIN_INTERVAL_HOURS must be at least 1")
         if self.auto_train_retry_hours < 1:
