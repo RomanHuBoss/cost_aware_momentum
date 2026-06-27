@@ -129,6 +129,16 @@ class DatasetSplit:
     test_meta: pd.DataFrame
 
 
+@dataclass(frozen=True)
+class PolicyEvaluationConfig:
+    fee_rate_round_trip: float
+    slippage_rate: float
+    stop_gap_reserve_rate: float
+    min_net_rr: float
+    min_net_ev_r: float
+    timeout_return_rate: float = -0.002
+
+
 def make_barrier_dataset(
     candles: pd.DataFrame,
     horizon: int = 8,
@@ -291,3 +301,99 @@ def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -
     except ValueError:
         metrics["auc_ovr_macro"] = None
     return metrics
+
+
+def evaluate_policy_model(
+    model: TemporalCalibratedBarrierModel,
+    split: DatasetSplit,
+    config: PolicyEvaluationConfig,
+) -> dict[str, object]:
+    """Evaluate the same cost-aware direction policy used by live inference.
+
+    This is deliberately a compact holdout utility check, not a replacement for
+    the event-driven portfolio backtest.  It prevents auto-activation based only
+    on classification metrics when a candidate would produce no tradable edge
+    after the configured fees, slippage and stop reserve.
+    """
+
+    probabilities = model.predict_proba(split.x_test)
+    class_to_index = {label: index for index, label in enumerate(model.classes_)}
+    meta = split.test_meta.copy().reset_index(drop=True)
+    for label in model.classes_:
+        meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
+
+    fee_slippage = config.fee_rate_round_trip + config.slippage_rate
+    meta["net_upside_rate"] = meta["barrier_upside_rate"] - fee_slippage
+    meta["stress_downside_rate"] = (
+        meta["barrier_downside_rate"] + fee_slippage + config.stop_gap_reserve_rate
+    )
+    meta["timeout_net_rate"] = config.timeout_return_rate - fee_slippage
+    meta["net_rr"] = np.where(
+        meta["stress_downside_rate"] > 0,
+        np.maximum(meta["net_upside_rate"], 0.0) / meta["stress_downside_rate"],
+        0.0,
+    )
+    meta["expected_net_rate"] = (
+        meta["p_tp"] * meta["net_upside_rate"]
+        - meta["p_sl"] * meta["stress_downside_rate"]
+        + meta["p_timeout"] * meta["timeout_net_rate"]
+    )
+    meta["expected_ev_r"] = np.where(
+        meta["stress_downside_rate"] > 0,
+        meta["expected_net_rate"] / meta["stress_downside_rate"],
+        0.0,
+    )
+
+    selected_index = meta.groupby(["open_time", "symbol"], sort=False)["expected_ev_r"].idxmax()
+    selected = meta.loc[selected_index].sort_values(["open_time", "symbol"]).reset_index(drop=True)
+    selected["actionable"] = (selected["net_rr"] >= config.min_net_rr) & (
+        selected["expected_ev_r"] >= config.min_net_ev_r
+    )
+    trades = selected[selected["actionable"]].copy()
+
+    if trades.empty:
+        return {
+            "policy_candidates": int(len(selected)),
+            "policy_trades": 0,
+            "policy_trade_rate": 0.0,
+            "policy_mean_expected_ev_r": None,
+            "policy_realized_mean_r": None,
+            "policy_realized_total_r": 0.0,
+            "policy_win_rate": None,
+            "policy_profit_factor": None,
+            "policy_max_drawdown_r": 0.0,
+        }
+
+    outcome = trades["target"].astype(str)
+    realized_net_rate = np.where(
+        outcome == "TP",
+        trades["net_upside_rate"],
+        np.where(
+            outcome == "SL",
+            -trades["stress_downside_rate"],
+            trades["realized_gross_return"] - fee_slippage,
+        ),
+    )
+    trades["realized_r"] = np.where(
+        trades["stress_downside_rate"] > 0,
+        realized_net_rate / trades["stress_downside_rate"],
+        0.0,
+    )
+    gains = float(trades.loc[trades["realized_r"] > 0, "realized_r"].sum())
+    losses = float(-trades.loc[trades["realized_r"] < 0, "realized_r"].sum())
+    profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
+    hourly_r = trades.groupby("open_time", sort=True)["realized_r"].mean()
+    equity = hourly_r.cumsum()
+    drawdown = equity.cummax() - equity
+
+    return {
+        "policy_candidates": int(len(selected)),
+        "policy_trades": int(len(trades)),
+        "policy_trade_rate": float(len(trades) / len(selected)) if len(selected) else 0.0,
+        "policy_mean_expected_ev_r": float(trades["expected_ev_r"].mean()),
+        "policy_realized_mean_r": float(trades["realized_r"].mean()),
+        "policy_realized_total_r": float(trades["realized_r"].sum()),
+        "policy_win_rate": float((trades["realized_r"] > 0).mean()),
+        "policy_profit_factor": float(profit_factor),
+        "policy_max_drawdown_r": float(drawdown.max()) if len(drawdown) else 0.0,
+    }

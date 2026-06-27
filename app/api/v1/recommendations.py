@@ -16,6 +16,7 @@ from app.db.models import (
     ExecutionPlan,
     MarketSignal,
     OperatorDecision,
+    ServiceHeartbeat,
     TickerSnapshot,
 )
 from app.services.audit import append_audit_event, publish_outbox
@@ -66,12 +67,15 @@ def recommendation_signal_query(
     latest_per_symbol: bool,
     limit: int,
     now: datetime,
+    active_symbols: list[str] | None = None,
 ):
     filters = []
     if not include_expired:
         filters.extend([MarketSignal.status == "PUBLISHED", MarketSignal.expires_at > now])
     if symbol:
         filters.append(MarketSignal.symbol == symbol.upper())
+    elif active_symbols:
+        filters.append(MarketSignal.symbol.in_(active_symbols))
 
     if latest_per_symbol:
         ranked = (
@@ -118,12 +122,27 @@ async def list_recommendations(
     limit: int = Query(default=1000, ge=1, le=2000),
 ) -> dict:
     profile = await resolve_profile(session, profile_id)
+    active_symbols: list[str] | None = None
+    if not include_expired:
+        worker = (
+            await session.execute(
+                select(ServiceHeartbeat)
+                .where(ServiceHeartbeat.service_name == "worker")
+                .order_by(desc(ServiceHeartbeat.last_seen_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        universe = (worker.details or {}).get("universe", {}) if worker else {}
+        values = universe.get("selected_symbols") if isinstance(universe, dict) else None
+        if isinstance(values, list):
+            active_symbols = [str(item) for item in values if item]
     query = recommendation_signal_query(
         include_expired=include_expired,
         symbol=symbol,
         latest_per_symbol=latest_per_symbol,
         limit=limit,
         now=datetime.now(UTC),
+        active_symbols=active_symbols,
     )
 
     signals = (await session.execute(query)).scalars().all()

@@ -182,6 +182,7 @@ async function loadStatus() {
     const phaseLabels = {
       STARTING: 'запуск',
       INITIAL_DELAY: 'ожидание запуска',
+      CHECKING_DATA: 'проверка истории',
       LOADING_DATA: 'загрузка данных',
       FITTING: 'обучение',
       REGISTERING: 'регистрация модели',
@@ -539,3 +540,4 @@ function debounce(fn, wait) { let timer; return (...args) => { clearTimeout(time
 window.addEventListener('resize', () => hideTooltip());
 loadAll().then(connectEvents);
 setInterval(() => { renderRecommendations(); }, 30000);
+setInterval(() => { loadStatus(); }, 30000);

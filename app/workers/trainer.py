@@ -15,11 +15,14 @@ from app.db.engine import SessionFactory, dispose_engine, engine
 from app.db.locks import lock_key
 from app.db.models import Candle, JobRun, ModelRegistry, ServiceHeartbeat
 from app.logging import configure_logging
+from app.ml.data_profile import TrainingDataProfile, compare_training_profiles
 from app.ml.lifecycle import (
     build_model_candidate,
     evaluate_quality_gate,
     incumbent_from_registry,
     load_training_candles,
+    load_training_data_profile,
+    policy_evaluation_config,
     register_model_candidate,
 )
 from scripts.model_registry import activate_registered_model
@@ -128,66 +131,119 @@ class BackgroundTrainer:
                 query = query.where(Candle.open_time <= before_or_at)
             return int((await session.execute(query)).scalar_one() or 0)
 
+    async def current_training_profile(self) -> TrainingDataProfile:
+        symbols = settings.symbols if settings.universe_mode == "static" else None
+        return await load_training_data_profile(
+            symbols,
+            lookback_days=settings.auto_train_lookback_days,
+            max_symbols=settings.auto_train_max_symbols,
+            horizon=settings.default_horizon_hours,
+            minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
+        )
+
     async def due_reason(self) -> tuple[bool, dict[str, object]]:
         now = datetime.now(UTC)
         active = await self.active_model()
         latest = await self.latest_attempt()
+        profile = await self.current_training_profile()
+        minimum_bootstrap = 300 + settings.default_horizon_hours + 72
+        if profile.unique_timestamps < minimum_bootstrap:
+            return False, {
+                "reason": "not_enough_history_for_bootstrap",
+                "timestamps": profile.unique_timestamps,
+                "required_timestamps": minimum_bootstrap,
+                "training_data_profile": profile.to_dict(),
+            }
+        if profile.coverage_ratio < settings.auto_train_min_symbol_coverage_ratio:
+            return False, {
+                "reason": "insufficient_symbol_history_coverage",
+                "coverage_ratio": profile.coverage_ratio,
+                "required_coverage_ratio": settings.auto_train_min_symbol_coverage_ratio,
+                "covered_symbols": profile.covered_symbols,
+                "symbol_count": profile.symbol_count,
+                "minimum_rows_per_symbol": settings.auto_train_min_bars_per_symbol,
+                "training_data_profile": profile.to_dict(),
+            }
+
+        active_profile = TrainingDataProfile.from_mapping(
+            (active.metrics or {}).get("training_data_profile") if active else None
+        )
+        comparison = compare_training_profiles(
+            profile,
+            active_profile,
+            minimum_new_rows=settings.auto_train_min_new_rows,
+            minimum_growth_ratio=settings.auto_train_min_dataset_growth_ratio,
+            minimum_new_symbols=settings.auto_train_min_new_symbols,
+            minimum_universe_change_ratio=settings.auto_train_min_universe_change_ratio,
+        )
+        label_cutoff = profile.end_time
+        new_timestamps = 0
+        if active and active.training_end and label_cutoff:
+            new_timestamps = await self.timestamp_count(active.training_end, label_cutoff)
+
+        if active is None or active.model_type == "deterministic_baseline":
+            trigger = {
+                "reason": "bootstrap_training",
+                "active_version": active.version if active else None,
+                "training_data_profile": profile.to_dict(),
+            }
+            trigger_kind = "bootstrap"
+        elif comparison["material_change"]:
+            trigger = {
+                "reason": "material_training_dataset_change",
+                "active_version": active.version,
+                "new_timestamps": new_timestamps,
+                "dataset_change": comparison,
+                "training_data_profile": profile.to_dict(),
+            }
+            trigger_kind = "data_change"
+        elif new_timestamps >= settings.auto_train_min_new_timestamps:
+            trigger = {
+                "reason": "scheduled_retraining",
+                "active_version": active.version,
+                "active_training_end": active.training_end.isoformat()
+                if active.training_end
+                else None,
+                "new_timestamps": new_timestamps,
+                "required_new_timestamps": settings.auto_train_min_new_timestamps,
+                "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
+                "dataset_change": comparison,
+                "training_data_profile": profile.to_dict(),
+            }
+            trigger_kind = "scheduled"
+        else:
+            return False, {
+                "reason": "not_enough_new_or_changed_training_data",
+                "active_version": active.version,
+                "active_training_end": active.training_end.isoformat()
+                if active.training_end
+                else None,
+                "new_timestamps": new_timestamps,
+                "required_new_timestamps": settings.auto_train_min_new_timestamps,
+                "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
+                "dataset_change": comparison,
+                "training_data_profile": profile.to_dict(),
+            }
 
         if latest is not None:
             age = now - latest.started_at
-            wait = timedelta(
-                hours=(
-                    settings.auto_train_interval_hours
-                    if latest.status == "SUCCESS"
-                    else settings.auto_train_retry_hours
-                )
-            )
+            if latest.status != "SUCCESS":
+                wait_hours = settings.auto_train_retry_hours
+            elif trigger_kind == "data_change":
+                wait_hours = settings.auto_train_data_change_cooldown_hours
+            else:
+                wait_hours = settings.auto_train_interval_hours
+            wait = timedelta(hours=wait_hours)
             if age < wait:
                 return False, {
-                    "reason": "training_interval_not_elapsed",
+                    "reason": "training_cooldown_not_elapsed",
+                    "pending_trigger": trigger,
                     "last_status": latest.status,
                     "last_started_at": latest.started_at.isoformat(),
+                    "cooldown_hours": wait_hours,
                     "next_due_at": (latest.started_at + wait).isoformat(),
                 }
-
-        latest_candle_time = await self.latest_candle_time()
-        label_cutoff = (
-            latest_candle_time - timedelta(hours=settings.default_horizon_hours)
-            if latest_candle_time
-            else None
-        )
-
-        if active and active.model_type != "deterministic_baseline" and active.training_end:
-            new_timestamps = await self.timestamp_count(active.training_end, label_cutoff)
-            if new_timestamps < settings.auto_train_min_new_timestamps:
-                return False, {
-                    "reason": "not_enough_new_labeled_time",
-                    "active_version": active.version,
-                    "active_training_end": active.training_end.isoformat(),
-                    "new_timestamps": new_timestamps,
-                    "required_new_timestamps": settings.auto_train_min_new_timestamps,
-                    "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
-                }
-            return True, {
-                "reason": "scheduled_retraining",
-                "active_version": active.version,
-                "new_timestamps": new_timestamps,
-                "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
-            }
-
-        total_timestamps = await self.timestamp_count(before_or_at=label_cutoff)
-        minimum_bootstrap = 300 + settings.default_horizon_hours + 72
-        if total_timestamps < minimum_bootstrap:
-            return False, {
-                "reason": "not_enough_history_for_bootstrap",
-                "timestamps": total_timestamps,
-                "required_timestamps": minimum_bootstrap,
-            }
-        return True, {
-            "reason": "bootstrap_training",
-            "active_version": active.version if active else None,
-            "timestamps": total_timestamps,
-        }
+        return True, trigger
 
     async def create_job(self, scheduled_for: datetime, details: dict[str, object]) -> JobRun:
         async with SessionFactory() as session, session.begin():
@@ -247,6 +303,12 @@ class BackgroundTrainer:
                         lookback_days=settings.auto_train_lookback_days,
                         max_symbols=settings.auto_train_max_symbols,
                     )
+                    trigger_profile = trigger.get("training_data_profile")
+                    expected_symbols = (
+                        [str(item) for item in trigger_profile.get("symbols", []) if item]
+                        if isinstance(trigger_profile, dict)
+                        else None
+                    )
                     self.state["phase"] = "FITTING"
                     candidate = await asyncio.to_thread(
                         build_model_candidate,
@@ -256,6 +318,9 @@ class BackgroundTrainer:
                         model_dir=settings.model_dir,
                         incumbent=incumbent,
                         source="background_trainer",
+                        minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
+                        policy_config=policy_evaluation_config(settings),
+                        expected_symbols=expected_symbols,
                     )
                     gate = evaluate_quality_gate(candidate, settings)
                     can_activate = bool(
@@ -351,6 +416,7 @@ class BackgroundTrainer:
                 )
         while not self.stop_event.is_set():
             try:
+                self.state["phase"] = "CHECKING_DATA"
                 due, trigger = await self.due_reason()
                 if due:
                     await self.run_training_once(trigger)

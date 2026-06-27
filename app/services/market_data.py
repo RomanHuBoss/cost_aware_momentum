@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -167,51 +167,242 @@ async def sync_candles(
         for symbol, price_type, rows in results:
             if not rows:
                 continue
-            values_list: list[dict] = []
-            for row in rows:
-                # [startTime, open, high, low, close, volume, turnover]
-                open_time = _dt_ms(row[0])
-                if open_time is None:
-                    continue
-                close_time = open_time + timedelta(minutes=interval_minutes)
-                values_list.append(
-                    {
-                        "symbol": symbol,
-                        "interval": interval,
-                        "open_time": open_time,
-                        "close_time": close_time,
-                        "available_at": close_time,
-                        "price_type": price_type,
-                        "open": _decimal(row[1]),
-                        "high": _decimal(row[2]),
-                        "low": _decimal(row[3]),
-                        "close": _decimal(row[4]),
-                        "volume": _decimal(row[5] if len(row) > 5 else 0),
-                        "turnover": _decimal(row[6] if len(row) > 6 else 0),
-                        "confirmed": close_time <= now,
-                        "source": "bybit_v5",
-                    }
-                )
-            if not values_list:
-                continue
-            stmt = insert(Candle).values(values_list)
-            stmt = stmt.on_conflict_do_update(
-                constraint="uq_candle_natural",
-                set_={
-                    "close_time": stmt.excluded.close_time,
-                    "available_at": stmt.excluded.available_at,
-                    "open": stmt.excluded.open,
-                    "high": stmt.excluded.high,
-                    "low": stmt.excluded.low,
-                    "close": stmt.excluded.close,
-                    "volume": stmt.excluded.volume,
-                    "turnover": stmt.excluded.turnover,
-                    "confirmed": stmt.excluded.confirmed,
-                },
+            values_list = _candle_values(
+                symbol=symbol,
+                interval=interval,
+                price_type=price_type,
+                rows=rows,
+                now=now,
+                interval_minutes=interval_minutes,
             )
-            await session.execute(stmt)
+            await _upsert_candle_values(session, values_list)
             count += len(values_list)
     return count
+
+
+def _candle_values(
+    *,
+    symbol: str,
+    interval: str,
+    price_type: str,
+    rows: Iterable[list[str]],
+    now: datetime,
+    interval_minutes: int,
+) -> list[dict]:
+    values_list: list[dict] = []
+    for row in rows:
+        # [startTime, open, high, low, close, volume, turnover]
+        open_time = _dt_ms(row[0])
+        if open_time is None:
+            continue
+        close_time = open_time + timedelta(minutes=interval_minutes)
+        values_list.append(
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "open_time": open_time,
+                "close_time": close_time,
+                "available_at": close_time,
+                "price_type": price_type,
+                "open": _decimal(row[1]),
+                "high": _decimal(row[2]),
+                "low": _decimal(row[3]),
+                "close": _decimal(row[4]),
+                "volume": _decimal(row[5] if len(row) > 5 else 0),
+                "turnover": _decimal(row[6] if len(row) > 6 else 0),
+                "confirmed": close_time <= now,
+                "source": "bybit_v5",
+            }
+        )
+    return values_list
+
+
+async def _upsert_candle_values(session: AsyncSession, values_list: list[dict]) -> None:
+    if not values_list:
+        return
+    stmt = insert(Candle).values(values_list)
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_candle_natural",
+        set_={
+            "close_time": stmt.excluded.close_time,
+            "available_at": stmt.excluded.available_at,
+            "open": stmt.excluded.open,
+            "high": stmt.excluded.high,
+            "low": stmt.excluded.low,
+            "close": stmt.excluded.close,
+            "volume": stmt.excluded.volume,
+            "turnover": stmt.excluded.turnover,
+            "confirmed": stmt.excluded.confirmed,
+        },
+    )
+    await session.execute(stmt)
+
+
+async def symbols_needing_history_backfill(
+    session: AsyncSession,
+    symbols: Iterable[str],
+    *,
+    interval: str,
+    target_days: int,
+    limit: int,
+) -> list[dict[str, object]]:
+    symbol_list = list(dict.fromkeys(symbols))
+    if not symbol_list:
+        return []
+    target_start = datetime.now(UTC) - timedelta(days=target_days)
+    launches = dict(
+        (
+            await session.execute(
+                select(Instrument.symbol, Instrument.launch_time).where(
+                    Instrument.symbol.in_(symbol_list)
+                )
+            )
+        ).all()
+    )
+    grouped = (
+        await session.execute(
+            select(
+                Candle.symbol,
+                func.count(Candle.id).label("rows"),
+                func.min(Candle.open_time).label("earliest"),
+                func.max(Candle.open_time).label("latest"),
+            )
+            .where(
+                Candle.symbol.in_(symbol_list),
+                Candle.interval == interval,
+                Candle.price_type == "last",
+                Candle.confirmed.is_(True),
+            )
+            .group_by(Candle.symbol)
+        )
+    ).all()
+    by_symbol = {
+        row.symbol: {
+            "symbol": row.symbol,
+            "rows": int(row.rows),
+            "earliest": row.earliest,
+            "latest": row.latest,
+        }
+        for row in grouped
+    }
+    candidates: list[dict[str, object]] = []
+    for symbol in symbol_list:
+        item = by_symbol.get(
+            symbol,
+            {"symbol": symbol, "rows": 0, "earliest": None, "latest": None},
+        )
+        earliest = item["earliest"]
+        launch_time = launches.get(symbol)
+        effective_target = max(
+            target_start,
+            launch_time if isinstance(launch_time, datetime) else target_start,
+        )
+        item["target_start"] = effective_target
+        if earliest is None or earliest > effective_target + timedelta(minutes=int(interval)):
+            candidates.append(item)
+    candidates.sort(
+        key=lambda item: (
+            int(item["rows"]),
+            item["earliest"] or datetime.max.replace(tzinfo=UTC),
+            str(item["symbol"]),
+        )
+    )
+    return candidates[: max(1, limit)]
+
+
+async def sync_candle_history(
+    session: AsyncSession,
+    client: BybitClient,
+    candidates: Iterable[dict[str, object]],
+    *,
+    interval: str,
+    target_days: int,
+    page_size: int,
+    max_pages_per_symbol: int,
+) -> dict[str, object]:
+    """Progressively extend last-price candle history backwards without blocking startup."""
+
+    now = datetime.now(UTC)
+    default_target_start = now - timedelta(days=target_days)
+    interval_minutes = int(interval)
+    rows_received = 0
+    symbols_processed = 0
+    completed_symbols: list[str] = []
+    progress: list[dict[str, object]] = []
+
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        target_start = candidate.get("target_start")
+        if not isinstance(target_start, datetime):
+            target_start = default_target_start
+        earliest = candidate.get("earliest")
+        end_ms = (
+            int(earliest.timestamp() * 1000) - 1
+            if isinstance(earliest, datetime)
+            else int(now.timestamp() * 1000)
+        )
+        symbol_rows = 0
+        oldest_seen = earliest if isinstance(earliest, datetime) else None
+        exhausted = False
+        error: str | None = None
+        try:
+            for _page in range(max_pages_per_symbol):
+                rows = await client.get_kline(
+                    symbol,
+                    interval=interval,
+                    limit=page_size,
+                    end_ms=end_ms,
+                    price_type="last",
+                )
+                if not rows:
+                    exhausted = True
+                    break
+                values = _candle_values(
+                    symbol=symbol,
+                    interval=interval,
+                    price_type="last",
+                    rows=rows,
+                    now=now,
+                    interval_minutes=interval_minutes,
+                )
+                values = [item for item in values if item["open_time"] >= target_start]
+                await _upsert_candle_values(session, values)
+                symbol_rows += len(values)
+                page_times = [_dt_ms(row[0]) for row in rows]
+                page_times = [item for item in page_times if item is not None]
+                if not page_times:
+                    exhausted = True
+                    break
+                oldest_seen = min(page_times)
+                if oldest_seen <= target_start or len(rows) < page_size:
+                    exhausted = True
+                    break
+                end_ms = int(oldest_seen.timestamp() * 1000) - 1
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("Historical candle backfill failed", extra={"symbol": symbol})
+        symbols_processed += 1
+        rows_received += symbol_rows
+        if exhausted or (oldest_seen is not None and oldest_seen <= target_start):
+            completed_symbols.append(symbol)
+        progress.append(
+            {
+                "symbol": symbol,
+                "rows_received": symbol_rows,
+                "oldest_seen": oldest_seen.isoformat() if oldest_seen else None,
+                "target_start": target_start.isoformat(),
+                "completed": symbol in completed_symbols,
+                "error": error,
+            }
+        )
+
+    return {
+        "symbols_processed": symbols_processed,
+        "rows_received": rows_received,
+        "completed_symbols": completed_symbols,
+        "progress": progress,
+        "default_target_start": default_target_start.isoformat(),
+    }
 
 
 async def sync_tickers(

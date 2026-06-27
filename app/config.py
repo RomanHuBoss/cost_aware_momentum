@@ -68,7 +68,13 @@ class Settings(BaseSettings):
     ticker_retention_hours: int = 48
 
     candle_interval: str = "60"
-    initial_backfill_bars: int = 500
+    initial_backfill_bars: int = 1000
+    history_backfill_enabled: bool = True
+    history_backfill_target_days: int = 365
+    history_backfill_interval_seconds: int = 60
+    history_backfill_symbols_per_cycle: int = 5
+    history_backfill_pages_per_symbol: int = 2
+    history_backfill_page_size: int = 1000
     market_poll_seconds: int = 60
     instrument_refresh_seconds: int = 21600
     inference_delay_seconds: int = 75
@@ -107,6 +113,13 @@ class Settings(BaseSettings):
     auto_train_lookback_days: int = 365
     auto_train_max_symbols: int = 100
     auto_train_min_new_timestamps: int = 168
+    auto_train_data_change_cooldown_hours: int = 6
+    auto_train_min_new_rows: int = 10000
+    auto_train_min_dataset_growth_ratio: float = 0.10
+    auto_train_min_new_symbols: int = 5
+    auto_train_min_universe_change_ratio: float = 0.10
+    auto_train_min_bars_per_symbol: int = 300
+    auto_train_min_symbol_coverage_ratio: float = 0.80
     auto_train_min_holdout_rows: int = 180
     auto_train_min_class_fraction: float = 0.02
     auto_train_max_log_loss: float = 1.20
@@ -115,6 +128,13 @@ class Settings(BaseSettings):
     auto_train_max_log_loss_regression: float = 0.01
     auto_train_max_brier_regression: float = 0.01
     auto_train_min_metric_improvement: float = 0.002
+    auto_train_min_policy_trades: int = 20
+    auto_train_min_policy_realized_mean_r: float = 0.0
+    auto_train_min_policy_profit_factor: float = 1.0
+    auto_train_max_policy_drawdown_r: float = 30.0
+    auto_train_max_policy_mean_r_regression: float = 0.02
+    auto_train_max_policy_drawdown_regression_r: float = 2.0
+    auto_train_min_policy_improvement_r: float = 0.01
     auto_train_require_improvement: bool = True
 
     worker_id: str = "worker-1"
@@ -189,6 +209,18 @@ class Settings(BaseSettings):
             raise ValueError("Leverage policy is inconsistent")
         if self.model_refresh_seconds < 30:
             raise ValueError("MODEL_REFRESH_SECONDS must be at least 30")
+        if self.initial_backfill_bars < self.universe_min_history_bars:
+            raise ValueError("INITIAL_BACKFILL_BARS must cover UNIVERSE_MIN_HISTORY_BARS")
+        if self.history_backfill_target_days < 30:
+            raise ValueError("HISTORY_BACKFILL_TARGET_DAYS must be at least 30")
+        if self.history_backfill_interval_seconds < 30:
+            raise ValueError("HISTORY_BACKFILL_INTERVAL_SECONDS must be at least 30")
+        if self.history_backfill_symbols_per_cycle < 1:
+            raise ValueError("HISTORY_BACKFILL_SYMBOLS_PER_CYCLE must be positive")
+        if self.history_backfill_pages_per_symbol < 1:
+            raise ValueError("HISTORY_BACKFILL_PAGES_PER_SYMBOL must be positive")
+        if not 50 <= self.history_backfill_page_size <= 1000:
+            raise ValueError("HISTORY_BACKFILL_PAGE_SIZE must be between 50 and 1000")
         if self.auto_train_interval_hours < 1:
             raise ValueError("AUTO_TRAIN_INTERVAL_HOURS must be at least 1")
         if self.auto_train_retry_hours < 1:
@@ -203,6 +235,20 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_MAX_SYMBOLS cannot be negative")
         if self.auto_train_min_new_timestamps < 1:
             raise ValueError("AUTO_TRAIN_MIN_NEW_TIMESTAMPS must be positive")
+        if self.auto_train_data_change_cooldown_hours < 1:
+            raise ValueError("AUTO_TRAIN_DATA_CHANGE_COOLDOWN_HOURS must be at least 1")
+        if self.auto_train_min_new_rows < 1:
+            raise ValueError("AUTO_TRAIN_MIN_NEW_ROWS must be positive")
+        if not 0 < self.auto_train_min_dataset_growth_ratio <= 1:
+            raise ValueError("AUTO_TRAIN_MIN_DATASET_GROWTH_RATIO must be in (0, 1]")
+        if self.auto_train_min_new_symbols < 1:
+            raise ValueError("AUTO_TRAIN_MIN_NEW_SYMBOLS must be positive")
+        if not 0 < self.auto_train_min_universe_change_ratio <= 1:
+            raise ValueError("AUTO_TRAIN_MIN_UNIVERSE_CHANGE_RATIO must be in (0, 1]")
+        if self.auto_train_min_bars_per_symbol < 72:
+            raise ValueError("AUTO_TRAIN_MIN_BARS_PER_SYMBOL must be at least 72")
+        if not 0 < self.auto_train_min_symbol_coverage_ratio <= 1:
+            raise ValueError("AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO must be in (0, 1]")
         if self.auto_train_min_holdout_rows < 90:
             raise ValueError("AUTO_TRAIN_MIN_HOLDOUT_ROWS must be at least 90")
         if not 0 < self.auto_train_min_class_fraction < 1 / 3:
@@ -215,6 +261,18 @@ class Settings(BaseSettings):
             raise ValueError("Automatic training regression tolerances cannot be negative")
         if self.auto_train_min_metric_improvement < 0:
             raise ValueError("AUTO_TRAIN_MIN_METRIC_IMPROVEMENT cannot be negative")
+        if self.auto_train_min_policy_trades < 1:
+            raise ValueError("AUTO_TRAIN_MIN_POLICY_TRADES must be positive")
+        if self.auto_train_min_policy_profit_factor < 0:
+            raise ValueError("AUTO_TRAIN_MIN_POLICY_PROFIT_FACTOR cannot be negative")
+        if self.auto_train_max_policy_drawdown_r <= 0:
+            raise ValueError("AUTO_TRAIN_MAX_POLICY_DRAWDOWN_R must be positive")
+        if self.auto_train_max_policy_mean_r_regression < 0:
+            raise ValueError("AUTO_TRAIN_MAX_POLICY_MEAN_R_REGRESSION cannot be negative")
+        if self.auto_train_max_policy_drawdown_regression_r < 0:
+            raise ValueError("AUTO_TRAIN_MAX_POLICY_DRAWDOWN_REGRESSION_R cannot be negative")
+        if self.auto_train_min_policy_improvement_r < 0:
+            raise ValueError("AUTO_TRAIN_MIN_POLICY_IMPROVEMENT_R cannot be negative")
         if self.app_mode == "production":
             errors: list[str] = []
             if self.allow_demo_seed:

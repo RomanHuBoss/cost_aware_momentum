@@ -1,14 +1,16 @@
 # Проверка соответствия спецификации версии 1.3
 
-Дата проверки: 2026-06-27
+Дата проверки: 2026-06-28
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.4.0
+Версия проекта после коррекции: 1.5.0
 
 ## Итог
 
-Проект соответствует спецификации **частично**. Архитектурный и операторский контур реализован существенно лучше исследовательского контура: FastAPI/Uvicorn, PostgreSQL-only, отдельный worker, ручное исполнение, профили капитала, cost/risk engine, UI, audit и жизненный цикл рекомендаций присутствуют. До исправления ML-контур не соответствовал заявленной постановке: обучалась бинарная модель направления, а вероятности TP/SL/timeout формировались эвристически; зарегистрированная active-модель не гарантированно загружалась worker.
+Проект соответствует спецификации **частично**. Архитектурный и операторский контур реализован существенно лучше исследовательского контура: FastAPI/Uvicorn, PostgreSQL-only, отдельные worker и trainer, ручное исполнение, профили капитала, cost/risk engine, UI, audit и жизненный цикл рекомендаций присутствуют.
 
-Версия 1.4.0 дополнительно закрывает эксплуатационный разрыв фонового переобучения: отдельный trainer формирует кандидата, сравнивает его с incumbent на одном holdout и безопасно активирует только после quality gate. Это по-прежнему не превращает проект в доказанную production-стратегию. Полный walk-forward, исторический стакан, drift-control, counterfactual outcomes и forward evidence остаются отдельными этапами.
+Версии 1.3.0–1.4.0 исправили основную постановку ML и добавили автоматический train → compare → activate pipeline. Версия 1.5.0 закрывает обнаруженный эксплуатационный дефект: trainer больше не считает датасет изменившимся только по максимальному timestamp. Массовый historical backfill, расширение состава символов и изменение покрытия теперь являются самостоятельными причинами досрочного переобучения. Worker постепенно загружает реальную историю до целевой глубины, а auto-activation учитывает не только классификационные метрики, но и cost-aware policy на общем holdout.
+
+Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, counterfactual outcomes и forward evidence остаются отдельными этапами.
 
 ## Реализовано и приведено в соответствие
 
@@ -16,6 +18,7 @@
 |---|---|---|
 | FastAPI/Uvicorn и PostgreSQL во всех режимах | Реализовано | `app/main.py`, `app/db/*`, Alembic, validator PostgreSQL URL |
 | Отдельный worker для ingestion/inference | Реализовано | `app/workers/runner.py`; длительные задачи не выполняются в HTTP request |
+| Отдельный background trainer | Реализовано | отдельный процесс, advisory lock, heartbeat/job history, fail-safe candidate lifecycle |
 | Advisory-only, без отправки ордеров | Реализовано | Bybit-клиент использует public/read-only GET; ручные решения и fills сохраняются отдельно |
 | Market signal отдельно от execution plan | Реализовано | `MarketSignal`, versioned `ExecutionPlan`, профили капитала |
 | Cost-aware R/R, EV и sizing | Реализовано | комиссии, slippage, stop reserve, funding scenario, min-order/margin/liquidity/portfolio caps |
@@ -24,68 +27,75 @@
 | ML-задача TP/SL/TIMEOUT, а не NO TRADE | Исправлено в 1.3.0 | direction-conditional barrier dataset и трехклассовая модель |
 | Временная калибровка | Исправлено в 1.3.0 | отдельное более позднее calibration window, sigmoid OVR |
 | Final holdout и purge gap | Реализовано частично | единичный chronological train/calibration/final-holdout split |
-| Model registry и воспроизводимый артефакт | Исправлено в 1.3.0 | SHA256, feature/task/horizon validation, явная activation/rollback, одна active-модель |
-| Реальный runtime активной модели | Исправлено в 1.3.0 | worker загружает registry-active artifact, проверяет hash/version/horizon и обновляет без перезапуска |
-| Fail-closed для обязательных входов inference | Исправлено в 1.3.0 | пропуск публикации при stale candle/ticker, missing features, missing bid/ask/spec, excessive spread |
-| Point-in-time cutoff при inference | Исправлено в 1.3.0 | `close_time <= cutoff`, `available_at <= cutoff`, spec `valid_from <= cutoff` |
-| Readiness модели и worker | Усилено в 1.3.0 | active registry version должна совпадать с runtime; hash и свежесть market sync проверяются |
-| Фоновое переобучение | Реализовано в 1.4.0 | отдельный trainer, weekly default, minimum-new-data gate, immutable candidates, same-holdout comparison и guarded auto-activation |
+| Model registry и воспроизводимый артефакт | Реализовано | SHA256, feature/task/horizon validation, activation/rollback, одна active-модель |
+| Реальный runtime active-модели | Реализовано | worker загружает registry-active artifact и обновляет его без перезапуска |
+| Fail-closed для обязательных входов inference | Реализовано | stale candle/ticker, missing features, bid/ask/spec и excessive spread блокируют публикацию |
+| Point-in-time cutoff при inference | Реализовано | `close_time <= cutoff`, `available_at <= cutoff`, spec `valid_from <= cutoff` |
+| Фоновое переобучение и auto-activation | Реализовано с 1.4.0 | rolling window, immutable candidates, same-holdout comparison, guarded atomic activation |
+| Dataset-aware retraining | Реализовано в 1.5.0 | profile rows/timestamps/symbols/coverage; triggers по backfill и universe change |
+| Фактическое накопление глубокой истории | Реализовано в 1.5.0 | progressive `history_backfill` до target days с batch/page limits и учетом launch time |
+| Экономический gate auto-activation | Реализовано в 1.5.0 | policy trades, realized mean R, profit factor, drawdown и incumbent-relative limits |
+| Актуальный universe в UI/API | Исправлено в 1.5.0 | текущие карточки фильтруются по worker universe; status обновляется автоматически |
 
 ## Частичное соответствие
 
 | Требование | Что есть | Чего не хватает |
 |---|---|---|
 | Walk-forward OOS | temporal split, purge, final holdout | expanding/rolling многооконный pipeline, OOF aggregation, embargo как отдельная сущность |
-| Event-driven backtest | barrier outcomes, cost reserve, NO TRADE threshold, cost x1.5/x2 | entry-zone/no-fill, partial fills, simultaneous portfolio, реальная funding timeline, operator latency |
+| Event-driven backtest | barrier outcomes, cost reserve, NO TRADE threshold, policy metrics | entry-zone/no-fill, partial fills, simultaneous portfolio, реальная funding timeline, operator latency |
 | Multi-horizon 4/8/12 | артефакт хранит horizon; можно обучить отдельные версии | одновременное сравнение нескольких горизонтов в live policy и отдельные active heads |
-| Point-in-time universe research | live universe и исторические candles | исторические membership snapshots, delisted contracts и полностью point-in-time research universe |
+| Point-in-time universe research | live universe, candles, dataset profiles | исторические membership snapshots, delisted contracts и полностью point-in-time research universe |
 | Liquidity/impact | spread и turnover-based caps | архив orderbook snapshots, depth VWAP и эмпирическая impact-модель |
-| Fees | настраиваемая taker fee | автоматическое использование account fee-rate snapshot в расчетах |
+| Fees | настраиваемая taker fee | автоматическое использование account fee-rate snapshot в обучении/backtest и live расчетах |
 | Portfolio risk | общий риск, single-name/directional ограничения | устойчивые correlation clusters и factor/beta exposure |
-| Надежность модели в UI | вероятности, version/calibration и причины | calibration bin, OOS analog count, confidence interval, regime statistics, drift status |
+| Надежность модели в UI | вероятности, version/calibration, training profile и причины | calibration bin, OOS analog count, confidence interval, regime statistics, live drift status |
 | Counterfactual outcome | сигналы сохраняются независимо от решения | автоматический post-event outcome для каждого сигнала и каждой plan version |
+| Автоматическая эксплуатационная защита | pre-activation ML/policy gate, сохранение incumbent | live realized-performance gate и автоматический rollback после production degradation |
 
 ## Не реализовано
 
 - систематический PSI/feature/probability/calibration drift monitoring и автоматический fallback;
-- scheduler переобучения с approval gate;
-- полноценные feature registry, dataset snapshots и fold-level experiment registry;
+- полноценные feature registry, immutable dataset snapshots и fold-level experiment registry;
 - 1–5-минутное восстановление порядка касаний TP/SL; применяется консервативное правило по часовому OHLC;
 - Probability of Backtest Overfitting и Deflated Sharpe Ratio;
 - историческая модель фактического исполнения по стакану;
 - завершенный paper/shadow forward evidence и доказательство экономического преимущества.
 
-## Состояние машинного обучения
-
-### До коррекции
-
-ML нельзя было считать работающим в смысле спецификации:
-
-1. `training.py` обучал бинарное направление будущей доходности, а не TP-first/SL-first/timeout.
-2. Runtime преобразовывал вероятность направления в `p_tp/p_sl/p_timeout` эвристически.
-3. Worker по умолчанию использовал детерминированный baseline.
-4. Запись `active=true` в PostgreSQL не гарантировала, что worker загрузил именно этот artifact.
-5. Readiness не сверял registry version с фактически загруженной моделью.
-6. Backtest оценивал направление будущей доходности, а не direction-specific barrier policy.
-
-### После коррекции 1.4.0
+## Состояние машинного обучения после коррекции 1.5.0
 
 Технический ML-путь работает end-to-end:
 
 1. Из confirmed hourly candles строятся два условных сценария на timestamp: LONG и SHORT.
-2. Для каждого сценария формируется метка `TP`, `SL` или `TIMEOUT`.
+2. Для каждого сценария формируется метка `TP`, `SL` или `TIMEOUT`; `NO TRADE` остается решением policy.
 3. Обучается pooled logistic baseline либо `HistGradientBoostingClassifier`.
-4. Для pooled LONG/SHORT модели добавляются feature×direction interactions.
-5. Вероятности калибруются на отдельном более позднем окне.
-6. Final holdout оценивается Brier/log loss/ECE/AUC и barrier-policy метриками.
-7. Artifact сохраняет task, feature schema, horizon, barrier settings, metrics и SHA256.
-8. Модель регистрируется неактивной; активация выполняется отдельно после проверки.
-9. Worker проверяет artifact hash/version/schema/horizon и публикует реальные прогнозы модели.
-10. `NO TRADE` остается решением cost/risk policy, а не классом модели.
+4. Вероятности калибруются на отдельном более позднем окне.
+5. Final holdout оценивается Brier/log loss/ECE/AUC и cost-aware policy metrics.
+6. Artifact сохраняет task, feature schema, horizon, barrier settings, metrics, SHA256 и полный `training_data_profile`.
+7. Worker постепенно расширяет историческую базу активного universe до настроенной глубины.
+8. Trainer сравнивает фактический текущий профиль PostgreSQL с профилем active-модели.
+9. Существенный backfill или изменение symbol coverage запускает обучение досрочно, даже если новых часов мало.
+10. Candidate и incumbent оцениваются на одном holdout; кандидат активируется автоматически только после абсолютных и относительных ML- и policy-gates.
+11. Worker проверяет artifact hash/version/schema/horizon и загружает новую active-версию без перезапуска.
+12. Провал обучения/gate не влияет на текущий inference; предыдущая модель остается доступна для rollback.
 
-Это означает техническую работоспособность pipeline, но не подтвержденную прибыльность. Без достаточной истории обучение завершится ошибкой; без явно активированной модели paper-режим продолжит использовать baseline. В production baseline теперь запрещается конфигурацией.
+Это означает техническую работоспособность автоматического pipeline, но не подтвержденную прибыльность. Legacy active-модель без `training_data_profile` рассматривается как требующая обновления, однако остается действующей до появления кандидата, прошедшего проверки.
 
-## Рекомендуемый цикл ML
+## Штатный ML-цикл
+
+При `AUTO_TRAIN_ENABLED=true` и `AUTO_TRAIN_AUTO_ACTIVATE=true` вмешательство оператора в обычное продвижение моделей не требуется:
+
+```text
+market/history sync
+→ dataset profile comparison
+→ background candidate training
+→ common final holdout
+→ ML quality gates
+→ cost-aware policy gates
+→ atomic activation
+→ worker hot reload
+```
+
+Ручные команды сохранены для диагностики, review и rollback:
 
 ```bash
 python manage.py train --horizon 8 --model-type logistic
@@ -94,10 +104,8 @@ python manage.py backtest --model models/<artifact>.joblib --output reports/back
 python manage.py model-registry activate --version <model-version>
 ```
 
-После активации worker загрузит новую версию не позднее `MODEL_REFRESH_SECONDS`. Активация старой версии той же командой является rollback.
-
 ## Вывод по готовности
 
-- Для локального advisory/paper/shadow применения: **технически пригоден после миграции и проверок**, с явной маркировкой baseline и без утверждения прибыльности.
-- Для production advisory: **условно**, только с обученной активной моделью, `ALLOW_BASELINE_MODEL=false`, отдельной БД, backup/restore и paper/shadow evidence.
+- Для локального advisory/paper/shadow применения: **технически пригоден после миграции и проверок**, без утверждения прибыльности.
+- Для production advisory: **условно**, только с активной обученной моделью, `ALLOW_BASELINE_MODEL=false`, отдельной БД, backup/restore и достаточным paper/shadow evidence.
 - Полное соответствие исследовательским и эконометрическим требованиям спецификации: **не достигнуто**; оставшиеся пункты перечислены выше.

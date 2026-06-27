@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.0 — 2026-06-28
+
+- Добавлен dataset-aware trigger фонового переобучения: historical row growth, symbol coverage и universe change.
+- Каждый model artifact хранит полный training-data profile и подписи состава/покрытия.
+- Добавлен progressive history backfill до 365 дней без длительной блокировки старта.
+- Auto-activation дополнена cost-aware holdout policy gates: trades, mean R, profit factor и drawdown.
+- Главный экран фильтрует рекомендации по текущему universe и автоматически обновляет system status.
+- Расширены `/api/v1/status`, `.env.example`, документация и regression tests.
+
 ## 1.4.0 — 2026-06-27
 
 - Добавлен отдельный `trainer` process для фонового переобучения без блокировки API и inference worker.

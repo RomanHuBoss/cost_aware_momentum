@@ -19,6 +19,8 @@ from app.db.models import JobRun, ModelRegistry, ServiceHeartbeat, TickerSnapsho
 from app.logging import configure_logging
 from app.ml.runtime import ModelRuntime
 from app.services.market_data import (
+    symbols_needing_history_backfill,
+    sync_candle_history,
     sync_candles,
     sync_funding_and_oi,
     sync_instruments,
@@ -45,6 +47,8 @@ class Worker:
         self.runtime = ModelRuntime(None, settings.allow_baseline_model)
         self.last_instrument_sync: datetime | None = None
         self.last_market_sync: datetime | None = None
+        self.last_history_backfill: datetime | None = None
+        self.history_backfill_summary: dict | None = None
         self.last_account_sync: datetime | None = None
         self.last_universe_refresh: datetime | None = None
         self.last_model_refresh: datetime | None = None
@@ -53,6 +57,7 @@ class Worker:
         self.universe_summary: dict = {
             "mode": settings.universe_mode,
             "selected_count": len(self.active_symbols),
+            "selected_symbols": list(self.active_symbols),
             "selected_sample": list(self.active_symbols[:25]),
         }
 
@@ -302,6 +307,47 @@ class Worker:
 
         return await self.run_job("hourly_market_close", event_time, task)
 
+    async def history_backfill_job(self) -> dict:
+        scheduled = datetime.now(UTC).replace(second=0, microsecond=0)
+
+        async def task(session):
+            candidates = await symbols_needing_history_backfill(
+                session,
+                self.active_symbols,
+                interval=settings.candle_interval,
+                target_days=settings.history_backfill_target_days,
+                limit=settings.history_backfill_symbols_per_cycle,
+            )
+            if not candidates:
+                return {
+                    "enabled": True,
+                    "status": "COMPLETE",
+                    "symbols_processed": 0,
+                    "rows_received": 0,
+                    "target_days": settings.history_backfill_target_days,
+                }
+            result = await sync_candle_history(
+                session,
+                self.client,
+                candidates,
+                interval=settings.candle_interval,
+                target_days=settings.history_backfill_target_days,
+                page_size=settings.history_backfill_page_size,
+                max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+            )
+            return {
+                "enabled": True,
+                "status": "RUNNING",
+                "target_days": settings.history_backfill_target_days,
+                **result,
+            }
+
+        result = await self.run_job("history_backfill", scheduled, task)
+        if not result.get("skipped"):
+            self.history_backfill_summary = result
+            self.last_history_backfill = datetime.now(UTC)
+        return result
+
     async def account_job(self) -> dict:
         scheduled = datetime.now(UTC).replace(second=0, microsecond=0)
 
@@ -386,6 +432,8 @@ class Worker:
             self.last_instrument_sync = datetime.now(UTC)
             market_result = await self.market_job(backfill=True)
             self.last_market_sync = datetime.now(UTC)
+            if settings.history_backfill_enabled and self.active_symbols:
+                await self.history_backfill_job()
             if self.active_symbols and not market_result.get("skipped"):
                 await self.catchup_inference_job("startup_backfill")
             if settings.bybit_read_only_account:
@@ -413,6 +461,12 @@ class Worker:
                     self.last_market_sync = now
                     if market_result.get("backfilled_symbols", 0) > 0:
                         await self.catchup_inference_job("universe_expanded")
+                if settings.history_backfill_enabled and self.active_symbols and (
+                    self.last_history_backfill is None
+                    or (now - self.last_history_backfill).total_seconds()
+                    >= settings.history_backfill_interval_seconds
+                ):
+                    await self.history_backfill_job()
                 if settings.bybit_read_only_account and (
                     self.last_account_sync is None
                     or (now - self.last_account_sync).total_seconds() >= settings.market_poll_seconds
@@ -436,6 +490,7 @@ class Worker:
                         if self.last_market_sync
                         else None,
                         "universe": self.universe_summary,
+                        "history_backfill": self.history_backfill_summary,
                     },
                 )
             except Exception as exc:
@@ -447,6 +502,7 @@ class Worker:
                         "model": self.runtime.metadata(),
                         "model_registry_id": self.active_model_registry_id,
                         "universe": self.universe_summary,
+                        "history_backfill": self.history_backfill_summary,
                     },
                 )
             with suppress(TimeoutError):

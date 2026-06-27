@@ -189,9 +189,24 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "model_type": settings.auto_train_model_type,
             "interval_hours": settings.auto_train_interval_hours,
             "minimum_new_timestamps": settings.auto_train_min_new_timestamps,
+            "data_change_cooldown_hours": settings.auto_train_data_change_cooldown_hours,
+            "minimum_new_rows": settings.auto_train_min_new_rows,
+            "minimum_dataset_growth_ratio": settings.auto_train_min_dataset_growth_ratio,
+            "minimum_new_symbols": settings.auto_train_min_new_symbols,
+            "minimum_universe_change_ratio": settings.auto_train_min_universe_change_ratio,
+            "minimum_bars_per_symbol": settings.auto_train_min_bars_per_symbol,
+            "minimum_symbol_coverage_ratio": settings.auto_train_min_symbol_coverage_ratio,
             "lookback_days": settings.auto_train_lookback_days,
             "max_symbols": settings.auto_train_max_symbols,
             "require_improvement": settings.auto_train_require_improvement,
+        },
+        "history_backfill": {
+            "enabled": settings.history_backfill_enabled,
+            "target_days": settings.history_backfill_target_days,
+            "interval_seconds": settings.history_backfill_interval_seconds,
+            "symbols_per_cycle": settings.history_backfill_symbols_per_cycle,
+            "pages_per_symbol": settings.history_backfill_pages_per_symbol,
+            "page_size": settings.history_backfill_page_size,
         },
         "database_revision": await current_revision(session),
         "expected_revision": expected_revision(),
@@ -202,6 +217,9 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "artifact_path": model.artifact_path if model else None,
             "artifact_sha256": model.artifact_sha256 if model else None,
             "metrics": model.metrics if model else None,
+            "training_data_profile": (model.metrics or {}).get("training_data_profile")
+            if model
+            else None,
             "worker_runtime": next(
                 (
                     heartbeat.details.get("model")

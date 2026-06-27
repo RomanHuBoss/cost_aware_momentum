@@ -54,10 +54,17 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 | `UNIVERSE_SYNC_MARK_PRICE` | дополнительно сохранять mark-price candles |
 | `UNIVERSE_ENRICH_FUNDING_OI` | выполнять тяжелый исторический сбор funding/OI для каждого нового участника |
 | `TICKER_RETENTION_HOURS` | срок хранения минутных ticker snapshots |
+| `INITIAL_BACKFILL_BARS` | быстрый стартовый срез свечей для нового символа; default 1000 |
+| `HISTORY_BACKFILL_ENABLED` | постепенно расширять исторические свечи назад |
+| `HISTORY_BACKFILL_TARGET_DAYS` | целевая глубина истории; default 365 дней |
+| `HISTORY_BACKFILL_INTERVAL_SECONDS` | частота небольших backfill-циклов |
+| `HISTORY_BACKFILL_SYMBOLS_PER_CYCLE` | сколько символов углублять за один цикл |
+| `HISTORY_BACKFILL_PAGES_PER_SYMBOL` | максимум страниц Bybit за символ и цикл |
+| `HISTORY_BACKFILL_PAGE_SIZE` | размер страницы Bybit, не более 1000 |
 
 `UNIVERSE_MAX_SYMBOLS=0` не означает отсутствие фильтра качества: система сканирует полный биржевой каталог, но анализирует только контракты, прошедшие статус, тип, возраст, ликвидность, spread и data-quality checks. Это предотвращает смешивание «всех существующих тикеров» с реально исполнимым торговым universe.
 
-При первом включении dynamic mode worker выполняет backfill часовых свечей для всех отобранных символов. Далее tickers обновляются с частотой `MARKET_POLL_SECONDS`, состав universe — с частотой `UNIVERSE_REFRESH_SECONDS`, а свечи всех активных символов обновляются один раз после закрытия часа перед inference. Незакрытая REST-свеча сохраняется с `confirmed=false` и не входит в признаки.
+При первом включении dynamic mode worker загружает быстрый стартовый срез для всех отобранных символов. Затем отдельный job `history_backfill` постепенно запрашивает более старые страницы до целевой глубины, не блокируя API и часовой inference на длительное время. Для молодых контрактов целевая дата автоматически ограничивается временем листинга. Далее tickers обновляются с частотой `MARKET_POLL_SECONDS`, состав universe — с частотой `UNIVERSE_REFRESH_SECONDS`, а свечи всех активных символов обновляются один раз после закрытия часа перед inference. Незакрытая REST-свеча сохраняется с `confirmed=false` и не входит в признаки.
 
 ## Risk policy
 
@@ -105,6 +112,13 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 | `AUTO_TRAIN_LOOKBACK_DAYS` | rolling-окно подтвержденных свечей, используемое для переобучения |
 | `AUTO_TRAIN_MAX_SYMBOLS` | top-N символов по последнему 24h turnover для ограничения памяти; `0` использует все сохраненные символы |
 | `AUTO_TRAIN_MIN_NEW_TIMESTAMPS` | сколько новых часовых timestamps требуется после `training_end` active-модели |
+| `AUTO_TRAIN_DATA_CHANGE_COOLDOWN_HOURS` | короткий cooldown для переобучения после крупного backfill/universe change |
+| `AUTO_TRAIN_MIN_NEW_ROWS` | минимальный абсолютный прирост trainable candle rows |
+| `AUTO_TRAIN_MIN_DATASET_GROWTH_RATIO` | минимальный относительный прирост датасета |
+| `AUTO_TRAIN_MIN_NEW_SYMBOLS` | сколько новых покрытых символов считается существенным изменением |
+| `AUTO_TRAIN_MIN_UNIVERSE_CHANGE_RATIO` | порог изменения состава обучающего universe |
+| `AUTO_TRAIN_MIN_BARS_PER_SYMBOL` | минимальная глубина символа для coverage check |
+| `AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO` | минимальная доля top-N символов с достаточной глубиной |
 | `AUTO_TRAIN_MIN_HOLDOUT_ROWS` | минимальный размер нового final holdout |
 | `AUTO_TRAIN_MIN_CLASS_FRACTION` | минимальная доля каждого исхода TP/SL/TIMEOUT в holdout |
 | `AUTO_TRAIN_MAX_LOG_LOSS` | абсолютный верхний предел log loss кандидата |
@@ -113,9 +127,16 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 | `AUTO_TRAIN_MAX_LOG_LOSS_REGRESSION` | допустимое ухудшение log loss относительно active-модели на том же holdout |
 | `AUTO_TRAIN_MAX_BRIER_REGRESSION` | допустимое ухудшение Brier относительно active-модели |
 | `AUTO_TRAIN_MIN_METRIC_IMPROVEMENT` | минимальное улучшение хотя бы одной основной метрики |
+| `AUTO_TRAIN_MIN_POLICY_TRADES` | минимум cost-aware сделок на общем holdout |
+| `AUTO_TRAIN_MIN_POLICY_REALIZED_MEAN_R` | минимальный средний реализованный результат в R |
+| `AUTO_TRAIN_MIN_POLICY_PROFIT_FACTOR` | минимальный holdout profit factor |
+| `AUTO_TRAIN_MAX_POLICY_DRAWDOWN_R` | максимальная допустимая просадка holdout policy в R |
+| `AUTO_TRAIN_MAX_POLICY_MEAN_R_REGRESSION` | допустимое ухудшение mean R относительно incumbent |
+| `AUTO_TRAIN_MAX_POLICY_DRAWDOWN_REGRESSION_R` | допустимое ухудшение drawdown относительно incumbent |
+| `AUTO_TRAIN_MIN_POLICY_IMPROVEMENT_R` | улучшение mean R, достаточное для relative gate |
 | `AUTO_TRAIN_REQUIRE_IMPROVEMENT` | требовать ли улучшение перед автоматической активацией |
 | `TRAINER_ID` | идентификатор trainer heartbeat и job actor |
 
-Trainer не изменяет существующий artifact на месте. Он полностью переобучает candidate на актуальном rolling-окне, сохраняет его атомарно, регистрирует SHA256 и сравнивает candidate с incumbent на одном и том же новом holdout. Не прошедший quality gate artifact остается неактивным. При конкурентном запуске используется PostgreSQL session advisory lock; при смене active-модели во время оценки auto-activation отменяется.
+Trainer не изменяет существующий artifact на месте. Он полностью переобучает candidate на актуальном rolling-окне, сохраняет его атомарно, регистрирует SHA256 и сравнивает candidate с incumbent на одном и том же новом holdout. Каждый artifact хранит полный dataset profile: candle rows, timestamps, список символов, временные границы, coverage и SHA256-подписи состава/покрытия. Поэтому существенная загрузка старой истории запускает переобучение даже при одном новом часовом timestamp. Не прошедший quality gate artifact остается неактивным. При конкурентном запуске используется PostgreSQL session advisory lock; при смене active-модели во время оценки auto-activation отменяется.
 
 `ACTIVE_MODEL_PATH` считается аварийным override. При его наличии trainer продолжает формировать candidates, но не выполняет автоматическую активацию registry-модели, поскольку inference worker все равно предпочитает override.

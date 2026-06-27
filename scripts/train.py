@@ -12,6 +12,7 @@ from app.ml.lifecycle import (
     build_model_candidate,
     incumbent_from_registry,
     load_training_candles,
+    policy_evaluation_config,
     register_model_candidate,
 )
 from scripts.model_registry import activate_registered_model
@@ -38,7 +39,11 @@ async def run(args: argparse.Namespace) -> None:
 
     incumbent_model = await active_model()
     symbols = settings.symbols if settings.universe_mode == "static" else None
-    frame = await load_training_candles(symbols, lookback_days=args.lookback_days)
+    frame = await load_training_candles(
+        symbols,
+        lookback_days=args.lookback_days,
+        max_symbols=settings.auto_train_max_symbols,
+    )
     candidate = build_model_candidate(
         frame,
         horizon=args.horizon,
@@ -48,6 +53,8 @@ async def run(args: argparse.Namespace) -> None:
         output=args.output,
         incumbent=incumbent_from_registry(incumbent_model),
         source="manual_cli",
+        minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
+        policy_config=policy_evaluation_config(settings),
     )
     registry = await register_model_candidate(
         candidate,

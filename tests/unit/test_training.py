@@ -105,3 +105,60 @@ def test_chronological_split_keeps_timestamp_groups_together() -> None:
     assert len(split.y_test) > 0
     assert split.test_meta.groupby("open_time")["symbol"].nunique().eq(2).all()
     assert split.test_meta.groupby(["open_time", "symbol"])["direction"].nunique().eq(2).all()
+
+
+def test_policy_evaluation_selects_one_direction_and_applies_cost_gate() -> None:
+    from app.ml.training import DatasetSplit, PolicyEvaluationConfig, evaluate_policy_model
+
+    class FakeModel:
+        classes_ = OUTCOME_CLASSES
+
+        def predict_proba(self, x):
+            # LONG rows (direction +1) have positive edge, SHORT rows do not.
+            result = []
+            for row in x:
+                if row[-1] > 0:
+                    result.append([0.65, 0.20, 0.15])
+                else:
+                    result.append([0.20, 0.60, 0.20])
+            return np.asarray(result, dtype=float)
+
+    times = [datetime(2025, 1, 1, tzinfo=UTC) + timedelta(hours=i) for i in range(40)]
+    x = []
+    meta = []
+    y = []
+    for index, open_time in enumerate(times):
+        for direction, code in (("LONG", 1.0), ("SHORT", -1.0)):
+            x.append([0.0] * (len(MODEL_FEATURE_NAMES) - 1) + [code])
+            target = "TP" if direction == "LONG" and index % 3 else "SL"
+            y.append(target)
+            meta.append(
+                {
+                    "open_time": open_time,
+                    "symbol": "BTCUSDT",
+                    "direction": direction,
+                    "target": target,
+                    "ambiguous": False,
+                    "realized_gross_return": 0.0,
+                    "barrier_upside_rate": 0.03,
+                    "barrier_downside_rate": 0.012,
+                }
+            )
+    values = np.asarray(x, dtype=float)
+    targets = np.asarray(y)
+    split = DatasetSplit(values, targets, values, targets, values, targets, pd.DataFrame(meta))
+    metrics = evaluate_policy_model(
+        FakeModel(),
+        split,
+        PolicyEvaluationConfig(
+            fee_rate_round_trip=0.0011,
+            slippage_rate=0.0003,
+            stop_gap_reserve_rate=0.001,
+            min_net_rr=1.2,
+            min_net_ev_r=0.05,
+        ),
+    )
+
+    assert metrics["policy_candidates"] == 40
+    assert metrics["policy_trades"] == 40
+    assert metrics["policy_profit_factor"] is not None

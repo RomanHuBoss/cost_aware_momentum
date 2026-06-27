@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import Settings
+from app.ml.data_profile import profile_from_symbol_rows
 from app.ml.lifecycle import ModelCandidate, evaluate_quality_gate
 
 
@@ -14,6 +15,15 @@ def _candidate(
     incumbent_metrics: dict | None = None,
 ) -> ModelCandidate:
     now = datetime.now(UTC)
+    profile = profile_from_symbol_rows(
+        [
+            ("BTCUSDT", 500, now, now),
+            ("ETHUSDT", 500, now, now),
+            ("SOLUSDT", 500, now, now),
+        ],
+        unique_timestamps=500,
+        minimum_rows_for_coverage=300,
+    )
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",
@@ -25,6 +35,7 @@ def _candidate(
         unique_timestamps=500,
         symbol_count=3,
         symbol_sample=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+        training_data_profile=profile,
         metrics=metrics,
         incumbent_metrics=incumbent_metrics,
         incumbent_version="incumbent-v1" if incumbent_metrics else None,
@@ -40,6 +51,10 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
+        "policy_trades": 80,
+        "policy_realized_mean_r": 0.05,
+        "policy_profit_factor": 1.2,
+        "policy_max_drawdown_r": 5.0,
     }
 
 

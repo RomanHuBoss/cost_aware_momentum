@@ -16,14 +16,21 @@ from sqlalchemy import desc, func, select
 from app.config import Settings
 from app.db.engine import SessionFactory
 from app.db.models import Candle, ModelRegistry, TickerSnapshot
+from app.ml.data_profile import (
+    TrainingDataProfile,
+    profile_from_symbol_rows,
+    profile_training_frame,
+)
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
     MODEL_FEATURE_NAMES,
+    PolicyEvaluationConfig,
     TemporalCalibratedBarrierModel,
     chronological_split,
     evaluate_model,
+    evaluate_policy_model,
     make_barrier_dataset,
 )
 from app.services.audit import append_audit_event, publish_outbox
@@ -54,9 +61,20 @@ class ModelCandidate:
     unique_timestamps: int
     symbol_count: int
     symbol_sample: tuple[str, ...]
+    training_data_profile: TrainingDataProfile
     metrics: dict[str, Any]
     incumbent_metrics: dict[str, Any] | None
     incumbent_version: str | None
+
+
+def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
+    return PolicyEvaluationConfig(
+        fee_rate_round_trip=settings.fee_rate_taker * 2,
+        slippage_rate=settings.base_slippage_bps / 10000,
+        stop_gap_reserve_rate=settings.stop_gap_reserve_bps / 10000,
+        min_net_rr=settings.min_net_rr,
+        min_net_ev_r=settings.min_net_ev_r,
+    )
 
 
 def _as_datetime(value: object) -> datetime:
@@ -69,6 +87,146 @@ def _as_datetime(value: object) -> datetime:
     return value.astimezone(UTC)
 
 
+async def _select_training_symbols(
+    session,
+    symbols: list[str] | tuple[str, ...] | None,
+    *,
+    max_symbols: int,
+    interval: str,
+) -> list[str]:
+    selected_symbols = list(dict.fromkeys(str(item).upper() for item in (symbols or []) if item))
+    if selected_symbols or max_symbols <= 0:
+        return selected_symbols
+
+    ranked_tickers = (
+        select(
+            TickerSnapshot.symbol.label("symbol"),
+            TickerSnapshot.turnover_24h.label("turnover_24h"),
+            func.row_number()
+            .over(
+                partition_by=TickerSnapshot.symbol,
+                order_by=TickerSnapshot.source_time.desc(),
+            )
+            .label("row_number"),
+        )
+        .subquery()
+    )
+    selected_symbols = list(
+        (
+            await session.execute(
+                select(ranked_tickers.c.symbol)
+                .where(ranked_tickers.c.row_number == 1)
+                .order_by(desc(ranked_tickers.c.turnover_24h).nullslast())
+                .limit(max_symbols)
+            )
+        ).scalars()
+    )
+    if selected_symbols:
+        return selected_symbols
+    return list(
+        (
+            await session.execute(
+                select(Candle.symbol)
+                .where(
+                    Candle.interval == interval,
+                    Candle.price_type == "last",
+                    Candle.confirmed.is_(True),
+                )
+                .distinct()
+                .order_by(Candle.symbol)
+                .limit(max_symbols)
+            )
+        ).scalars()
+    )
+
+
+async def _latest_training_candle_time(
+    session,
+    *,
+    selected_symbols: list[str],
+    interval: str,
+) -> datetime | None:
+    query = select(func.max(Candle.open_time)).where(
+        Candle.interval == interval,
+        Candle.price_type == "last",
+        Candle.confirmed.is_(True),
+    )
+    if selected_symbols:
+        query = query.where(Candle.symbol.in_(selected_symbols))
+    return (await session.execute(query)).scalar_one_or_none()
+
+
+async def load_training_data_profile(
+    symbols: list[str] | tuple[str, ...] | None,
+    *,
+    lookback_days: int | None,
+    max_symbols: int,
+    horizon: int,
+    minimum_rows_for_coverage: int,
+    interval: str = "60",
+) -> TrainingDataProfile:
+    async with SessionFactory() as session:
+        selected_symbols = await _select_training_symbols(
+            session, symbols, max_symbols=max_symbols, interval=interval
+        )
+        latest = await _latest_training_candle_time(
+            session, selected_symbols=selected_symbols, interval=interval
+        )
+        if latest is None:
+            return profile_from_symbol_rows(
+                [], unique_timestamps=0, minimum_rows_for_coverage=minimum_rows_for_coverage
+            )
+        label_cutoff = latest - timedelta(hours=horizon)
+        lookback_cutoff = (
+            latest - timedelta(days=lookback_days)
+            if lookback_days and lookback_days > 0
+            else None
+        )
+        filters = [
+            Candle.interval == interval,
+            Candle.price_type == "last",
+            Candle.confirmed.is_(True),
+            Candle.open_time <= label_cutoff,
+        ]
+        if selected_symbols:
+            filters.append(Candle.symbol.in_(selected_symbols))
+        if lookback_cutoff is not None:
+            filters.append(Candle.open_time >= lookback_cutoff)
+
+        grouped = (
+            await session.execute(
+                select(
+                    Candle.symbol,
+                    func.count(Candle.id),
+                    func.min(Candle.open_time),
+                    func.max(Candle.open_time),
+                )
+                .where(*filters)
+                .group_by(Candle.symbol)
+                .order_by(Candle.symbol)
+            )
+        ).all()
+        if selected_symbols:
+            grouped_by_symbol = {str(row[0]): row for row in grouped}
+            grouped = [
+                grouped_by_symbol.get(symbol, (symbol, 0, None, None))
+                for symbol in selected_symbols
+            ]
+        unique_timestamps = int(
+            (
+                await session.execute(
+                    select(func.count(func.distinct(Candle.open_time))).where(*filters)
+                )
+            ).scalar_one()
+            or 0
+        )
+    return profile_from_symbol_rows(
+        grouped,
+        unique_timestamps=unique_timestamps,
+        minimum_rows_for_coverage=minimum_rows_for_coverage,
+    )
+
+
 async def load_training_candles(
     symbols: list[str] | tuple[str, ...] | None,
     *,
@@ -76,52 +234,16 @@ async def load_training_candles(
     max_symbols: int = 0,
     interval: str = "60",
 ) -> pd.DataFrame:
-    cutoff = None
-    if lookback_days and lookback_days > 0:
-        cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
-
     async with SessionFactory() as session:
-        selected_symbols = list(symbols) if symbols else []
-        if not selected_symbols and max_symbols > 0:
-            ranked_tickers = (
-                select(
-                    TickerSnapshot.symbol.label("symbol"),
-                    TickerSnapshot.turnover_24h.label("turnover_24h"),
-                    func.row_number()
-                    .over(
-                        partition_by=TickerSnapshot.symbol,
-                        order_by=TickerSnapshot.source_time.desc(),
-                    )
-                    .label("row_number"),
-                )
-                .subquery()
-            )
-            selected_symbols = list(
-                (
-                    await session.execute(
-                        select(ranked_tickers.c.symbol)
-                        .where(ranked_tickers.c.row_number == 1)
-                        .order_by(desc(ranked_tickers.c.turnover_24h).nullslast())
-                        .limit(max_symbols)
-                    )
-                ).scalars()
-            )
-            if not selected_symbols:
-                selected_symbols = list(
-                    (
-                        await session.execute(
-                            select(Candle.symbol)
-                            .where(
-                                Candle.interval == interval,
-                                Candle.price_type == "last",
-                                Candle.confirmed.is_(True),
-                            )
-                            .distinct()
-                            .order_by(Candle.symbol)
-                            .limit(max_symbols)
-                        )
-                    ).scalars()
-                )
+        selected_symbols = await _select_training_symbols(
+            session, symbols, max_symbols=max_symbols, interval=interval
+        )
+        latest = await _latest_training_candle_time(
+            session, selected_symbols=selected_symbols, interval=interval
+        )
+        cutoff = None
+        if latest is not None and lookback_days and lookback_days > 0:
+            cutoff = latest - timedelta(days=lookback_days)
 
         query = select(Candle).where(
             Candle.interval == interval,
@@ -173,6 +295,9 @@ def build_model_candidate(
     output: Path | None = None,
     incumbent: IncumbentSnapshot | None = None,
     source: str = "manual",
+    minimum_rows_for_coverage: int = 300,
+    policy_config: PolicyEvaluationConfig | None = None,
+    expected_symbols: list[str] | tuple[str, ...] | None = None,
 ) -> ModelCandidate:
     if candles.empty:
         raise RuntimeError("No confirmed hourly candles are available for model training")
@@ -189,6 +314,8 @@ def build_model_candidate(
         split.y_cal,
     )
     metrics = evaluate_model(model, split)
+    if policy_config is not None:
+        metrics.update(evaluate_policy_model(model, split, policy_config))
 
     incumbent_metrics: dict[str, Any] | None = None
     if incumbent and incumbent.is_artifact_model:
@@ -201,6 +328,10 @@ def build_model_candidate(
             )
             if runtime.horizon_hours == horizon and runtime.bundle is not None:
                 incumbent_metrics = evaluate_model(runtime.bundle["model"], split)
+                if policy_config is not None:
+                    incumbent_metrics.update(
+                        evaluate_policy_model(runtime.bundle["model"], split, policy_config)
+                    )
             else:
                 incumbent_metrics = {
                     "comparison_skipped": "incumbent_horizon_mismatch",
@@ -223,6 +354,12 @@ def build_model_candidate(
     training_end = _as_datetime(dataset.open_time.max())
     unique_timestamps = int(dataset["open_time"].nunique())
     symbol_values = tuple(sorted(str(item) for item in dataset["symbol"].unique()))
+    training_data_profile = profile_training_frame(
+        candles,
+        label_cutoff=training_end,
+        minimum_rows_for_coverage=minimum_rows_for_coverage,
+        expected_symbols=expected_symbols,
+    )
     bundle = {
         "task": "barrier_outcome_v1",
         "model": model,
@@ -241,6 +378,8 @@ def build_model_candidate(
         "unique_timestamps": unique_timestamps,
         "symbol_count": len(symbol_values),
         "symbol_sample": list(symbol_values[:25]),
+        "symbols": list(symbol_values),
+        "training_data_profile": training_data_profile.to_dict(),
         "source": source,
         "created_at": created_at.isoformat(),
     }
@@ -264,6 +403,7 @@ def build_model_candidate(
         unique_timestamps=unique_timestamps,
         symbol_count=len(symbol_values),
         symbol_sample=symbol_values[:25],
+        training_data_profile=training_data_profile,
         metrics=metrics,
         incumbent_metrics=incumbent_metrics,
         incumbent_version=incumbent.version if incumbent else None,
@@ -295,6 +435,26 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         (float(class_distribution.get(label, 0.0)) for label in ("TP", "SL", "TIMEOUT")),
         default=0.0,
     )
+    policy_trades = int(metrics.get("policy_trades", 0) or 0)
+    policy_mean_r_value = metrics.get("policy_realized_mean_r")
+    policy_profit_factor_value = metrics.get("policy_profit_factor")
+    policy_drawdown_value = metrics.get("policy_max_drawdown_r")
+    policy_mean_r = (
+        float(policy_mean_r_value)
+        if policy_mean_r_value is not None and math.isfinite(float(policy_mean_r_value))
+        else -math.inf
+    )
+    policy_profit_factor = (
+        float(policy_profit_factor_value)
+        if policy_profit_factor_value is not None
+        and math.isfinite(float(policy_profit_factor_value))
+        else -math.inf
+    )
+    policy_drawdown = (
+        float(policy_drawdown_value)
+        if policy_drawdown_value is not None and math.isfinite(float(policy_drawdown_value))
+        else math.inf
+    )
 
     if rows < settings.auto_train_min_holdout_rows:
         reasons.append("holdout_rows_below_minimum")
@@ -306,6 +466,14 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("calibration_error_above_limit")
     if min_class_fraction < settings.auto_train_min_class_fraction:
         reasons.append("holdout_class_fraction_below_minimum")
+    if policy_trades < settings.auto_train_min_policy_trades:
+        reasons.append("policy_trade_count_below_minimum")
+    if policy_mean_r < settings.auto_train_min_policy_realized_mean_r:
+        reasons.append("policy_realized_mean_r_below_minimum")
+    if policy_profit_factor < settings.auto_train_min_policy_profit_factor:
+        reasons.append("policy_profit_factor_below_minimum")
+    if policy_drawdown > settings.auto_train_max_policy_drawdown_r:
+        reasons.append("policy_drawdown_above_limit")
 
     relative: dict[str, Any] | None = None
     incumbent = candidate.incumbent_metrics
@@ -318,16 +486,38 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     elif incumbent:
         incumbent_log_loss = float(incumbent["log_loss"])
         incumbent_brier = float(incumbent["multiclass_brier"])
+        incumbent_policy_mean_r_value = incumbent.get("policy_realized_mean_r")
+        incumbent_policy_drawdown_value = incumbent.get("policy_max_drawdown_r")
+        incumbent_policy_mean_r = (
+            float(incumbent_policy_mean_r_value)
+            if incumbent_policy_mean_r_value is not None
+            and math.isfinite(float(incumbent_policy_mean_r_value))
+            else -math.inf
+        )
+        incumbent_policy_drawdown = (
+            float(incumbent_policy_drawdown_value)
+            if incumbent_policy_drawdown_value is not None
+            and math.isfinite(float(incumbent_policy_drawdown_value))
+            else math.inf
+        )
         log_loss_delta = log_loss_value - incumbent_log_loss
         brier_delta = brier_value - incumbent_brier
-        improved = (
+        policy_mean_r_delta = policy_mean_r - incumbent_policy_mean_r
+        policy_drawdown_delta = policy_drawdown - incumbent_policy_drawdown
+        ml_improved = (
             log_loss_delta <= -settings.auto_train_min_metric_improvement
             or brier_delta <= -settings.auto_train_min_metric_improvement
         )
+        policy_improved = policy_mean_r_delta >= settings.auto_train_min_policy_improvement_r
+        improved = ml_improved or policy_improved
         if log_loss_delta > settings.auto_train_max_log_loss_regression:
             reasons.append("log_loss_regressed_vs_incumbent")
         if brier_delta > settings.auto_train_max_brier_regression:
             reasons.append("multiclass_brier_regressed_vs_incumbent")
+        if policy_mean_r_delta < -settings.auto_train_max_policy_mean_r_regression:
+            reasons.append("policy_mean_r_regressed_vs_incumbent")
+        if policy_drawdown_delta > settings.auto_train_max_policy_drawdown_regression_r:
+            reasons.append("policy_drawdown_regressed_vs_incumbent")
         if settings.auto_train_require_improvement and not improved:
             reasons.append("no_required_improvement_vs_incumbent")
         relative = {
@@ -338,6 +528,14 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "candidate_multiclass_brier": brier_value,
             "incumbent_multiclass_brier": incumbent_brier,
             "multiclass_brier_delta": brier_delta,
+            "candidate_policy_realized_mean_r": policy_mean_r,
+            "incumbent_policy_realized_mean_r": incumbent_policy_mean_r,
+            "policy_realized_mean_r_delta": policy_mean_r_delta,
+            "candidate_policy_max_drawdown_r": policy_drawdown,
+            "incumbent_policy_max_drawdown_r": incumbent_policy_drawdown,
+            "policy_max_drawdown_r_delta": policy_drawdown_delta,
+            "ml_improved": ml_improved,
+            "policy_improved": policy_improved,
             "improved": improved,
         }
 
@@ -355,6 +553,14 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "max_ece_limit": settings.auto_train_max_ece,
             "min_class_fraction": min_class_fraction,
             "min_class_fraction_limit": settings.auto_train_min_class_fraction,
+            "policy_trades": policy_trades,
+            "min_policy_trades": settings.auto_train_min_policy_trades,
+            "policy_realized_mean_r": policy_mean_r,
+            "min_policy_realized_mean_r": settings.auto_train_min_policy_realized_mean_r,
+            "policy_profit_factor": policy_profit_factor,
+            "min_policy_profit_factor": settings.auto_train_min_policy_profit_factor,
+            "policy_max_drawdown_r": policy_drawdown,
+            "max_policy_drawdown_r": settings.auto_train_max_policy_drawdown_r,
         },
         "relative": relative,
     }
@@ -380,6 +586,7 @@ async def register_model_candidate(
         "unique_timestamps": candidate.unique_timestamps,
         "symbol_count": candidate.symbol_count,
         "symbol_sample": list(candidate.symbol_sample),
+        "training_data_profile": candidate.training_data_profile.to_dict(),
         "incumbent_version": candidate.incumbent_version,
         "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
         "quality_gate": quality_gate,

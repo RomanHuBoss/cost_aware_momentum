@@ -29,6 +29,7 @@ class UniverseSelection:
             "ticker_count": self.ticker_count,
             "eligible_before_limit": self.eligible_before_limit,
             "selected_count": len(self.symbols),
+            "selected_symbols": list(self.symbols),
             "selected_sample": list(self.symbols[:25]),
             "excluded_counts": dict(sorted(self.excluded_counts.items())),
         }
