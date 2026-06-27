@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 app/__init__.py
+app/asyncio_compat.py
 app/config.py
 app/logging.py
 app/main.py
@@ -41,6 +42,7 @@ app/services/execution.py
 app/services/idempotency.py
 app/services/market_data.py
 app/services/signals.py
+app/services/universe.py
 app/workers/__init__.py
 app/workers/runner.py
 cost_aware_momentum.egg-info/PKG-INFO

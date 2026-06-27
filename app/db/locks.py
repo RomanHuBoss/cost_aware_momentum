@@ -20,3 +20,10 @@ async def advisory_lock(session: AsyncSession, namespace: str, value: str) -> As
         (await session.execute(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key})).scalar()
     )
     yield acquired
+
+
+async def acquire_advisory_xact_lock(session: AsyncSession, namespace: str, value: str) -> None:
+    """Acquire a blocking transaction-scoped PostgreSQL advisory lock."""
+
+    key = lock_key(namespace, value)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from app.api.deps import MutatingOperatorDep, SessionDep, SettingsDep
 from app.api.schemas import DecisionRequest
@@ -59,20 +59,73 @@ async def latest_plan(session: SessionDep, signal_id: UUID, profile_id: UUID) ->
     ).scalar_one_or_none()
 
 
+def recommendation_signal_query(
+    *,
+    include_expired: bool,
+    symbol: str | None,
+    latest_per_symbol: bool,
+    limit: int,
+    now: datetime,
+):
+    filters = []
+    if not include_expired:
+        filters.extend([MarketSignal.status == "PUBLISHED", MarketSignal.expires_at > now])
+    if symbol:
+        filters.append(MarketSignal.symbol == symbol.upper())
+
+    if latest_per_symbol:
+        ranked = (
+            select(
+                MarketSignal.id.label("signal_id"),
+                func.row_number()
+                .over(
+                    partition_by=MarketSignal.symbol,
+                    order_by=(
+                        desc(MarketSignal.publish_time),
+                        desc(MarketSignal.event_time),
+                        desc(MarketSignal.created_at),
+                        desc(MarketSignal.id),
+                    ),
+                )
+                .label("symbol_rank"),
+            )
+            .where(*filters)
+            .subquery()
+        )
+        return (
+            select(MarketSignal)
+            .join(ranked, ranked.c.signal_id == MarketSignal.id)
+            .where(ranked.c.symbol_rank == 1)
+            .order_by(desc(MarketSignal.publish_time))
+            .limit(limit)
+        )
+
+    return (
+        select(MarketSignal)
+        .where(*filters)
+        .order_by(desc(MarketSignal.publish_time))
+        .limit(limit)
+    )
+
+
 @router.get("")
 async def list_recommendations(
     session: SessionDep,
     profile_id: UUID | None = None,
     symbol: str | None = None,
     include_expired: bool = False,
+    latest_per_symbol: bool = True,
     limit: int = Query(default=1000, ge=1, le=2000),
 ) -> dict:
     profile = await resolve_profile(session, profile_id)
-    query = select(MarketSignal).order_by(desc(MarketSignal.publish_time)).limit(limit)
-    if not include_expired:
-        query = query.where(MarketSignal.status == "PUBLISHED", MarketSignal.expires_at > datetime.now(UTC))
-    if symbol:
-        query = query.where(MarketSignal.symbol == symbol.upper())
+    query = recommendation_signal_query(
+        include_expired=include_expired,
+        symbol=symbol,
+        latest_per_symbol=latest_per_symbol,
+        limit=limit,
+        now=datetime.now(UTC),
+    )
+
     signals = (await session.execute(query)).scalars().all()
     items: list[dict] = []
     for signal in signals:
@@ -94,6 +147,7 @@ async def list_recommendations(
         "items": items,
         "returned_count": len(items),
         "query_limit": limit,
+        "latest_per_symbol": latest_per_symbol,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -218,6 +272,38 @@ async def accept_recommendation(
         return cached
     signal, plan, profile = await _select_plan_for_action(session, signal_id, payload)
     now = datetime.now(UTC)
+    if signal.status != "PUBLISHED":
+        replacement_id = (
+            await session.execute(
+                select(MarketSignal.id)
+                .where(
+                    MarketSignal.symbol == signal.symbol,
+                    MarketSignal.status == "PUBLISHED",
+                    MarketSignal.expires_at > now,
+                )
+                .order_by(desc(MarketSignal.publish_time))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        body_dict = {
+            "ok": False,
+            "code": "RECOMMENDATION_SUPERSEDED",
+            "detail": f"Recommendation status {signal.status} is not current",
+            "old_signal_id": str(signal.id),
+            "replacement_signal_id": str(replacement_id) if replacement_id else None,
+        }
+        body = json.dumps(body_dict, ensure_ascii=False).encode()
+        await store_cached(
+            session,
+            key=idempotency_key,
+            scope=scope,
+            request_payload=request_payload,
+            response_status=409,
+            response_body=body,
+        )
+        await session.commit()
+        return Response(content=body, status_code=409, media_type="application/json")
+
     conflict_reason: str | None = None
     if plan.status not in {"ACTIONABLE", "LIMITED", "VIEWED"}:
         conflict_reason = f"Plan status {plan.status} is not acceptable"
@@ -226,14 +312,21 @@ async def accept_recommendation(
     elif plan.profile_version != profile.version:
         conflict_reason = "Capital profile version changed"
     ticker = await latest_ticker(session, signal.symbol)
-    if ticker is None or (now - ticker.source_time).total_seconds() > settings.max_ticker_age_seconds:
+    if conflict_reason is None and (
+        ticker is None or (now - ticker.source_time).total_seconds() > settings.max_ticker_age_seconds
+    ):
         conflict_reason = "Ticker is stale"
-    elif not (signal.entry_low <= ticker.last_price <= signal.entry_high):
+    elif conflict_reason is None and ticker is not None and not (
+        signal.entry_low <= ticker.last_price <= signal.entry_high
+    ):
         conflict_reason = "Current price is outside entry zone"
 
     current_open_risk = await open_risk_usdt(session)
     current_capital, _, _, _ = await effective_capital(session, profile)
-    if current_open_risk + plan.actual_stress_loss > current_capital * profile.max_total_risk_rate:
+    if (
+        conflict_reason is None
+        and current_open_risk + plan.actual_stress_loss > current_capital * profile.max_total_risk_rate
+    ):
         conflict_reason = "Portfolio risk limit changed"
 
     conflicting_plan = (
@@ -248,7 +341,7 @@ async def accept_recommendation(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if conflicting_plan is not None:
+    if conflict_reason is None and conflicting_plan is not None:
         conflict_reason = "Another active plan exists for this symbol"
 
     if conflict_reason:
@@ -360,7 +453,9 @@ async def reject_recommendation(
     if cached:
         return cached
     signal, plan, profile = await _select_plan_for_action(session, signal_id, payload)
-    if plan.status in {"ACCEPTED", "ENTERED", "CLOSED", "REJECTED"}:
+    if signal.status != "PUBLISHED":
+        raise HTTPException(status_code=409, detail=f"Recommendation status is {signal.status}")
+    if plan.status in {"ACCEPTED", "ENTERED", "CLOSED", "REJECTED", "SUPERSEDED", "EXPIRED"}:
         raise HTTPException(status_code=409, detail=f"Cannot reject plan in status {plan.status}")
     decision = OperatorDecision(
         plan_id=plan.id,
@@ -418,6 +513,8 @@ async def recalculate_plan(
     signal = await session.get(MarketSignal, signal_id)
     if signal is None:
         raise HTTPException(status_code=404, detail="Recommendation not found")
+    if signal.status != "PUBLISHED" or signal.expires_at <= datetime.now(UTC):
+        raise HTTPException(status_code=409, detail="Recommendation is no longer current")
     profile = await resolve_profile(session, profile_id)
     old_plan = await latest_plan(session, signal.id, profile.id)
     new_plan = await create_execution_plan(

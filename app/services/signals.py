@@ -10,7 +10,15 @@ from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import Candle, CapitalProfile, InstrumentSpecHistory, MarketSignal, TickerSnapshot
+from app.db.locks import acquire_advisory_xact_lock
+from app.db.models import (
+    Candle,
+    CapitalProfile,
+    ExecutionPlan,
+    InstrumentSpecHistory,
+    MarketSignal,
+    TickerSnapshot,
+)
 from app.ml.features import latest_feature_snapshot
 from app.ml.runtime import ModelRuntime
 from app.risk.math import CostScenario, net_rr_and_ev, projected_funding_rate
@@ -18,6 +26,15 @@ from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import create_execution_plan
 
 logger = logging.getLogger(__name__)
+
+PLAN_STATUSES_PRESERVED_ON_SIGNAL_REPLACEMENT = {
+    "ACCEPTED",
+    "ENTERED",
+    "PARTIAL",
+    "CLOSED",
+    "REJECTED",
+    "EXPIRED",
+}
 
 
 def decimal(value: float | str | Decimal) -> Decimal:
@@ -95,6 +112,62 @@ async def expire_old_signals(session: AsyncSession) -> int:
         .values(status="EXPIRED", updated_at=now)
     )
     return int(result.rowcount or 0)
+
+
+async def supersede_published_signals(
+    session: AsyncSession,
+    *,
+    symbol: str,
+    replacement_natural_key: str,
+) -> list[MarketSignal]:
+    """Retire older visible recommendations before publishing a replacement.
+
+    A signal can live longer than the one-hour inference cadence.  Without an
+    explicit replacement step, two consecutive hourly signals for the same
+    symbol remain ``PUBLISHED`` at the same time and both are rendered by the
+    operator UI.  The row lock and database uniqueness constraint make the
+    replacement atomic inside the inference transaction.
+
+    Accepted/entered plans are preserved because they belong to the trade
+    lifecycle.  All still-pending plans attached to the retired recommendation
+    become ``SUPERSEDED`` and can no longer be accepted from a stale browser
+    dialog.
+    """
+
+    previous = (
+        (
+            await session.execute(
+                select(MarketSignal)
+                .where(MarketSignal.symbol == symbol, MarketSignal.status == "PUBLISHED")
+                .order_by(desc(MarketSignal.publish_time), desc(MarketSignal.event_time))
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not previous:
+        return []
+
+    now = datetime.now(UTC)
+    previous_ids = [item.id for item in previous]
+    for item in previous:
+        item.status = "SUPERSEDED"
+        item.invalidation_reason = f"Заменено более свежей рекомендацией {replacement_natural_key}"
+        item.updated_at = now
+
+    await session.execute(
+        update(ExecutionPlan)
+        .where(
+            ExecutionPlan.signal_id.in_(previous_ids),
+            ExecutionPlan.status.not_in(PLAN_STATUSES_PRESERVED_ON_SIGNAL_REPLACEMENT),
+        )
+        .values(status="SUPERSEDED", updated_at=now)
+    )
+    # Flush the retirement before inserting the new row.  This is required by
+    # the partial unique index that permits only one PUBLISHED signal per symbol.
+    await session.flush()
+    return previous
 
 
 async def publish_hourly_signals(
@@ -186,11 +259,21 @@ async def publish_hourly_signals(
         )
         gross_rr = abs(tp1 - reference) / abs(reference - stop)
         natural_key = f"{symbol}-{event_time:%Y%m%dT%H0000Z}-{direction}-h{settings.default_horizon_hours}-{prediction.model_version}"
+        # Different worker job types can overlap during startup/catch-up.  Lock
+        # by symbol before the idempotency check so two transactions cannot both
+        # publish a current recommendation for the same instrument.
+        await acquire_advisory_xact_lock(session, "market_signal_publish", symbol)
         existing = (
             await session.execute(select(MarketSignal).where(MarketSignal.natural_key == natural_key))
         ).scalar_one_or_none()
         if existing:
             continue
+
+        superseded = await supersede_published_signals(
+            session,
+            symbol=symbol,
+            replacement_natural_key=natural_key,
+        )
 
         warnings: list[str] = []
         if data_age > settings.max_candle_age_seconds:
@@ -268,6 +351,26 @@ async def publish_hourly_signals(
             aggregate_id=str(signal.id),
             payload={"symbol": symbol, "direction": direction},
         )
+        for previous in superseded:
+            await append_audit_event(
+                session,
+                event_type="MARKET_SIGNAL_SUPERSEDED",
+                entity_type="market_signal",
+                entity_id=str(previous.id),
+                actor="worker",
+                payload={
+                    "symbol": symbol,
+                    "replacement_signal_id": str(signal.id),
+                    "replacement_natural_key": natural_key,
+                },
+            )
+            await publish_outbox(
+                session,
+                event_type="MARKET_SIGNAL_SUPERSEDED",
+                aggregate_type="market_signal",
+                aggregate_id=str(previous.id),
+                payload={"symbol": symbol, "replacement_signal_id": str(signal.id)},
+            )
         for profile in profiles:
             await create_execution_plan(session, signal=signal, profile=profile, settings=settings)
         published.append(signal)

@@ -142,6 +142,17 @@ function updateProfileSummary() {
     : 'Профиль не выбран';
 }
 
+function latestRecommendationsBySymbol(items) {
+  const latest = new Map();
+  for (const item of items) {
+    const current = latest.get(item.symbol);
+    const itemExpiry = Date.parse(item.expires_at || '') || 0;
+    const currentExpiry = Date.parse(current?.expires_at || '') || 0;
+    if (!current || itemExpiry > currentExpiry) latest.set(item.symbol, item);
+  }
+  return [...latest.values()];
+}
+
 async function loadRecommendations() {
   if (!state.activeProfile) return;
   const symbol = $('#symbol-filter').value.trim().toUpperCase();
@@ -153,7 +164,10 @@ async function loadRecommendations() {
   });
   if (symbol) params.set('symbol', symbol);
   const result = await api(`/api/v1/recommendations?${params}`);
-  state.recommendations = result.items;
+  // Backend enforces one current recommendation per symbol.  Keep this small
+  // client-side guard for rolling upgrades where an old API process may still
+  // return overlapping hourly signals for a few seconds.
+  state.recommendations = latestRecommendationsBySymbol(result.items);
   $('#last-update').textContent = `Последнее обновление: ${new Date(result.generated_at).toLocaleString('ru-RU')}`;
   updateUniverseState();
   renderRecommendations();

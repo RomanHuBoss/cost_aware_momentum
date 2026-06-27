@@ -215,7 +215,10 @@ async def create_execution_plan(
         portfolio_notional_cap=portfolio_notional_cap,
         capital_verified=verified,
     )
-    if signal.expires_at <= now:
+    if signal.status != "PUBLISHED":
+        status = "EXPIRED" if signal.status == "EXPIRED" else "SUPERSEDED"
+        warnings.append("Рекомендация больше не является текущей")
+    elif signal.expires_at <= now:
         status = "EXPIRED"
         warnings.append("Срок действия рекомендации истек")
     elif status_override is not None:

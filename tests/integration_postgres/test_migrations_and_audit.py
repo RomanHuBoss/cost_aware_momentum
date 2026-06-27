@@ -39,7 +39,22 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert (await session.execute(select(CapitalProfile))).scalars().all()
         assert len((await session.execute(select(UIGlossary))).scalars().all()) >= 10
         revision = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert revision == "0001_initial"
+        assert revision == "0002_one_signal_per_symbol"
+        index_definition = (
+            await session.execute(
+                text(
+                    """
+                    SELECT indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = 'advisory'
+                      AND indexname = 'uq_market_signal_one_published_per_symbol'
+                    """
+                )
+            )
+        ).scalar_one()
+        assert "UNIQUE INDEX" in index_definition
+        assert "WHERE" in index_definition
+        assert "PUBLISHED" in index_definition
     await engine.dispose()
 
 

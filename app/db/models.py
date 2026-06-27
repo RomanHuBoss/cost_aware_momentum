@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -193,6 +194,12 @@ class MarketSignal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("natural_key", name="uq_market_signal_natural_key"),
         Index("ix_market_signal_active", "status", "expires_at"),
+        Index(
+            "uq_market_signal_one_published_per_symbol",
+            "symbol",
+            unique=True,
+            postgresql_where=text("status = 'PUBLISHED'"),
+        ),
         {"schema": "advisory"},
     )
 
