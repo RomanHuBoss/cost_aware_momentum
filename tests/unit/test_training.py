@@ -10,8 +10,10 @@ from app.ml.features import FEATURE_NAMES
 from app.ml.training import (
     MODEL_FEATURE_NAMES,
     OUTCOME_CLASSES,
+    DatasetSplit,
     TemporalCalibratedBarrierModel,
     chronological_split,
+    evaluate_model,
     make_barrier_dataset,
 )
 
@@ -46,6 +48,86 @@ def test_calibrated_barrier_model_returns_ordered_outcome_probabilities() -> Non
     assert probabilities[0, 0] > probabilities[0, 1]
     assert probabilities[1, 1] > probabilities[1, 0]
     assert probabilities[2, 2] == probabilities[2].max()
+
+
+
+def test_evaluate_model_log_loss_respects_declared_probability_order() -> None:
+    class FakeModel:
+        classes_ = OUTCOME_CLASSES.copy()
+
+        def predict_proba(self, x: np.ndarray) -> np.ndarray:
+            return np.asarray(
+                [
+                    [0.90, 0.05, 0.05],
+                    [0.05, 0.90, 0.05],
+                    [0.05, 0.05, 0.90],
+                ],
+                dtype=float,
+            )
+
+        def _base_probabilities(self, x: np.ndarray) -> np.ndarray:
+            return np.asarray(
+                [
+                    [0.80, 0.10, 0.10],
+                    [0.10, 0.80, 0.10],
+                    [0.10, 0.10, 0.80],
+                ],
+                dtype=float,
+            )
+
+        def predict(self, x: np.ndarray) -> np.ndarray:
+            probabilities = self.predict_proba(x)
+            return self.classes_[np.argmax(probabilities, axis=1)]
+
+    x = np.zeros((3, len(MODEL_FEATURE_NAMES)), dtype=float)
+    y = np.asarray(["TP", "SL", "TIMEOUT"])
+    split = DatasetSplit(
+        x_train=x,
+        y_train=y,
+        x_cal=x,
+        y_cal=y,
+        x_test=x,
+        y_test=y,
+        test_meta=pd.DataFrame({"ambiguous": [False, False, False]}),
+    )
+
+    metrics = evaluate_model(FakeModel(), split)
+
+    assert metrics["accuracy"] == pytest.approx(1.0)
+    assert metrics["log_loss"] == pytest.approx(-np.log(0.90))
+    assert metrics["raw_log_loss"] == pytest.approx(-np.log(0.80))
+    assert metrics["calibration_log_loss_improvement"] == pytest.approx(
+        -np.log(0.80) + np.log(0.90)
+    )
+    assert metrics["class_prior_log_loss"] == pytest.approx(np.log(3.0))
+    assert metrics["uniform_log_loss"] == pytest.approx(np.log(3.0))
+    assert metrics["log_loss_skill_vs_prior"] > 0
+
+
+def test_evaluate_model_rejects_invalid_probability_rows() -> None:
+    class InvalidProbabilityModel:
+        classes_ = OUTCOME_CLASSES.copy()
+
+        def predict_proba(self, x: np.ndarray) -> np.ndarray:
+            return np.asarray([[0.90, 0.05, 0.04]], dtype=float)
+
+        def predict(self, x: np.ndarray) -> np.ndarray:
+            return np.asarray(["TP"])
+
+    x = np.zeros((1, len(MODEL_FEATURE_NAMES)), dtype=float)
+    y = np.asarray(["TP"])
+    split = DatasetSplit(
+        x_train=np.vstack([x, x, x]),
+        y_train=np.asarray(["TP", "SL", "TIMEOUT"]),
+        x_cal=x,
+        y_cal=y,
+        x_test=x,
+        y_test=y,
+        test_meta=pd.DataFrame({"ambiguous": [False]}),
+    )
+
+    with pytest.raises(ValueError, match="sum to 1"):
+        evaluate_model(InvalidProbabilityModel(), split)
 
 
 def test_barrier_dataset_creates_long_and_short_scenarios() -> None:

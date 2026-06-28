@@ -1,5 +1,31 @@
 # QA report
 
+Дата проверки версии 1.7.9: 28 июня 2026 г.
+
+## Итерация 1.7.9 — class-order-safe multiclass log loss
+
+Подтвержден high-severity ML metric defect: model probability columns имели artifact-порядок `TP / SL / TIMEOUT`, но `sklearn.metrics.log_loss` интерпретировал строковые labels лексикографически как `SL / TIMEOUT / TP`. Из-за этого quality gate мог сохранять `log_loss_above_limit` при нормальных Brier/ECE и не активировать подходящий candidate.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `27742e2e3b4649e0161015e4b7dfc4c9813afbcda2a92b72b82b92b761028fc0` |
+| Baseline isolated `python -m pytest -q` | PASSED — 129 passed, 3 skipped, 20 warnings |
+| Baseline training tests | PASSED — 4 passed |
+| RED class-order regression | PASSED как доказательство дефекта — expected `0.1053605`, получено `2.9957323` |
+| `python -m pip check` | PASSED — No broken requirements found |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 131 passed, 3 skipped, 20 warnings |
+| targeted training tests | PASSED — 6 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0005_plan_outcome_invalid_input` |
+| PostgreSQL integration | NOT RUN — отдельная test database и `TEST_DATABASE_URL` отсутствуют |
+| Migration / `.env` | не требуется |
+
+Новый расчет выбирает вероятность истинного класса по явному `model.classes_`, проверяет форму/finite/range/row sum и сохраняет `classification_metric_schema=ordered-probability-v2`. Metrics также содержат raw/calibrated log loss, calibration improvement и training class-prior/uniform benchmarks. Исторические registry rows не переписываются.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-log-loss-class-order.md`.
+
 Дата проверки версии 1.7.8: 28 июня 2026 г.
 
 ## Итерация 1.7.8 — atomic model candidate promotion

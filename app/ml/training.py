@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, brier_score_loss, log_loss, roc_auc_score
+from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -274,23 +274,83 @@ def _expected_calibration_error(y_true: np.ndarray, probabilities: np.ndarray, b
     return float(np.dot(errors, weights)) if weights else 0.0
 
 
+def _ordered_multiclass_log_loss(
+    y_true: np.ndarray, probabilities: np.ndarray, classes: np.ndarray
+) -> float:
+    """Calculate multiclass log loss without reordering declared probability columns."""
+
+    labels = [str(label) for label in classes]
+    if len(labels) != len(set(labels)):
+        raise ValueError("Model outcome classes must be unique")
+
+    targets = np.asarray(y_true, dtype=str)
+    values = np.asarray(probabilities, dtype=float)
+    if values.ndim != 2 or values.shape != (len(targets), len(labels)):
+        raise ValueError("Probability matrix shape does not match targets and declared classes")
+    if not np.isfinite(values).all():
+        raise ValueError("Probability matrix contains non-finite values")
+    if ((values < 0.0) | (values > 1.0)).any():
+        raise ValueError("Probability matrix contains values outside [0, 1]")
+    if not np.allclose(values.sum(axis=1), 1.0, rtol=1e-7, atol=1e-9):
+        raise ValueError("Probability rows must sum to 1")
+
+    class_to_index = {label: index for index, label in enumerate(labels)}
+    unknown = sorted(set(targets) - set(labels))
+    if unknown:
+        raise ValueError(f"Targets contain unknown outcome classes: {unknown}")
+
+    true_indexes = np.fromiter(
+        (class_to_index[label] for label in targets),
+        dtype=int,
+        count=len(targets),
+    )
+    true_probabilities = values[np.arange(len(targets)), true_indexes]
+    epsilon = np.finfo(float).eps
+    return float(-np.mean(np.log(np.clip(true_probabilities, epsilon, 1.0))))
+
+
+def _class_prior_probabilities(y_train: np.ndarray, classes: np.ndarray, rows: int) -> np.ndarray:
+    labels = np.asarray(classes, dtype=str)
+    targets = np.asarray(y_train, dtype=str)
+    priors = np.asarray([(targets == label).mean() for label in labels], dtype=float)
+    if not np.isfinite(priors).all() or priors.sum() <= 0:
+        raise ValueError("Training targets cannot produce valid class-prior probabilities")
+    priors /= priors.sum()
+    return np.tile(priors, (rows, 1))
+
+
 def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -> dict:
     probabilities = model.predict_proba(split.x_test)
     predicted = model.predict(split.x_test)
     y = np.asarray(split.y_test, dtype=str)
-    class_to_index = {label: index for index, label in enumerate(model.classes_)}
+    classes = np.asarray(model.classes_, dtype=str)
+    calibrated_log_loss = _ordered_multiclass_log_loss(y, probabilities, classes)
+    prior_probabilities = _class_prior_probabilities(split.y_train, classes, len(y))
+    class_prior_log_loss = _ordered_multiclass_log_loss(y, prior_probabilities, classes)
+    class_to_index = {label: index for index, label in enumerate(classes)}
     y_index = np.array([class_to_index[label] for label in y])
-    one_hot = np.eye(len(model.classes_))[y_index]
+    one_hot = np.eye(len(classes))[y_index]
 
     metrics: dict[str, object] = {
+        "classification_metric_schema": "ordered-probability-v2",
         "rows": int(len(y)),
         "accuracy": float(accuracy_score(y, predicted)),
-        "log_loss": float(log_loss(y, probabilities, labels=list(model.classes_))),
+        "log_loss": calibrated_log_loss,
+        "class_prior_log_loss": class_prior_log_loss,
+        "log_loss_skill_vs_prior": class_prior_log_loss - calibrated_log_loss,
+        "uniform_log_loss": float(np.log(len(classes))),
         "multiclass_brier": float(np.mean(np.sum((probabilities - one_hot) ** 2, axis=1))),
         "ambiguous_rate": float(split.test_meta["ambiguous"].mean()),
-        "class_distribution": {label: float((y == label).mean()) for label in model.classes_},
+        "class_distribution": {label: float((y == label).mean()) for label in classes},
     }
-    for index, label in enumerate(model.classes_):
+
+    base_probability_loader = getattr(model, "_base_probabilities", None)
+    if callable(base_probability_loader):
+        raw_probabilities = base_probability_loader(split.x_test)
+        raw_log_loss = _ordered_multiclass_log_loss(y, raw_probabilities, classes)
+        metrics["raw_log_loss"] = raw_log_loss
+        metrics["calibration_log_loss_improvement"] = raw_log_loss - calibrated_log_loss
+    for index, label in enumerate(classes):
         binary = (y == label).astype(int)
         metrics[f"brier_{label.lower()}"] = float(brier_score_loss(binary, probabilities[:, index]))
         metrics[f"ece_{label.lower()}"] = _expected_calibration_error(binary, probabilities[:, index])

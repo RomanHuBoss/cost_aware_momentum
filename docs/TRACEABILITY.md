@@ -12,6 +12,7 @@
 | Direction-specific TP/SL/TIMEOUT | Да с 1.3.0 | `make_barrier_dataset`, `TemporalCalibratedBarrierModel` |
 | Logistic baseline и nonlinear candidate | Да с 1.3.0 | logistic и HistGradientBoostingClassifier |
 | Временная calibration | Да с 1.3.0 | later calibration window, sigmoid OVR |
+| Корректный порядок классов в probabilistic metrics | Да с 1.7.9 | class-order-safe log loss для `TP / SL / TIMEOUT`; raw/calibrated и prior/uniform benchmarks |
 | Purging и final holdout | Частично | один chronological split с purge gap; нет полноценного multi-fold walk-forward |
 | Model registry/hash/activation/rollback | Да с 1.3.0 | SHA256 validation, activation CLI, unique active index, audit/outbox |
 | Worker использует active registry model | Да с 1.3.0 | periodic reload и runtime/registry readiness match |

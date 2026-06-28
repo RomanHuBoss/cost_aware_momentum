@@ -31,10 +31,11 @@
 
 Artifact хранит:
 
-- multiclass log loss и Brier score;
+- multiclass log loss и Brier score; начиная с 1.7.9 log loss индексирует probability columns по объявленному artifact-порядку `TP / SL / TIMEOUT`, а не по лексикографической сортировке labels;
 - Brier и ECE для каждого исхода;
 - macro OVR AUC;
 - accuracy только как вспомогательную метрику;
+- raw и calibrated log loss, улучшение после calibration, class-prior benchmark, uniform benchmark и skill относительно class prior;
 - распределение классов и долю ambiguous labels;
 - training-data profile: число candle rows/timestamps/символов, полный список символов, временные границы, coverage и SHA256-подписи;
 - cost-aware holdout policy metrics: число сделок, trade rate, expected EV, realized mean/total R, win rate, profit factor и max drawdown;
