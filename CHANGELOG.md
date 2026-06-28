@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.5 — 2026-06-28
+
+- Position sizing now validates finite positive capital, risk rate, instrument steps/minima and leverage before any arithmetic.
+- Non-finite margin/cap values and invalid margin reserve rates return zero-sized `BLOCKED_INVALID_INPUT` diagnostics instead of `decimal.InvalidOperation` or fail-open plans.
+- Fee, slippage and stop-gap reserves must be finite and non-negative; signed finite funding remains supported.
+- Invalid-input responses contain only finite capital/risk outputs, preventing `NaN`/`Infinity` from leaking into plan persistence or API serialization.
+- Added red-to-green regression coverage for seven corrupted numeric-input classes while preserving all valid sizing results.
+
 ## 1.7.4 — 2026-06-28
 
 - Risk mathematics now rejects inverted or non-finite LONG/SHORT entry, stop and take-profit geometry instead of converting it into a positive distance with `abs()`.

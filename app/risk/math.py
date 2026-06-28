@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from decimal import ROUND_DOWN, Decimal, getcontext
+from decimal import ROUND_DOWN, Decimal, DecimalException, getcontext
 from typing import Literal
 
 getcontext().prec = 36
@@ -49,6 +49,74 @@ class PositionPlan:
 
 def d(value: Decimal | float | int | str) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def _finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
+    try:
+        result = d(value)
+    except (DecimalException, TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a valid decimal") from exc
+    if not result.is_finite():
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _positive_finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
+    result = _finite_decimal(value, name)
+    if result <= 0:
+        raise ValueError(f"{name} must be positive")
+    return result
+
+
+def _nonnegative_finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
+    result = _finite_decimal(value, name)
+    if result < 0:
+        raise ValueError(f"{name} cannot be negative")
+    return result
+
+
+def _safe_positive_finite_decimal(value: object) -> Decimal:
+    try:
+        result = d(value)  # type: ignore[arg-type]
+    except (DecimalException, TypeError, ValueError):
+        return Decimal("0")
+    return result if result.is_finite() and result > 0 else Decimal("0")
+
+
+def _blocked_invalid_position_plan(
+    *,
+    effective_capital: object,
+    risk_rate: object,
+    leverage: object,
+    reason: str,
+    limiting_cap: str = "INVALID_INPUT",
+) -> PositionPlan:
+    safe_capital = _safe_positive_finite_decimal(effective_capital)
+    safe_risk_rate = _safe_positive_finite_decimal(risk_rate)
+    try:
+        safe_risk_budget = safe_capital * safe_risk_rate
+    except DecimalException:
+        safe_risk_budget = Decimal("0")
+    if not safe_risk_budget.is_finite():
+        safe_risk_budget = Decimal("0")
+    try:
+        safe_leverage = max(1, int(leverage))
+    except (TypeError, ValueError, OverflowError):
+        safe_leverage = 1
+    return PositionPlan(
+        "BLOCKED_INVALID_INPUT",
+        safe_capital,
+        safe_risk_budget,
+        Decimal("0"),
+        Decimal("0"),
+        Decimal("0"),
+        Decimal("0"),
+        Decimal("0"),
+        safe_leverage,
+        Decimal("0"),
+        limiting_cap,
+        (reason,),
+    )
 
 
 def _direction_sign(direction: Direction) -> Decimal:
@@ -209,14 +277,88 @@ def calculate_position_plan(
     exchange_notional_cap: Decimal | None = None,
     capital_verified: bool = False,
 ) -> PositionPlan:
-    effective_capital = d(effective_capital)
-    risk_rate = d(risk_rate)
-    entry = d(entry)
-    allowed_max_leverage = max(1, int(constraints.max_leverage))
-    leverage = int(min(max(1, leverage), allowed_max_leverage))
+    raw_effective_capital = effective_capital
+    raw_risk_rate = risk_rate
+    raw_leverage = leverage
     warnings: list[str] = []
 
-    risk_budget = effective_capital * risk_rate
+    try:
+        effective_capital = _positive_finite_decimal(effective_capital, "effective_capital")
+        risk_rate = _positive_finite_decimal(risk_rate, "risk_rate")
+        entry = _positive_finite_decimal(entry, "entry")
+
+        fee_rate = _nonnegative_finite_decimal(costs.fee_rate_round_trip, "fee_rate_round_trip")
+        slippage_rate = _nonnegative_finite_decimal(costs.slippage_rate, "slippage_rate")
+        stop_gap_reserve_rate = _nonnegative_finite_decimal(
+            costs.stop_gap_reserve_rate, "stop_gap_reserve_rate"
+        )
+        funding_rate = _finite_decimal(costs.funding_rate, "funding_rate")
+        costs = CostScenario(
+            fee_rate_round_trip=fee_rate,
+            slippage_rate=slippage_rate,
+            stop_gap_reserve_rate=stop_gap_reserve_rate,
+            funding_rate=funding_rate,
+        )
+
+        qty_step = _positive_finite_decimal(constraints.qty_step, "qty_step")
+        min_qty = _positive_finite_decimal(constraints.min_qty, "min_qty")
+        min_notional = _positive_finite_decimal(constraints.min_notional, "min_notional")
+        max_qty = (
+            _positive_finite_decimal(constraints.max_qty, "max_qty")
+            if constraints.max_qty is not None
+            else None
+        )
+        max_leverage = _positive_finite_decimal(constraints.max_leverage, "max_leverage")
+        requested_leverage = max(1, int(leverage))
+        leverage = (
+            requested_leverage if Decimal(requested_leverage) <= max_leverage else max(1, int(max_leverage))
+        )
+        constraints = InstrumentConstraints(
+            qty_step=qty_step,
+            min_qty=min_qty,
+            min_notional=min_notional,
+            max_qty=max_qty,
+            max_leverage=max_leverage,
+        )
+
+        reserve_rate = _finite_decimal(margin_reserve_rate, "margin_reserve_rate")
+        if reserve_rate < 0 or reserve_rate >= 1:
+            raise ValueError("margin_reserve_rate must be finite and in [0, 1)")
+        margin_reserve_rate = reserve_rate
+        if available_margin is not None:
+            available_margin = _nonnegative_finite_decimal(available_margin, "available_margin")
+        if liquidity_notional_cap is not None:
+            liquidity_notional_cap = _nonnegative_finite_decimal(
+                liquidity_notional_cap, "liquidity_notional_cap"
+            )
+        if portfolio_notional_cap is not None:
+            portfolio_notional_cap = _nonnegative_finite_decimal(
+                portfolio_notional_cap, "portfolio_notional_cap"
+            )
+        if exchange_notional_cap is not None:
+            exchange_notional_cap = _nonnegative_finite_decimal(
+                exchange_notional_cap, "exchange_notional_cap"
+            )
+    except (DecimalException, TypeError, ValueError, OverflowError) as exc:
+        return _blocked_invalid_position_plan(
+            effective_capital=raw_effective_capital,
+            risk_rate=raw_risk_rate,
+            leverage=raw_leverage,
+            reason=str(exc),
+        )
+
+    try:
+        risk_budget = effective_capital * risk_rate
+    except DecimalException:
+        risk_budget = Decimal("0")
+    if not risk_budget.is_finite() or risk_budget <= 0:
+        return _blocked_invalid_position_plan(
+            effective_capital=effective_capital,
+            risk_rate=risk_rate,
+            leverage=leverage,
+            reason="risk_budget must be positive and finite",
+        )
+
     try:
         validate_directional_geometry(
             entry=entry,
@@ -225,61 +367,63 @@ def calculate_position_plan(
             direction=direction,
         )
         downside = stress_downside_rate(entry, stop, direction, costs)
-    except ValueError as exc:
-        safe_risk_budget = (
-            risk_budget if risk_budget.is_finite() and risk_budget > 0 else Decimal("0")
+    except (DecimalException, TypeError, ValueError) as exc:
+        return _blocked_invalid_position_plan(
+            effective_capital=effective_capital,
+            risk_rate=risk_rate,
+            leverage=leverage,
+            reason=str(exc),
+            limiting_cap="INVALID_GEOMETRY",
         )
-        return PositionPlan(
-            "BLOCKED_INVALID_INPUT",
-            effective_capital,
-            safe_risk_budget,
-            Decimal("0"),
-            Decimal("0"),
-            Decimal("0"),
-            Decimal("0"),
-            Decimal("0"),
-            leverage,
-            Decimal("0"),
-            "INVALID_GEOMETRY",
-            tuple(warnings + [str(exc)]),
-        )
-    if effective_capital <= 0 or risk_budget <= 0 or downside <= 0:
-        return PositionPlan(
-            "BLOCKED_INVALID_INPUT",
-            effective_capital,
-            max(Decimal("0"), risk_budget),
-            max(Decimal("0"), downside),
-            Decimal("0"),
-            Decimal("0"),
-            Decimal("0"),
-            Decimal("0"),
-            leverage,
-            Decimal("0"),
-            "INVALID_INPUT",
-            tuple(warnings),
+    if not downside.is_finite() or downside <= 0:
+        return _blocked_invalid_position_plan(
+            effective_capital=effective_capital,
+            risk_rate=risk_rate,
+            leverage=leverage,
+            reason="stress_downside_rate must be positive and finite",
         )
 
-    risk_notional = risk_budget / downside
-    caps: list[tuple[str, Decimal]] = [("RISK", risk_notional)]
+    try:
+        risk_notional = _positive_finite_decimal(risk_budget / downside, "risk_notional")
+        caps: list[tuple[str, Decimal]] = [("RISK", risk_notional)]
 
-    if available_margin is not None:
-        free_after_reserve = max(Decimal("0"), d(available_margin) * (Decimal("1") - d(margin_reserve_rate)))
-        caps.append(("MARGIN", free_after_reserve * d(leverage)))
-    if liquidity_notional_cap is not None:
-        caps.append(("LIQUIDITY", max(Decimal("0"), d(liquidity_notional_cap))))
-    if portfolio_notional_cap is not None:
-        caps.append(("PORTFOLIO", max(Decimal("0"), d(portfolio_notional_cap))))
-    if exchange_notional_cap is not None:
-        caps.append(("EXCHANGE", max(Decimal("0"), d(exchange_notional_cap))))
-    if constraints.max_qty is not None:
-        caps.append(("EXCHANGE_MAX_QTY", constraints.max_qty * entry))
+        if available_margin is not None:
+            free_after_reserve = available_margin * (Decimal("1") - margin_reserve_rate)
+            caps.append(
+                (
+                    "MARGIN",
+                    _nonnegative_finite_decimal(
+                        free_after_reserve * Decimal(leverage), "margin_notional_cap"
+                    ),
+                )
+            )
+        if liquidity_notional_cap is not None:
+            caps.append(("LIQUIDITY", liquidity_notional_cap))
+        if portfolio_notional_cap is not None:
+            caps.append(("PORTFOLIO", portfolio_notional_cap))
+        if exchange_notional_cap is not None:
+            caps.append(("EXCHANGE", exchange_notional_cap))
+        if constraints.max_qty is not None:
+            caps.append(
+                (
+                    "EXCHANGE_MAX_QTY",
+                    _positive_finite_decimal(constraints.max_qty * entry, "exchange_max_qty_notional"),
+                )
+            )
 
-    limiting_cap, final_notional_raw = min(caps, key=lambda item: item[1])
-    qty_raw = final_notional_raw / entry
-    qty = floor_to_step(qty_raw, constraints.qty_step)
-    notional = qty * entry
-    actual_loss = notional * downside
-    margin = notional / d(leverage)
+        limiting_cap, final_notional_raw = min(caps, key=lambda item: item[1])
+        qty_raw = _nonnegative_finite_decimal(final_notional_raw / entry, "qty_raw")
+        qty = floor_to_step(qty_raw, constraints.qty_step)
+        notional = _nonnegative_finite_decimal(qty * entry, "notional")
+        actual_loss = _nonnegative_finite_decimal(notional * downside, "actual_stress_loss")
+        margin = _nonnegative_finite_decimal(notional / Decimal(leverage), "margin_estimate")
+    except (DecimalException, TypeError, ValueError, OverflowError) as exc:
+        return _blocked_invalid_position_plan(
+            effective_capital=effective_capital,
+            risk_rate=risk_rate,
+            leverage=leverage,
+            reason=str(exc),
+        )
 
     if not capital_verified:
         warnings.append("Капитал не подтвержден биржей")
@@ -310,9 +454,7 @@ def calculate_position_plan(
             tuple(warnings + [blocked_message]),
         )
 
-    if available_margin is not None and margin > d(available_margin) * (
-        Decimal("1") - d(margin_reserve_rate)
-    ):
+    if available_margin is not None and margin > available_margin * (Decimal("1") - margin_reserve_rate):
         return PositionPlan(
             "BLOCKED_MARGIN",
             effective_capital,

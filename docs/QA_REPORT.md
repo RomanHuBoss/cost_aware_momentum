@@ -1,6 +1,30 @@
 # QA report
 
-Дата проверки версии 1.7.4: 28 июня 2026 г.
+Дата проверки версии 1.7.5: 28 июня 2026 г.
+
+## Итерация 1.7.5 — fail-closed numeric sizing inputs
+
+Подтвержден defect финансовой boundary: `calculate_position_plan()` доверял non-price Decimal inputs. `NaN` в capital/margin/caps и zero `qty_step` приводили к необработанным исключениям, infinite risk rate мог вернуть non-blocked plan, а отрицательная fee уменьшала downside и формировала `ACTIONABLE` sizing.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `fe1f05616b7099c384d865d6eb25e95b9aab5da27b511cb1d0d5214487e3ce4c` |
+| Baseline isolated `python -m pytest -q` | PASSED — 103 passed, 3 skipped, 20 warnings |
+| Red risk-input tests | PASSED как доказательство дефекта — 7 failed, 19 passed |
+| `python -m pip check` | PASSED — No broken requirements found |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 111 passed, 3 skipped, 20 warnings |
+| targeted risk tests | PASSED — 26 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0004_counterfactual_outcomes` |
+| `python manage.py doctor` | FAILED (environment) — 6 failures: `.env`, default secrets, PostgreSQL tools/service |
+| PostgreSQL integration | NOT RUN — `POSTGRES_ADMIN_URL`/`TEST_DATABASE_URL` и отдельная test database отсутствуют |
+| Migration / `.env` | не требуется |
+
+Host Python environment до isolated setup также зафиксирован: `pip check` выявил внешний MoviePy/Pillow conflict, Ruff и psycopg отсутствовали. Production fix проверен в isolated environment из `.[dev]`; SQLite/fake application database не применялась.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-risk-input-validation.md`.
 
 ## Итерация 1.7.4 — fail-closed directional geometry
 

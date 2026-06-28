@@ -247,3 +247,61 @@ def test_zero_margin_capacity_has_margin_block_status() -> None:
         capital_verified=True,
     )
     assert plan.status == "BLOCKED_MARGIN"
+
+
+def _valid_position_plan_kwargs() -> dict:
+    return {
+        "effective_capital": D("5000"),
+        "risk_rate": D("0.0035"),
+        "entry": D("100"),
+        "stop": D("98.5"),
+        "take_profit": D("103.6"),
+        "direction": "LONG",
+        "costs": costs(),
+        "constraints": constraints(),
+        "leverage": 3,
+        "capital_verified": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("changes", "diagnostic"),
+    [
+        ({"effective_capital": D("NaN")}, "effective_capital"),
+        ({"risk_rate": D("Infinity")}, "risk_rate"),
+        ({"available_margin": D("NaN")}, "available_margin"),
+        ({"margin_reserve_rate": D("1")}, "margin_reserve_rate"),
+        ({"liquidity_notional_cap": D("NaN")}, "liquidity_notional_cap"),
+        (
+            {"constraints": InstrumentConstraints(D("0"), D("0.001"), D("5"), D("1000000"), D("100"))},
+            "qty_step",
+        ),
+        (
+            {"costs": CostScenario(D("-0.0011"), D("0.0008"), D("0.0010"), D("0"))},
+            "fee_rate_round_trip",
+        ),
+    ],
+)
+def test_position_sizing_blocks_invalid_numeric_inputs(changes: dict, diagnostic: str) -> None:
+    plan = calculate_position_plan(**(_valid_position_plan_kwargs() | changes))
+
+    assert plan.status == "BLOCKED_INVALID_INPUT"
+    assert plan.qty == D("0")
+    assert plan.notional == D("0")
+    assert plan.actual_stress_loss == D("0")
+    assert plan.margin_estimate == D("0")
+    assert plan.limiting_cap == "INVALID_INPUT"
+    assert all(value.is_finite() for value in (plan.effective_capital, plan.risk_budget))
+    assert any(diagnostic in warning for warning in plan.warnings)
+
+
+def test_position_sizing_accepts_finite_signed_funding_rate() -> None:
+    plan = calculate_position_plan(
+        **(
+            _valid_position_plan_kwargs()
+            | {"costs": CostScenario(D("0.0011"), D("0.0008"), D("0.0010"), D("-0.0001"))}
+        )
+    )
+
+    assert plan.status == "ACTIONABLE"
+    assert plan.qty > 0
