@@ -74,11 +74,12 @@ API завершится до readiness. Не использовать `stamp he
 
 ## Trainer создал `.joblib`, но candidate отсутствует в registry
 
-1. Сопоставить время файла в `models/` с последним `ops.job_runs` для `model_retraining`.
+1. Сопоставить время файла в `models/` с последним `ops.job_runs` для `model_retraining`; UI 1.7.7 также показывает первый незарегистрированный artifact.
 2. Если ошибка содержит `InvalidTextRepresentation`, `-Infinity`, `Infinity` или `NaN`, обновить проект минимум до 1.7.1 и перезапустить trainer.
-3. Не активировать orphan artifact прямым изменением PostgreSQL и не создавать registry row вручную: same-holdout gate и audit могли не завершиться.
-4. Дождаться следующего штатного training cycle. Отклоненный candidate должен появиться в `model-registry list` с `active=false`; прошедший gate может активироваться автоматически.
-5. Старый orphan artifact можно оставить для forensic review либо удалить после подтверждения нового зарегистрированного candidate.
+3. Не создавать registry row и не менять `active` прямым SQL: hash, metadata, gate и audit должны быть воспроизводимы.
+4. При отсутствии usable active trained model выполнить `python manage.py model-registry recover-artifact --artifact models/<artifact>.joblib`. Команда разрешена только вне production, проверяет расположение, task/schema/classes/version/horizon, training profile и абсолютный quality gate.
+5. Если gate не пройден, artifact остается inactive; не снижать пороги только ради исчезновения baseline. Дождаться следующего training cycle либо провести отдельный review и использовать штатный manual activation как осознанный operator override.
+6. После успешного recovery дождаться `MODEL_REFRESH_SECONDS` либо перезапустить worker и проверить, что `worker_runtime.baseline=false`.
 
 ## Baseline работает, но recovery training не стартует
 

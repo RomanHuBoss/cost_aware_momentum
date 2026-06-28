@@ -79,6 +79,8 @@ python manage.py model-registry activate --version <version>
 
 Одновременно допускается только одна active-модель. Worker перечитывает registry каждые `MODEL_REFRESH_SECONDS`. Активация предыдущей версии выполняет rollback и создает audit/outbox event.
 
+Для orphan artifact, который существует в `MODEL_DIR`, но отсутствует в registry после прерванной регистрации, версия 1.7.7 предоставляет контролируемую команду recovery. Она доступна только в non-production при отсутствии usable trained active model, повторно валидирует bundle и абсолютные ML/policy gates, затем использует обычную registry activation. Наличие файла само по себе никогда не означает активацию.
+
 ## Baseline policy
 
 В non-production baseline может быть разрешен через `ALLOW_BASELINE_MODEL=true`, но каждая рекомендация получает предупреждение, worker heartbeat имеет статус `DEGRADED`, а UI явно показывает effective runtime. Baseline используется при отсутствии active registry row, active deterministic baseline и при физическом отсутствии файла active registry artifact. Это не распространяется на повреждение, hash mismatch или несовместимый bundle. Начиная с 1.7.3 trainer распознает такое состояние до обычной dataset-aware scheduling: после startup delay запускается bootstrap/recovery training, несвязанные старые failures не блокируют новый recovery episode, а повторная техническая ошибка получает короткий `AUTO_TRAIN_RECOVERY_RETRY_MINUTES`. Утраченный incumbent может быть заменен только кандидатом, прошедшим абсолютные gates. В production validator требует `ALLOW_BASELINE_MODEL=false`; отсутствие валидной active-модели делает запуск/readiness неуспешным.

@@ -1,6 +1,31 @@
 # QA report
 
-Дата проверки версии 1.7.6: 28 июня 2026 г.
+Дата проверки версии 1.7.7: 28 июня 2026 г.
+
+## Итерация 1.7.7 — controlled orphan model recovery and diagnostics
+
+Подтвержден operational gap: наличие нового `.joblib` в `MODEL_DIR` не означало active model, однако status/UI не различали inactive candidate, failed gate и orphan artifact. Безопасного CLI для повторной регистрации уже созданного artifact при отсутствующей usable active-модели не было.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `dc7caaf4bd0f733ad92d7b3426bced5770eefe7dedb96b516b0fb55f8887bd4a` |
+| Baseline isolated `python -m pytest -q` | PASSED — 120 passed, 3 skipped, 20 warnings |
+| Red recovery tests | PASSED как доказательство gap — collection error: отсутствовал `app.ml.artifact_recovery` |
+| `python -m pip check` | PASSED — No broken requirements found |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 126 passed, 3 skipped, 20 warnings |
+| targeted recovery/diagnostics tests | PASSED — 17 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0005_plan_outcome_invalid_input` |
+| `model_registry --help` | PASSED — `recover-artifact` присутствует |
+| `python -m scripts.doctor` | FAILED (environment) — 6 ошибок: `.env`, secrets, PostgreSQL tools/service |
+| PostgreSQL integration | NOT RUN — отдельная test database отсутствует; 3 integration tests skipped |
+| Migration / `.env` | не требуется |
+
+Host baseline также зафиксирован: внешний MoviePy/Pillow conflict, отсутствующие Ruff/psycopg. Production code проверен в isolated environment из `.[dev]`. Реальная пользовательская model/DB не были доступны, поэтому фактический gate result файла `barrier-logistic-h8-20260628T072708Z.joblib` не заявляется.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-model-artifact-reconciliation.md`.
 
 ## Итерация 1.7.6 — fail-closed counterfactual plan valuation
 

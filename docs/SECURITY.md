@@ -26,3 +26,5 @@
 
 Controlled baseline recovery не является обходом artifact integrity. Он применяется только к физически отсутствующему registry artifact в non-production при `ALLOW_BASELINE_MODEL=true`. Существующий файл с неверным SHA256, поврежденным bundle или несовместимыми metadata остается блокирующей ошибкой. `ACTIVE_MODEL_PATH` также никогда не fallback-ится. В production baseline запрещен validator-ом.
 
+Команда `model-registry recover-artifact` должна использоваться только для доверенного локального `.joblib`, созданного этим проектом. Формат joblib/pickle не является безопасным для файлов неизвестного происхождения. Recovery требует размещение внутри `MODEL_DIR`, non-production режим, повторную schema/horizon/quality-gate проверку и не активирует failed candidate.
+

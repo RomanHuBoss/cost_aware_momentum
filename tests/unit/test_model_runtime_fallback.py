@@ -231,3 +231,32 @@ async def test_worker_refresh_survives_deleted_active_artifact(
     assert worker.runtime.is_baseline is True
     assert worker.model_notice and worker.model_notice["code"] == "ACTIVE_MODEL_ARTIFACT_MISSING"
     assert worker.model_heartbeat_status() == "DEGRADED"
+
+
+def test_candidate_diagnostics_distinguish_gate_failure_and_orphan_files(tmp_path: Path) -> None:
+    from app.api.v1.status import candidate_diagnostics, orphan_model_artifacts
+
+    registered_path = tmp_path / "registered.joblib"
+    registered_path.write_bytes(b"registered")
+    orphan_path = tmp_path / "barrier-logistic-h8-20260628T072708Z.joblib"
+    orphan_path.write_bytes(b"orphan")
+    candidate = SimpleNamespace(
+        version="registered",
+        artifact_path=str(registered_path),
+        metrics={
+            "activation_requested": False,
+            "quality_gate": {
+                "passed": False,
+                "reasons": ["policy_profit_factor_below_minimum"],
+            },
+        },
+        updated_at=None,
+    )
+
+    details = candidate_diagnostics(candidate)
+    orphans = orphan_model_artifacts(tmp_path, [candidate])
+
+    assert details["artifact_exists"] is True
+    assert details["quality_gate_passed"] is False
+    assert details["quality_gate_reasons"] == ["policy_profit_factor_below_minimum"]
+    assert orphans == [orphan_path.name]

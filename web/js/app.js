@@ -198,10 +198,27 @@ async function loadStatus() {
       DISABLED: 'отключено',
     };
     const trainerPhase = trainer?.details?.phase;
-    const trainingState = status.auto_training?.enabled
+    const waitReason = trainer?.details?.wait_reason || null;
+    const lastTrainingResult = trainer?.details?.last_result || null;
+    let trainingState = status.auto_training?.enabled
       ? (phaseLabels[trainerPhase] || 'ожидание trainer')
       : 'отключено';
+    if (waitReason?.reason === 'training_cooldown_not_elapsed') {
+      const nextDue = waitReason.next_due_at
+        ? new Date(waitReason.next_due_at).toLocaleString('ru-RU')
+        : null;
+      trainingState = nextDue
+        ? `пауза до ${nextDue}`
+        : 'пауза перед повторной проверкой';
+    } else if (waitReason?.reason === 'training_recovery_backoff_not_elapsed') {
+      trainingState = 'короткая пауза перед повтором восстановления';
+    } else if (lastTrainingResult?.error) {
+      trainingState = `ошибка: ${lastTrainingResult.error}`;
+    }
+
     const effectiveVersion = runtime?.version || status.active_model?.version || '—';
+    const latestCandidate = status.active_model?.latest_candidate || null;
+    const orphanArtifacts = status.active_model?.orphan_artifacts || [];
     let modelDetail = '';
     if (modelNotice?.code === 'ACTIVE_MODEL_ARTIFACT_MISSING') {
       modelDetail = ` · файл ${modelNotice.registry_version || 'активной модели'} отсутствует, используется baseline`;
@@ -209,6 +226,20 @@ async function loadStatus() {
       modelDetail = ' · старт с baseline до первой обученной модели';
     } else if (modelNotice?.code === 'REGISTRY_BASELINE_ACTIVE') {
       modelDetail = ' · активен некалиброванный baseline';
+    }
+
+    if (baselineActive && latestCandidate?.artifact_exists) {
+      if (latestCandidate.quality_gate_passed === false) {
+        const reasons = (latestCandidate.quality_gate_reasons || []).slice(0, 2).join(', ');
+        modelDetail += ` · кандидат ${latestCandidate.version} не прошёл quality gate${reasons ? `: ${reasons}` : ''}`;
+      } else if (latestCandidate.quality_gate_passed === true) {
+        modelDetail += ` · кандидат ${latestCandidate.version} прошёл gate, но не активирован`;
+      } else {
+        modelDetail += ` · кандидат ${latestCandidate.version} зарегистрирован, но не активирован`;
+      }
+    }
+    if (baselineActive && orphanArtifacts.length) {
+      modelDetail += ` · файл ${orphanArtifacts[0]} не зарегистрирован в model registry`;
     }
     $('#model-state').textContent = `Модель: ${effectiveVersion}${modelDetail} · дообучение: ${trainingState}`;
     const worker = status.heartbeats.find(item => item.service === 'worker');

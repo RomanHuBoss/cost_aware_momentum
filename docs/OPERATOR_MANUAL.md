@@ -69,6 +69,14 @@
 python manage.py model-registry list
 ```
 
+Начиная с 1.7.7 верхняя строка отдельно показывает зарегистрированный inactive candidate, причины quality gate и незарегистрированный файл в `models/`. Если usable active artifact отсутствует, а валидный orphan создан штатным trainer до завершения registry transaction, выполните:
+
+```bash
+python manage.py model-registry recover-artifact --artifact models/<artifact>.joblib
+```
+
+Команда не является обходом gate: она работает только вне production, повторно проверяет artifact и активирует его только после абсолютного ML/policy gate. Если файл уже зарегистрирован с failed gate, он останется inactive.
+
 Для режима обязательного ручного утверждения установите `AUTO_TRAIN_AUTO_ACTIVATE=false`.
 ## Работа после удаления model artifacts
 

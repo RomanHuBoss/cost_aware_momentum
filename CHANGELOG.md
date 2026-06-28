@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.7 — 2026-06-28
+
+- Status API and UI now distinguish a missing active artifact from an inactive registered candidate and from an unregistered `.joblib` present in `MODEL_DIR`.
+- Trainer cooldown/backoff and quality-gate rejection are shown explicitly instead of the generic “ожидание новых данных” label.
+- Added `model-registry recover-artifact --artifact PATH` for controlled non-production recovery of orphan artifacts while no usable trained model is active.
+- Recovery revalidates filename/version, task, feature/classes schema, horizon, training profile and absolute ML/policy gates before registry insertion and guarded activation.
+- Registered candidates with a failed quality gate remain inactive; production, valid incumbent replacement, corrupt/hash-incompatible artifacts and files outside `MODEL_DIR` remain blocked.
+- Added red-to-green unit coverage for artifact reconstruction, gate enforcement, recovery activation flow and orphan diagnostics.
+
 ## 1.7.6 — 2026-06-28
 
 - Counterfactual plan valuation now validates finite qty, prices, stress loss, fees, slippage, stop reserve and signed funding before arithmetic.

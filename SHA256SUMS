@@ -1,7 +1,7 @@
 960d14a13f498f09acbec1ffb900efcba965c8542cbaf26995f8f664300974e1  ./.env.example
 a6960bd9b5929f866983471ebfe00492e59b886b625ba1180dce59185a1585f4  ./.github/workflows/ci.yml
 bcfa36db82ca822e0cd895bb0e7a50aa6adf9887f036ae545f1be132a31e80bd  ./.gitignore
-958bda6224cc490b3eaf1c4ca35ae35dfd419cb56f11012d64c78a10ee95dab4  ./CHANGELOG.md
+94ece1377c03f986f7192a0a7c62ecf1aae8a591ddb073c8a9a329ba18b5dc15  ./CHANGELOG.md
 bdcc506721bf873228400b7d66a169aaad63679647b78162dd4abc4916ea50df  ./Makefile
 814f6e4f846d03ce0688ff4ce76df3e78392718cf01a0065af684b267c87ddbe  ./PATCH_1.1.2.md
 117b6b7072a55d897e833e065668cb8554653e23625fcf029803b8daa07442bd  ./PATCH_1.1.3.md
@@ -19,9 +19,10 @@ a38a134eee1d3bae32481faba7b4604d13370d7bf5a0deffe47cb9b335ae5b8e  ./PATCH_1.7.2.
 eb59061abd320264c75767d406422fa15376fbf50126817f48146ec004c75a15  ./PATCH_1.7.4.md
 d1be2a3a47ce39ca6b21098aea5d275b2386f50de165549550667a3d594138f6  ./PATCH_1.7.5.md
 f780d0e810234c05366609484f733b695f3f23e4a00cca435fd1230c5ff57414  ./PATCH_1.7.6.md
-7568b1db6ccb7ffb057f22186954392cc0ee63f8a0da79997bee3ca9b473dadb  ./README.md
+ca767631d8db0d2ea44f6d64ca82029afe3f20e814e6672e989f8b087974538e  ./PATCH_1.7.7.md
+6c44ef57a24cebb1d650d1d79d011c7c721be0f072ca0cd8ef9825390b8611e2  ./README.md
 c7957d8dc92aa0acf8ba2d80501ee776b263b248a5f01a9d1836375d6ded52bb  ./alembic.ini
-d7156e57022e5c540ff1dadb2e89edda34cc58d22619a8e228186a2fcdfd812f  ./app/__init__.py
+8de4f54dddeca5cc3a39636850600d91952bcae9456868f7f669a7cd806d83d8  ./app/__init__.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./app/api/__init__.py
 31fe91eaef1707af9c9348819b82f395aaaff5b5642c6e3c6752f45535e8a88d  ./app/api/deps.py
 d6a0e6f7a96017c8fb93f1ac217c2a3a0b3dada6a2fd6e55d271aa6ac46655f2  ./app/api/schemas.py
@@ -34,7 +35,7 @@ f7db84865d34e73a600c88911ec9ad6533501aac671109f365d211abbb8aa1e2  ./app/api/v1/c
 fbd89803bdcb5c6580a30e47cf19fc66f9326325733c3f1360a9f6459a3fde8d  ./app/api/v1/portfolio.py
 7da8ef51f4fea5de27638a489a98caa8019e54514576bc0ef48161198c61649e  ./app/api/v1/recommendations.py
 0b7aee5a3308c0a452e5057599154f0295f6406280135cb21e7ae118fe36a2c7  ./app/api/v1/session.py
-574974a13392b2c53884a14b2f1f9f3e5cda698154910ee721e957667b7e8e42  ./app/api/v1/status.py
+14d19293ef8c0c0839ff2a113914dfb8bf7c7c5d6950576cbe04be36937aaf9f  ./app/api/v1/status.py
 d5631e68d16b8f0942118fc1dad00be627511375ad19caf5cd076a2bf8b1d8e2  ./app/api/v1/trades.py
 4dac87375003fe4dcc262969f56b372f49653f7390fd76da9d593f104eb56854  ./app/api/v1/ui.py
 f4d110953064281b6bd48f2c937fc59a74b893c0050c561d4269ff57fd31c3c4  ./app/asyncio_compat.py
@@ -51,6 +52,7 @@ a58e94f770e2a96c77c52288515528005b7165266645a6142e4444bc2f727351  ./app/db/locks
 a309194dbca3e896ebbcd8af884e5356ccfd7c9dbd981747000edfef3adcaf39  ./app/logging.py
 c11dd5a021b5dfa90f8172294f4f85fcf492cc39d677e7919ca5ac46939381ed  ./app/main.py
 5a885e95d04f7461b6c814238f9f37fb59f5fcffdd97cecbbfd4c6b84e243355  ./app/ml/__init__.py
+68b9009bd0a912346e7509ae5410359e6c6f40993140bd2af4f90ada418ca225  ./app/ml/artifact_recovery.py
 d2e71f41dfdee499804b999f1fe183b1fa24cd495d2e8120e6ba31478b46b416  ./app/ml/data_profile.py
 3c820ef9058471ba752b39c0cac65d72e524edec152dafe51eac151a877dd20f  ./app/ml/features.py
 e6188834963e0cc41d1fa8318e518a6165492afc1f45ea78ffe60f4d27b46f25  ./app/ml/labels.py
@@ -74,9 +76,10 @@ f3644c2b5369e1aafc4641ca69fdb82c3aa8913a562f9796afe6aac06d938f65  ./app/workers/
 eca5e870ceb89b885bc40f81cb806abeaeced8931807301eb1fdc1097af74571  ./app/workers/trainer.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./backups/.gitkeep
 861b7cdfdb277d3903d4b81d74c7c368082b9c05df6b9998ffe8aa0a885a4139  ./docs/ARCHITECTURE.md
-072c5642eb8b086bcd23877fb79b827ccf19680a766b89b7dfd385848aa80119  ./docs/CONFIGURATION.md
-028f2218e774e0f2e56016aa36ab62f279b12d8543c853d858339dbc85d062a2  ./docs/INCIDENT_RUNBOOK.md
+5ae8d5998ad8359729697f95f5ea6ea9b8c88273371aadc47bfdfd3a262df76a  ./docs/CONFIGURATION.md
+0ab65889b831de3919d7f3c9a610a053dd8daa7f782ebe274b94ef00659a268e  ./docs/INCIDENT_RUNBOOK.md
 d120d60f8ef8ce77cef21aba379b8cd61b46457c77881c4b28e721b0150faa7c  ./docs/ITERATION_REPORT_2026-06-28-directional-geometry.md
+3c99dbd923cb1e69ddb59b14c33b73efee6da19c08c1d7cd5470f5782dd3f42e  ./docs/ITERATION_REPORT_2026-06-28-model-artifact-reconciliation.md
 1a7d0d5e5e915facf597f1f2cbeb35d0a94b26b8684c98ed1acb21a2d91e51d1  ./docs/ITERATION_REPORT_2026-06-28-model-artifact-recovery.md
 607e8a3bee705a156cfd6a198c10d7e5f4675fc69370ee3271958ecd0e5daa88  ./docs/ITERATION_REPORT_2026-06-28-model-bootstrap-recovery.md
 b24e35c0182a381101b28c12bc9c4c4e8de7476899cdf6363998ea2237587eb2  ./docs/ITERATION_REPORT_2026-06-28-model-registry-json-safety.md
@@ -84,13 +87,13 @@ b24e35c0182a381101b28c12bc9c4c4e8de7476899cdf6363998ea2237587eb2  ./docs/ITERATI
 0d915e2834bd755f2c9eb88c147fa3dabb068a5ab46dffba5b3f4bd1095e2441  ./docs/ITERATION_REPORT_2026-06-28-risk-input-validation.md
 5b19e565d5e63bfd3403d4c19b26eb0e3b1f1815223389956904bc9ccb3e8181  ./docs/ITERATION_REPORT_2026-06-28_counterfactual-outcomes.md
 d793cddbd24277c6217ec29bd31085b0656181839aa101899bf1c728f86d6bbc  ./docs/ITERATION_REPORT_2026-06-28_intrabar-outcomes.md
-9f7287947ea1432acc8acdf814cd0a062e3a8e19cef599bb456e06c9a7bb5a45  ./docs/MODEL_CARD.md
+f19b3f699484b94517781b410386d42699f945d32c6b4daf59598774d5bebf32  ./docs/MODEL_CARD.md
 af1a707dfb9eac089d8ac54dab5d0bb8fe23f58f2d623bfc1d4380ea22476f7a  ./docs/NATIVE_INSTALL.md
-a5da643693ccfe36d5b34d613cd9772db7ba7cdb81a1f2a6b34eea92185edbae  ./docs/OPERATOR_MANUAL.md
-dd6db9abfdf9ec2795bdf1f08bfc3801325be7d2832e0ae19f51b6bf44d7f96a  ./docs/QA_REPORT.md
-6490782e1ac42fbb06575263a6c68e7cd964153233546ce876723f6dc29e7566  ./docs/SECURITY.md
-7d6091b2a00cb77163285939aa0ad38e7152c36f20e46ee39d9202a9d73cd220  ./docs/SPEC_COMPLIANCE.md
-7608cf819a1959e991139616c287cba8df8a3e5ef536fd8dabf7d959cd9ae19b  ./docs/TRACEABILITY.md
+e0194ea03385e0a8a3e2a534f528df451c94e347301001aa0116c3d624de449a  ./docs/OPERATOR_MANUAL.md
+7966363d0fdc143ce949543df956950d3560369f6908921a030b39c5f4537af5  ./docs/QA_REPORT.md
+00875a178ca7f91bd8013e0ba048921faadc94afb8635d407ae40387bca273b6  ./docs/SECURITY.md
+0c793a6f02824bd1f84e809dc6515cb2a194fa611bd9b0f29990c9583fde91bc  ./docs/SPEC_COMPLIANCE.md
+a58e0dc3388b351f6a17bbc1f470052abe4ada1f250404e77c772e86d88f5f9a  ./docs/TRACEABILITY.md
 b0159a96b085dc9dab9898a85dc6836e831267efefb7979f61c75eb01908eb84  ./docs/source/Cost_aware_hourly_ML_momentum_specification.docx
 9ef9c627b4f0f29b10774ab7b21fc8787f94b449316ecc7523990752ba35be8b  ./manage.py
 d2db851a7b5c477365224a9eb8e0bdd459d6b0ad415ef52402345f7819e4f37c  ./migrations/env.py
@@ -101,7 +104,7 @@ c2bd0d7d4d6bd1551797d8ec891f7fe857b38723efbfcd00cf7e76958f5ffd7b  ./migrations/v
 a82328382b1b37afb21a229ff660d324582ea9d899013850d7277576bf08a33a  ./migrations/versions/0004_counterfactual_outcomes.py
 07739d34887d49936bd8153e2050229bcfb129ca507a2d5ab981edf27d08cec7  ./migrations/versions/0005_plan_outcome_invalid_input.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./models/.gitkeep
-060f821228dede495f4b858e2c499ad8f85c0951b0bb56ad7f3819a9dc62284e  ./pyproject.toml
+dc18ec1536176dadf7951095985b13323cf501330cdddd302dda5354aa7ee967  ./pyproject.toml
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./reports/.gitkeep
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./scripts/__init__.py
 f28a2e7e8e1fc6bec621efd6273f667cad86bb0aadbf71a3878668f08a3e2a83  ./scripts/backtest.py
@@ -110,7 +113,7 @@ f28a2e7e8e1fc6bec621efd6273f667cad86bb0aadbf71a3878668f08a3e2a83  ./scripts/back
 46dd129a28f6dfc65200491a6afe379d4309745c13c338653a7612c5ebe659eb  ./scripts/daily_report.py
 36354da9477266afdf647c5e01af72f708d06753c1f9796c0d968c5d2c94081f  ./scripts/db_init.py
 9c90a82b5ea5aeecb06b306f13ba1b8b0300246e2487cbc01ed9476f02368564  ./scripts/doctor.py
-328f109b2bd4461c2c79211dc0e6b1b26e605ae60cc967e939699076ec5d3cb0  ./scripts/model_registry.py
+4fb5b752d9cdde5cdd1d187afefc5666f6b0dd46898746d762b3d08b8bc1ae71  ./scripts/model_registry.py
 11edfd2dc328e0f7f9368dec088eec33837e33edc65699db5913b0804938b464  ./scripts/postgres_utils.py
 d8186c4e08c13bae2774cde7740e54bcfa48368f6bdc552973a9fe3d471b55cc  ./scripts/replay.py
 8527cbd4ed8c3c8883ba4e545d2f69116d14b5d49a7fc939371938278e799dd9  ./scripts/restore_check.py
@@ -124,8 +127,9 @@ ce300c68dc7f1e8a69bd61b640d050950ebd29572820c808856b5fb2174813e8  ./tests/unit/t
 79642e9d418873016d724a98495df682c2acf34ab52e2ac06634499e8066ae88  ./tests/unit/test_intrabar_outcomes.py
 62ba4d5c522aff903c8cd88ee9d484f9319dd4b7af141b3725890b4bc24c7e72  ./tests/unit/test_json_utils.py
 d8b0329ac62960556b2feebaf8f46fc4652f7f2052317cd1ea5e6219458c75f0  ./tests/unit/test_labels_features.py
+7a80ec8c9c732982442cf5a268bf8524415c5c5a2d270ec5b63d25d165daa6f4  ./tests/unit/test_model_artifact_recovery.py
 e0ecc2f766ca21aae9b8e7d1888edbd584debeb65d672b1200b30fcce6c9eeb2  ./tests/unit/test_model_lifecycle.py
-e1552e1931143093bacb07a07d1325bf614ed1e4f078107eda6cf0e0b55f21bc  ./tests/unit/test_model_runtime_fallback.py
+2b714c83266e5f10636afabcb1e3689ec572ed9d4304778fa683cda64f74457c  ./tests/unit/test_model_runtime_fallback.py
 d024dbaeccc57f03c42805ab50b145fb689f9e2dafb40a98c6f52a97bafa4f54  ./tests/unit/test_native_management.py
 7b86fadb22b76e7e07f1239681c87ac347c11a7487552ae4fc7bee3574ac50ad  ./tests/unit/test_recommendation_uniqueness.py
 b3e41231cf3a17b0537643ecf2fce86c8a49553539ec3d14fadf85c6e9652f79  ./tests/unit/test_risk_math.py
@@ -137,4 +141,4 @@ e8edc6420c8903c3c2b0ae17cb726796ba0fd85cc7f5f664a1794fe23257f6b4  ./tests/unit/t
 2163e3b569461bf7b34d0c3f240f60a330e7078999da70e93786a2a6cbf1b8f7  ./web/404.html
 9f27b5494929919f8ddced60c876f86279607a6eae3beca6ec70d3da62f0af5c  ./web/css/app.css
 03a635393fec6d1acfa7c2ab2ba6cf4092ea32d62aaf02e835b6bed2888a5070  ./web/index.html
-faf1dac31a175f2cda7aacf8fd8cca3ff9e1482b2a7e62a01dc5da47017bcdbe  ./web/js/app.js
+513a4561ac14e5889f41f6d09dae17966006347327f9d297834f1521803227cf  ./web/js/app.js

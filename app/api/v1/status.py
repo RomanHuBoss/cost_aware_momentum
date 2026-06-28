@@ -17,6 +17,59 @@ from app.ml.runtime_selection import CONTROLLED_BASELINE_NOTICE_CODES
 router = APIRouter(tags=["status"])
 
 
+def candidate_diagnostics(model: object | None) -> dict[str, object] | None:
+    if model is None:
+        return None
+    metrics = getattr(model, "metrics", None)
+    metrics = metrics if isinstance(metrics, dict) else {}
+    quality_gate = metrics.get("quality_gate")
+    quality_gate = quality_gate if isinstance(quality_gate, dict) else {}
+    reasons = quality_gate.get("reasons")
+    if not isinstance(reasons, list):
+        reasons = []
+    artifact_text = getattr(model, "artifact_path", None)
+    artifact_path = Path(artifact_text).expanduser() if artifact_text else None
+    return {
+        "version": getattr(model, "version", None),
+        "artifact_path": str(artifact_path) if artifact_path else None,
+        "artifact_exists": bool(artifact_path and artifact_path.is_file()),
+        "activation_requested": metrics.get("activation_requested") is True,
+        "quality_gate_passed": quality_gate.get("passed")
+        if isinstance(quality_gate.get("passed"), bool)
+        else None,
+        "quality_gate_reasons": [str(item) for item in reasons[:10]],
+        "updated_at": getattr(model, "updated_at", None).isoformat()
+        if getattr(model, "updated_at", None) is not None
+        else None,
+    }
+
+
+def orphan_model_artifacts(model_dir: Path, registry_models: list[object]) -> list[str]:
+    resolved_registered: set[Path] = set()
+    for model in registry_models:
+        artifact_text = model if isinstance(model, (str, Path)) else getattr(model, "artifact_path", None)
+        if not artifact_text:
+            continue
+        try:
+            resolved_registered.add(Path(artifact_text).expanduser().resolve())
+        except OSError:
+            continue
+    directory = model_dir.expanduser()
+    if not directory.is_dir():
+        return []
+    candidates: list[tuple[float, str]] = []
+    for path in directory.glob("*.joblib"):
+        try:
+            resolved = path.resolve()
+            modified = path.stat().st_mtime
+        except OSError:
+            continue
+        if resolved not in resolved_registered:
+            candidates.append((modified, path.name))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [name for _, name in candidates[:10]]
+
+
 def assess_model_runtime(
     *,
     registry_version: str | None,
@@ -228,6 +281,22 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             .limit(1)
         )
     ).scalar_one_or_none()
+    latest_candidate = (
+        await session.execute(
+            select(ModelRegistry)
+            .where(
+                ModelRegistry.active.is_(False),
+                ModelRegistry.model_type != "deterministic_baseline",
+            )
+            .order_by(ModelRegistry.updated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    registered_artifact_paths = (
+        await session.execute(
+            select(ModelRegistry.artifact_path).where(ModelRegistry.artifact_path.is_not(None))
+        )
+    ).scalars().all()
     issues = (
         (
             await session.execute(
@@ -306,6 +375,8 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
                 ),
                 None,
             ),
+            "latest_candidate": candidate_diagnostics(latest_candidate),
+            "orphan_artifacts": orphan_model_artifacts(settings.model_dir, registered_artifact_paths),
         },
         "heartbeats": [
             {

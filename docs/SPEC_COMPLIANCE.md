@@ -2,13 +2,13 @@
 
 Дата проверки: 2026-06-28
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.7.6
+Версия проекта после коррекции: 1.7.7
 
 ## Итог
 
 Проект соответствует спецификации **частично**. Архитектурный и операторский контур реализован существенно лучше исследовательского контура: FastAPI/Uvicorn, PostgreSQL-only, отдельные worker и trainer, ручное исполнение, профили капитала, cost/risk engine, UI, audit и жизненный цикл рекомендаций присутствуют.
 
-Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact. Версия 1.7.2 добавляет controlled runtime recovery при физической утрате active artifact. Версия 1.7.3 завершает scheduler-side recovery. Версия 1.7.4 закрывает fail-open риск в directional mathematics: инвертированные или нечисловые entry/SL/TP больше не превращаются через `abs()` в положительные расстояния и не получают исполнимый размер. Версия 1.7.5 закрывает соседнюю числовую boundary-проблему sizing: non-finite capital/risk/margin/caps, невалидные instrument constraints и отрицательные cost reserves блокируются до арифметики и не создают исключение либо исполнимый план. Версия 1.7.6 распространяет тот же fail-closed контракт на post-event valuation каждой execution-plan version: поврежденный sizing/cost/funding snapshot получает terminal `INVALID_INPUT` с нулевыми результатами и не останавливает batch.
+Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact. Версия 1.7.2 добавляет controlled runtime recovery при физической утрате active artifact. Версия 1.7.3 завершает scheduler-side recovery. Версия 1.7.4 закрывает fail-open риск в directional mathematics: инвертированные или нечисловые entry/SL/TP больше не превращаются через `abs()` в положительные расстояния и не получают исполнимый размер. Версия 1.7.5 закрывает соседнюю числовую boundary-проблему sizing: non-finite capital/risk/margin/caps, невалидные instrument constraints и отрицательные cost reserves блокируются до арифметики и не создают исключение либо исполнимый план. Версия 1.7.6 распространяет тот же fail-closed контракт на post-event valuation каждой execution-plan version: поврежденный sizing/cost/funding snapshot получает terminal `INVALID_INPUT` с нулевыми результатами и не останавливает batch. Версия 1.7.7 закрывает операционный разрыв между файловой системой и model registry: UI показывает inactive/rejected/orphan artifact, а explicit recovery CLI может зарегистрировать и активировать orphan только после повторной metadata-проверки и абсолютного quality gate в non-production.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -40,6 +40,7 @@
 | Экономический gate auto-activation | Реализовано в 1.5.0 | policy trades, realized mean R, profit factor, drawdown и incumbent-relative limits |
 | JSON-safe candidate registration | Исправлено в 1.7.1 | internal fail-closed sentinels не сериализуются; non-finite metrics → `null`; registry/job/audit JSONB защищены |
 | Recovery после утраты active artifact | Реализовано в 1.7.2–1.7.3 | explicit non-production baseline fallback, DEGRADED diagnostics, immediate bootstrap/recovery trigger after startup delay, short technical retry backoff, strict integrity boundary и absolute gates |
+| Orphan artifact reconciliation | Реализовано в 1.7.7 | status/UI inventory, explicit non-production recovery inside `MODEL_DIR`, metadata validation, absolute quality gate, guarded registry activation; directory presence alone не активирует model |
 | Актуальный universe в UI/API | Исправлено в 1.5.0 | текущие карточки фильтруются по worker universe; status обновляется автоматически |
 | Counterfactual outcome journal | Реализовано с intrabar refinement в 1.7.0 | confirmed hourly path; точечный 1/3/5-minute reconstruction для same-hour TP1/SL; отдельная оценка каждой plan version, audit/outbox/API/UI; missing intrabar и legacy funding timeline fail-closed |
 
@@ -66,7 +67,7 @@
 - историческая модель фактического исполнения по стакану;
 - завершенный paper/shadow forward evidence и доказательство экономического преимущества.
 
-## Состояние машинного обучения и post-event журнала после коррекции 1.7.6
+## Состояние машинного обучения и post-event журнала после коррекции 1.7.7
 
 Технический ML-путь работает end-to-end:
 

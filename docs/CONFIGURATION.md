@@ -96,6 +96,8 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 
 Нормальный источник active model — таблица `model.model_registry`. Обучение сохраняет SHA256 и регистрирует artifact inactive. Команда `model-registry activate` проверяет file/hash/version/task/schema/classes/horizon, деактивирует предыдущую версию и создает audit/outbox event. Worker повторяет проверку при загрузке.
 
+Файл, просто скопированный в `MODEL_DIR`, не становится active. В 1.7.7 status API перечисляет такие orphan artifacts по имени. При отсутствующей usable active-модели их можно обработать через `model-registry recover-artifact --artifact PATH`: команда разрешена только вне production, требует файл внутри `MODEL_DIR`, восстанавливает candidate metadata, выполняет абсолютный quality gate и лишь затем регистрирует/активирует artifact.
+
 Если active registry row существует, но его файл физически отсутствует, worker может перейти на controlled baseline recovery только при `ALLOW_BASELINE_MODEL=true` и `APP_MODE != production`. Registry row сохраняется для аудита, heartbeat получает `model_notice.code=ACTIVE_MODEL_ARTIFACT_MISSING`, статус worker становится `DEGRADED`, а UI показывает фактически используемый baseline. Отсутствие active registry row аналогично запускает bootstrap baseline до первой обученной модели.
 
 `ACTIVE_MODEL_PATH` сохранен только как явный operational override и проходит строгую проверку без fallback. SHA256 mismatch, поврежденный bundle и несовместимость version/task/schema/classes/horizon также остаются fail-closed и не трактуются как простое отсутствие файла.
