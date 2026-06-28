@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -10,6 +11,7 @@ from app.api.serializers import counterfactual_outcome_dict
 from app.services.outcomes import (
     OutcomeBar,
     _funding_rate_for_holding_period,
+    _record_plan_outcome,
     estimate_plan_outcome,
     evaluate_barrier_outcome,
 )
@@ -268,3 +270,135 @@ def test_counterfactual_serializer_preserves_null_r_and_plan_version() -> None:
     assert payload["plan"]["plan_version"] == 3
     assert payload["plan"]["counterfactual_r"] is None
     assert payload["details"]["actual_execution_pnl"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("qty", Decimal("NaN")),
+        ("actual_stress_loss", Decimal("Infinity")),
+        ("fee_rate_round_trip", Decimal("-0.001")),
+        ("slippage_rate", Decimal("NaN")),
+        ("stop_gap_reserve_rate", Decimal("Infinity")),
+        ("funding_rate", Decimal("NaN")),
+    ],
+)
+def test_plan_estimate_invalid_numeric_inputs_fail_closed(
+    field: str, invalid_value: Decimal
+) -> None:
+    inputs = {
+        "direction": "LONG",
+        "outcome": "TP",
+        "qty": Decimal("2"),
+        "entry_price": Decimal("100"),
+        "exit_price": Decimal("104"),
+        "actual_stress_loss": Decimal("5"),
+        "fee_rate_round_trip": Decimal("0.001"),
+        "slippage_rate": Decimal("0.0005"),
+        "stop_gap_reserve_rate": Decimal("0.001"),
+        "funding_rate": Decimal("0.0002"),
+    }
+    inputs[field] = invalid_value
+
+    estimate = estimate_plan_outcome(**inputs)
+
+    assert estimate.valuation_status == "INVALID_INPUT"
+    assert estimate.gross_pnl == Decimal("0")
+    assert estimate.estimated_trading_costs == Decimal("0")
+    assert estimate.estimated_funding_cash_flow == Decimal("0")
+    assert estimate.estimated_net_pnl == Decimal("0")
+    assert estimate.counterfactual_r is None
+    assert estimate.validation_error is not None
+    assert field in estimate.validation_error
+
+
+def test_funding_snapshot_rejects_nonfinite_rate() -> None:
+    plan = SimpleNamespace(
+        sizing_snapshot={
+            "costs": {
+                "funding_rate_per_settlement": "NaN",
+                "funding_next_settlement": (BASE + timedelta(hours=1)).isoformat(),
+                "funding_interval_minutes": 120,
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="funding_rate_per_settlement must be finite"):
+        _funding_rate_for_holding_period(
+            plan, start_time=BASE, exit_time=BASE + timedelta(hours=4)
+        )
+
+
+def test_plan_outcome_schema_supports_invalid_input_status() -> None:
+    from app.db.models import PlanOutcome
+
+    status_constraint = next(
+        constraint
+        for constraint in PlanOutcome.__table__.constraints
+        if constraint.name == "ck_plan_outcomes_plan_outcome_valuation_status"
+    )
+
+    assert "INVALID_INPUT" in str(status_constraint.sqltext)
+
+
+@pytest.mark.asyncio
+async def test_invalid_plan_snapshot_is_persisted_as_zero_valued_outcome(monkeypatch) -> None:
+    recorded = SimpleNamespace(row=None)
+
+    class FakeSession:
+        def add(self, row) -> None:
+            recorded.row = row
+
+        async def flush(self) -> None:
+            return None
+
+    async def fake_append_audit_event(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.outcomes.append_audit_event",
+        fake_append_audit_event,
+    )
+    signal = SimpleNamespace(
+        id=uuid4(),
+        direction="LONG",
+        event_time=BASE,
+        entry_reference=Decimal("100"),
+    )
+    signal_outcome = SimpleNamespace(
+        id=uuid4(),
+        outcome="TP",
+        exit_price=Decimal("104"),
+        exit_time=BASE + timedelta(hours=2),
+    )
+    plan = SimpleNamespace(
+        id=uuid4(),
+        version=3,
+        qty=Decimal("NaN"),
+        actual_stress_loss=Decimal("5"),
+        sizing_snapshot={
+            "costs": {
+                "fee_rate_round_trip": "0.001",
+                "slippage_rate": "0.0005",
+                "stop_gap_reserve_rate": "0.001",
+                "funding_rate_per_settlement": "0.0001",
+                "funding_next_settlement": (BASE + timedelta(hours=1)).isoformat(),
+                "funding_interval_minutes": 120,
+            }
+        },
+    )
+
+    row = await _record_plan_outcome(
+        FakeSession(),
+        signal=signal,
+        signal_outcome=signal_outcome,
+        plan=plan,
+        actor="pytest",
+    )
+
+    assert row is recorded.row
+    assert row.valuation_status == "INVALID_INPUT"
+    assert row.qty == Decimal("0")
+    assert row.estimated_net_pnl == Decimal("0")
+    assert row.counterfactual_r is None
+    assert row.cost_assumptions["validation_error"] == "qty must be finite"

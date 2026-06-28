@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from typing import Literal
 
 from sqlalchemy import select
@@ -10,7 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.locks import acquire_advisory_xact_lock
 from app.db.models import Candle, ExecutionPlan, MarketSignal, PlanOutcome, SignalOutcome
-from app.risk.math import funding_cash_flow, gross_pnl, validate_directional_geometry
+from app.risk.math import (
+    finite_decimal,
+    funding_cash_flow,
+    gross_pnl,
+    nonnegative_finite_decimal,
+    positive_finite_decimal,
+    validate_directional_geometry,
+)
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.market_data import CandleWindow
 
@@ -44,12 +51,25 @@ class BarrierEvaluation:
 
 @dataclass(frozen=True)
 class PlanOutcomeEstimate:
-    valuation_status: Literal["VALUED", "NOT_SIZED", "FUNDING_UNAVAILABLE"]
+    valuation_status: Literal["VALUED", "NOT_SIZED", "FUNDING_UNAVAILABLE", "INVALID_INPUT"]
     gross_pnl: Decimal
     estimated_trading_costs: Decimal
     estimated_funding_cash_flow: Decimal
     estimated_net_pnl: Decimal
     counterfactual_r: Decimal | None
+    validation_error: str | None = None
+
+
+def _invalid_plan_estimate(reason: str) -> PlanOutcomeEstimate:
+    return PlanOutcomeEstimate(
+        valuation_status="INVALID_INPUT",
+        gross_pnl=Decimal("0"),
+        estimated_trading_costs=Decimal("0"),
+        estimated_funding_cash_flow=Decimal("0"),
+        estimated_net_pnl=Decimal("0"),
+        counterfactual_r=None,
+        validation_error=reason,
+    )
 
 
 def _require_aware(value: datetime, name: str) -> None:
@@ -260,25 +280,32 @@ def estimate_plan_outcome(
     This is an evaluation estimate, not actual execution P&L.  It uses the plan's
     stored fee/slippage/funding assumptions; the stop-gap reserve is charged only
     for an SL outcome.  An unsized plan receives the market outcome but no fake R.
+    Invalid numeric plan inputs are persisted as a zero-valued fail-closed result
+    instead of emitting NaN/Infinity or aborting the whole outcome job.
     """
 
-    qty = Decimal(qty)
-    entry_price = Decimal(entry_price)
-    exit_price = Decimal(exit_price)
-    actual_stress_loss = Decimal(actual_stress_loss)
-    fee_rate_round_trip = Decimal(fee_rate_round_trip)
-    slippage_rate = Decimal(slippage_rate)
-    stop_gap_reserve_rate = Decimal(stop_gap_reserve_rate)
-    funding_rate = Decimal(funding_rate)
     if direction not in {"LONG", "SHORT"}:
         raise ValueError(f"Unsupported direction: {direction}")
     if outcome not in {"TP", "SL", "TIMEOUT"}:
         raise ValueError(f"Unsupported outcome: {outcome}")
-    if qty < 0 or entry_price <= 0 or exit_price <= 0 or actual_stress_loss < 0:
-        raise ValueError("Plan outcome inputs must be non-negative and prices positive")
-    for rate in (fee_rate_round_trip, slippage_rate, stop_gap_reserve_rate):
-        if rate < 0:
-            raise ValueError("Cost rates must be non-negative")
+
+    try:
+        qty = nonnegative_finite_decimal(qty, "qty")
+        entry_price = positive_finite_decimal(entry_price, "entry_price")
+        exit_price = positive_finite_decimal(exit_price, "exit_price")
+        actual_stress_loss = nonnegative_finite_decimal(
+            actual_stress_loss, "actual_stress_loss"
+        )
+        fee_rate_round_trip = nonnegative_finite_decimal(
+            fee_rate_round_trip, "fee_rate_round_trip"
+        )
+        slippage_rate = nonnegative_finite_decimal(slippage_rate, "slippage_rate")
+        stop_gap_reserve_rate = nonnegative_finite_decimal(
+            stop_gap_reserve_rate, "stop_gap_reserve_rate"
+        )
+        funding_rate = finite_decimal(funding_rate, "funding_rate")
+    except ValueError as exc:
+        return _invalid_plan_estimate(str(exc))
 
     if qty == 0:
         return PlanOutcomeEstimate(
@@ -290,20 +317,34 @@ def estimate_plan_outcome(
             counterfactual_r=None,
         )
 
-    entry_notional = qty * entry_price
-    exit_notional = qty * exit_price
-    gross = gross_pnl(direction, qty, entry_price, exit_price)
-    # The stored round-trip rate is two equal taker legs in the current plan
-    # contract.  Charge each leg against its own executed notional instead of
-    # applying both fees to the entry notional.
-    fee_rate_per_leg = fee_rate_round_trip / Decimal("2")
-    trading_costs = (entry_notional + exit_notional) * fee_rate_per_leg
-    trading_costs += entry_notional * slippage_rate
-    if outcome == "SL":
-        trading_costs += entry_notional * stop_gap_reserve_rate
-    funding = funding_cash_flow(direction, entry_notional, funding_rate)
-    net = gross - trading_costs + funding
-    counterfactual_r = net / actual_stress_loss if funding_complete and actual_stress_loss > 0 else None
+    try:
+        entry_notional = qty * entry_price
+        exit_notional = qty * exit_price
+        gross = gross_pnl(direction, qty, entry_price, exit_price)
+        # The stored round-trip rate is two equal taker legs in the current plan
+        # contract. Charge each leg against its own executed notional.
+        fee_rate_per_leg = fee_rate_round_trip / Decimal("2")
+        trading_costs = (entry_notional + exit_notional) * fee_rate_per_leg
+        trading_costs += entry_notional * slippage_rate
+        if outcome == "SL":
+            trading_costs += entry_notional * stop_gap_reserve_rate
+        funding = funding_cash_flow(direction, entry_notional, funding_rate)
+        net = gross - trading_costs + funding
+        counterfactual_r = (
+            net / actual_stress_loss if funding_complete and actual_stress_loss > 0 else None
+        )
+        for name, value in (
+            ("gross_pnl", gross),
+            ("estimated_trading_costs", trading_costs),
+            ("estimated_funding_cash_flow", funding),
+            ("estimated_net_pnl", net),
+        ):
+            finite_decimal(value, name)
+        if counterfactual_r is not None:
+            finite_decimal(counterfactual_r, "counterfactual_r")
+    except (DecimalException, ValueError) as exc:
+        return _invalid_plan_estimate(f"plan outcome arithmetic failed: {exc}")
+
     return PlanOutcomeEstimate(
         valuation_status="VALUED" if funding_complete else "FUNDING_UNAVAILABLE",
         gross_pnl=gross,
@@ -324,11 +365,16 @@ def _funding_rate_for_holding_period(
 ) -> tuple[Decimal, bool, dict[str, object]]:
     """Return only settlements crossed by the hypothetical holding period.
 
-    Version 1.6 plans persist the per-settlement rate, next settlement and
-    interval in their immutable cost snapshot.  Legacy plans cannot safely
-    reconstruct this timeline; they are valued without funding and explicitly
-    marked incomplete instead of charging the full-horizon scenario.
+    Legacy plans without a complete timeline remain explicitly incomplete. A
+    malformed timeline is invalid input and must not silently turn into a numeric
+    funding result. Settlement counts are computed arithmetically to avoid long
+    loops on corrupted historical timestamps.
     """
+
+    _require_aware(start_time, "start_time")
+    _require_aware(exit_time, "exit_time")
+    if exit_time < start_time:
+        raise ValueError("exit_time must not be earlier than start_time")
 
     costs = (plan.sizing_snapshot or {}).get("costs") or {}
     required = {
@@ -341,23 +387,37 @@ def _funding_rate_for_holding_period(
 
     raw_next = costs.get("funding_next_settlement")
     raw_interval = costs.get("funding_interval_minutes")
-    per_settlement = Decimal(str(costs.get("funding_rate_per_settlement") or "0"))
+    per_settlement = finite_decimal(
+        costs.get("funding_rate_per_settlement") or "0",
+        "funding_rate_per_settlement",
+    )
     if raw_next is None or raw_interval is None:
         return Decimal("0"), True, {"source": "plan_snapshot", "settlements": 0}
 
-    next_settlement = datetime.fromisoformat(str(raw_next).replace("Z", "+00:00"))
+    try:
+        next_settlement = datetime.fromisoformat(str(raw_next).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("funding_next_settlement must be a valid ISO timestamp") from exc
     _require_aware(next_settlement, "funding_next_settlement")
-    interval_minutes = int(raw_interval)
+    try:
+        interval_minutes = int(raw_interval)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("funding_interval_minutes must be an integer") from exc
     if interval_minutes <= 0:
         raise ValueError("funding_interval_minutes must be positive")
-    interval = timedelta(minutes=interval_minutes)
-    while next_settlement <= start_time:
-        next_settlement += interval
+    try:
+        interval = timedelta(minutes=interval_minutes)
+    except OverflowError as exc:
+        raise ValueError("funding_interval_minutes is too large") from exc
+
+    if next_settlement <= start_time:
+        elapsed = start_time - next_settlement
+        steps = int(elapsed // interval) + 1
+        next_settlement += interval * steps
+
     settlements = 0
-    cursor = next_settlement
-    while cursor <= exit_time:
-        settlements += 1
-        cursor += interval
+    if next_settlement <= exit_time:
+        settlements = 1 + int((exit_time - next_settlement) // interval)
     return (
         per_settlement * settlements,
         True,
@@ -379,46 +439,78 @@ async def _record_plan_outcome(
     plan: ExecutionPlan,
     actor: str,
 ) -> PlanOutcome:
-    funding_rate, funding_complete, funding_details = _funding_rate_for_holding_period(
-        plan, start_time=signal.event_time, exit_time=signal_outcome.exit_time
-    )
-    estimate = estimate_plan_outcome(
-        direction=signal.direction,
-        outcome=signal_outcome.outcome,
-        qty=plan.qty,
-        entry_price=signal.entry_reference,
-        exit_price=signal_outcome.exit_price,
-        actual_stress_loss=plan.actual_stress_loss,
-        fee_rate_round_trip=_cost_value(plan, "fee_rate_round_trip"),
-        slippage_rate=_cost_value(plan, "slippage_rate"),
-        stop_gap_reserve_rate=_cost_value(plan, "stop_gap_reserve_rate"),
-        funding_rate=funding_rate,
-        funding_complete=funding_complete,
-    )
+    # These values belong to the already-resolved market outcome rather than the
+    # plan snapshot. If they are corrupted, do not fabricate substitute prices.
+    entry_price = positive_finite_decimal(signal.entry_reference, "signal.entry_reference")
+    exit_price = positive_finite_decimal(signal_outcome.exit_price, "signal_outcome.exit_price")
+
+    try:
+        fee_rate_round_trip = _cost_value(plan, "fee_rate_round_trip")
+        slippage_rate = _cost_value(plan, "slippage_rate")
+        stop_gap_reserve_rate = _cost_value(plan, "stop_gap_reserve_rate")
+        funding_rate, funding_complete, funding_details = _funding_rate_for_holding_period(
+            plan, start_time=signal.event_time, exit_time=signal_outcome.exit_time
+        )
+        estimate = estimate_plan_outcome(
+            direction=signal.direction,
+            outcome=signal_outcome.outcome,
+            qty=plan.qty,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            actual_stress_loss=plan.actual_stress_loss,
+            fee_rate_round_trip=fee_rate_round_trip,
+            slippage_rate=slippage_rate,
+            stop_gap_reserve_rate=stop_gap_reserve_rate,
+            funding_rate=funding_rate,
+            funding_complete=funding_complete,
+        )
+    except (DecimalException, TypeError, ValueError, OverflowError) as exc:
+        funding_rate = Decimal("0")
+        funding_details = {
+            "source": "invalid_plan_snapshot",
+            "settlements": 0,
+            "validation_error": str(exc),
+        }
+        estimate = _invalid_plan_estimate(str(exc))
+        fee_rate_round_trip = slippage_rate = stop_gap_reserve_rate = Decimal("0")
+
+    invalid_input = estimate.valuation_status == "INVALID_INPUT"
+    if invalid_input:
+        stored_qty = Decimal("0")
+        cost_assumptions = {
+            "source": "execution_plan.sizing_snapshot.costs",
+            "actual_execution_pnl": False,
+            "validation_error": estimate.validation_error,
+            "funding": funding_details,
+        }
+    else:
+        stored_qty = plan.qty
+        cost_assumptions = {
+            "fee_rate_round_trip": str(fee_rate_round_trip),
+            "slippage_rate": str(slippage_rate),
+            "stop_gap_reserve_rate": str(stop_gap_reserve_rate),
+            "funding_rate": str(funding_rate),
+            "funding": funding_details,
+            "fee_valuation": "equal_rate_per_leg_on_entry_and_exit_notional",
+            "source": "execution_plan.sizing_snapshot.costs",
+            "actual_execution_pnl": False,
+        }
+
     row = PlanOutcome(
         signal_outcome_id=signal_outcome.id,
         plan_id=plan.id,
         plan_version=plan.version,
         outcome=signal_outcome.outcome,
         valuation_status=estimate.valuation_status,
-        qty=plan.qty,
-        entry_price=signal.entry_reference,
-        exit_price=signal_outcome.exit_price,
+        qty=stored_qty,
+        entry_price=entry_price,
+        exit_price=exit_price,
         gross_pnl=estimate.gross_pnl,
         estimated_trading_costs=estimate.estimated_trading_costs,
         estimated_funding_cash_flow=estimate.estimated_funding_cash_flow,
         estimated_net_pnl=estimate.estimated_net_pnl,
         counterfactual_r=estimate.counterfactual_r,
-        cost_assumptions={
-            "fee_rate_round_trip": str(_cost_value(plan, "fee_rate_round_trip")),
-            "slippage_rate": str(_cost_value(plan, "slippage_rate")),
-            "stop_gap_reserve_rate": str(_cost_value(plan, "stop_gap_reserve_rate")),
-            "funding_rate": str(funding_rate),
-            "funding": funding_details,
-            "fee_valuation": "equal_rate_per_leg_on_entry_and_exit_notional",
-            "source": "execution_plan.sizing_snapshot.costs",
-            "actual_execution_pnl": False,
-        },
+        cost_assumptions=cost_assumptions,
         resolved_at=datetime.now(UTC),
     )
     session.add(row)
@@ -436,7 +528,10 @@ async def _record_plan_outcome(
             "outcome": row.outcome,
             "valuation_status": row.valuation_status,
             "estimated_net_pnl": str(row.estimated_net_pnl),
-            "counterfactual_r": str(row.counterfactual_r) if row.counterfactual_r is not None else None,
+            "counterfactual_r": (
+                str(row.counterfactual_r) if row.counterfactual_r is not None else None
+            ),
+            "validation_error": estimate.validation_error,
         },
     )
     return row
@@ -753,6 +848,7 @@ async def resolve_counterfactual_outcomes(
         )
     ).all()
     plan_count = 0
+    invalid_plans: list[dict[str, str]] = []
     for plan, signal, signal_outcome in missing_plan_rows:
         await acquire_advisory_xact_lock(session, "counterfactual_outcome", str(signal.id))
         existing_plan = (
@@ -760,13 +856,23 @@ async def resolve_counterfactual_outcomes(
         ).scalar_one_or_none()
         if existing_plan is not None:
             continue
-        row = await _record_plan_outcome(
-            session,
-            signal=signal,
-            signal_outcome=signal_outcome,
-            plan=plan,
-            actor=actor,
-        )
+        try:
+            row = await _record_plan_outcome(
+                session,
+                signal=signal,
+                signal_outcome=signal_outcome,
+                plan=plan,
+                actor=actor,
+            )
+        except ValueError as exc:
+            invalid_plans.append(
+                {
+                    "signal_id": str(signal.id),
+                    "plan_id": str(plan.id),
+                    "error": str(exc),
+                }
+            )
+            continue
         await publish_outbox(
             session,
             event_type="COUNTERFACTUAL_PLAN_OUTCOME_RECORDED",
@@ -785,6 +891,7 @@ async def resolve_counterfactual_outcomes(
         "signals_resolved": resolved_count,
         "signals_pending": pending_count,
         "invalid_signals": invalid,
+        "invalid_plan_outcomes": invalid_plans,
         "plan_outcomes_recorded": plan_count,
         "market_cutoff": market_cutoff.isoformat(),
         "available_cutoff": available_cutoff.isoformat(),

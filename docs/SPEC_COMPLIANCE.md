@@ -2,13 +2,13 @@
 
 Дата проверки: 2026-06-28
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.7.5
+Версия проекта после коррекции: 1.7.6
 
 ## Итог
 
 Проект соответствует спецификации **частично**. Архитектурный и операторский контур реализован существенно лучше исследовательского контура: FastAPI/Uvicorn, PostgreSQL-only, отдельные worker и trainer, ручное исполнение, профили капитала, cost/risk engine, UI, audit и жизненный цикл рекомендаций присутствуют.
 
-Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact. Версия 1.7.2 добавляет controlled runtime recovery при физической утрате active artifact. Версия 1.7.3 завершает scheduler-side recovery. Версия 1.7.4 закрывает fail-open риск в directional mathematics: инвертированные или нечисловые entry/SL/TP больше не превращаются через `abs()` в положительные расстояния и не получают исполнимый размер. Версия 1.7.5 закрывает соседнюю числовую boundary-проблему sizing: non-finite capital/risk/margin/caps, невалидные instrument constraints и отрицательные cost reserves блокируются до арифметики и не создают исключение либо исполнимый план.
+Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact. Версия 1.7.2 добавляет controlled runtime recovery при физической утрате active artifact. Версия 1.7.3 завершает scheduler-side recovery. Версия 1.7.4 закрывает fail-open риск в directional mathematics: инвертированные или нечисловые entry/SL/TP больше не превращаются через `abs()` в положительные расстояния и не получают исполнимый размер. Версия 1.7.5 закрывает соседнюю числовую boundary-проблему sizing: non-finite capital/risk/margin/caps, невалидные instrument constraints и отрицательные cost reserves блокируются до арифметики и не создают исключение либо исполнимый план. Версия 1.7.6 распространяет тот же fail-closed контракт на post-event valuation каждой execution-plan version: поврежденный sizing/cost/funding snapshot получает terminal `INVALID_INPUT` с нулевыми результатами и не останавливает batch.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -24,6 +24,7 @@
 | Cost-aware R/R, EV и sizing | Реализовано | комиссии, slippage, stop reserve, funding scenario, min-order/margin/liquidity/portfolio caps |
 | Directional geometry fail-closed | Исправлено в 1.7.4 | единый validator LONG/SHORT для risk, sizing и outcome; invalid plan получает `BLOCKED_INVALID_INPUT` и нулевой размер |
 | Numeric sizing inputs fail-closed | Исправлено в 1.7.5 | finite/positive capital, risk and instrument constraints; finite non-negative costs/margin/caps; invalid values дают zero-sized `BLOCKED_INVALID_INPUT` |
+| Counterfactual plan inputs fail-closed | Исправлено в 1.7.6 | finite qty/prices/stress loss/costs/funding; malformed plan snapshot дает terminal zero-valued `INVALID_INPUT`, audit diagnostic и per-plan isolation |
 | Компактная плитка, подробный диалог и glossary | Реализовано | HTML/CSS/Vanilla JS, keyboard/touch/hover подсказки, modal actions |
 | Один текущий сигнал на символ | Реализовано | supersede-логика и частичный уникальный индекс PostgreSQL |
 | ML-задача TP/SL/TIMEOUT, а не NO TRADE | Исправлено в 1.3.0 | direction-conditional barrier dataset и трехклассовая модель |
@@ -65,7 +66,7 @@
 - историческая модель фактического исполнения по стакану;
 - завершенный paper/shadow forward evidence и доказательство экономического преимущества.
 
-## Состояние машинного обучения и post-event журнала после коррекции 1.7.5
+## Состояние машинного обучения и post-event журнала после коррекции 1.7.6
 
 Технический ML-путь работает end-to-end:
 

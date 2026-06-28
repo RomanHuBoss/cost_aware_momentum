@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.6 — 2026-06-28
+
+- Counterfactual plan valuation now validates finite qty, prices, stress loss, fees, slippage, stop reserve and signed funding before arithmetic.
+- Corrupted or imported plan snapshots produce a terminal zero-valued `INVALID_INPUT` outcome with a diagnostic instead of `decimal.InvalidOperation`, `NaN` P&L/R or a failed worker job.
+- Malformed funding timelines are rejected explicitly; settlement counts are calculated arithmetically rather than through unbounded loops over corrupted timestamps.
+- Invalid plan snapshots are isolated per plan version, while corrupted signal/outcome prices remain unvalued and appear in job diagnostics without blocking other plans.
+- Added migration `0005_plan_outcome_invalid_input`, UI status text and red-to-green unit/integration contract coverage.
+
 ## 1.7.5 — 2026-06-28
 
 - Position sizing now validates finite positive capital, risk rate, instrument steps/minima and leverage before any arithmetic.

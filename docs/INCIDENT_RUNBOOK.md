@@ -87,3 +87,12 @@ API завершится до readiness. Не использовать `stamp he
 3. В версии 1.7.3 несвязанный старый `scheduled_retraining`/`material_training_dataset_change` failure не должен блокировать новый bootstrap episode.
 4. Если предыдущая попытка того же bootstrap/recovery episode завершилась технической ошибкой, ждать только `AUTO_TRAIN_RECOVERY_RETRY_MINUTES` (default 15), а не общий `AUTO_TRAIN_RETRY_HOURS`.
 5. Если candidate успешно обучен, но отклонен quality gate, baseline сохраняется, а следующая попытка использует controlled data-change cooldown; не снижать gate ради появления active-модели.
+## Counterfactual plan outcome имеет `INVALID_INPUT`
+
+1. Открыть detail конкретной plan version и зафиксировать `plan_id`, `plan_version` и `validation_error` из `cost_assumptions`/audit.
+2. Проверить immutable `execution_plans.qty`, `actual_stress_loss` и `sizing_snapshot.costs` на `NaN`, `Infinity`, отрицательные fees/reserves, malformed funding timestamp/interval.
+3. Не изменять существующий `plan_outcome`: он является audit-результатом фактического snapshot. Исправить источник данных или import pipeline.
+4. Создать новую plan version штатным recalculation только если исходный market signal еще актуален; старую версию не переписывать.
+5. После обновления до 1.7.6 убедиться, что `python manage.py migrate` применил head `0005_plan_outcome_invalid_input`.
+6. Если invalid относится к entry/exit market outcome, worker оставляет valuation незаписанной и показывает запись в `invalid_plan_outcomes`; исправить corrupted signal/outcome row до повторного запуска.
+

@@ -27,6 +27,7 @@
 | Издержки, net R/R, EV | Да, базовая модель | fee/slippage/funding scenario/stop reserve; account fee-rate и depth impact пока не подключены полностью |
 | Направленная геометрия entry/SL/TP | Да с 1.7.4 | LONG: `SL < entry < TP`; SHORT: `TP < entry < SL`; risk sizing блокирует invalid/non-finite geometry с нулевым размером |
 | Числовая граница position sizing | Да с 1.7.5 | non-finite/invalid capital, risk, costs, margin, caps и instrument constraints дают finite zero-sized `BLOCKED_INVALID_INPUT` без исключений |
+| Числовая граница counterfactual plan valuation | Да с 1.7.6 | invalid qty/stress/cost/funding snapshot сохраняется как zero-valued `INVALID_INPUT`; поврежденная plan version не блокирует остальные outcomes |
 | Policy-aware model promotion | Да с 1.5.0 | trades, realized mean R, profit factor, drawdown и incumbent-relative regression limits |
 | Профили капитала и sizing | Да | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps |
 | Компактные плитки и modal actions | Да | `web/*` |

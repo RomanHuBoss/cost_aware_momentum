@@ -354,7 +354,7 @@ function renderDetail() {
   } else if (state.detailTab === 'economics') {
     const outcome = d.counterfactual_outcome;
     const planOutcome = outcome?.plan;
-    const valuationLabels = { VALUED: 'Рассчитано', NOT_SIZED: 'Без безопасного размера', FUNDING_UNAVAILABLE: 'Funding timeline недоступен' };
+    const valuationLabels = { VALUED: 'Рассчитано', NOT_SIZED: 'Без безопасного размера', FUNDING_UNAVAILABLE: 'Funding timeline недоступен', INVALID_INPUT: 'Некорректный snapshot плана' };
     const outcomeCard = outcome ? `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3>${dataList([
       ['Исход первичного барьера', escapeHtml(outcome.outcome)], ['Цена выхода', fmtPrice(outcome.exit_price)],
       ['Время исхода', new Date(outcome.exit_time).toLocaleString('ru-RU')], ['Неоднозначный часовой бар', outcome.ambiguous ? 'Да, консервативно SL' : 'Нет'],

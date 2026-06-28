@@ -51,7 +51,7 @@ def d(value: Decimal | float | int | str) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
-def _finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
+def finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
     try:
         result = d(value)
     except (DecimalException, TypeError, ValueError) as exc:
@@ -61,15 +61,15 @@ def _finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
     return result
 
 
-def _positive_finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
-    result = _finite_decimal(value, name)
+def positive_finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
+    result = finite_decimal(value, name)
     if result <= 0:
         raise ValueError(f"{name} must be positive")
     return result
 
 
-def _nonnegative_finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
-    result = _finite_decimal(value, name)
+def nonnegative_finite_decimal(value: Decimal | float | int | str, name: str) -> Decimal:
+    result = finite_decimal(value, name)
     if result < 0:
         raise ValueError(f"{name} cannot be negative")
     return result
@@ -283,16 +283,16 @@ def calculate_position_plan(
     warnings: list[str] = []
 
     try:
-        effective_capital = _positive_finite_decimal(effective_capital, "effective_capital")
-        risk_rate = _positive_finite_decimal(risk_rate, "risk_rate")
-        entry = _positive_finite_decimal(entry, "entry")
+        effective_capital = positive_finite_decimal(effective_capital, "effective_capital")
+        risk_rate = positive_finite_decimal(risk_rate, "risk_rate")
+        entry = positive_finite_decimal(entry, "entry")
 
-        fee_rate = _nonnegative_finite_decimal(costs.fee_rate_round_trip, "fee_rate_round_trip")
-        slippage_rate = _nonnegative_finite_decimal(costs.slippage_rate, "slippage_rate")
-        stop_gap_reserve_rate = _nonnegative_finite_decimal(
+        fee_rate = nonnegative_finite_decimal(costs.fee_rate_round_trip, "fee_rate_round_trip")
+        slippage_rate = nonnegative_finite_decimal(costs.slippage_rate, "slippage_rate")
+        stop_gap_reserve_rate = nonnegative_finite_decimal(
             costs.stop_gap_reserve_rate, "stop_gap_reserve_rate"
         )
-        funding_rate = _finite_decimal(costs.funding_rate, "funding_rate")
+        funding_rate = finite_decimal(costs.funding_rate, "funding_rate")
         costs = CostScenario(
             fee_rate_round_trip=fee_rate,
             slippage_rate=slippage_rate,
@@ -300,15 +300,15 @@ def calculate_position_plan(
             funding_rate=funding_rate,
         )
 
-        qty_step = _positive_finite_decimal(constraints.qty_step, "qty_step")
-        min_qty = _positive_finite_decimal(constraints.min_qty, "min_qty")
-        min_notional = _positive_finite_decimal(constraints.min_notional, "min_notional")
+        qty_step = positive_finite_decimal(constraints.qty_step, "qty_step")
+        min_qty = positive_finite_decimal(constraints.min_qty, "min_qty")
+        min_notional = positive_finite_decimal(constraints.min_notional, "min_notional")
         max_qty = (
-            _positive_finite_decimal(constraints.max_qty, "max_qty")
+            positive_finite_decimal(constraints.max_qty, "max_qty")
             if constraints.max_qty is not None
             else None
         )
-        max_leverage = _positive_finite_decimal(constraints.max_leverage, "max_leverage")
+        max_leverage = positive_finite_decimal(constraints.max_leverage, "max_leverage")
         requested_leverage = max(1, int(leverage))
         leverage = (
             requested_leverage if Decimal(requested_leverage) <= max_leverage else max(1, int(max_leverage))
@@ -321,22 +321,22 @@ def calculate_position_plan(
             max_leverage=max_leverage,
         )
 
-        reserve_rate = _finite_decimal(margin_reserve_rate, "margin_reserve_rate")
+        reserve_rate = finite_decimal(margin_reserve_rate, "margin_reserve_rate")
         if reserve_rate < 0 or reserve_rate >= 1:
             raise ValueError("margin_reserve_rate must be finite and in [0, 1)")
         margin_reserve_rate = reserve_rate
         if available_margin is not None:
-            available_margin = _nonnegative_finite_decimal(available_margin, "available_margin")
+            available_margin = nonnegative_finite_decimal(available_margin, "available_margin")
         if liquidity_notional_cap is not None:
-            liquidity_notional_cap = _nonnegative_finite_decimal(
+            liquidity_notional_cap = nonnegative_finite_decimal(
                 liquidity_notional_cap, "liquidity_notional_cap"
             )
         if portfolio_notional_cap is not None:
-            portfolio_notional_cap = _nonnegative_finite_decimal(
+            portfolio_notional_cap = nonnegative_finite_decimal(
                 portfolio_notional_cap, "portfolio_notional_cap"
             )
         if exchange_notional_cap is not None:
-            exchange_notional_cap = _nonnegative_finite_decimal(
+            exchange_notional_cap = nonnegative_finite_decimal(
                 exchange_notional_cap, "exchange_notional_cap"
             )
     except (DecimalException, TypeError, ValueError, OverflowError) as exc:
@@ -384,7 +384,7 @@ def calculate_position_plan(
         )
 
     try:
-        risk_notional = _positive_finite_decimal(risk_budget / downside, "risk_notional")
+        risk_notional = positive_finite_decimal(risk_budget / downside, "risk_notional")
         caps: list[tuple[str, Decimal]] = [("RISK", risk_notional)]
 
         if available_margin is not None:
@@ -392,7 +392,7 @@ def calculate_position_plan(
             caps.append(
                 (
                     "MARGIN",
-                    _nonnegative_finite_decimal(
+                    nonnegative_finite_decimal(
                         free_after_reserve * Decimal(leverage), "margin_notional_cap"
                     ),
                 )
@@ -407,16 +407,16 @@ def calculate_position_plan(
             caps.append(
                 (
                     "EXCHANGE_MAX_QTY",
-                    _positive_finite_decimal(constraints.max_qty * entry, "exchange_max_qty_notional"),
+                    positive_finite_decimal(constraints.max_qty * entry, "exchange_max_qty_notional"),
                 )
             )
 
         limiting_cap, final_notional_raw = min(caps, key=lambda item: item[1])
-        qty_raw = _nonnegative_finite_decimal(final_notional_raw / entry, "qty_raw")
+        qty_raw = nonnegative_finite_decimal(final_notional_raw / entry, "qty_raw")
         qty = floor_to_step(qty_raw, constraints.qty_step)
-        notional = _nonnegative_finite_decimal(qty * entry, "notional")
-        actual_loss = _nonnegative_finite_decimal(notional * downside, "actual_stress_loss")
-        margin = _nonnegative_finite_decimal(notional / Decimal(leverage), "margin_estimate")
+        notional = nonnegative_finite_decimal(qty * entry, "notional")
+        actual_loss = nonnegative_finite_decimal(notional * downside, "actual_stress_loss")
+        margin = nonnegative_finite_decimal(notional / Decimal(leverage), "margin_estimate")
     except (DecimalException, TypeError, ValueError, OverflowError) as exc:
         return _blocked_invalid_position_plan(
             effective_capital=effective_capital,

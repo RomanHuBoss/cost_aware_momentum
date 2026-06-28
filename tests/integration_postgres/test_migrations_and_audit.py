@@ -63,7 +63,7 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert (await session.execute(select(CapitalProfile))).scalars().all()
         assert len((await session.execute(select(UIGlossary))).scalars().all()) >= 10
         revision = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert revision == "0004_counterfactual_outcomes"
+        assert revision == "0005_plan_outcome_invalid_input"
         index_definition = (
             await session.execute(
                 text(
@@ -112,6 +112,18 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert tables == {"signal_outcomes", "plan_outcomes"}
         assert SignalOutcome.__table__.schema == "advisory"
         assert PlanOutcome.__table__.schema == "advisory"
+        valuation_constraint = (
+            await session.execute(
+                text(
+                    """
+                    SELECT pg_get_constraintdef(oid)
+                    FROM pg_constraint
+                    WHERE conname = 'ck_plan_outcomes_plan_outcome_valuation_status'
+                    """
+                )
+            )
+        ).scalar_one()
+        assert "INVALID_INPUT" in valuation_constraint
     await engine.dispose()
 
 

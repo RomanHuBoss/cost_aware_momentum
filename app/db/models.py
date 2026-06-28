@@ -323,7 +323,7 @@ class PlanOutcome(Base, UUIDPrimaryKeyMixin):
         UniqueConstraint("plan_id", name="uq_plan_outcome_plan"),
         CheckConstraint("outcome IN ('TP', 'SL', 'TIMEOUT')", name="plan_outcome_value"),
         CheckConstraint(
-            "valuation_status IN ('VALUED', 'NOT_SIZED', 'FUNDING_UNAVAILABLE')",
+            "valuation_status IN ('VALUED', 'NOT_SIZED', 'FUNDING_UNAVAILABLE', 'INVALID_INPUT')",
             name="plan_outcome_valuation_status",
         ),
         CheckConstraint("qty >= 0", name="plan_outcome_qty_non_negative"),

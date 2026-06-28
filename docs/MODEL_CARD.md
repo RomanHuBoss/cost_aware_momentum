@@ -106,4 +106,6 @@ python manage.py model-registry activate --version <version>
 
 Для каждой execution-plan version сохраняется отдельный estimate по ее immutable qty/risk/cost snapshot. Комиссии входа/выхода применяются к соответствующим notionals, stop-gap reserve — только к SL. Funding включает только settlement timestamps, пересеченные гипотетическим holding period, когда timeline присутствует в snapshot. Legacy-планы без такого timeline получают `FUNDING_UNAVAILABLE` и не получают counterfactual R.
 
+Начиная с 1.7.6 non-finite qty/stress loss, отрицательные либо non-finite costs и поврежденный funding timeline не создают `NaN`-метрики и не прерывают worker batch. Такая plan version получает terminal `INVALID_INPUT`, нулевые оценочные денежные значения, `counterfactual_r=null` и диагностический `validation_error`. Валидный market outcome сохраняется отдельно; это не исправляет исходные данные и не превращает нулевую оценку в фактический P&L.
+
 Этот журнал предназначен для анализа selection bias, calibration и policy quality. Он не является realized P&L ручной сделки, не использует фактические fills и пока не служит автоматическим live rollback gate.

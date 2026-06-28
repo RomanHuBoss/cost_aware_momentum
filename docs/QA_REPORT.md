@@ -1,6 +1,30 @@
 # QA report
 
-Дата проверки версии 1.7.5: 28 июня 2026 г.
+Дата проверки версии 1.7.6: 28 июня 2026 г.
+
+## Итерация 1.7.6 — fail-closed counterfactual plan valuation
+
+Подтвержден defect post-event financial boundary: `estimate_plan_outcome()` не проверял finite Decimal values. `NaN` вызывал `decimal.InvalidOperation` либо попадал в P&L, бесконечные stress/reserve значения ошибочно получали `VALUED`, а поврежденная plan version могла прервать обработку последующих outcomes.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `d86b3ca56d134b1ecf528398df2adf5e70812a26b85778d7bad3b871678790f7` |
+| Baseline isolated `python -m pytest -q` | PASSED — 111 passed, 3 skipped, 20 warnings |
+| Red counterfactual tests | PASSED как доказательство дефекта — 8 failed, 12 passed |
+| `python -m pip check` | PASSED — No broken requirements found |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 120 passed, 3 skipped, 20 warnings |
+| targeted counterfactual tests | PASSED — 21 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0005_plan_outcome_invalid_input` |
+| `python manage.py doctor` | FAILED (environment) — project-local `.venv`/`.env` и PostgreSQL tools/service отсутствуют |
+| PostgreSQL integration | NOT RUN — `TEST_DATABASE_URL` и отдельная PostgreSQL test database отсутствуют; 3 integration tests корректно skipped в full suite |
+| Migration / `.env` | требуется `python manage.py migrate`; новые `.env` переменные не требуются |
+
+Host environment до isolated setup также зафиксирован: `pip check` выявил внешний MoviePy/Pillow conflict, Ruff и psycopg отсутствовали, из-за чего host pytest завершился collection errors. Production fix проверен в isolated environment из `.[dev]`; SQLite/fake application database не применялась.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-plan-outcome-input-validation.md`.
 
 ## Итерация 1.7.5 — fail-closed numeric sizing inputs
 
