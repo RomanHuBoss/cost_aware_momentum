@@ -55,8 +55,8 @@ def test_reference_sizing_500_usdt() -> None:
     )
     assert plan.status == "ACTIONABLE"
     assert plan.risk_budget == D("1.7500")
-    assert plan.qty == D("0.977")
-    assert plan.notional == D("97.700")
+    assert plan.qty == D("0.978")
+    assert plan.notional == D("97.800")
     assert plan.actual_stress_loss <= plan.risk_budget
     assert plan.margin_estimate == plan.notional / D("3")
 
@@ -124,8 +124,8 @@ def test_net_rr_and_ev_reference_arithmetic() -> None:
         p_sl=0.48,
         p_timeout=0.10,
     )
-    assert downside == D("0.0179")
-    assert upside == D("0.0341")
+    assert downside == D("0.01789175")
+    assert upside == D("0.03408020")
     assert float(rr) == pytest.approx(1.905, rel=1e-3)
     assert ev_r > 0
 
@@ -305,3 +305,38 @@ def test_position_sizing_accepts_finite_signed_funding_rate() -> None:
 
     assert plan.status == "ACTIONABLE"
     assert plan.qty > 0
+
+
+def test_fee_math_uses_each_barrier_leg_notional() -> None:
+    fee_only = CostScenario(D("0.001"), D("0"), D("0"), D("0"))
+
+    long_rr, _, long_downside, long_upside = net_rr_and_ev(
+        entry=D("100"),
+        stop=D("90"),
+        take_profit=D("110"),
+        direction="LONG",
+        costs=fee_only,
+        p_tp=0.5,
+        p_sl=0.5,
+        p_timeout=0.0,
+    )
+    short_rr, _, short_downside, short_upside = net_rr_and_ev(
+        entry=D("100"),
+        stop=D("110"),
+        take_profit=D("90"),
+        direction="SHORT",
+        costs=fee_only,
+        p_tp=0.5,
+        p_sl=0.5,
+        p_timeout=0.0,
+    )
+
+    # fee_rate_round_trip=0.1% means 0.05% on entry and 0.05% on exit.
+    # Rates below are normalized by entry notional, so the exit leg depends on
+    # the actual stop/TP price rather than being fixed at entry notional.
+    assert long_downside == D("0.10095")
+    assert long_upside == D("0.09895")
+    assert short_downside == D("0.10105")
+    assert short_upside == D("0.09905")
+    assert long_rr == long_upside / long_downside
+    assert short_rr == short_upside / short_downside

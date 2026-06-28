@@ -199,15 +199,34 @@ def fee_cash(qty: Decimal, executed_price: Decimal, fee_rate: Decimal) -> Decima
     return abs(d(qty) * d(executed_price)) * d(fee_rate)
 
 
+def normalized_round_trip_fee_rate(
+    entry: Decimal, exit_price: Decimal, fee_rate_round_trip: Decimal
+) -> Decimal:
+    """Return two equal fee legs normalized by entry notional.
+
+    ``fee_rate_round_trip`` is the sum of equal entry and exit fee rates.  The
+    exit leg must be charged on the actual exit notional, not on entry notional.
+    """
+
+    entry = _positive_finite_price(entry, "entry")
+    exit_price = _positive_finite_price(exit_price, "exit_price")
+    fee_rate_round_trip = nonnegative_finite_decimal(
+        fee_rate_round_trip, "fee_rate_round_trip"
+    )
+    fee_rate_per_leg = fee_rate_round_trip / Decimal("2")
+    return fee_rate_per_leg * (Decimal("1") + exit_price / entry)
+
+
 def stress_downside_rate(entry: Decimal, stop: Decimal, direction: Direction, costs: CostScenario) -> Decimal:
     validate_directional_geometry(entry=entry, stop=stop, direction=direction)
     entry = d(entry)
     stop = d(stop)
     price_move = (entry - stop) / entry if direction == "LONG" else (stop - entry) / entry
     adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
+    fee_rate = normalized_round_trip_fee_rate(entry, stop, costs.fee_rate_round_trip)
     return (
         price_move
-        + costs.fee_rate_round_trip
+        + fee_rate
         + costs.slippage_rate
         + costs.stop_gap_reserve_rate
         + adverse_funding
@@ -220,7 +239,8 @@ def upside_rate(entry: Decimal, take_profit: Decimal, direction: Direction, cost
     tp = d(take_profit)
     price_move = (tp - entry) / entry if direction == "LONG" else (entry - tp) / entry
     adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
-    return price_move - costs.fee_rate_round_trip - costs.slippage_rate - adverse_funding
+    fee_rate = normalized_round_trip_fee_rate(entry, tp, costs.fee_rate_round_trip)
+    return price_move - fee_rate - costs.slippage_rate - adverse_funding
 
 
 def net_rr_and_ev(
@@ -245,7 +265,14 @@ def net_rr_and_ev(
     upside = upside_rate(entry, take_profit, direction, costs)
     rr = Decimal("0") if downside <= 0 else max(Decimal("0"), upside) / downside
     adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
-    timeout_net = d(timeout_return_rate) - costs.fee_rate_round_trip - costs.slippage_rate - adverse_funding
+    timeout_gross = finite_decimal(timeout_return_rate, "timeout_return_rate")
+    timeout_exit = d(entry) * (
+        Decimal("1") + timeout_gross if direction == "LONG" else Decimal("1") - timeout_gross
+    )
+    timeout_fee_rate = normalized_round_trip_fee_rate(
+        entry, timeout_exit, costs.fee_rate_round_trip
+    )
+    timeout_net = timeout_gross - timeout_fee_rate - costs.slippage_rate - adverse_funding
     ev_rate = d(p_tp) * upside - d(p_sl) * downside + d(p_timeout) * timeout_net
     ev_r = Decimal("0") if downside <= 0 else ev_rate / downside
     return rr, ev_r, downside, upside

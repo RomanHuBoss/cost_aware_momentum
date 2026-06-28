@@ -264,6 +264,7 @@ async def load_training_candles(
             {
                 "symbol": row.symbol,
                 "open_time": row.open_time,
+                "close_time": row.close_time,
                 "open": float(row.open),
                 "high": float(row.high),
                 "low": float(row.low),
@@ -318,7 +319,7 @@ def build_model_candidate(
     )
     metrics = evaluate_model(model, split)
     label_data_end = _as_datetime(dataset.label_end_time.max())
-    metrics["temporal_split_schema"] = "label-end-purged-v2"
+    metrics["temporal_split_schema"] = "decision-and-label-end-purged-v3"
     metrics["feature_schema_version"] = MODEL_FEATURE_SCHEMA_VERSION
     metrics["hourly_continuity"] = json_compatible(
         dataset.attrs.get("hourly_continuity") or {}
@@ -360,13 +361,13 @@ def build_model_candidate(
     target = (output or model_dir / f"{generated_version}.joblib").expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    training_start = _as_datetime(dataset.open_time.min())
-    training_end = _as_datetime(dataset.open_time.max())
-    unique_timestamps = int(dataset["open_time"].nunique())
+    training_start = _as_datetime(dataset.decision_time.min())
+    training_end = _as_datetime(dataset.decision_time.max())
+    unique_timestamps = int(dataset["decision_time"].nunique())
     symbol_values = tuple(sorted(str(item) for item in dataset["symbol"].unique()))
     training_data_profile = profile_training_frame(
         candles,
-        label_cutoff=training_end,
+        label_cutoff=_as_datetime(dataset.source_open_time.max()),
         minimum_rows_for_coverage=minimum_rows_for_coverage,
         expected_symbols=expected_symbols,
     )
@@ -378,7 +379,7 @@ def build_model_candidate(
         "calibration_version": f"sigmoid-ovr-{generated_version}",
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
-        "temporal_split_schema": "label-end-purged-v2",
+        "temporal_split_schema": "decision-and-label-end-purged-v3",
         "label_data_end": label_data_end.isoformat(),
         "horizon_hours": horizon,
         "stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,

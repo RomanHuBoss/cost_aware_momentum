@@ -33,6 +33,7 @@ async def load_frame() -> pd.DataFrame:
             {
                 "symbol": row.symbol,
                 "open_time": row.open_time,
+                "close_time": row.close_time,
                 "open": float(row.open),
                 "high": float(row.high),
                 "low": float(row.low),
@@ -70,10 +71,10 @@ def policy_backtest(
 
     chosen = (
         meta.sort_values(
-            ["open_time", "symbol", "predicted_net_edge"],
+            ["decision_time", "symbol", "predicted_net_edge"],
             ascending=[True, True, False],
         )
-        .groupby(["open_time", "symbol"], as_index=False)
+        .groupby(["decision_time", "symbol"], as_index=False)
         .head(1)
         .reset_index(drop=True)
     )
@@ -85,29 +86,57 @@ def policy_backtest(
         - np.where(chosen["target"] == "SL", gap_rate, 0.0),
         0.0,
     )
-    equity = np.cumprod(1.0 + chosen["net_return"].to_numpy(float))
-    peaks = np.maximum.accumulate(equity) if len(equity) else np.array([])
-    drawdowns = equity / peaks - 1.0 if len(equity) else np.array([])
-    traded = chosen[chosen["traded"]]
+    traded = chosen[chosen["traded"]].copy()
+    all_periods = pd.Index(chosen["decision_time"].drop_duplicates().sort_values())
+    period_returns = (
+        traded.groupby("decision_time", sort=True)["net_return"].mean().reindex(all_periods, fill_value=0.0)
+    )
+    concurrent_trades = (
+        traded.groupby("decision_time", sort=True).size().reindex(all_periods, fill_value=0)
+    )
+    equity = np.concatenate(
+        ([1.0], np.cumprod(1.0 + period_returns.to_numpy(float)))
+    )
+    peaks = np.maximum.accumulate(equity)
+    drawdowns = equity / peaks - 1.0
 
     def stressed(multiplier: float) -> float:
-        net = np.where(
-            chosen["traded"],
-            chosen["realized_gross_return"]
+        stressed_rows = chosen.loc[chosen["traded"], ["decision_time"]].copy()
+        stressed_rows["net_return"] = (
+            chosen.loc[chosen["traded"], "realized_gross_return"].to_numpy(float)
             - cost_rate * multiplier
-            - np.where(chosen["target"] == "SL", gap_rate * multiplier, 0.0),
-            0.0,
+            - np.where(
+                chosen.loc[chosen["traded"], "target"].to_numpy() == "SL",
+                gap_rate * multiplier,
+                0.0,
+            )
         )
-        return float(np.cumprod(1.0 + net)[-1] - 1.0) if len(net) else 0.0
+        stressed_periods = (
+            stressed_rows.groupby("decision_time", sort=True)["net_return"]
+            .mean()
+            .reindex(all_periods, fill_value=0.0)
+        )
+        return (
+            float(np.cumprod(1.0 + stressed_periods.to_numpy(float))[-1] - 1.0)
+            if len(stressed_periods)
+            else 0.0
+        )
 
     return {
         "candidate_rows": int(len(chosen)),
         "trades": int(chosen["traded"].sum()),
         "no_trade_rate": float(1.0 - chosen["traded"].mean()) if len(chosen) else 1.0,
-        "net_return": float(equity[-1] - 1.0) if len(equity) else 0.0,
+        "net_return": float(equity[-1] - 1.0),
         "mean_net_return_per_trade": float(traded["net_return"].mean()) if len(traded) else 0.0,
         "win_rate": float((traded["net_return"] > 0).mean()) if len(traded) else 0.0,
-        "max_drawdown": float(drawdowns.min()) if len(drawdowns) else 0.0,
+        "max_drawdown": float(drawdowns.min()),
+        "portfolio_periods": int(len(period_returns)),
+        "max_concurrent_trades": int(concurrent_trades.max()) if len(concurrent_trades) else 0,
+        "mean_concurrent_trades": (
+            float(concurrent_trades[concurrent_trades > 0].mean())
+            if (concurrent_trades > 0).any()
+            else 0.0
+        ),
         "cost_bps": round_trip_cost_bps,
         "stop_gap_reserve_bps": stop_gap_reserve_bps,
         "minimum_predicted_edge": minimum_predicted_edge,

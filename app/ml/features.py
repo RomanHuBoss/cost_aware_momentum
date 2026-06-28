@@ -37,6 +37,10 @@ def build_feature_frame(candles: pd.DataFrame) -> pd.DataFrame:
         return candles.copy()
     frame = candles.copy()
     frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, errors="coerce")
+    if "close_time" in frame.columns:
+        frame["close_time"] = pd.to_datetime(frame["close_time"], utc=True, errors="coerce")
+    else:
+        frame["close_time"] = frame["open_time"] + _HOURLY_INTERVAL
     frame = frame.sort_values(["symbol", "open_time"]).copy()
     for column in ("open", "high", "low", "close", "volume", "turnover"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")

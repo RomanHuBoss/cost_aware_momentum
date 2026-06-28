@@ -23,7 +23,7 @@ OUTCOME_CLASSES = np.array(["TP", "SL", "TIMEOUT"])
 MODEL_FEATURE_NAMES = [*FEATURE_NAMES, "scenario_direction"]
 DEFAULT_STOP_ATR_MULTIPLIER = 1.15
 DEFAULT_TP_ATR_MULTIPLIER = 2.20
-MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v2"
+MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 
 
@@ -193,18 +193,26 @@ def make_barrier_dataset(
                 continue
 
             future = group.iloc[index + 1 : index + 1 + horizon][
-                ["open_time", "high", "low", "close"]
+                ["open_time", "close_time", "high", "low", "close"]
             ]
             if len(future) < horizon:
                 continue
-            current_time = current["open_time"]
+            source_open_time = current["open_time"]
+            decision_time = current["close_time"]
+            if pd.isna(decision_time) or decision_time - source_open_time != hourly:
+                diagnostics["skipped_feature_gap_timestamps"] += 1
+                continue
             expected_times = pd.date_range(
-                start=current_time + hourly,
+                start=decision_time,
                 periods=horizon,
                 freq=hourly,
             )
             actual_times = pd.DatetimeIndex(future["open_time"])
-            if not actual_times.equals(expected_times):
+            actual_close_times = pd.DatetimeIndex(future["close_time"])
+            expected_close_times = expected_times + hourly
+            if not actual_times.equals(expected_times) or not actual_close_times.equals(
+                expected_close_times
+            ):
                 diagnostics["skipped_label_gap_timestamps"] += 1
                 continue
 
@@ -215,7 +223,7 @@ def make_barrier_dataset(
             atr = float(current.get("atr_14", np.nan))
             if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
                 continue
-            label_end_time = future.iloc[-1]["open_time"]
+            label_end_time = future.iloc[-1]["close_time"]
 
             rows_before = len(rows)
             for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
@@ -241,8 +249,11 @@ def make_barrier_dataset(
                 row.update(
                     {
                         "scenario_direction": direction_code,
-                        "open_time": current_time,
+                        "open_time": source_open_time,
+                        "source_open_time": source_open_time,
+                        "decision_time": decision_time,
                         "feature_window_start_time": current[FEATURE_WINDOW_START_COLUMN],
+                        "source_label_end_open_time": future.iloc[-1]["open_time"],
                         "label_end_time": label_end_time,
                         "symbol": symbol,
                         "direction": direction,
@@ -279,23 +290,25 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
     if purge_hours < 0:
         raise ValueError("purge_rows must be non-negative")
 
-    required_columns = {"open_time", "label_end_time"}
+    required_columns = {"decision_time", "label_end_time"}
     missing_columns = sorted(required_columns - set(frame.columns))
     if missing_columns:
         raise ValueError(f"Chronological split requires columns: {missing_columns}")
 
     frame = frame.copy()
-    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, errors="coerce")
+    frame["decision_time"] = pd.to_datetime(
+        frame["decision_time"], utc=True, errors="coerce"
+    )
     frame["label_end_time"] = pd.to_datetime(
         frame["label_end_time"], utc=True, errors="coerce"
     )
-    if frame[["open_time", "label_end_time"]].isna().any().any():
-        raise ValueError("Chronological split contains invalid open_time or label_end_time")
-    if (frame["label_end_time"] <= frame["open_time"]).any():
-        raise ValueError("Every label_end_time must be later than its open_time")
+    if frame[["decision_time", "label_end_time"]].isna().any().any():
+        raise ValueError("Chronological split contains invalid decision_time or label_end_time")
+    if (frame["label_end_time"] <= frame["decision_time"]).any():
+        raise ValueError("Every label_end_time must be later than its decision_time")
 
-    frame = frame.sort_values(["open_time", "symbol", "direction"]).reset_index(drop=True)
-    unique_times = pd.Index(frame["open_time"].drop_duplicates().sort_values())
+    frame = frame.sort_values(["decision_time", "symbol", "direction"]).reset_index(drop=True)
+    unique_times = pd.Index(frame["decision_time"].drop_duplicates().sort_values())
     n_times = len(unique_times)
     if n_times < 300:
         raise ValueError("At least 300 unique labeled timestamps are required")
@@ -307,22 +320,23 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
 
     train = frame[frame["label_end_time"] < train_boundary]
     cal = frame[
-        (frame["open_time"] >= train_boundary + embargo)
+        (frame["decision_time"] >= train_boundary + embargo)
         & (frame["label_end_time"] < cal_boundary)
     ]
-    test = frame[frame["open_time"] >= cal_boundary + embargo]
+    test = frame[frame["decision_time"] >= cal_boundary + embargo]
     if min(len(train), len(cal), len(test)) < 90:
         raise ValueError("Chronological split produced an undersized window")
-    if train["open_time"].max() >= cal["open_time"].min():
+    if train["decision_time"].max() >= cal["decision_time"].min():
         raise AssertionError("Train/calibration windows overlap")
-    if cal["open_time"].max() >= test["open_time"].min():
+    if cal["decision_time"].max() >= test["decision_time"].min():
         raise AssertionError("Calibration/final-holdout windows overlap")
-    if train["label_end_time"].max() >= cal["open_time"].min():
+    if train["label_end_time"].max() >= cal["decision_time"].min():
         raise AssertionError("Train labels overlap calibration features")
-    if cal["label_end_time"].max() >= test["open_time"].min():
+    if cal["label_end_time"].max() >= test["decision_time"].min():
         raise AssertionError("Calibration labels overlap final-holdout features")
 
     meta_columns = [
+        "decision_time",
         "open_time",
         "label_end_time",
         "symbol",
@@ -467,12 +481,55 @@ def evaluate_policy_model(
     for label in model.classes_:
         meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
 
-    fee_slippage = config.fee_rate_round_trip + config.slippage_rate
-    meta["net_upside_rate"] = meta["barrier_upside_rate"] - fee_slippage
-    meta["stress_downside_rate"] = (
-        meta["barrier_downside_rate"] + fee_slippage + config.stop_gap_reserve_rate
+    fee_rate_per_leg = config.fee_rate_round_trip / 2.0
+    is_long = meta["direction"].eq("LONG")
+    tp_exit_ratio = np.where(
+        is_long,
+        1.0 + meta["barrier_upside_rate"],
+        1.0 - meta["barrier_upside_rate"],
     )
-    meta["timeout_net_rate"] = config.timeout_return_rate - fee_slippage
+    sl_exit_ratio = np.where(
+        is_long,
+        1.0 - meta["barrier_downside_rate"],
+        1.0 + meta["barrier_downside_rate"],
+    )
+    timeout_exit_ratio = np.where(
+        is_long,
+        1.0 + config.timeout_return_rate,
+        1.0 - config.timeout_return_rate,
+    )
+    realized_timeout_exit_ratio = np.where(
+        is_long,
+        1.0 + meta["realized_gross_return"],
+        1.0 - meta["realized_gross_return"],
+    )
+    if (
+        (tp_exit_ratio <= 0).any()
+        or (sl_exit_ratio <= 0).any()
+        or (timeout_exit_ratio <= 0).any()
+        or (realized_timeout_exit_ratio <= 0).any()
+    ):
+        raise ValueError("Policy evaluation produced a non-positive exit notional ratio")
+    tp_fee_rate = fee_rate_per_leg * (1.0 + tp_exit_ratio)
+    sl_fee_rate = fee_rate_per_leg * (1.0 + sl_exit_ratio)
+    timeout_fee_rate = fee_rate_per_leg * (1.0 + timeout_exit_ratio)
+    meta["net_upside_rate"] = (
+        meta["barrier_upside_rate"] - tp_fee_rate - config.slippage_rate
+    )
+    meta["stress_downside_rate"] = (
+        meta["barrier_downside_rate"]
+        + sl_fee_rate
+        + config.slippage_rate
+        + config.stop_gap_reserve_rate
+    )
+    meta["timeout_net_rate"] = (
+        config.timeout_return_rate - timeout_fee_rate - config.slippage_rate
+    )
+    meta["realized_timeout_net_rate"] = (
+        meta["realized_gross_return"]
+        - fee_rate_per_leg * (1.0 + realized_timeout_exit_ratio)
+        - config.slippage_rate
+    )
     meta["net_rr"] = np.where(
         meta["stress_downside_rate"] > 0,
         np.maximum(meta["net_upside_rate"], 0.0) / meta["stress_downside_rate"],
@@ -489,8 +546,8 @@ def evaluate_policy_model(
         0.0,
     )
 
-    selected_index = meta.groupby(["open_time", "symbol"], sort=False)["expected_ev_r"].idxmax()
-    selected = meta.loc[selected_index].sort_values(["open_time", "symbol"]).reset_index(drop=True)
+    selected_index = meta.groupby(["decision_time", "symbol"], sort=False)["expected_ev_r"].idxmax()
+    selected = meta.loc[selected_index].sort_values(["decision_time", "symbol"]).reset_index(drop=True)
     selected["actionable"] = (selected["net_rr"] >= config.min_net_rr) & (
         selected["expected_ev_r"] >= config.min_net_ev_r
     )
@@ -516,7 +573,7 @@ def evaluate_policy_model(
         np.where(
             outcome == "SL",
             -trades["stress_downside_rate"],
-            trades["realized_gross_return"] - fee_slippage,
+            trades["realized_timeout_net_rate"],
         ),
     )
     trades["realized_r"] = np.where(
@@ -527,9 +584,10 @@ def evaluate_policy_model(
     gains = float(trades.loc[trades["realized_r"] > 0, "realized_r"].sum())
     losses = float(-trades.loc[trades["realized_r"] < 0, "realized_r"].sum())
     profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
-    hourly_r = trades.groupby("open_time", sort=True)["realized_r"].mean()
-    equity = hourly_r.cumsum()
-    drawdown = equity.cummax() - equity
+    hourly_r = trades.groupby("decision_time", sort=True)["realized_r"].mean()
+    cumulative_r = np.concatenate(([0.0], hourly_r.cumsum().to_numpy(float)))
+    running_peak = np.maximum.accumulate(cumulative_r)
+    drawdown = running_peak - cumulative_r
 
     return {
         "policy_candidates": int(len(selected)),

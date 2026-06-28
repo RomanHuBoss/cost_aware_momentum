@@ -174,6 +174,7 @@ def test_chronological_split_keeps_timestamp_groups_together() -> None:
                     {
                         "scenario_direction": direction_code,
                         "open_time": start + timedelta(hours=hour),
+                        "decision_time": start + timedelta(hours=hour),
                         "label_end_time": start + timedelta(hours=hour + 8),
                         "symbol": symbol,
                         "direction": direction,
@@ -213,6 +214,7 @@ def test_chronological_split_purges_by_actual_label_end_time() -> None:
                     {
                         "scenario_direction": direction_code,
                         "open_time": open_time,
+                        "decision_time": open_time,
                         "label_end_time": label_end_time,
                         "symbol": symbol,
                         "direction": direction,
@@ -248,6 +250,7 @@ def test_chronological_split_fails_closed_without_valid_label_end_time() -> None
                 {
                     "scenario_direction": direction_code,
                     "open_time": start + timedelta(hours=hour),
+                    "decision_time": start + timedelta(hours=hour),
                     "symbol": "BTCUSDT",
                     "direction": direction,
                     "target": "TP" if hour % 3 == 0 else "SL",
@@ -296,6 +299,7 @@ def test_policy_evaluation_selects_one_direction_and_applies_cost_gate() -> None
             meta.append(
                 {
                     "open_time": open_time,
+                    "decision_time": open_time,
                     "symbol": "BTCUSDT",
                     "direction": direction,
                     "target": target,
@@ -363,3 +367,97 @@ def test_barrier_dataset_excludes_non_contiguous_feature_and_label_windows() -> 
     assert continuity["label_horizon_hours"] == 4
     assert continuity["skipped_feature_gap_timestamps"] >= 24
     assert continuity["skipped_label_gap_timestamps"] >= 4
+
+
+def test_barrier_dataset_uses_candle_close_as_decision_and_label_availability_time() -> None:
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    rows = []
+    close = 100.0
+    for hour in range(80):
+        open_time = start + timedelta(hours=hour)
+        close *= 1.001 if hour % 5 else 0.998
+        rows.append(
+            {
+                "symbol": "BTCUSDT",
+                "open_time": open_time,
+                "close_time": open_time + timedelta(hours=1),
+                "open": close * 0.999,
+                "high": close * 1.006,
+                "low": close * 0.994,
+                "close": close,
+                "volume": 1000 + hour * 3,
+                "turnover": (1000 + hour * 3) * close,
+            }
+        )
+
+    dataset = make_barrier_dataset(pd.DataFrame(rows), horizon=4)
+    first = dataset.sort_values(["source_open_time", "direction"]).iloc[0]
+
+    decision_time = pd.Timestamp(first["decision_time"]).to_pydatetime()
+    source_open_time = pd.Timestamp(first["source_open_time"]).to_pydatetime()
+    label_end_time = pd.Timestamp(first["label_end_time"]).to_pydatetime()
+    label_end_open_time = pd.Timestamp(first["source_label_end_open_time"]).to_pydatetime()
+
+    assert decision_time == source_open_time + timedelta(hours=1)
+    assert label_end_time == decision_time + timedelta(hours=4)
+    assert label_end_time == label_end_open_time + timedelta(hours=1)
+
+
+def test_policy_drawdown_includes_loss_from_initial_equity() -> None:
+    from app.ml.training import PolicyEvaluationConfig, evaluate_policy_model
+
+    class FirstLossModel:
+        classes_ = OUTCOME_CLASSES
+
+        def predict_proba(self, x):
+            result = []
+            for row in x:
+                if row[-1] > 0:
+                    result.append([0.70, 0.20, 0.10])
+                else:
+                    result.append([0.20, 0.70, 0.10])
+            return np.asarray(result, dtype=float)
+
+    decision_times = [
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 1, 1, 1, tzinfo=UTC),
+    ]
+    x = []
+    meta = []
+    y = []
+    for index, decision_time in enumerate(decision_times):
+        for direction, code in (("LONG", 1.0), ("SHORT", -1.0)):
+            x.append([0.0] * (len(MODEL_FEATURE_NAMES) - 1) + [code])
+            target = "SL" if direction == "LONG" and index == 0 else "TP"
+            y.append(target)
+            meta.append(
+                {
+                    "decision_time": decision_time,
+                    "open_time": decision_time - timedelta(hours=1),
+                    "label_end_time": decision_time + timedelta(hours=8),
+                    "symbol": "BTCUSDT",
+                    "direction": direction,
+                    "target": target,
+                    "ambiguous": False,
+                    "realized_gross_return": -0.01 if target == "SL" else 0.02,
+                    "barrier_upside_rate": 0.02,
+                    "barrier_downside_rate": 0.01,
+                }
+            )
+    values = np.asarray(x, dtype=float)
+    targets = np.asarray(y)
+    split = DatasetSplit(values, targets, values, targets, values, targets, pd.DataFrame(meta))
+
+    metrics = evaluate_policy_model(
+        FirstLossModel(),
+        split,
+        PolicyEvaluationConfig(
+            fee_rate_round_trip=0.0,
+            slippage_rate=0.0,
+            stop_gap_reserve_rate=0.0,
+            min_net_rr=0.0,
+            min_net_ev_r=-1.0,
+        ),
+    )
+
+    assert metrics["policy_max_drawdown_r"] == pytest.approx(1.0)
