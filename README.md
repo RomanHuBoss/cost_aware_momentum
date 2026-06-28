@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.3: исправлены расчёт комиссий по фактическим entry/exit notionals, временная доступность ML-признаков и labels, а также агрегация и drawdown портфельного backtest.
+> Версия 1.8.4: LONG/SHORT теперь выбирается по той же чистой экономике `EV/R`, которая публикуется оператору и используется policy quality gate, а не по предварительной беззатратной utility модели.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -11,6 +11,7 @@
 - Отдельные процессы API, inference worker и trainer.
 - Read-only интеграция с Bybit.
 - Direction-conditional модель исходов `TP / SL / TIMEOUT`; `NO TRADE` остаётся решением policy layer.
+- Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
 - Decimal-арифметика для денежных и контрактных расчётов.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии или превышении риска.
@@ -168,13 +169,13 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
-## Обновление с 1.8.2 на 1.8.3
+## Обновление с 1.8.3 на 1.8.4
 
 - DB migration не требуется.
 - Новые `.env` переменные не требуются.
 - Перезапустите API, worker и trainer после замены файлов.
-- Переобучите модели, чтобы новые artifacts использовали исправленные `decision_time` и `label_end_time`; старые artifacts остаются читаемыми, но их историческая выборка не пересчитывается автоматически.
-- Пересчитайте research backtests: прежняя версия могла давать order-dependent compound return и нулевую просадку при убытке в первом периоде.
+- Переобучение artifact не требуется: контракт `TP / SL / TIMEOUT` не изменился.
+- После перезапуска worker оценивает оба направления и публикует сценарий с максимальным текущим net `EV/R`; поэтому направление части рекомендаций может корректно отличаться от 1.8.3.
 
 ## Ограничения
 

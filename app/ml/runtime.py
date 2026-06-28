@@ -122,6 +122,10 @@ class ModelRuntime:
         return p_tp * 2.20 - p_sl * 1.15 - p_timeout * 0.20
 
     def _predict_artifact(self, features: dict[str, float]) -> Prediction:
+        scenarios = self._predict_artifact_scenarios(features)
+        return max(scenarios, key=lambda item: item.score)
+
+    def _predict_artifact_scenarios(self, features: dict[str, float]) -> tuple[Prediction, Prediction]:
         if self.bundle is None:
             raise RuntimeError("No artifact loaded")
         model = self.bundle["model"]
@@ -138,25 +142,81 @@ class ModelRuntime:
             utility = self._scenario_utility(**outcome)
             scenarios.append((direction, utility, outcome))
 
-        scenarios.sort(key=lambda item: item[1], reverse=True)
-        direction, utility, outcome = scenarios[0]
-        alternative_utility = scenarios[1][1]
-        reasons = list(self._reasons(features, direction))
-        reasons.append(
-            "Модель оценила сценарий "
-            f"{direction}: P(TP)={outcome['p_tp']:.1%}, P(SL)={outcome['p_sl']:.1%}, "
-            f"P(timeout)={outcome['p_timeout']:.1%}"
+        predictions: list[Prediction] = []
+        for index, (direction, utility, outcome) in enumerate(scenarios):
+            alternative_utility = scenarios[1 - index][1]
+            reasons = list(self._reasons(features, direction))
+            reasons.append(
+                "Модель оценила сценарий "
+                f"{direction}: P(TP)={outcome['p_tp']:.1%}, P(SL)={outcome['p_sl']:.1%}, "
+                f"P(timeout)={outcome['p_timeout']:.1%}"
+            )
+            predictions.append(
+                Prediction(
+                    direction=direction,
+                    p_tp=outcome["p_tp"],
+                    p_sl=outcome["p_sl"],
+                    p_timeout=outcome["p_timeout"],
+                    score=utility - alternative_utility,
+                    model_version=self.version,
+                    calibration_version=self.calibration_version,
+                    reasons=tuple(reasons[:7]),
+                )
+            )
+        return predictions[0], predictions[1]
+
+    def _predict_baseline_scenarios(self, features: dict[str, float]) -> tuple[Prediction, Prediction]:
+        score = (
+            1.25 * features.get("ret_3h", 0.0)
+            + 1.10 * features.get("ret_6h", 0.0)
+            + 0.70 * features.get("ret_12h", 0.0)
+            + 0.55 * features.get("ema_distance_12", 0.0)
+            + 0.35 * features.get("ema_slope_12", 0.0)
+            + 0.25 * features.get("breakout_24", 0.0)
+            + 0.03 * max(-3.0, min(3.0, features.get("volume_z_24", 0.0)))
         )
-        return Prediction(
-            direction=direction,
-            p_tp=outcome["p_tp"],
-            p_sl=outcome["p_sl"],
-            p_timeout=outcome["p_timeout"],
-            score=utility - alternative_utility,
-            model_version=self.version,
-            calibration_version=self.calibration_version,
-            reasons=tuple(reasons[:7]),
-        )
+        vol = max(0.002, min(0.10, abs(features.get("atr_pct_14", 0.02))))
+        normalized = math.tanh(score / max(0.004, vol * 0.8))
+        rows: list[tuple[Direction, float, dict[str, float]]] = []
+        for direction, sign in (("LONG", 1.0), ("SHORT", -1.0)):
+            alignment = normalized * sign
+            p_tp = max(0.01, 0.34 + 0.30 * alignment)
+            p_sl = max(0.01, 0.52 - 0.22 * alignment)
+            p_timeout = max(0.06, 1.0 - p_tp - p_sl)
+            total = p_tp + p_sl + p_timeout
+            outcome = {
+                "p_tp": p_tp / total,
+                "p_sl": p_sl / total,
+                "p_timeout": p_timeout / total,
+            }
+            rows.append((direction, self._scenario_utility(**outcome), outcome))
+
+        predictions: list[Prediction] = []
+        for index, (direction, utility, outcome) in enumerate(rows):
+            predictions.append(
+                Prediction(
+                    direction=direction,
+                    p_tp=outcome["p_tp"],
+                    p_sl=outcome["p_sl"],
+                    p_timeout=outcome["p_timeout"],
+                    score=utility - rows[1 - index][1],
+                    model_version=self.version,
+                    calibration_version=self.calibration_version,
+                    reasons=self._reasons(features, direction),
+                )
+            )
+        return predictions[0], predictions[1]
+
+    def predict_scenarios(self, features: dict[str, float]) -> tuple[Prediction, Prediction]:
+        """Return independently calibrated LONG and SHORT outcome scenarios.
+
+        Direction selection belongs to the cost/risk policy because current bid/ask,
+        fees, funding and barrier geometry are unavailable to the model runtime.
+        """
+
+        if self.bundle is not None:
+            return self._predict_artifact_scenarios(features)
+        return self._predict_baseline_scenarios(features)
 
     def predict(self, features: dict[str, float]) -> Prediction:
         if self.bundle is not None:

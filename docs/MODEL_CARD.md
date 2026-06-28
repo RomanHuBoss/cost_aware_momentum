@@ -4,6 +4,8 @@
 
 Модель оценивает распределение исходов `TP first`, `SL first`, `TIMEOUT` отдельно для условного LONG и SHORT на фиксированном горизонте. Она не прогнозирует `NO TRADE`: это решение последующего cost/risk policy engine.
 
+Начиная с 1.8.4 runtime передает policy layer оба распределения. Окончательное направление выбирается по фактическому net `EV/R` с текущими executable bid/ask, комиссиями, slippage, funding и barrier geometry. Предварительная модельная utility используется только как диагностический score и tie-breaker, но не может заменить экономический выбор направления. Это согласует production inference с cost-aware holdout policy, применяемой перед auto-activation.
+
 ## Доступные модели
 
 - `logistic`: интерпретируемый pooled baseline с масштабированием и feature×direction interactions;

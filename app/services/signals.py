@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -20,7 +21,7 @@ from app.db.models import (
     TickerSnapshot,
 )
 from app.ml.features import BASELINE_FEATURE_SCHEMA_VERSION, latest_feature_snapshot
-from app.ml.runtime import ModelRuntime
+from app.ml.runtime import ModelRuntime, Prediction
 from app.risk.math import CostScenario, net_rr_and_ev, projected_funding_rate
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import create_execution_plan
@@ -39,6 +40,95 @@ PLAN_STATUSES_PRESERVED_ON_SIGNAL_REPLACEMENT = {
 
 def decimal(value: float | str | Decimal) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+@dataclass(frozen=True)
+class SignalScenarioEconomics:
+    prediction: Prediction
+    reference: Decimal
+    entry_low: Decimal
+    entry_high: Decimal
+    stop: Decimal
+    take_profit_1: Decimal
+    take_profit_2: Decimal
+    net_rr: Decimal
+    ev_r: Decimal
+    downside: Decimal
+    upside: Decimal
+
+
+def select_cost_aware_scenario(
+    predictions: Iterable[Prediction],
+    *,
+    bid_price: Decimal | None,
+    ask_price: Decimal | None,
+    last_price: Decimal,
+    atr_pct: Decimal,
+    costs: CostScenario,
+) -> SignalScenarioEconomics:
+    """Select LONG/SHORT by the exact economics published to the operator.
+
+    The model runtime estimates outcome probabilities for both directions.  It
+    cannot choose the economically superior direction because executable bid/ask,
+    current costs and funding are only available in the signal policy layer.
+    """
+
+    candidates: list[SignalScenarioEconomics] = []
+    for prediction in predictions:
+        reference = ask_price if prediction.direction == "LONG" else bid_price
+        reference = reference or last_price
+        atr = reference * atr_pct
+        zone_half = atr * Decimal("0.12")
+        stop_distance = atr * Decimal("1.15")
+        tp_distance = atr * Decimal("2.20")
+        tp2_distance = atr * Decimal("3.10")
+
+        if prediction.direction == "LONG":
+            stop = reference - stop_distance
+            tp1 = reference + tp_distance
+            tp2 = reference + tp2_distance
+        else:
+            stop = reference + stop_distance
+            tp1 = reference - tp_distance
+            tp2 = reference - tp2_distance
+
+        net_rr, ev_r, downside, upside = net_rr_and_ev(
+            entry=reference,
+            stop=stop,
+            take_profit=tp1,
+            direction=prediction.direction,
+            costs=costs,
+            p_tp=prediction.p_tp,
+            p_sl=prediction.p_sl,
+            p_timeout=prediction.p_timeout,
+        )
+        candidates.append(
+            SignalScenarioEconomics(
+                prediction=prediction,
+                reference=reference,
+                entry_low=reference - zone_half,
+                entry_high=reference + zone_half,
+                stop=stop,
+                take_profit_1=tp1,
+                take_profit_2=tp2,
+                net_rr=net_rr,
+                ev_r=ev_r,
+                downside=downside,
+                upside=upside,
+            )
+        )
+
+    if not candidates:
+        raise ValueError("At least one directional prediction is required")
+    return max(
+        candidates,
+        key=lambda item: (
+            item.ev_r,
+            item.net_rr,
+            item.prediction.score,
+            item.prediction.direction == "LONG",
+        ),
+    )
 
 
 async def _candles_frame(
@@ -267,24 +357,7 @@ async def publish_hourly_signals(
             )
             continue
 
-        prediction = runtime.predict(snapshot.values)
-        direction = prediction.direction
-        reference = ticker.ask_price if direction == "LONG" else ticker.bid_price
-        reference = reference or ticker.last_price
         atr_pct = max(0.004, min(0.08, snapshot.values.get("atr_pct_14", 0.02)))
-        atr = reference * decimal(atr_pct)
-        zone_half = atr * Decimal("0.12")
-        stop_distance = atr * Decimal("1.15")
-        tp_distance = atr * Decimal("2.20")
-        tp2_distance = atr * Decimal("3.10")
-
-        if direction == "LONG":
-            entry_low, entry_high = reference - zone_half, reference + zone_half
-            stop, tp1, tp2 = reference - stop_distance, reference + tp_distance, reference + tp2_distance
-        else:
-            entry_low, entry_high = reference - zone_half, reference + zone_half
-            stop, tp1, tp2 = reference + stop_distance, reference - tp_distance, reference - tp2_distance
-
         # Entry reference already uses executable ask/bid; residual slippage must not add the spread again.
         slippage_bps = settings.base_slippage_bps
         fee_round_trip = settings.fee_rate_taker * 2
@@ -303,16 +376,25 @@ async def publish_hourly_signals(
             stop_gap_reserve_rate=decimal(settings.stop_gap_reserve_bps / 10000),
             funding_rate=decimal(funding_scenario),
         )
-        net_rr, ev_r, downside, upside = net_rr_and_ev(
-            entry=reference,
-            stop=stop,
-            take_profit=tp1,
-            direction=direction,
+        scenario = select_cost_aware_scenario(
+            runtime.predict_scenarios(snapshot.values),
+            bid_price=ticker.bid_price,
+            ask_price=ticker.ask_price,
+            last_price=ticker.last_price,
+            atr_pct=decimal(atr_pct),
             costs=costs,
-            p_tp=prediction.p_tp,
-            p_sl=prediction.p_sl,
-            p_timeout=prediction.p_timeout,
         )
+        prediction = scenario.prediction
+        direction = prediction.direction
+        reference = scenario.reference
+        entry_low = scenario.entry_low
+        entry_high = scenario.entry_high
+        stop = scenario.stop
+        tp1 = scenario.take_profit_1
+        tp2 = scenario.take_profit_2
+        net_rr = scenario.net_rr
+        ev_r = scenario.ev_r
+        downside = scenario.downside
         gross_rr = abs(tp1 - reference) / abs(reference - stop)
         natural_key = (
             f"{symbol}-{event_time:%Y%m%dT%H0000Z}-h{settings.default_horizon_hours}-"

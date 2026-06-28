@@ -10,7 +10,7 @@
 | Closed-candle cutoff | Да | confirmed candles; `close_time` и `available_at` ограничены event cutoff |
 | Строгая hourly continuity для features/labels | Да с 1.7.11 | 24 последовательных перехода для feature snapshot; ровно N следующих hourly candles для label; gaps/duplicates fail-closed/excluded с diagnostics |
 | Market signal отдельно от execution plan | Да | отдельные ORM-объекты и versioned profile recalculation |
-| NO TRADE — policy, не класс модели | Да с 1.3.0 | ML выдает TP/SL/TIMEOUT; `publish_hourly_signals` применяет net policy |
+| NO TRADE — policy, не класс модели | Да с 1.3.0; направление согласовано в 1.8.4 | ML выдает TP/SL/TIMEOUT для LONG и SHORT; `publish_hourly_signals` выбирает направление по текущему net EV/R и затем применяет execution gates |
 | Direction-specific TP/SL/TIMEOUT | Да с 1.3.0 | `make_barrier_dataset`, `TemporalCalibratedBarrierModel` |
 | Logistic baseline и nonlinear candidate | Да с 1.3.0 | logistic и HistGradientBoostingClassifier |
 | Временная calibration | Да с 1.3.0 | later calibration window, sigmoid OVR |

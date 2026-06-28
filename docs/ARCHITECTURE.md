@@ -14,10 +14,13 @@ market-data worker -> PostgreSQL market/reference
         |                                      v                         v
         |                              PostgreSQL model registry <- safe activation
         v
-hourly feature snapshot -> ModelRuntime -> MarketSignal
+hourly feature snapshot -> ModelRuntime -> LONG + SHORT outcome scenarios
         |
         v
-cost/risk/policy + CapitalProfile + account/portfolio snapshot
+current bid/ask + cost/risk/policy -> MarketSignal
+        |
+        v
+CapitalProfile + account/portfolio snapshot
         |
         v
 ExecutionPlan(versioned) -> FastAPI -> Vanilla JS UI
