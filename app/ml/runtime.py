@@ -113,6 +113,7 @@ class ModelRuntime:
             return
         if not self.allow_baseline:
             raise RuntimeError("No active model artifact and baseline model is disabled")
+        self.source = source
 
     @staticmethod
     def _scenario_utility(p_tp: float, p_sl: float, p_timeout: float) -> float:

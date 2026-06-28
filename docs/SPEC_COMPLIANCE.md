@@ -2,13 +2,13 @@
 
 Дата проверки: 2026-06-28
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.7.1
+Версия проекта после коррекции: 1.7.2
 
 ## Итог
 
 Проект соответствует спецификации **частично**. Архитектурный и операторский контур реализован существенно лучше исследовательского контура: FastAPI/Uvicorn, PostgreSQL-only, отдельные worker и trainer, ручное исполнение, профили капитала, cost/risk engine, UI, audit и жизненный цикл рекомендаций присутствуют.
 
-Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact.
+Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact. Версия 1.7.2 добавляет controlled recovery при физической утрате active artifact: non-production worker явно переходит на baseline, а trainer может восстановить active-модель только через абсолютные quality gates.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -36,6 +36,7 @@
 | Фактическое накопление глубокой истории | Реализовано в 1.5.0 | progressive `history_backfill` до target days с batch/page limits и учетом launch time |
 | Экономический gate auto-activation | Реализовано в 1.5.0 | policy trades, realized mean R, profit factor, drawdown и incumbent-relative limits |
 | JSON-safe candidate registration | Исправлено в 1.7.1 | internal fail-closed sentinels не сериализуются; non-finite metrics → `null`; registry/job/audit JSONB защищены |
+| Recovery после утраты active artifact | Реализовано в 1.7.2 | explicit non-production baseline fallback, DEGRADED heartbeat/readiness diagnostics, strict integrity boundary и bootstrap retraining with absolute gates |
 | Актуальный universe в UI/API | Исправлено в 1.5.0 | текущие карточки фильтруются по worker universe; status обновляется автоматически |
 | Counterfactual outcome journal | Реализовано с intrabar refinement в 1.7.0 | confirmed hourly path; точечный 1/3/5-minute reconstruction для same-hour TP1/SL; отдельная оценка каждой plan version, audit/outbox/API/UI; missing intrabar и legacy funding timeline fail-closed |
 
@@ -62,7 +63,7 @@
 - историческая модель фактического исполнения по стакану;
 - завершенный paper/shadow forward evidence и доказательство экономического преимущества.
 
-## Состояние машинного обучения и post-event журнала после коррекции 1.7.1
+## Состояние машинного обучения и post-event журнала после коррекции 1.7.2
 
 Технический ML-путь работает end-to-end:
 
@@ -78,6 +79,7 @@
 10. Candidate и incumbent оцениваются на одном holdout; кандидат активируется автоматически только после абсолютных и относительных ML- и policy-gates.
 11. Worker проверяет artifact hash/version/schema/horizon и загружает новую active-версию без перезапуска.
 12. Провал обучения/gate не влияет на текущий inference; предыдущая модель остается доступна для rollback.
+13. При физической утрате incumbent artifact non-production worker использует явно обозначенный baseline, а trainer выполняет bootstrap recovery без выдуманного incumbent comparison; production и integrity failures остаются fail-closed.
 13. Отдельный worker job разрешает primary-barrier outcome по непрерывному confirmed hourly path и создает immutable plan-version estimates.
 14. При hourly TP/SL ambiguity worker запрашивает только точный 1/3/5-minute window; неполный intrabar path оставляет outcome pending, а same-finest-bar ambiguity разрешается консервативно как SL.
 

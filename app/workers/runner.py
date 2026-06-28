@@ -5,7 +5,6 @@ import logging
 import signal
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
@@ -18,6 +17,7 @@ from app.db.locks import advisory_lock
 from app.db.models import JobRun, ModelRegistry, ServiceHeartbeat, TickerSnapshot
 from app.logging import configure_logging
 from app.ml.runtime import ModelRuntime
+from app.ml.runtime_selection import select_model_runtime
 from app.services.market_data import (
     symbols_needing_history_backfill,
     sync_candle_history,
@@ -55,6 +55,7 @@ class Worker:
         self.last_universe_refresh: datetime | None = None
         self.last_model_refresh: datetime | None = None
         self.active_model_registry_id: str | None = None
+        self.model_notice: dict[str, object] | None = None
         self.active_symbols: tuple[str, ...] = tuple(settings.symbols)
         self.universe_summary: dict = {
             "mode": settings.universe_mode,
@@ -85,48 +86,42 @@ class Worker:
                 )
             ).scalar_one_or_none()
 
-        if settings.active_model_path is not None:
-            candidate = ModelRuntime(Path(settings.active_model_path), allow_baseline=False)
-            candidate.load(source="environment_override")
-            if candidate.horizon_hours != settings.default_horizon_hours:
-                raise RuntimeError(
-                    f"Model override horizon {candidate.horizon_hours} does not match "
-                    f"DEFAULT_HORIZON_HOURS={settings.default_horizon_hours}"
-                )
-            registry_id = None
-        elif registry is None:
-            candidate = ModelRuntime(None, allow_baseline=settings.allow_baseline_model)
-            candidate.load(source="baseline")
-            registry_id = None
-        elif registry.model_type == "deterministic_baseline":
-            candidate = ModelRuntime(None, allow_baseline=settings.allow_baseline_model)
-            candidate.load(source="registry_baseline")
-            candidate.version = registry.version
-            candidate.calibration_version = registry.calibration_version or "uncalibrated-baseline-v1"
-            registry_id = str(registry.id)
-        else:
-            if not registry.artifact_path:
-                raise RuntimeError(f"Active model {registry.version} has no artifact_path")
-            candidate = ModelRuntime(Path(registry.artifact_path), allow_baseline=False)
-            candidate.load(
-                expected_sha256=registry.artifact_sha256,
-                expected_version=registry.version,
-                source="model_registry",
-            )
-            if candidate.horizon_hours != settings.default_horizon_hours:
-                raise RuntimeError(
-                    f"Active model horizon {candidate.horizon_hours} does not match "
-                    f"DEFAULT_HORIZON_HOURS={settings.default_horizon_hours}"
-                )
-            registry_id = str(registry.id)
-
-        changed = candidate.metadata() != self.runtime.metadata()
-        self.runtime = candidate
-        self.active_model_registry_id = registry_id
+        selection = select_model_runtime(
+            registry=registry,
+            active_model_path=settings.active_model_path,
+            allow_baseline_model=settings.allow_baseline_model,
+            app_mode=settings.app_mode,
+            default_horizon_hours=settings.default_horizon_hours,
+        )
+        changed = (
+            selection.runtime.metadata() != self.runtime.metadata()
+            or selection.notice != self.model_notice
+            or selection.registry_id != self.active_model_registry_id
+        )
+        self.runtime = selection.runtime
+        self.active_model_registry_id = selection.registry_id
+        self.model_notice = selection.notice
         self.last_model_refresh = now
-        if changed:
+        if changed and self.model_notice is not None:
+            logger.warning(
+                "Model runtime is using deterministic baseline",
+                extra={"model": self.runtime.metadata(), "model_notice": self.model_notice},
+            )
+        elif changed:
             logger.info("Model runtime loaded", extra={"model": self.runtime.metadata()})
         return changed
+
+    def model_heartbeat_status(self) -> str:
+        return "DEGRADED" if self.model_notice is not None else "RUNNING"
+
+    def heartbeat_details(self, **extra: object) -> dict[str, object]:
+        return {
+            "model": self.runtime.metadata(),
+            "model_registry_id": self.active_model_registry_id,
+            "model_notice": self.model_notice,
+            "universe": self.universe_summary,
+            **extra,
+        }
 
     async def heartbeat(self, status: str = "RUNNING", details: dict | None = None) -> None:
         async with SessionFactory() as session:
@@ -448,14 +443,7 @@ class Worker:
 
     async def run(self) -> None:
         await self.refresh_model_runtime(force=True)
-        await self.heartbeat(
-            "STARTING",
-            {
-                "model": self.runtime.metadata(),
-                "model_registry_id": self.active_model_registry_id,
-                "universe": self.universe_summary,
-            },
-        )
+        await self.heartbeat("STARTING", self.heartbeat_details())
         try:
             await self.instrument_job()
             self.last_instrument_sync = datetime.now(UTC)
@@ -514,28 +502,22 @@ class Worker:
                     await self.retention_job(event_time)
                 await self.expiry_job()
                 await self.heartbeat(
-                    "RUNNING",
-                    {
-                        "model": self.runtime.metadata(),
-                        "model_registry_id": self.active_model_registry_id,
-                        "last_market_sync": self.last_market_sync.isoformat()
+                    self.model_heartbeat_status(),
+                    self.heartbeat_details(
+                        last_market_sync=self.last_market_sync.isoformat()
                         if self.last_market_sync
                         else None,
-                        "universe": self.universe_summary,
-                        "history_backfill": self.history_backfill_summary,
-                    },
+                        history_backfill=self.history_backfill_summary,
+                    ),
                 )
             except Exception as exc:
                 logger.exception("Worker loop iteration failed")
                 await self.heartbeat(
                     "DEGRADED",
-                    {
-                        "error": str(exc),
-                        "model": self.runtime.metadata(),
-                        "model_registry_id": self.active_model_registry_id,
-                        "universe": self.universe_summary,
-                        "history_backfill": self.history_backfill_summary,
-                    },
+                    self.heartbeat_details(
+                        error=str(exc),
+                        history_backfill=self.history_backfill_summary,
+                    ),
                 )
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.stop_event.wait(), timeout=settings.heartbeat_seconds)

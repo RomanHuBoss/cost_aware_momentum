@@ -40,6 +40,15 @@ API завершится до readiness. Не использовать `stamp he
 4. Не записывать TP/SL вручную и не менять существующие outcome rows: после восстановления worker повторит точечную загрузку на следующем cycle.
 5. При большом backlog временно увеличить `OUTCOME_INTRABAR_MAX_WINDOWS_PER_CYCLE`, контролируя API rate limits и время job.
 
+## Удален файл active-модели
+
+1. В non-production с `ALLOW_BASELINE_MODEL=true` перезапустить проект обычной командой `python manage.py run`. Worker должен остаться запущенным, а `/api/v1/status` показать baseline runtime, `model_notice.code=ACTIVE_MODEL_ARTIFACT_MISSING` и heartbeat `DEGRADED`.
+2. Не удалять stale registry row вручную: он нужен для optimistic activation и аудита.
+3. Проверить trainer heartbeat и последний `model_retraining`. При следующем допустимом цикле trainer использует bootstrap recovery; новый candidate должен пройти абсолютные quality gates.
+4. Если candidate проходит gates, activation атомарно заменит stale active row. Если нет, baseline остается активным, а candidate регистрируется inactive с причинами gate.
+5. Если ошибка относится к SHA256 mismatch, поврежденному bundle, version/schema/classes/horizon mismatch или `ACTIVE_MODEL_PATH`, fallback намеренно не применяется. Восстановить правильный artifact или явно активировать проверенную registry version.
+6. В production baseline recovery запрещен: восстановить artifact из доверенной резервной копии либо активировать другую проверенную модель.
+
 ## Ошибка модели или drift
 
 1. Деактивировать артефакт: очистить `ACTIVE_MODEL_PATH` и, только для paper/shadow, разрешить baseline.

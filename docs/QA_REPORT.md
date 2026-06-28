@@ -1,6 +1,29 @@
 # QA report
 
-Дата проверки версии 1.7.1: 28 июня 2026 г.
+Дата проверки версии 1.7.2: 28 июня 2026 г.
+
+## Итерация 1.7.2 — recovery после удаления active model artifact
+
+Подтвержден пользовательский startup failure: registry-active модель оставалась в PostgreSQL, но удаленный `.joblib` приводил к завершению inference worker до heartbeat. Исправление добавляет controlled baseline fallback и bootstrap recovery trainer без ослабления production/integrity boundary.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `75740b1e1a908e4a7040ee5bbaa6f9d8b2876e253d5e5eaa3d82b3d2c158788b` |
+| Baseline `python -m pytest -q` | PASSED — 77 passed, 3 skipped |
+| Red regression test | PASSED как доказательство gap — collection failed: `ModuleNotFoundError: app.ml.runtime_selection` |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 88 passed, 3 skipped |
+| model fallback targeted tests | PASSED — 11 passed |
+| `node --check web/js/app.js` | PASSED |
+| PostgreSQL integration | NOT RUN — отдельная test database отсутствует |
+| Migration | не требуется; head остается `0004_counterfactual_outcomes` |
+
+`python -m pip check` в host environment остается FAILED из-за внешнего конфликта `moviepy 2.2.1`/`pillow 12.2.0`, не объявленного данным проектом. Missing artifact recovery проверен unit-level через фактический `Worker.refresh_model_runtime()` с mock PostgreSQL session; SQLite/fake application database не применялась.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-model-artifact-recovery.md`.
+
+## Историческая проверка версии 1.7.1
 
 ## Итерация 1.7.1 — JSON-safe model lifecycle
 

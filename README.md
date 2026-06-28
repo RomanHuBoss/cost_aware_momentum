@@ -1,7 +1,7 @@
 # Cost-aware hourly ML momentum
 
 
-> Версия 1.7.1: background trainer сохраняет отсутствующие и нечисловые quality-gate метрики как JSON `null`, а не `NaN`/`±Infinity`. Не прошедший gate кандидат теперь гарантированно регистрируется в PostgreSQL как неактивный, не повреждая действующую модель.
+> Версия 1.7.2: при отсутствии файла active-модели worker в non-production режиме с `ALLOW_BASELINE_MODEL=true` продолжает работу на явно помеченном deterministic baseline. Trainer рассматривает утраченный incumbent как bootstrap-состояние и может заменить его новым кандидатом только после прохождения абсолютных quality gates.
 
 Локальная рекомендательная система для линейных USDT-фьючерсов Bybit. Система получает рыночные данные, строит часовые признаки, формирует LONG/SHORT-кандидаты, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения, а затем показывает оператору исполнимый план. Ордеры на биржу приложение **не отправляет**.
 
@@ -152,6 +152,8 @@ python manage.py migrate
 
 При обновлении с 1.7.0 на 1.7.1 migration и новые переменные окружения не требуются. Перезапустите API/worker/trainer после замены файлов. Уже созданные orphan `.joblib`, отсутствующие в `model-registry list`, автоматически не активируются; их можно сохранить для аудита или удалить после появления зарегистрированного кандидата.
 
+При обновлении с 1.7.1 на 1.7.2 migration и новые переменные окружения также не требуются. Если active artifact был удален, paper/shadow/development worker запустится на baseline с желтым статусом и кодом `ACTIVE_MODEL_ARTIFACT_MISSING`; production и конфигурации с `ALLOW_BASELINE_MODEL=false` останутся fail-closed. Повреждение файла, SHA256 mismatch и несовместимый artifact не считаются восстанавливаемым отсутствием и не обходятся fallback-механизмом.
+
 ## Управление проектом
 
 Все команды кроссплатформенные и выполняются через `manage.py`:
@@ -210,7 +212,8 @@ Remove-Item Env:POSTGRES_ADMIN_URL
 4. оценивает candidate и текущую active-модель на одном новом final holdout;
 5. проверяет log loss, Brier/ECE, представленность классов и cost-aware policy metrics: число исполнимых сделок, realized mean R, profit factor и drawdown;
 6. автоматически и атомарно активирует candidate только после абсолютных и incumbent-relative gates;
-7. оставляет не прошедшую проверку модель неактивной, не нарушая текущий inference.
+7. оставляет не прошедшую проверку модель неактивной, не нарушая текущий inference;
+8. если зарегистрированный incumbent физически утрачен, в разрешенном non-production recovery-mode сравнивает новый candidate только с абсолютными gates и атомарно заменяет stale registry entry лишь при успешной проверке.
 
 Это не `partial_fit` существующего файла. Модель безопасно пересобирается на расширенном/скользящем наборе данных, а предыдущие версии остаются доступны для rollback. CPU-нагрузка обучения вынесена из API и inference worker. Оператор не обязан вручную выбирать штатную модель; ручная активация остается только инструментом review и аварийного rollback.
 
@@ -231,7 +234,7 @@ python manage.py replay --signal-id <UUID> --output reports/replay.json
 
 Trainer и ручное обучение создают direction-specific метки `TP`, `SL`, `TIMEOUT`, используют хронологические train/calibration/final-holdout окна и immutable artifacts. Worker проверяет SHA256, task/schema/classes/horizon и загружает новую active-версию без перезапуска. Активация предыдущей версии является rollback.
 
-Baseline остается только операционной заглушкой для paper/development. Его вероятности не калиброваны. В `production` конфигурация требует `ALLOW_BASELINE_MODEL=false`, безопасные credentials и отключенный demo seed.
+Baseline остается только операционной заглушкой для non-production режимов. Его вероятности не калиброваны, каждая рекомендация содержит предупреждение, а heartbeat/UI показывают состояние `DEGRADED`. При отсутствии active registry row или физического файла active artifact worker может использовать baseline только при `ALLOW_BASELINE_MODEL=true`; явный `ACTIVE_MODEL_PATH`, SHA256 mismatch, поврежденный или несовместимый artifact остаются fail-closed. В `production` конфигурация требует `ALLOW_BASELINE_MODEL=false`, безопасные credentials и отключенный demo seed.
 
 Текущий backtest еще не моделирует исторический стакан, partial fills, полноценный портфель и задержки оператора. Поэтому работающий ML pipeline и положительный отчет не являются доказательством прибыльности. Полная матрица соответствия: [SPEC_COMPLIANCE](docs/SPEC_COMPLIANCE.md).
 

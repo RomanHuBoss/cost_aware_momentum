@@ -42,6 +42,7 @@ main { max-width: 1500px; margin: 0 auto; padding: 20px 28px 56px; }
 .system-strip strong { color: var(--text); }
 .status-dot { display: inline-block; width: 9px; height: 9px; margin-right: 7px; border-radius: 50%; background: var(--watch); box-shadow: 0 0 0 4px rgba(231,182,74,.12); }
 .status-dot.ok { background: var(--long); box-shadow: 0 0 0 4px rgba(38,194,129,.12); }
+.status-dot.warn { background: var(--watch); box-shadow: 0 0 0 4px rgba(231,182,74,.12); }
 .status-dot.bad { background: var(--short); box-shadow: 0 0 0 4px rgba(239,107,115,.12); }
 .system-actions { margin-left: auto; display: flex; gap: 14px; }
 .text-button { color: #8dc5ff; border: 0; background: transparent; cursor: pointer; padding: 0; }

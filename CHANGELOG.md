@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.2 — 2026-06-28
+
+- Worker больше не завершается при физическом отсутствии файла active-модели, если baseline явно разрешен и режим не production.
+- Controlled fallback запускает `baseline-momentum-v1`, сохраняет stale registry row для аудита и публикует `ACTIVE_MODEL_ARTIFACT_MISSING` в heartbeat/status/UI.
+- Отсутствие любой active registry row поддерживает bootstrap baseline до первой обученной модели.
+- Worker работает со статусом `DEGRADED`, но readiness остается operational только для этого явно распознанного fallback без других ошибок и при свежих market data.
+- Поврежденный artifact, SHA256/version/schema/classes/horizon mismatch и отсутствующий `ACTIVE_MODEL_PATH` остаются fail-closed.
+- Trainer при утраченном incumbent использует recovery bootstrap: candidate проходит абсолютные ML/policy gates и может атомарно заменить stale active row; recovery context сохраняется в job, registry metrics и audit.
+- Добавлены regression tests для worker startup, production boundary, strict override/integrity behavior и readiness.
+- Migration и новые `.env` параметры не требуются.
+
 ## 1.7.1 — 2026-06-28
 
 - Исправлен подтвержденный сбой регистрации model candidate в PostgreSQL JSONB при `incumbent_policy_realized_mean_r = -Infinity`.

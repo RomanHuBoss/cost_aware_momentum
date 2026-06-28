@@ -12,8 +12,66 @@ from sqlalchemy import desc, func, select
 from app.api.deps import SessionDep, SettingsDep
 from app.db.health import current_revision, database_health
 from app.db.models import DataQualityIssue, JobRun, ModelRegistry, ServiceHeartbeat
+from app.ml.runtime_selection import CONTROLLED_BASELINE_NOTICE_CODES
 
 router = APIRouter(tags=["status"])
+
+
+def assess_model_runtime(
+    *,
+    registry_version: str | None,
+    registry_type: str | None,
+    artifact_ok: bool,
+    worker_model: dict[str, object] | None,
+    worker_notice: dict[str, object] | None,
+    allow_baseline_model: bool,
+) -> dict[str, object]:
+    worker_model = worker_model or {}
+    worker_notice = worker_notice or {}
+    worker_version = worker_model.get("version")
+    runtime_is_baseline = worker_model.get("baseline") is True
+    runtime_matches_registry = bool(registry_version and worker_version == registry_version)
+    notice_code = worker_notice.get("code")
+
+    registered_baseline_ok = bool(
+        registry_version
+        and registry_type == "deterministic_baseline"
+        and allow_baseline_model
+        and artifact_ok
+        and runtime_matches_registry
+        and runtime_is_baseline
+    )
+    trained_model_ok = bool(
+        registry_version
+        and registry_type != "deterministic_baseline"
+        and artifact_ok
+        and runtime_matches_registry
+        and not runtime_is_baseline
+    )
+    bootstrap_fallback_ok = bool(
+        registry_version is None
+        and allow_baseline_model
+        and runtime_is_baseline
+        and notice_code == "NO_ACTIVE_MODEL_REGISTERED"
+    )
+    missing_artifact_fallback_ok = bool(
+        registry_version
+        and registry_type != "deterministic_baseline"
+        and not artifact_ok
+        and allow_baseline_model
+        and runtime_is_baseline
+        and notice_code == "ACTIVE_MODEL_ARTIFACT_MISSING"
+        and worker_notice.get("registry_version") == registry_version
+    )
+    fallback_active = bootstrap_fallback_ok or missing_artifact_fallback_ok
+    ok = trained_model_ok or registered_baseline_ok or fallback_active
+    return {
+        "ok": ok,
+        "runtime_matches_registry": runtime_matches_registry,
+        "fallback_active": fallback_active,
+        "degraded": bool(ok and runtime_is_baseline),
+        "notice": worker_notice or None,
+    }
 
 
 def expected_revision() -> str:
@@ -77,11 +135,25 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
             market_sync_time
             and (datetime.now(UTC) - market_sync_time).total_seconds() <= market_max_age
         )
+        worker_notice = worker_details.get("model_notice")
+        controlled_model_degradation = bool(
+            worker
+            and worker.status == "DEGRADED"
+            and isinstance(worker_notice, dict)
+            and worker_notice.get("active") is True
+            and worker_notice.get("code") in CONTROLLED_BASELINE_NOTICE_CODES
+            and not worker_details.get("error")
+        )
+        worker_operational = bool(
+            worker and (worker.status == "RUNNING" or controlled_model_degradation)
+        )
         checks["worker"] = {
-            "ok": worker_fresh and market_fresh and worker.status == "RUNNING",
+            "ok": worker_fresh and market_fresh and worker_operational,
             "last_seen_at": worker.last_seen_at.isoformat() if worker else None,
             "instance_id": worker.instance_id if worker else None,
             "status": worker.status if worker else None,
+            "degraded": controlled_model_degradation,
+            "model_notice": worker_notice if isinstance(worker_notice, dict) else None,
             "last_market_sync": market_sync_time.isoformat() if market_sync_time else None,
             "market_data_fresh": market_fresh,
         }
@@ -100,7 +172,6 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
             "details": trainer_details or None,
         }
 
-        expected_version = active_model.version if active_model else "baseline-momentum-v1"
         artifact_ok = True
         artifact_detail: dict[str, object] = {}
         if active_model and active_model.model_type != "deterministic_baseline":
@@ -111,22 +182,20 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
                 actual_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
                 artifact_detail["sha256"] = actual_hash
                 artifact_ok = actual_hash.lower() == active_model.artifact_sha256.lower()
-        baseline_allowed = not (
-            active_model
-            and active_model.model_type == "deterministic_baseline"
-            and not settings.allow_baseline_model
+        model_state = assess_model_runtime(
+            registry_version=active_model.version if active_model else None,
+            registry_type=active_model.model_type if active_model else None,
+            artifact_ok=artifact_ok,
+            worker_model=worker_model if isinstance(worker_model, dict) else None,
+            worker_notice=worker_notice if isinstance(worker_notice, dict) else None,
+            allow_baseline_model=settings.allow_baseline_model,
         )
-        runtime_matches = bool(worker_model and worker_model.get("version") == expected_version)
         checks["model"] = {
-            "ok": bool(active_model)
-            and artifact_ok
-            and baseline_allowed
-            and worker_fresh
-            and runtime_matches,
+            **model_state,
+            "ok": bool(model_state["ok"] and worker_fresh),
             "registry_version": active_model.version if active_model else None,
             "registry_type": active_model.model_type if active_model else None,
             "worker_runtime": worker_model or None,
-            "runtime_matches_registry": runtime_matches,
             "artifact": artifact_detail or None,
         }
         blocking_issues = (
@@ -225,6 +294,15 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
                     heartbeat.details.get("model")
                     for heartbeat in heartbeats
                     if heartbeat.service_name == "worker" and heartbeat.details.get("model")
+                ),
+                None,
+            ),
+            "worker_notice": next(
+                (
+                    heartbeat.details.get("model_notice")
+                    for heartbeat in heartbeats
+                    if heartbeat.service_name == "worker"
+                    and heartbeat.details.get("model_notice")
                 ),
                 None,
             ),

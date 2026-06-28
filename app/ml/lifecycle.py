@@ -578,6 +578,7 @@ async def register_model_candidate(
     quality_gate: dict[str, Any] | None,
     activation_requested: bool,
     actor: str,
+    incumbent_recovery: dict[str, Any] | None = None,
 ) -> ModelRegistry:
     digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
     safe_quality_gate = json_compatible(quality_gate)
@@ -596,6 +597,7 @@ async def register_model_candidate(
             "training_data_profile": candidate.training_data_profile.to_dict(),
             "incumbent_version": candidate.incumbent_version,
             "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
+            "incumbent_recovery": incumbent_recovery,
             "quality_gate": safe_quality_gate,
             "activation_requested": activation_requested,
         }
@@ -628,6 +630,7 @@ async def register_model_candidate(
                 "source": source,
                 "quality_gate": safe_quality_gate,
                 "activation_requested": activation_requested,
+                "incumbent_recovery": json_compatible(incumbent_recovery),
             },
         )
         await publish_outbox(

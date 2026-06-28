@@ -26,6 +26,7 @@ from app.ml.lifecycle import (
     policy_evaluation_config,
     register_model_candidate,
 )
+from app.ml.runtime_selection import recoverable_registry_artifact_notice
 from scripts.model_registry import activate_registered_model
 
 settings = get_settings()
@@ -290,13 +291,24 @@ class BackgroundTrainer:
                 job = await self.create_job(scheduled_for, {"trigger": trigger})
                 try:
                     active = await self.active_model()
-                    incumbent = incumbent_from_registry(active)
+                    incumbent_recovery = recoverable_registry_artifact_notice(
+                        active,
+                        allow_baseline_model=settings.allow_baseline_model,
+                        app_mode=settings.app_mode,
+                    )
+                    incumbent = None if incumbent_recovery else incumbent_from_registry(active)
+                    if incumbent_recovery:
+                        logger.warning(
+                            "Missing active artifact is treated as bootstrap baseline for training",
+                            extra={"incumbent_recovery": incumbent_recovery},
+                        )
                     symbols = settings.symbols if settings.universe_mode == "static" else None
                     self.state.update(
                         {
                             "phase": "LOADING_DATA",
                             "healthy": True,
                             "active_version_before_training": active.version if active else None,
+                            "incumbent_recovery": incumbent_recovery,
                         }
                     )
                     candles = await load_training_candles(
@@ -329,6 +341,24 @@ class BackgroundTrainer:
                         and gate["passed"]
                         and settings.active_model_path is None
                     )
+                    recovery_activation_skipped: str | None = None
+                    if can_activate and incumbent_recovery:
+                        current_active = await self.active_model()
+                        current_recovery = recoverable_registry_artifact_notice(
+                            current_active,
+                            allow_baseline_model=settings.allow_baseline_model,
+                            app_mode=settings.app_mode,
+                        )
+                        if (
+                            current_active is None
+                            or active is None
+                            or current_active.version != active.version
+                            or current_recovery is None
+                        ):
+                            can_activate = False
+                            recovery_activation_skipped = (
+                                "incumbent_recovery_condition_changed_during_training"
+                            )
                     self.state["phase"] = "REGISTERING"
                     registry = await register_model_candidate(
                         candidate,
@@ -336,6 +366,7 @@ class BackgroundTrainer:
                         quality_gate=gate,
                         activation_requested=can_activate,
                         actor=settings.trainer_id,
+                        incumbent_recovery=incumbent_recovery,
                     )
 
                     activation: dict[str, object] | None = None
@@ -347,6 +378,8 @@ class BackgroundTrainer:
                             actor=settings.trainer_id,
                             expected_previous_version=active.version if active else None,
                         )
+                    elif recovery_activation_skipped is not None:
+                        activation_skipped = recovery_activation_skipped
                     elif settings.active_model_path is not None:
                         activation_skipped = "ACTIVE_MODEL_PATH override is configured"
                     elif not settings.auto_train_auto_activate:
@@ -368,6 +401,7 @@ class BackgroundTrainer:
                         "metrics": candidate.metrics,
                         "incumbent_version": candidate.incumbent_version,
                         "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
+                        "incumbent_recovery": incumbent_recovery,
                         "quality_gate": gate,
                         "activated": activation is not None,
                         "activation": activation,

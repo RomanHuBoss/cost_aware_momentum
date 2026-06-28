@@ -68,3 +68,15 @@ python manage.py model-registry list
 ```
 
 Для режима обязательного ручного утверждения установите `AUTO_TRAIN_AUTO_ACTIVATE=false`.
+## Работа после удаления model artifacts
+
+В версии 1.7.2 paper/shadow/development запуск не требует ручной активации baseline, если `ALLOW_BASELINE_MODEL=true`. При stale active registry row и отсутствующем `.joblib`:
+
+- верхняя строка показывает «Система доступна с ограничениями»;
+- effective model равна `baseline-momentum-v1`;
+- worker heartbeat имеет `DEGRADED`;
+- рекомендации продолжают формироваться, но содержат предупреждение о некалиброванном baseline;
+- trainer продолжает сбор данных и пытается создать новый кандидат.
+
+Нормальное восстановление завершено, когда `/api/v1/status.active_model.worker_runtime.baseline=false`, worker heartbeat снова `RUNNING`, а registry version совпадает с effective runtime. Не включайте ручную активацию кандидата, который не прошел quality gate.
+

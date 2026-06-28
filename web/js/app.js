@@ -176,8 +176,13 @@ async function loadRecommendations() {
 async function loadStatus() {
   try {
     const status = await api('/api/v1/status');
-    $('#system-dot').className = 'status-dot ok';
-    $('#system-state').textContent = 'Система доступна';
+    const runtime = status.active_model?.worker_runtime || null;
+    const modelNotice = status.active_model?.worker_notice || null;
+    const baselineActive = runtime?.baseline === true;
+    $('#system-dot').className = baselineActive ? 'status-dot warn' : 'status-dot ok';
+    $('#system-state').textContent = baselineActive
+      ? 'Система доступна с ограничениями'
+      : 'Система доступна';
     const trainer = status.heartbeats.find(item => item.service === 'trainer');
     const phaseLabels = {
       STARTING: 'запуск',
@@ -196,7 +201,16 @@ async function loadStatus() {
     const trainingState = status.auto_training?.enabled
       ? (phaseLabels[trainerPhase] || 'ожидание trainer')
       : 'отключено';
-    $('#model-state').textContent = `Модель: ${status.active_model.version || '—'} · дообучение: ${trainingState}`;
+    const effectiveVersion = runtime?.version || status.active_model?.version || '—';
+    let modelDetail = '';
+    if (modelNotice?.code === 'ACTIVE_MODEL_ARTIFACT_MISSING') {
+      modelDetail = ` · файл ${modelNotice.registry_version || 'активной модели'} отсутствует, используется baseline`;
+    } else if (modelNotice?.code === 'NO_ACTIVE_MODEL_REGISTERED') {
+      modelDetail = ' · старт с baseline до первой обученной модели';
+    } else if (modelNotice?.code === 'REGISTRY_BASELINE_ACTIVE') {
+      modelDetail = ' · активен некалиброванный baseline';
+    }
+    $('#model-state').textContent = `Модель: ${effectiveVersion}${modelDetail} · дообучение: ${trainingState}`;
     const worker = status.heartbeats.find(item => item.service === 'worker');
     state.universeStatus = worker?.details?.universe || null;
     updateUniverseState();
