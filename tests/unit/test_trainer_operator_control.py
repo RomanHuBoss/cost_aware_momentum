@@ -86,15 +86,25 @@ async def test_check_now_control_updates_wait_reason_without_forcing_training(
     async def heartbeat():
         calls["heartbeats"] = int(calls.get("heartbeats", 0)) + 1
 
-    async def finish(job_id, *, status: str, result: dict[str, object]):
-        calls["finished"] = (job_id, status, result)
+    async def finish(
+        job_id,
+        *,
+        status: str,
+        result: dict[str, object],
+        claim_token: str,
+    ):
+        calls["finished"] = (job_id, status, result, claim_token)
 
     monkeypatch.setattr(trainer, "due_reason", due_reason)
     monkeypatch.setattr(trainer, "heartbeat", heartbeat)
     monkeypatch.setattr(trainer, "finish_control_request", finish)
     job = SimpleNamespace(
         id=uuid4(),
-        details={"action": "CHECK_NOW", "requested_at": datetime.now(UTC).isoformat()},
+        details={
+            "action": "CHECK_NOW",
+            "requested_at": datetime.now(UTC).isoformat(),
+            "claim_token": "check-token",
+        },
     )
 
     await trainer.process_control_request(job)
@@ -102,9 +112,10 @@ async def test_check_now_control_updates_wait_reason_without_forcing_training(
     assert calls["force_recovery"] is False
     assert trainer.state["phase"] == "WAITING"
     assert trainer.state["wait_reason"]["reason"] == "not_enough_new_or_changed_training_data"
-    _, status, result = calls["finished"]
+    _, status, result, claim_token = calls["finished"]
     assert status == "SUCCESS"
     assert result["training_started"] is False
+    assert claim_token == "check-token"
 
 
 @pytest.mark.asyncio
@@ -126,8 +137,14 @@ async def test_recover_now_control_requests_forced_recovery_but_keeps_training_r
     async def heartbeat():
         calls["heartbeats"] = int(calls.get("heartbeats", 0)) + 1
 
-    async def finish(job_id, *, status: str, result: dict[str, object]):
-        calls["finished"] = (job_id, status, result)
+    async def finish(
+        job_id,
+        *,
+        status: str,
+        result: dict[str, object],
+        claim_token: str,
+    ):
+        calls["finished"] = (job_id, status, result, claim_token)
 
     monkeypatch.setattr(trainer, "due_reason", due_reason)
     monkeypatch.setattr(trainer, "run_training_once", run_training_once)
@@ -135,17 +152,22 @@ async def test_recover_now_control_requests_forced_recovery_but_keeps_training_r
     monkeypatch.setattr(trainer, "finish_control_request", finish)
     job = SimpleNamespace(
         id=uuid4(),
-        details={"action": "RECOVER_NOW", "requested_at": datetime.now(UTC).isoformat()},
+        details={
+            "action": "RECOVER_NOW",
+            "requested_at": datetime.now(UTC).isoformat(),
+            "claim_token": "recover-token",
+        },
     )
 
     await trainer.process_control_request(job)
 
     assert calls["force_recovery"] is True
     assert calls["trigger"] == trigger
-    _, status, result = calls["finished"]
+    _, status, result, claim_token = calls["finished"]
     assert status == "SUCCESS"
     assert result["training_started"] is True
     assert result["training_result"]["candidate_version"] == "candidate-v2"
+    assert claim_token == "recover-token"
 
 
 def test_latest_service_heartbeat_uses_freshest_instance() -> None:

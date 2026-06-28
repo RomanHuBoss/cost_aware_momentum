@@ -17,6 +17,7 @@ from app.services.trainer_control import (
     TRAINER_CONTROL_JOB_NAME,
     control_job_payload,
     recovery_availability,
+    trainer_control_stale_after_seconds,
     trainer_heartbeat_is_fresh,
 )
 
@@ -427,6 +428,7 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "trainer_online": trainer_heartbeat_is_fresh(trainer_heartbeat, settings),
             "recovery_available": recovery_available,
             "recovery_reason": recovery_reason,
+            "stale_after_seconds": trainer_control_stale_after_seconds(settings),
             "latest_request": control_job_payload(latest_control_job),
             "latest_training_job": job_run_payload(latest_training_job),
         },

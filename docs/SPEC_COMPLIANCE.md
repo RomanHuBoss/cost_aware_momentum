@@ -2,7 +2,7 @@
 
 Дата проверки: 2026-06-28
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.0
+Версия проекта после коррекции: 1.8.1
 
 ## Итог
 
@@ -10,6 +10,7 @@
 
 Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact. Версия 1.7.2 добавляет controlled runtime recovery при физической утрате active artifact. Версия 1.7.3 завершает scheduler-side recovery. Версия 1.7.4 закрывает fail-open риск в directional mathematics: инвертированные или нечисловые entry/SL/TP больше не превращаются через `abs()` в положительные расстояния и не получают исполнимый размер. Версия 1.7.5 закрывает соседнюю числовую boundary-проблему sizing: non-finite capital/risk/margin/caps, невалидные instrument constraints и отрицательные cost reserves блокируются до арифметики и не создают исключение либо исполнимый план. Версия 1.7.6 распространяет тот же fail-closed контракт на post-event valuation каждой execution-plan version: поврежденный sizing/cost/funding snapshot получает terminal `INVALID_INPUT` с нулевыми результатами и не останавливает batch. Версия 1.7.7 закрывает операционный разрыв между файловой системой и model registry: UI показывает inactive/rejected/orphan artifact, а explicit recovery CLI может зарегистрировать и активировать orphan только после повторной metadata-проверки и абсолютного quality gate в non-production. Версия 1.7.8 устраняет соседнее транзакционное окно: для нового candidate регистрация, деактивация incumbent, activation, audit и outbox теперь коммитятся или откатываются вместе. Версия 1.7.9 исправляет classification-metric boundary: multiclass `log_loss` больше не сопоставляет столбцы `TP / SL / TIMEOUT` с лексикографическим порядком `SL / TIMEOUT / TP`; quality gate получает class-order-safe значение и диагностические raw/calibrated/prior/uniform benchmarks. Версия 1.7.10 закрывает temporal leakage при разреженной истории: split использует фактический конец будущего label-window. Версия 1.7.11 устраняет оставшуюся semantic drift: features и labels строятся только по строго последовательным hourly timestamps, а затронутые gaps/duplicates блокируются в live и исключаются из research dataset. Версия 1.7.12 закрывает temporal integrity gap ручного журнала: partial/full close не может быть записан раньше entry или последнего фактического fill.
 Версия 1.8.0 закрывает операторский UX/operations gap trainer: отдельное окно показывает heartbeat, фазу, wait reason, data-readiness и последние результаты, а authenticated PostgreSQL-backed commands позволяют немедленно повторить scheduler check либо запустить ограниченный recovery без выполнения обучения в API и без обхода model gates.
+Версия 1.8.1 закрывает crash-recovery gap этой очереди: stale `RUNNING` request больше не блокирует enqueue навсегда. Система требует одновременно истекший пяти-минутный claim window и stale/missing heartbeat владельца, фиксирует прежнюю попытку как `FAILED`, создает новый linked retry, пишет audit/outbox и отвергает late completion по claim-token.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -19,7 +20,7 @@
 |---|---|---|
 | FastAPI/Uvicorn и PostgreSQL во всех режимах | Реализовано | `app/main.py`, `app/db/*`, Alembic, validator PostgreSQL URL |
 | Отдельный worker для ingestion/inference | Реализовано | `app/workers/runner.py`; длительные задачи не выполняются в HTTP request |
-| Отдельный background trainer | Реализовано; UX усилен в 1.8.0 | отдельный процесс, advisory lock, heartbeat/job history, fail-safe candidate lifecycle, операторское окно и PostgreSQL control queue |
+| Отдельный background trainer | Реализовано; UX усилен в 1.8.0, crash recovery в 1.8.1 | отдельный процесс, advisory lock, heartbeat/job history, fail-safe candidate lifecycle, операторское окно и восстанавливаемая PostgreSQL control queue |
 | Advisory-only, без отправки ордеров | Реализовано | Bybit-клиент использует public/read-only GET; ручные решения и fills сохраняются отдельно |
 | Хронология ручного исполнения | Исправлено в 1.7.12 | manual-close валидирует entry/latest fill time под row lock до изменения qty, P&L, audit и outbox |
 | Market signal отдельно от execution plan | Реализовано | `MarketSignal`, versioned `ExecutionPlan`, профили капитала |
@@ -28,7 +29,7 @@
 | Numeric sizing inputs fail-closed | Исправлено в 1.7.5 | finite/positive capital, risk and instrument constraints; finite non-negative costs/margin/caps; invalid values дают zero-sized `BLOCKED_INVALID_INPUT` |
 | Counterfactual plan inputs fail-closed | Исправлено в 1.7.6 | finite qty/prices/stress loss/costs/funding; malformed plan snapshot дает terminal zero-valued `INVALID_INPUT`, audit diagnostic и per-plan isolation |
 | Компактная плитка, подробный диалог и glossary | Реализовано | HTML/CSS/Vanilla JS, keyboard/touch/hover подсказки, modal actions |
-| Наблюдаемость и безопасное управление trainer | Реализовано в 1.8.0 | modal heartbeat/phase/wait/progress/result; authenticated `CHECK_NOW`/`RECOVER_NOW`; API не выполняет fitting и не ослабляет gates |
+| Наблюдаемость и безопасное управление trainer | Реализовано в 1.8.0; stale-claim recovery в 1.8.1 | modal heartbeat/phase/wait/progress/result; authenticated `CHECK_NOW`/`RECOVER_NOW`; abandoned claim получает terminal evidence, linked retry и late-completion guard; API не выполняет fitting и не ослабляет gates |
 | Один текущий сигнал на символ | Реализовано | supersede-логика и частичный уникальный индекс PostgreSQL |
 | ML-задача TP/SL/TIMEOUT, а не NO TRADE | Исправлено в 1.3.0 | direction-conditional barrier dataset и трехклассовая модель |
 | Временная калибровка | Исправлено в 1.3.0 | отдельное более позднее calibration window, sigmoid OVR |

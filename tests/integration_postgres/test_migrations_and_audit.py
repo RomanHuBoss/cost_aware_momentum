@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 
 from app.config import Settings
 from app.db.engine import rebuild_engine
@@ -17,14 +17,22 @@ from app.db.models import (
     Candle,
     CapitalProfile,
     ExecutionPlan,
+    JobRun,
     MarketSignal,
+    OutboxEvent,
     PlanOutcome,
+    ServiceHeartbeat,
     SignalOutcome,
     UIGlossary,
 )
 from app.services.audit import append_audit_event
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 from app.services.outcomes import resolve_counterfactual_outcomes
+from app.services.trainer_control import (
+    TRAINER_CONTROL_JOB_NAME,
+    acquire_trainer_control_lock,
+    recover_stale_trainer_control,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -124,6 +132,101 @@ async def test_seeded_reference_data(database_url: str) -> None:
             )
         ).scalar_one()
         assert "INVALID_INPUT" in valuation_constraint
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stale_trainer_control_is_failed_and_requeued_atomically(database_url: str) -> None:
+    settings = Settings(
+        database_url=database_url,
+        heartbeat_seconds=15,
+        trainer_id="trainer-recovery-integration",
+    )
+    engine, factory = rebuild_engine(settings)
+    now = datetime.now(UTC)
+    accepted_at = now - timedelta(minutes=10)
+    stale_owner = "trainer-stale-integration"
+
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(JobRun).where(JobRun.job_name == TRAINER_CONTROL_JOB_NAME)
+        )
+        await session.execute(
+            delete(ServiceHeartbeat).where(
+                ServiceHeartbeat.service_name == "trainer",
+                ServiceHeartbeat.instance_id == stale_owner,
+            )
+        )
+        abandoned = JobRun(
+            job_name=TRAINER_CONTROL_JOB_NAME,
+            scheduled_for=accepted_at,
+            started_at=accepted_at,
+            status="RUNNING",
+            worker_id=stale_owner,
+            details={
+                "action": "CHECK_NOW",
+                "requested_by": "integration-operator",
+                "requested_at": (accepted_at - timedelta(seconds=5)).isoformat(),
+                "accepted_at": accepted_at.isoformat(),
+                "accepted_by": stale_owner,
+                "claim_token": "abandoned-claim",
+            },
+        )
+        session.add(abandoned)
+        session.add(
+            ServiceHeartbeat(
+                service_name="trainer",
+                instance_id=stale_owner,
+                last_seen_at=accepted_at,
+                status="RUNNING",
+                details={},
+            )
+        )
+        await session.flush()
+        abandoned_id = abandoned.id
+
+    async with factory() as session, session.begin():
+        await acquire_trainer_control_lock(session)
+        replacement = await recover_stale_trainer_control(
+            session,
+            settings,
+            recovered_by=settings.trainer_id,
+        )
+        assert replacement is not None
+        replacement_id = replacement.id
+
+    async with factory() as session:
+        abandoned = await session.get(JobRun, abandoned_id)
+        replacement = await session.get(JobRun, replacement_id)
+        assert abandoned is not None
+        assert abandoned.status == "FAILED"
+        assert abandoned.details["result"]["error"] == "stale_trainer_control_owner"
+        assert replacement is not None
+        assert replacement.status == "PENDING"
+        assert replacement.details["retry_of"] == str(abandoned_id)
+        audit_types = set(
+            (
+                await session.execute(
+                    select(AuditEvent.event_type).where(
+                        AuditEvent.entity_id.in_([str(abandoned_id), str(replacement_id)])
+                    )
+                )
+            ).scalars()
+        )
+        outbox_types = set(
+            (
+                await session.execute(
+                    select(OutboxEvent.event_type).where(
+                        OutboxEvent.aggregate_id.in_([str(abandoned_id), str(replacement_id)])
+                    )
+                )
+            ).scalars()
+        )
+        assert audit_types == {
+            "TRAINER_CONTROL_STALE_RECOVERED",
+            "TRAINER_CONTROL_REQUEUED",
+        }
+        assert outbox_types == audit_types
     await engine.dispose()
 
 

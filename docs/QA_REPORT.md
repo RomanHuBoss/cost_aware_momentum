@@ -1,5 +1,28 @@
 # QA report
 
+Дата проверки версии 1.8.1: 28 июня 2026 г.
+
+## Итерация 1.8.1 — recovery зависших trainer-control requests
+
+Подтвержден операционный defect: после аварии trainer между claim и completion запись `trainer_control_request` оставалась `RUNNING`. Enqueue дедуплицировал по `PENDING/RUNNING`, а trainer выбирал только `PENDING`, поэтому очередь блокировалась бессрочно и требовала опасного ручного SQL-вмешательства.
+
+| Проверка | Baseline 1.8.0 | Post-check 1.8.1 |
+|---|---|---|
+| isolated `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | PASSED — 148 passed, 3 skipped, 19 warnings | PASSED — 152 passed, 4 skipped, 19 warnings |
+| trainer-control recovery regression | RED — 3 failed | GREEN — 4 passed |
+| PostgreSQL recovery integration | отсутствовал | ADDED, SKIPPED — `TEST_DATABASE_URL` не настроен |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| `alembic heads` | `0005_plan_outcome_invalid_input` | `0005_plan_outcome_invalid_input` |
+| `python manage.py doctor` | FAILED (environment) | FAILED (environment) — release не содержит `.venv`/`.env`, PostgreSQL tools/service не настроены |
+| `python manage.py test --require-integration` | NOT RUN/UNAVAILABLE | NOT RUN/UNAVAILABLE — отдельная PostgreSQL test DB отсутствует |
+
+Версия 1.8.1 сериализует enqueue/claim одним advisory lock, признает request abandoned только при сочетании возраста claim не менее пяти минут и stale/missing heartbeat владельца, оставляет старую попытку terminal `FAILED`, создает связанный retry и пишет audit/outbox. Claim-token и status guard блокируют поздний completion старого процесса. Migration и новые `.env` переменные не требуются; необходимо перезапустить API и trainer.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-trainer-control-recovery.md`.
+
 Дата проверки версии 1.8.0: 28 июня 2026 г.
 
 ## Итерация 1.8.0 — operator-visible trainer status and control

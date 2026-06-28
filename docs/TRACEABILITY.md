@@ -4,7 +4,7 @@
 |---|---|---|
 | FastAPI/Uvicorn, PostgreSQL only | Да | `app/main.py`, `app/db/*`; SQLite URL отвергается |
 | Отдельный market/inference worker | Да | `app/workers/runner.py` |
-| Отдельный background trainer | Да; операторский контур с 1.8.0 | отдельный процесс, advisory lock, heartbeat/job history, status dialog и PostgreSQL-backed control requests |
+| Отдельный background trainer | Да; операторский контур с 1.8.0, crash recovery с 1.8.1 | отдельный процесс, advisory lock, heartbeat/job history, status dialog и PostgreSQL-backed control requests с linked retry после stale owner |
 | Ручное исполнение, без order API | Да | public/read-only Bybit client; accept/fills — журнал, не ордер |
 | Хронология фактических manual fills | Да с 1.7.12 | close под row lock; `fill_time` не раньше entry и последнего fill; invalid chronology отклоняется до mutation |
 | Closed-candle cutoff | Да | confirmed candles; `close_time` и `available_at` ограничены event cutoff |
@@ -36,7 +36,7 @@
 | Профили капитала и sizing | Да | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps |
 | Компактные плитки и modal actions | Да | `web/*` |
 | Актуальность status/universe UI | Да с 1.5.0 | периодическое обновление и фильтрация текущих рекомендаций по worker universe |
-| Operator-visible trainer status/control | Да с 1.8.0 | heartbeat, phase, next check, wait progress, artifact, latest training/control jobs; CSRF-protected `CHECK_NOW`/`RECOVER_NOW` без gate bypass |
+| Operator-visible trainer status/control | Да с 1.8.0; stale request recovery с 1.8.1 | heartbeat, phase, next check, wait progress, artifact, latest training/control jobs; CSRF-protected `CHECK_NOW`/`RECOVER_NOW`; abandoned `RUNNING` определяется по age+heartbeat, старый claim терминализируется и late completion отклоняется |
 | Versioned glossary и доступность | Да | DB glossary, hover/focus/tap tooltips |
 | Одна текущая рекомендация на символ | Да | supersede transaction + PostgreSQL partial unique index |
 | Audit/idempotency/outbox | Да | append-only hash chain, idempotency keys, outbox events, job runs и heartbeats |

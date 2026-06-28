@@ -77,6 +77,7 @@ async def trainer_control(
         session,
         action=payload.action,
         operator=operator,
+        settings=settings,
     )
     if created:
         await append_audit_event(

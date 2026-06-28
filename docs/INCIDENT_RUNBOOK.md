@@ -99,6 +99,14 @@ API завершится до readiness. Не использовать `stamp he
 6. В версии 1.7.3+ несвязанный старый `scheduled_retraining`/`material_training_dataset_change` failure не блокирует новый bootstrap episode. Без операторской команды техническая ошибка того же episode использует `AUTO_TRAIN_RECOVERY_RETRY_MINUTES`.
 7. Если candidate обучен, но отклонен quality gate, baseline сохраняется; не снижать gate ради появления active-модели.
 8. При stale/offline heartbeat endpoint control возвращает HTTP 409. Запустить trainer отдельно и проверить traceback/PostgreSQL, а не повторять кнопку.
+
+## Команда trainer зависла в `RUNNING`
+
+1. Проверить heartbeat instance, записанный в `accepted_by`, и время `accepted_at` в `ops.job_runs`/окне «Обучатель».
+2. В версии 1.8.1+ не изменять status прямым SQL. После пяти минут и при stale/missing heartbeat следующий цикл trainer атомарно завершит старую попытку как `FAILED` и создаст связанный `PENDING`-retry.
+3. Убедиться, что audit содержит `TRAINER_CONTROL_STALE_RECOVERED`, а для автоматического повтора — `TRAINER_CONTROL_REQUEUED`; в job details должны быть `retry_of` и `recovery_count`.
+4. Если старый процесс возобновился, его поздний completion будет отклонен из-за terminal status/claim-token. Проверить отдельный `model_retraining`: session advisory lock по-прежнему исключает параллельное fitting/activation.
+5. Если recovery не происходит, проверить доступность PostgreSQL, запуск нового trainer и его heartbeat. До восстановления БД не создавать ручные дубликаты и не снижать model gates.
 ## Counterfactual plan outcome имеет `INVALID_INPUT`
 
 1. Открыть detail конкретной plan version и зафиксировать `plan_id`, `plan_version` и `validation_error` из `cost_assumptions`/audit.

@@ -5,6 +5,7 @@ import logging
 import signal
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -32,6 +33,8 @@ from app.services.audit import publish_outbox
 from app.services.trainer_control import (
     TRAINER_CONTROL_ACTIONS,
     TRAINER_CONTROL_JOB_NAME,
+    acquire_trainer_control_lock,
+    recover_stale_trainer_control,
 )
 
 settings = get_settings()
@@ -361,6 +364,12 @@ class BackgroundTrainer:
 
     async def claim_control_request(self) -> JobRun | None:
         async with SessionFactory() as session, session.begin():
+            await acquire_trainer_control_lock(session)
+            await recover_stale_trainer_control(
+                session,
+                settings,
+                recovered_by=settings.trainer_id,
+            )
             job = (
                 await session.execute(
                     select(JobRun)
@@ -378,6 +387,7 @@ class BackgroundTrainer:
             details = dict(job.details or {})
             details["accepted_at"] = datetime.now(UTC).isoformat()
             details["accepted_by"] = settings.trainer_id
+            details["claim_token"] = uuid4().hex
             job.status = "RUNNING"
             job.worker_id = settings.trainer_id
             job.details = json_compatible(details)
@@ -390,7 +400,8 @@ class BackgroundTrainer:
         *,
         status: str,
         result: dict[str, object],
-    ) -> None:
+        claim_token: str,
+    ) -> bool:
         async with SessionFactory() as session, session.begin():
             job = (
                 await session.execute(
@@ -398,6 +409,12 @@ class BackgroundTrainer:
                 )
             ).scalar_one()
             details = dict(job.details or {})
+            if job.status != "RUNNING" or details.get("claim_token") != claim_token:
+                logger.warning(
+                    "Ignoring completion from a stale trainer control claim",
+                    extra={"job_id": str(job.id), "status": job.status},
+                )
+                return False
             details["result"] = json_compatible(result)
             job.status = status
             job.finished_at = datetime.now(UTC)
@@ -413,10 +430,13 @@ class BackgroundTrainer:
                     "training_started": result.get("training_started"),
                 },
             )
+            await session.flush()
+            return True
 
     async def process_control_request(self, job: JobRun) -> None:
         details = job.details if isinstance(job.details, dict) else {}
         action = str(details.get("action") or "")
+        claim_token = str(details.get("claim_token") or "")
         self.state.pop("wait_reason", None)
         self.state.update(
             {
@@ -446,7 +466,12 @@ class BackgroundTrainer:
                     "control_request": None,
                 }
             )
-            await self.finish_control_request(job.id, status="FAILED", result=result)
+            await self.finish_control_request(
+                job.id,
+                status="FAILED",
+                result=result,
+                claim_token=claim_token,
+            )
             await self.heartbeat_best_effort()
             return
 
@@ -481,7 +506,12 @@ class BackgroundTrainer:
                     "control_request": None,
                 }
             )
-            await self.finish_control_request(job.id, status=control_status, result=result)
+            await self.finish_control_request(
+                job.id,
+                status=control_status,
+                result=result,
+                claim_token=claim_token,
+            )
         except Exception as exc:
             result = {
                 "action": action,
@@ -496,7 +526,12 @@ class BackgroundTrainer:
                     "control_request": None,
                 }
             )
-            await self.finish_control_request(job.id, status="FAILED", result=result)
+            await self.finish_control_request(
+                job.id,
+                status="FAILED",
+                result=result,
+                claim_token=claim_token,
+            )
             logger.exception("Trainer control request failed")
         await self.heartbeat_best_effort()
 
