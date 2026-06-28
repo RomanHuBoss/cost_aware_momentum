@@ -35,6 +35,8 @@ SignalOutcome -> PlanOutcome(each version) -> API/UI/audit/outbox
 
 Market signal не зависит от профиля капитала. Execution plan зависит от профиля и snapshot счета. Один signal имеет несколько versioned plans.
 
+Начиная с 1.7.12 manual-close выполняется под row lock сделки и до любой mutation читает последний сохраненный `fills.fill_time`. Новый partial/full fill допускается только при `fill_time >= entry_time` и `fill_time >= latest_fill_time`; одинаковые timestamps разрешены для нескольких биржевых fills.
+
 ## Нативные процессы
 
 - `api`: HTTP/SSE, UI, validation и operator actions; запускается через `python manage.py api`.

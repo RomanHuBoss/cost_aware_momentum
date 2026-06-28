@@ -6,6 +6,7 @@
 | Отдельный market/inference worker | Да | `app/workers/runner.py` |
 | Отдельный background trainer | Да с 1.4.0 | отдельный процесс, advisory lock, heartbeat и job history |
 | Ручное исполнение, без order API | Да | public/read-only Bybit client; accept/fills — журнал, не ордер |
+| Хронология фактических manual fills | Да с 1.7.12 | close под row lock; `fill_time` не раньше entry и последнего fill; invalid chronology отклоняется до mutation |
 | Closed-candle cutoff | Да | confirmed candles; `close_time` и `available_at` ограничены event cutoff |
 | Строгая hourly continuity для features/labels | Да с 1.7.11 | 24 последовательных перехода для feature snapshot; ровно N следующих hourly candles для label; gaps/duplicates fail-closed/excluded с diagnostics |
 | Market signal отдельно от execution plan | Да | отдельные ORM-объекты и versioned profile recalculation |

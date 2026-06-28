@@ -1,5 +1,26 @@
 # QA report
 
+Дата проверки версии 1.7.12: 28 июня 2026 г.
+
+## Итерация 1.7.12 — monotonic manual fill chronology
+
+Подтвержден data-integrity defect: `POST /api/v1/trades/{id}/close` проверял status и remaining qty, но не сравнивал `fill_time` с entry и предыдущими fills. Поэтому partial/full close мог быть записан раньше открытия либо более ранним временем после уже сохраненного partial close.
+
+| Проверка | Baseline 1.7.11 | Post-check 1.7.12 |
+|---|---|---|
+| isolated `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | PASSED — 136 passed, 3 skipped, 19 warnings | PASSED — 139 passed, 3 skipped, 19 warnings |
+| manual chronology regression tests | RED — 2 failed, 1 passed на исходном production code | GREEN — 3 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| `alembic heads` | `0005_plan_outcome_invalid_input` | `0005_plan_outcome_invalid_input` |
+| PostgreSQL integration | NOT RUN — нет отдельной test database | NOT RUN — нет отдельной test database |
+
+Close flow теперь блокирует `ManualTrade` через `FOR UPDATE`, читает последний `Fill.fill_time` и отклоняет время раньше entry/latest fill с HTTP 422 до изменения remaining qty, P&L, audit/outbox и idempotency result. Одинаковый timestamp разрешен для нескольких фактических fills. Migration и `.env`-изменения не требуются.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-manual-fill-chronology.md`.
+
 Дата проверки версии 1.7.11: 28 июня 2026 г.
 
 ## Итерация 1.7.11 — strict hourly feature/label continuity

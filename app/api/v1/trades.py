@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from uuid import UUID
 
@@ -16,6 +16,19 @@ from app.services.audit import append_audit_event, publish_outbox
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 
 router = APIRouter(prefix="/api/v1/trades", tags=["manual trades"])
+
+
+def validate_close_fill_time(
+    fill_time: datetime,
+    *,
+    entry_time: datetime,
+    latest_fill_time: datetime | None = None,
+) -> None:
+    """Require manual close fills to preserve the recorded trade chronology."""
+    if fill_time < entry_time:
+        raise ValueError("Close fill time cannot be earlier than trade entry")
+    if latest_fill_time is not None and fill_time < latest_fill_time:
+        raise ValueError("Close fill time cannot be earlier than latest recorded fill")
 
 
 async def _cached_or_none(session, key, scope, payload):
@@ -220,6 +233,23 @@ async def close_trade(
     if payload.qty > trade.remaining_qty:
         raise HTTPException(status_code=422, detail="Close quantity exceeds remaining quantity")
 
+    latest_fill_time = (
+        await session.execute(
+            select(Fill.fill_time)
+            .where(Fill.trade_id == trade.id)
+            .order_by(Fill.fill_time.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    try:
+        validate_close_fill_time(
+            payload.fill_time,
+            entry_time=trade.entry_time,
+            latest_fill_time=latest_fill_time,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     pnl = gross_pnl(trade.direction, payload.qty, trade.entry_price, payload.exit_price)
     net_change = pnl - payload.fee + payload.funding
     trade.remaining_qty -= payload.qty
@@ -251,6 +281,7 @@ async def close_trade(
         entity_id=str(trade.id),
         actor=operator,
         payload={
+            "fill_time": payload.fill_time.isoformat(),
             "exit_price": str(payload.exit_price),
             "qty": str(payload.qty),
             "gross_pnl": str(pnl),
