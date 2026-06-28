@@ -315,6 +315,9 @@ def build_model_candidate(
         split.y_cal,
     )
     metrics = evaluate_model(model, split)
+    label_data_end = _as_datetime(dataset.label_end_time.max())
+    metrics["temporal_split_schema"] = "label-end-purged-v2"
+    metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
         metrics.update(evaluate_policy_model(model, split, policy_config))
 
@@ -369,6 +372,8 @@ def build_model_candidate(
         "calibration_version": f"sigmoid-ovr-{generated_version}",
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": "hourly-barrier-v1",
+        "temporal_split_schema": "label-end-purged-v2",
+        "label_data_end": label_data_end.isoformat(),
         "horizon_hours": horizon,
         "stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
         "tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,

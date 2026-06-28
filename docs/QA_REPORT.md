@@ -1,5 +1,32 @@
 # QA report
 
+Дата проверки версии 1.7.10: 28 июня 2026 г.
+
+## Итерация 1.7.10 — label-end-aware temporal purge
+
+Подтвержден high-severity ML temporal defect: barrier label строился по следующим N наблюдаемым свечам, а purge между train/calibration/final-holdout задавался как N wall-clock часов. При пропусках свечей train-label мог использовать OHLC уже из calibration window, и same-holdout quality gate получал оптимистично загрязненную оценку.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `d68133e676485d2597a96bffd6e2388a9f4677f0be19be6587ba98b0581bbdf1` |
+| Initial host baseline | FAILED/UNAVAILABLE — отсутствовали `ruff` и `psycopg`; внешний `moviepy/pillow` conflict; зафиксировано до создания isolated environment |
+| Baseline isolated `python -m pytest -q` | PASSED — 131 passed, 3 skipped, 20 warnings |
+| RED temporal regression | PASSED как доказательство дефекта — 2 failed; train label ended `2025-02-19T20:00Z`, calibration began `2025-02-19T08:00Z` |
+| `python -m pip check` | PASSED — No broken requirements found |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 133 passed, 3 skipped, 19 warnings |
+| targeted training tests | PASSED — 8 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0005_plan_outcome_invalid_input` |
+| `python manage.py doctor` | FAILED (environment) — project-local `.venv`, `.env` and PostgreSQL native setup are not configured |
+| PostgreSQL integration | SKIPPED — 3 tests; `TEST_DATABASE_URL` is not configured |
+| Migration / `.env` | не требуется |
+
+Новые training rows содержат `label_end_time`. Split отклоняет отсутствующие/невалидные timestamps и проверяет, что train label ends строго раньше calibration features, а calibration label ends — раньше final holdout. Horizon-hour embargo после границы сохранен. Новые artifacts получают `temporal_split_schema=label-end-purged-v2` и отдельный `label_data_end`; существующие artifacts не переписываются.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-label-end-temporal-purge.md`.
+
 Дата проверки версии 1.7.9: 28 июня 2026 г.
 
 ## Итерация 1.7.9 — class-order-safe multiclass log loss

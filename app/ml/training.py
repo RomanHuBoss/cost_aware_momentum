@@ -171,9 +171,12 @@ def make_barrier_dataset(
             atr = float(current.get("atr_14", np.nan))
             if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
                 continue
-            future = group.iloc[index + 1 : index + 1 + horizon][["high", "low", "close"]]
+            future = group.iloc[index + 1 : index + 1 + horizon][
+                ["open_time", "high", "low", "close"]
+            ]
             if len(future) < horizon:
                 continue
+            label_end_time = future.iloc[-1]["open_time"]
 
             for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
                 if direction == "LONG":
@@ -199,6 +202,7 @@ def make_barrier_dataset(
                     {
                         "scenario_direction": direction_code,
                         "open_time": current["open_time"],
+                        "label_end_time": label_end_time,
                         "symbol": symbol,
                         "direction": direction,
                         "target": result.outcome,
@@ -215,7 +219,35 @@ def make_barrier_dataset(
 
 
 def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSplit:
-    """Chronological train/calibration/final-holdout split on whole timestamps with purge gaps."""
+    """Split whole timestamps while purging samples by their actual label end time.
+
+    ``purge_rows`` remains the post-boundary embargo in hours for backward-compatible
+    hourly research semantics.  Label overlap is controlled independently through the
+    explicit ``label_end_time`` emitted by :func:`make_barrier_dataset`, so missing or
+    irregular candles cannot make a nominal N-hour purge shorter than the data used by
+    an N-bar label.
+    """
+
+    if isinstance(purge_rows, bool) or not isinstance(purge_rows, (int, np.integer)):
+        raise TypeError("purge_rows must be an integer number of hours")
+    purge_hours = int(purge_rows)
+    if purge_hours < 0:
+        raise ValueError("purge_rows must be non-negative")
+
+    required_columns = {"open_time", "label_end_time"}
+    missing_columns = sorted(required_columns - set(frame.columns))
+    if missing_columns:
+        raise ValueError(f"Chronological split requires columns: {missing_columns}")
+
+    frame = frame.copy()
+    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, errors="coerce")
+    frame["label_end_time"] = pd.to_datetime(
+        frame["label_end_time"], utc=True, errors="coerce"
+    )
+    if frame[["open_time", "label_end_time"]].isna().any().any():
+        raise ValueError("Chronological split contains invalid open_time or label_end_time")
+    if (frame["label_end_time"] <= frame["open_time"]).any():
+        raise ValueError("Every label_end_time must be later than its open_time")
 
     frame = frame.sort_values(["open_time", "symbol", "direction"]).reset_index(drop=True)
     unique_times = pd.Index(frame["open_time"].drop_duplicates().sort_values())
@@ -226,20 +258,28 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
     cal_index = int(n_times * 0.85)
     train_boundary = unique_times[train_index]
     cal_boundary = unique_times[cal_index]
-    purge = pd.Timedelta(hours=purge_rows)
+    embargo = pd.Timedelta(purge_hours, unit="h")
 
-    train = frame[frame["open_time"] < train_boundary - purge]
-    cal = frame[(frame["open_time"] >= train_boundary + purge) & (frame["open_time"] < cal_boundary - purge)]
-    test = frame[frame["open_time"] >= cal_boundary + purge]
+    train = frame[frame["label_end_time"] < train_boundary]
+    cal = frame[
+        (frame["open_time"] >= train_boundary + embargo)
+        & (frame["label_end_time"] < cal_boundary)
+    ]
+    test = frame[frame["open_time"] >= cal_boundary + embargo]
     if min(len(train), len(cal), len(test)) < 90:
         raise ValueError("Chronological split produced an undersized window")
     if train["open_time"].max() >= cal["open_time"].min():
         raise AssertionError("Train/calibration windows overlap")
     if cal["open_time"].max() >= test["open_time"].min():
         raise AssertionError("Calibration/final-holdout windows overlap")
+    if train["label_end_time"].max() >= cal["open_time"].min():
+        raise AssertionError("Train labels overlap calibration features")
+    if cal["label_end_time"].max() >= test["open_time"].min():
+        raise AssertionError("Calibration labels overlap final-holdout features")
 
     meta_columns = [
         "open_time",
+        "label_end_time",
         "symbol",
         "direction",
         "target",

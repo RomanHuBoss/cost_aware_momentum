@@ -157,6 +157,8 @@ def test_barrier_dataset_creates_long_and_short_scenarios() -> None:
     assert set(dataset["scenario_direction"]) == {-1.0, 1.0}
     assert dataset.groupby(["open_time", "symbol"])["direction"].nunique().eq(2).all()
     assert all(name in dataset.columns for name in MODEL_FEATURE_NAMES)
+    assert "label_end_time" in dataset.columns
+    assert (dataset["label_end_time"] > dataset["open_time"]).all()
 
 
 def test_chronological_split_keeps_timestamp_groups_together() -> None:
@@ -172,6 +174,7 @@ def test_chronological_split_keeps_timestamp_groups_together() -> None:
                     {
                         "scenario_direction": direction_code,
                         "open_time": start + timedelta(hours=hour),
+                        "label_end_time": start + timedelta(hours=hour + 8),
                         "symbol": symbol,
                         "direction": direction,
                         "target": target,
@@ -187,6 +190,82 @@ def test_chronological_split_keeps_timestamp_groups_together() -> None:
     assert len(split.y_test) > 0
     assert split.test_meta.groupby("open_time")["symbol"].nunique().eq(2).all()
     assert split.test_meta.groupby(["open_time", "symbol"])["direction"].nunique().eq(2).all()
+
+
+def test_chronological_split_purges_by_actual_label_end_time() -> None:
+    rows = []
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    open_by_index: dict[int, datetime] = {}
+    label_end_by_index: dict[int, datetime] = {}
+    outcomes = ["TP", "SL", "TIMEOUT"]
+
+    for index in range(420):
+        open_time = start + timedelta(hours=index * 4)
+        label_end_time = open_time + timedelta(hours=32)
+        open_by_index[index] = open_time
+        label_end_by_index[index] = label_end_time
+        for symbol in ("BTCUSDT", "ETHUSDT"):
+            for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
+                row = {name: 0.0 for name in FEATURE_NAMES}
+                row[FEATURE_NAMES[0]] = float(index)
+                target = outcomes[(index + (0 if direction == "LONG" else 1)) % 3]
+                row.update(
+                    {
+                        "scenario_direction": direction_code,
+                        "open_time": open_time,
+                        "label_end_time": label_end_time,
+                        "symbol": symbol,
+                        "direction": direction,
+                        "target": target,
+                        "ambiguous": False,
+                        "realized_gross_return": 0.0,
+                        "barrier_upside_rate": 0.02,
+                        "barrier_downside_rate": 0.01,
+                    }
+                )
+                rows.append(row)
+
+    split = chronological_split(pd.DataFrame(rows), purge_rows=8)
+    train_indexes = {int(value) for value in split.x_train[:, 0]}
+    cal_indexes = {int(value) for value in split.x_cal[:, 0]}
+    test_indexes = {int(value) for value in split.x_test[:, 0]}
+
+    assert max(label_end_by_index[index] for index in train_indexes) < min(
+        open_by_index[index] for index in cal_indexes
+    )
+    assert max(label_end_by_index[index] for index in cal_indexes) < min(
+        open_by_index[index] for index in test_indexes
+    )
+
+
+def test_chronological_split_fails_closed_without_valid_label_end_time() -> None:
+    rows = []
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    for hour in range(420):
+        for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
+            row = {name: 0.0 for name in FEATURE_NAMES}
+            row.update(
+                {
+                    "scenario_direction": direction_code,
+                    "open_time": start + timedelta(hours=hour),
+                    "symbol": "BTCUSDT",
+                    "direction": direction,
+                    "target": "TP" if hour % 3 == 0 else "SL",
+                    "ambiguous": False,
+                    "realized_gross_return": 0.0,
+                    "barrier_upside_rate": 0.02,
+                    "barrier_downside_rate": 0.01,
+                }
+            )
+            rows.append(row)
+
+    frame = pd.DataFrame(rows)
+    with pytest.raises(ValueError, match="label_end_time"):
+        chronological_split(frame, purge_rows=8)
+
+    frame["label_end_time"] = frame["open_time"]
+    with pytest.raises(ValueError, match="later than"):
+        chronological_split(frame, purge_rows=8)
 
 
 def test_policy_evaluation_selects_one_direction_and_applies_cost_gate() -> None:

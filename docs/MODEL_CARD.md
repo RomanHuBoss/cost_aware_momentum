@@ -23,7 +23,7 @@
 
 ## Разбиение и калибровка
 
-Данные делятся хронологически на train, более позднее calibration window и final holdout. Между окнами создается purge gap не меньше горизонта. В каждой calibration class должна присутствовать TP/SL/TIMEOUT. Вероятности калибруются one-vs-rest sigmoid и затем нормируются.
+Данные делятся хронологически на train, более позднее calibration window и final holdout. Начиная с 1.7.10 каждая строка хранит фактический `label_end_time`: train/calibration observation исключается, если ее будущий barrier-window достигает следующего окна. После границы дополнительно сохраняется embargo не меньше горизонта в часах. Отсутствующий, невалидный или не более поздний `label_end_time` блокирует split fail-closed. В каждой calibration class должна присутствовать TP/SL/TIMEOUT. Вероятности калибруются one-vs-rest sigmoid и затем нормируются.
 
 Текущая поставка не реализует многооконный expanding/rolling walk-forward и OOF aggregation; поэтому final holdout является необходимой, но недостаточной проверкой.
 
@@ -53,6 +53,7 @@ Joblib bundle обязан содержать:
 - outcome classes `TP`, `SL`, `TIMEOUT`;
 - horizon и параметры barriers;
 - calibration version и holdout metrics.
+- `temporal_split_schema=label-end-purged-v2` и `label_data_end`, отделенный от scheduler-поля `training_end`;
 
 При активации и загрузке проверяются version, SHA256, task, feature schema, classes и соответствие `DEFAULT_HORIZON_HOURS`. Legacy binary-direction artifacts отвергаются.
 

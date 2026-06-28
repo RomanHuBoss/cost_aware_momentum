@@ -1,7 +1,7 @@
 # Cost-aware hourly ML momentum
 
 
-> Версия 1.7.9: multiclass `log_loss` теперь вычисляется строго в объявленном порядке классов `TP / SL / TIMEOUT`, без скрытой лексикографической перестановки столбцов scikit-learn. В metrics дополнительно сохраняются raw/calibrated log loss и сравнение с class-prior/uniform benchmark.
+> Версия 1.7.10: temporal split теперь очищает train/calibration/final-holdout по фактическому `label_end_time`, а не только по номинальному числу часов. Разреженные или пропущенные свечи больше не позволяют label использовать данные из следующего окна; отсутствие корректного времени окончания label блокирует обучение fail-closed.
 
 Локальная рекомендательная система для линейных USDT-фьючерсов Bybit. Система получает рыночные данные, строит часовые признаки, формирует LONG/SHORT-кандидаты, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения, а затем показывает оператору исполнимый план. Ордеры на биржу приложение **не отправляет**.
 
@@ -176,7 +176,7 @@ python manage.py model-registry recover-artifact --artifact models/<artifact>.jo
 
 При обновлении с 1.7.7 на 1.7.8 migration и новые `.env` переменные не требуются. Перезапустите API/worker/trainer. Новые candidates, которые должны быть активированы сразу, теперь регистрируются, переключают active-row и создают audit/outbox события одной транзакцией; существующие inactive candidates и ручной rollback работают как раньше.
 
-При обновлении с 1.7.8 на 1.7.9 migration и новые `.env` переменные не требуются. Перезапустите API/worker/trainer. Исторические значения `log_loss`, уже сохраненные кандидатами версии 1.7.8 и ниже, автоматически не переписываются; для корректного quality gate требуется новое обучение или повторная оценка artifact кодом 1.7.9. Не повышайте `AUTO_TRAIN_MAX_LOG_LOSS` для обхода старой ошибочной метрики.
+При обновлении с 1.7.9 на 1.7.10 migration и новые `.env` переменные не требуются. Перезапустите API/worker/trainer и получите новый candidate: существующие artifacts не переписываются, а их split не содержит `temporal_split_schema=label-end-purged-v2`. `training_end` сохраняет прежнюю scheduler-семантику последнего feature timestamp; фактический конец данных, использованных labels, отдельно записывается как `label_data_end`.
 
 ## Управление проектом
 
@@ -258,7 +258,7 @@ python manage.py report --output reports/daily_report.json
 python manage.py replay --signal-id <UUID> --output reports/replay.json
 ```
 
-Trainer и ручное обучение создают direction-specific метки `TP`, `SL`, `TIMEOUT`, используют хронологические train/calibration/final-holdout окна и immutable artifacts. Worker проверяет SHA256, task/schema/classes/horizon и загружает новую active-версию без перезапуска. Активация предыдущей версии является rollback.
+Trainer и ручное обучение создают direction-specific метки `TP`, `SL`, `TIMEOUT`, сохраняют для каждой строки фактический `label_end_time` и используют его для purge между хронологическими train/calibration/final-holdout окнами. Дополнительный post-boundary embargo остается равным горизонту в часах. Worker проверяет SHA256, task/schema/classes/horizon и загружает новую active-версию без перезапуска. Активация предыдущей версии является rollback.
 
 Baseline остается только операционной заглушкой для non-production режимов. Его вероятности не калиброваны, каждая рекомендация содержит предупреждение, а heartbeat/UI показывают состояние `DEGRADED`. При отсутствии active registry row или физического файла active artifact worker может использовать baseline только при `ALLOW_BASELINE_MODEL=true`; явный `ACTIVE_MODEL_PATH`, SHA256 mismatch, поврежденный или несовместимый artifact остаются fail-closed. В `production` конфигурация требует `ALLOW_BASELINE_MODEL=false`, безопасные credentials и отключенный demo seed.
 
