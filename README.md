@@ -1,7 +1,7 @@
 # Cost-aware hourly ML momentum
 
 
-> Версия 1.7.10: temporal split теперь очищает train/calibration/final-holdout по фактическому `label_end_time`, а не только по номинальному числу часов. Разреженные или пропущенные свечи больше не позволяют label использовать данные из следующего окна; отсутствие корректного времени окончания label блокирует обучение fail-closed.
+> Версия 1.7.11: live inference, training и backtest используют только строго непрерывные часовые окна. Пропуск или дубликат свечи внутри 24-часового feature-lookback либо будущего label-horizon блокирует затронутый timestamp вместо скрытого растягивания доходностей и горизонта метки.
 
 Локальная рекомендательная система для линейных USDT-фьючерсов Bybit. Система получает рыночные данные, строит часовые признаки, формирует LONG/SHORT-кандидаты, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения, а затем показывает оператору исполнимый план. Ордеры на биржу приложение **не отправляет**.
 
@@ -177,6 +177,8 @@ python manage.py model-registry recover-artifact --artifact models/<artifact>.jo
 При обновлении с 1.7.7 на 1.7.8 migration и новые `.env` переменные не требуются. Перезапустите API/worker/trainer. Новые candidates, которые должны быть активированы сразу, теперь регистрируются, переключают active-row и создают audit/outbox события одной транзакцией; существующие inactive candidates и ручной rollback работают как раньше.
 
 При обновлении с 1.7.9 на 1.7.10 migration и новые `.env` переменные не требуются. Перезапустите API/worker/trainer и получите новый candidate: существующие artifacts не переписываются, а их split не содержит `temporal_split_schema=label-end-purged-v2`. `training_end` сохраняет прежнюю scheduler-семантику последнего feature timestamp; фактический конец данных, использованных labels, отдельно записывается как `label_data_end`.
+
+При обновлении с 1.7.10 на 1.7.11 migration и новые `.env` переменные не требуются. Перезапустите API/worker/trainer. Символ с разрывом в последних 24 часах не публикует новый signal до восстановления непрерывного окна. Новое обучение исключает timestamps с разрывом feature-lookback или label-horizon и сохраняет diagnostics `hourly_continuity`; новые artifacts получают `feature_schema_version=hourly-barrier-contiguous-v2`. Существующие artifacts остаются читаемыми и сохраняют свой прежний schema marker.
 
 ## Управление проектом
 

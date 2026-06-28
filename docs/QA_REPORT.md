@@ -1,5 +1,24 @@
 # QA report
 
+Дата проверки версии 1.7.11: 28 июня 2026 г.
+
+## Итерация 1.7.11 — strict hourly feature/label continuity
+
+Подтвержден high-severity ML/live correctness defect: rolling features и barrier labels использовали количество наблюдаемых строк. При пропущенной часовой свече `ret_24h` фактически охватывал более 24 часов, а N-bar label — более N часов; live worker мог опубликовать signal по такому вектору.
+
+| Проверка | Baseline 1.7.10 | Post-check 1.7.11 |
+|---|---|---|
+| isolated `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | PASSED — 133 passed, 3 skipped, 19 warnings | PASSED — 136 passed, 3 skipped, 19 warnings |
+| continuity regression tests | RED — 3 failed на исходном production code | GREEN — 3 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| `alembic heads` | `0005_plan_outcome_invalid_input` | `0005_plan_outcome_invalid_input` |
+| PostgreSQL integration | NOT RUN — нет отдельной test database | NOT RUN — нет отдельной test database |
+
+Новый contract требует 24 последовательных одночасовых перехода для полного feature-lookback и ровно N следующих hourly candles для label. Live snapshot при gap возвращает пустой vector с `NON_CONTIGUOUS_HOURLY_HISTORY`; training/backtest исключают только затронутые timestamps и сохраняют counts в `hourly_continuity`. Новые artifacts имеют `feature_schema_version=hourly-barrier-contiguous-v2`; старые artifacts не переписываются.
+
 Дата проверки версии 1.7.10: 28 июня 2026 г.
 
 ## Итерация 1.7.10 — label-end-aware temporal purge

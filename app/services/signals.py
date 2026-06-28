@@ -19,7 +19,7 @@ from app.db.models import (
     MarketSignal,
     TickerSnapshot,
 )
-from app.ml.features import latest_feature_snapshot
+from app.ml.features import BASELINE_FEATURE_SCHEMA_VERSION, latest_feature_snapshot
 from app.ml.runtime import ModelRuntime
 from app.risk.math import CostScenario, net_rr_and_ev, projected_funding_rate
 from app.services.audit import append_audit_event, publish_outbox
@@ -228,7 +228,7 @@ async def publish_hourly_signals(
         missing_flags = [flag for flag in snapshot.quality_flags if flag.startswith("MISSING_")]
         if not snapshot.values or missing_flags:
             logger.warning(
-                "Skipping symbol with incomplete feature vector",
+                "Skipping symbol with incomplete or non-contiguous feature vector",
                 extra={"symbol": symbol, "quality_flags": list(snapshot.quality_flags)},
             )
             continue
@@ -369,7 +369,9 @@ async def publish_hourly_signals(
             model_version=prediction.model_version,
             calibration_version=prediction.calibration_version,
             feature_schema_version=(
-                "hourly-core-v1" if runtime.is_baseline else "hourly-barrier-v1"
+                BASELINE_FEATURE_SCHEMA_VERSION
+                if runtime.is_baseline
+                else str((runtime.bundle or {}).get("feature_schema_version") or "hourly-barrier-v1")
             ),
             data_cutoff=event_time,
             reasons=list(prediction.reasons),

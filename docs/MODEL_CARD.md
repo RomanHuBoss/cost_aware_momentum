@@ -13,7 +13,7 @@
 ## Данные и метки
 
 - confirmed hourly last-price candles из PostgreSQL;
-- rolling point-in-time features без использования будущих строк;
+- rolling point-in-time features без использования будущих строк; начиная с 1.7.11 полный 24-часовой lookback обязан состоять из последовательных hourly timestamps;
 - два сценария на каждый symbol/time: LONG и SHORT;
 - ATR-based stop/TP barriers;
 - при одновременном касании TP и SL внутри часовой свечи используется консервативный исход SL;
@@ -23,7 +23,7 @@
 
 ## Разбиение и калибровка
 
-Данные делятся хронологически на train, более позднее calibration window и final holdout. Начиная с 1.7.10 каждая строка хранит фактический `label_end_time`: train/calibration observation исключается, если ее будущий barrier-window достигает следующего окна. После границы дополнительно сохраняется embargo не меньше горизонта в часах. Отсутствующий, невалидный или не более поздний `label_end_time` блокирует split fail-closed. В каждой calibration class должна присутствовать TP/SL/TIMEOUT. Вероятности калибруются one-vs-rest sigmoid и затем нормируются.
+До split dataset builder исключает timestamp, если 24-часовой feature-lookback или следующие N label-candles содержат пропуск/дубликат; счетчики сохраняются в `hourly_continuity`. Данные делятся хронологически на train, более позднее calibration window и final holdout. Начиная с 1.7.10 каждая строка хранит фактический `label_end_time`: train/calibration observation исключается, если ее будущий barrier-window достигает следующего окна. После границы дополнительно сохраняется embargo не меньше горизонта в часах. Отсутствующий, невалидный или не более поздний `label_end_time` блокирует split fail-closed. В каждой calibration class должна присутствовать TP/SL/TIMEOUT. Вероятности калибруются one-vs-rest sigmoid и затем нормируются.
 
 Текущая поставка не реализует многооконный expanding/rolling walk-forward и OOF aggregation; поэтому final holdout является необходимой, но недостаточной проверкой.
 
@@ -49,11 +49,11 @@ Joblib bundle обязан содержать:
 
 - `task=barrier_outcome_v1`;
 - model/version/model_type;
-- точный список feature names и `feature_schema_version=hourly-barrier-v1`;
+- точный список feature names и `feature_schema_version=hourly-barrier-contiguous-v2` для новых artifacts; recovery старых `hourly-barrier-v1` сохраняет их исходный marker;
 - outcome classes `TP`, `SL`, `TIMEOUT`;
 - horizon и параметры barriers;
 - calibration version и holdout metrics.
-- `temporal_split_schema=label-end-purged-v2` и `label_data_end`, отделенный от scheduler-поля `training_end`;
+- `temporal_split_schema=label-end-purged-v2`, `label_data_end` и diagnostics `hourly_continuity`, отделенные от scheduler-поля `training_end`;
 
 При активации и загрузке проверяются version, SHA256, task, feature schema, classes и соответствие `DEFAULT_HORIZON_HOURS`. Legacy binary-direction artifacts отвергаются.
 
@@ -92,6 +92,7 @@ python manage.py model-registry activate --version <version>
 - калибровка и costs деградируют при смене режима;
 - cross-sectional dependence уменьшает эффективный размер выборки;
 - hourly ambiguity в post-event журнале уточняется 1/3/5-минутным путем, но training labels пока сохраняют консервативное hourly правило;
+- разрывы hourly history теперь исключаются, но pipeline пока не выполняет автоматическое targeted backfill/repair конкретного gap перед training;
 - операторский выбор создает selection bias;
 - backtest не является доказательством прибыли и не заменяет paper/shadow forward test;
 - полноценные PSI/feature/probability drift gates и автоматический rollback по realized performance еще не реализованы; текущий trainer использует holdout quality gate до активации.

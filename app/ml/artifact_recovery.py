@@ -96,4 +96,7 @@ def load_recovery_candidate(
         metrics=metrics,
         incumbent_metrics=None,
         incumbent_version=None,
+        feature_schema_version=str(
+            bundle.get("feature_schema_version") or "hourly-barrier-v1"
+        ),
     )

@@ -27,6 +27,7 @@ from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
     MODEL_FEATURE_NAMES,
+    MODEL_FEATURE_SCHEMA_VERSION,
     PolicyEvaluationConfig,
     TemporalCalibratedBarrierModel,
     chronological_split,
@@ -66,6 +67,7 @@ class ModelCandidate:
     metrics: dict[str, Any]
     incumbent_metrics: dict[str, Any] | None
     incumbent_version: str | None
+    feature_schema_version: str = MODEL_FEATURE_SCHEMA_VERSION
 
 
 def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
@@ -317,6 +319,10 @@ def build_model_candidate(
     metrics = evaluate_model(model, split)
     label_data_end = _as_datetime(dataset.label_end_time.max())
     metrics["temporal_split_schema"] = "label-end-purged-v2"
+    metrics["feature_schema_version"] = MODEL_FEATURE_SCHEMA_VERSION
+    metrics["hourly_continuity"] = json_compatible(
+        dataset.attrs.get("hourly_continuity") or {}
+    )
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
         metrics.update(evaluate_policy_model(model, split, policy_config))
@@ -371,13 +377,14 @@ def build_model_candidate(
         "version": generated_version,
         "calibration_version": f"sigmoid-ovr-{generated_version}",
         "feature_names": MODEL_FEATURE_NAMES,
-        "feature_schema_version": "hourly-barrier-v1",
+        "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "temporal_split_schema": "label-end-purged-v2",
         "label_data_end": label_data_end.isoformat(),
         "horizon_hours": horizon,
         "stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
         "tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,
         "metrics": metrics,
+        "hourly_continuity": metrics["hourly_continuity"],
         "training_start": training_start.isoformat(),
         "training_end": training_end.isoformat(),
         "dataset_rows": int(len(dataset)),
@@ -656,7 +663,7 @@ async def _register_model_candidate_in_session(
         model_type=f"barrier_{candidate.model_type}",
         artifact_path=str(candidate.path),
         artifact_sha256=digest,
-        feature_schema_version="hourly-barrier-v1",
+        feature_schema_version=candidate.feature_schema_version,
         calibration_version=f"sigmoid-ovr-{candidate.version}",
         training_start=candidate.training_start,
         training_end=candidate.training_end,

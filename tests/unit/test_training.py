@@ -323,3 +323,43 @@ def test_policy_evaluation_selects_one_direction_and_applies_cost_gate() -> None
     assert metrics["policy_candidates"] == 40
     assert metrics["policy_trades"] == 40
     assert metrics["policy_profit_factor"] is not None
+
+
+def test_barrier_dataset_excludes_non_contiguous_feature_and_label_windows() -> None:
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    rows = []
+    close = 100.0
+    for hour in range(120):
+        if hour == 60:
+            continue
+        close *= 1.001 if hour % 5 else 0.998
+        rows.append(
+            {
+                "symbol": "BTCUSDT",
+                "open_time": start + timedelta(hours=hour),
+                "open": close * 0.999,
+                "high": close * 1.006,
+                "low": close * 0.994,
+                "close": close,
+                "volume": 1000 + hour * 3,
+                "turnover": (1000 + hour * 3) * close,
+            }
+        )
+
+    dataset = make_barrier_dataset(pd.DataFrame(rows), horizon=4)
+    labeled_times = set(pd.to_datetime(dataset["open_time"], utc=True))
+
+    # The missing candle at hour 60 invalidates labels whose future four-bar
+    # window crosses the gap, and invalidates features until 24 consecutive
+    # hourly transitions have been restored.
+    assert all(start + timedelta(hours=hour) not in labeled_times for hour in range(56, 60))
+    assert all(start + timedelta(hours=hour) not in labeled_times for hour in range(61, 85))
+    assert start + timedelta(hours=55) in labeled_times
+    assert start + timedelta(hours=85) in labeled_times
+
+    continuity = dataset.attrs["hourly_continuity"]
+    assert continuity["schema"] == "strict-hourly-v1"
+    assert continuity["feature_lookback_hours"] == 24
+    assert continuity["label_horizon_hours"] == 4
+    assert continuity["skipped_feature_gap_timestamps"] >= 24
+    assert continuity["skipped_label_gap_timestamps"] >= 4

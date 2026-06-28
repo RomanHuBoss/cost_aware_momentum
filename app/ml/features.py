@@ -18,6 +18,12 @@ FEATURE_NAMES = [
     "volume_z_24",
     "breakout_24",
 ]
+FEATURE_LOOKBACK_HOURS = 24
+FEATURE_CONTINUITY_COLUMN = "feature_history_contiguous"
+FEATURE_WINDOW_START_COLUMN = "feature_window_start_time"
+FEATURE_CONTINUITY_FLAG = "NON_CONTIGUOUS_HOURLY_HISTORY"
+BASELINE_FEATURE_SCHEMA_VERSION = "hourly-core-contiguous-v2"
+_HOURLY_INTERVAL = pd.Timedelta(1, unit="h")
 
 
 @dataclass(frozen=True)
@@ -29,7 +35,9 @@ class FeatureSnapshot:
 def build_feature_frame(candles: pd.DataFrame) -> pd.DataFrame:
     if candles.empty:
         return candles.copy()
-    frame = candles.sort_values(["symbol", "open_time"]).copy()
+    frame = candles.copy()
+    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, errors="coerce")
+    frame = frame.sort_values(["symbol", "open_time"]).copy()
     for column in ("open", "high", "low", "close", "volume", "turnover"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
@@ -66,6 +74,23 @@ def build_feature_frame(candles: pd.DataFrame) -> pd.DataFrame:
     lower = (rolling_low / frame["close"] - 1.0).clip(lower=-0.2, upper=0.2)
     frame["breakout_24"] = upper.where(upper.abs() >= lower.abs(), -lower)
 
+    frame[FEATURE_WINDOW_START_COLUMN] = grouped["open_time"].shift(FEATURE_LOOKBACK_HOURS)
+    frame["_hour_step_valid"] = grouped["open_time"].diff().eq(_HOURLY_INTERVAL).astype(int)
+    frame[FEATURE_CONTINUITY_COLUMN] = frame.groupby("symbol", group_keys=False)[
+        "_hour_step_valid"
+    ].transform(
+        lambda s: s.rolling(
+            FEATURE_LOOKBACK_HOURS,
+            min_periods=FEATURE_LOOKBACK_HOURS,
+        )
+        .sum()
+        .eq(FEATURE_LOOKBACK_HOURS)
+    )
+    frame[FEATURE_CONTINUITY_COLUMN] &= frame[FEATURE_WINDOW_START_COLUMN].eq(
+        frame["open_time"] - pd.Timedelta(FEATURE_LOOKBACK_HOURS, unit="h")
+    )
+    frame.drop(columns=["_hour_step_valid"], inplace=True)
+
     return frame
 
 
@@ -74,6 +99,12 @@ def latest_feature_snapshot(candles: pd.DataFrame) -> FeatureSnapshot:
     if frame.empty:
         return FeatureSnapshot({}, ("NO_DATA",))
     row = frame.iloc[-1]
+    if not bool(row.get(FEATURE_CONTINUITY_COLUMN, False)):
+        flags = [FEATURE_CONTINUITY_FLAG]
+        if len(frame) < FEATURE_LOOKBACK_HOURS + 1:
+            flags.append("SHORT_HISTORY")
+        return FeatureSnapshot({}, tuple(flags))
+
     values: dict[str, float] = {}
     flags: list[str] = []
     for name in FEATURE_NAMES:

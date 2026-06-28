@@ -148,7 +148,11 @@ async def run(args) -> None:
         stop_gap_reserve_bps=args.stop_gap_reserve_bps,
         minimum_predicted_edge=args.minimum_predicted_edge,
     )
-    metrics = {"prediction": prediction_metrics, "policy": trade_metrics}
+    metrics = {
+        "prediction": prediction_metrics,
+        "policy": trade_metrics,
+        "hourly_continuity": dataset.attrs.get("hourly_continuity") or {},
+    }
     output = Path(args.output or f"reports/backtest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")

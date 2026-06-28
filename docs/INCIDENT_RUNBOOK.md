@@ -32,6 +32,14 @@ API завершится до readiness. Не использовать `stamp he
 3. Сравнить последнюю confirmed candle и ticker source time.
 4. После восстановления дождаться успешного market job и нового plan version.
 
+## Пропуск hourly candle блокирует signal или уменьшает training dataset
+
+1. Проверить worker/trainer logs на `NON_CONTIGUOUS_HOURLY_HISTORY` и diagnostics `hourly_continuity`.
+2. Сопоставить `market.candles` для символа: timestamps должны идти шагом ровно 60 минут без дубликатов в последних 24 часах и на всем label-horizon.
+3. Запустить штатный market/history sync; не заполнять gap синтетической свечой и не ослаблять continuity gate.
+4. Live signal возобновится после накопления нового полного 24-часового окна. Training может продолжиться на остальных валидных timestamps/символах; при undersized split сначала восстановить реальную историю.
+5. Старые artifacts остаются доступными, но новый candidate следует получать после repair/backfill, чтобы его metadata содержала `hourly-barrier-contiguous-v2` и актуальные gap counts.
+
 ## Counterfactual outcome остается pending
 
 1. Проверить `ops.job_runs` для job `counterfactual_outcomes` и поле `intrabar_sync.errors`.

@@ -10,13 +10,21 @@ from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from app.ml.features import FEATURE_NAMES, build_feature_frame
+from app.ml.features import (
+    FEATURE_CONTINUITY_COLUMN,
+    FEATURE_LOOKBACK_HOURS,
+    FEATURE_NAMES,
+    FEATURE_WINDOW_START_COLUMN,
+    build_feature_frame,
+)
 from app.ml.labels import triple_barrier_outcome
 
 OUTCOME_CLASSES = np.array(["TP", "SL", "TIMEOUT"])
 MODEL_FEATURE_NAMES = [*FEATURE_NAMES, "scenario_direction"]
 DEFAULT_STOP_ATR_MULTIPLIER = 1.15
 DEFAULT_TP_ATR_MULTIPLIER = 2.20
+MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v2"
+HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 
 
 class TemporalCalibratedBarrierModel:
@@ -146,10 +154,15 @@ def make_barrier_dataset(
     stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
     tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
 ) -> pd.DataFrame:
-    """Build two point-in-time scenarios (LONG and SHORT) for every labeled timestamp.
+    """Build point-in-time LONG/SHORT scenarios from strict hourly windows.
+
+    Every feature row must have a complete 24-hour lookback and every label must
+    use exactly the next ``horizon`` hourly candles. Missing or duplicated bars
+    invalidate only the affected timestamps instead of silently stretching the
+    economic meaning of row-based returns, rolling statistics, or labels.
 
     Hourly OHLC cannot reveal the order of TP/SL touches within one bar, therefore
-    ambiguous bars are resolved conservatively as SL.  A future lower-timeframe
+    ambiguous bars are resolved conservatively as SL. A future lower-timeframe
     implementation can replace this fallback without changing the model contract.
     """
 
@@ -157,13 +170,44 @@ def make_barrier_dataset(
         raise ValueError("horizon must be positive")
     frame = build_feature_frame(candles).sort_values(["symbol", "open_time"]).reset_index(drop=True)
     rows: list[dict] = []
+    diagnostics: dict[str, int | str] = {
+        "schema": HOURLY_CONTINUITY_SCHEMA,
+        "feature_lookback_hours": FEATURE_LOOKBACK_HOURS,
+        "label_horizon_hours": int(horizon),
+        "candidate_timestamps": 0,
+        "labeled_timestamps": 0,
+        "skipped_feature_gap_timestamps": 0,
+        "skipped_label_gap_timestamps": 0,
+    }
+    hourly = pd.Timedelta(1, unit="h")
 
     for symbol, group in frame.groupby("symbol", sort=False):
         group = group.reset_index(drop=True)
         if len(group) <= horizon:
             continue
+        diagnostics["candidate_timestamps"] += len(group) - horizon
         for index in range(0, len(group) - horizon):
             current = group.iloc[index]
+            if not bool(current.get(FEATURE_CONTINUITY_COLUMN, False)):
+                diagnostics["skipped_feature_gap_timestamps"] += 1
+                continue
+
+            future = group.iloc[index + 1 : index + 1 + horizon][
+                ["open_time", "high", "low", "close"]
+            ]
+            if len(future) < horizon:
+                continue
+            current_time = current["open_time"]
+            expected_times = pd.date_range(
+                start=current_time + hourly,
+                periods=horizon,
+                freq=hourly,
+            )
+            actual_times = pd.DatetimeIndex(future["open_time"])
+            if not actual_times.equals(expected_times):
+                diagnostics["skipped_label_gap_timestamps"] += 1
+                continue
+
             values = [current.get(name) for name in FEATURE_NAMES]
             if any(value is None or not np.isfinite(float(value)) for value in values):
                 continue
@@ -171,13 +215,9 @@ def make_barrier_dataset(
             atr = float(current.get("atr_14", np.nan))
             if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
                 continue
-            future = group.iloc[index + 1 : index + 1 + horizon][
-                ["open_time", "high", "low", "close"]
-            ]
-            if len(future) < horizon:
-                continue
             label_end_time = future.iloc[-1]["open_time"]
 
+            rows_before = len(rows)
             for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
                 if direction == "LONG":
                     stop = entry - atr * stop_atr_multiplier
@@ -201,7 +241,8 @@ def make_barrier_dataset(
                 row.update(
                     {
                         "scenario_direction": direction_code,
-                        "open_time": current["open_time"],
+                        "open_time": current_time,
+                        "feature_window_start_time": current[FEATURE_WINDOW_START_COLUMN],
                         "label_end_time": label_end_time,
                         "symbol": symbol,
                         "direction": direction,
@@ -214,8 +255,12 @@ def make_barrier_dataset(
                     }
                 )
                 rows.append(row)
+            if len(rows) > rows_before:
+                diagnostics["labeled_timestamps"] += 1
 
-    return pd.DataFrame.from_records(rows)
+    dataset = pd.DataFrame.from_records(rows)
+    dataset.attrs["hourly_continuity"] = diagnostics
+    return dataset
 
 
 def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSplit:

@@ -17,6 +17,8 @@
 
 Цвет обозначает направление, текстовый статус — исполнимость. Зеленая LONG-плитка может быть заблокирована.
 
+Если в последних 24 часах отсутствует или дублируется hourly candle, новая плитка для символа не публикуется. Это fail-closed контроль качества данных; не заменяйте пропуск искусственным значением.
+
 ## 4. Проверка плитки
 
 До открытия деталей оцените срок, текущую цену/entry-zone, SL/основной TP, чистый доход/риск, ожидаемый результат, риск USDT, notional и предупреждение. Термины имеют tooltip по hover/focus/tap.
@@ -93,3 +95,5 @@ python manage.py model-registry recover-artifact --artifact models/<artifact>.jo
 Если предыдущий `model_retraining` относился к обычному scheduled/data-change cycle, он не задерживает новый recovery episode. Повторная техническая ошибка именно `bootstrap_training`/`bootstrap_recovery` ожидает только `AUTO_TRAIN_RECOVERY_RETRY_MINUTES` (default 15). Успешно обученный, но отклоненный quality gate кандидат остается inactive; следующий recovery cycle использует более длинный controlled cooldown, чтобы не повторять fitting на почти идентичных данных.
 
 Начиная с 1.7.9 в `metrics` нового candidate присутствуют `classification_metric_schema=ordered-probability-v2`, `raw_log_loss`, `class_prior_log_loss`, `uniform_log_loss`, `calibration_log_loss_improvement` и `log_loss_skill_vs_prior`. Кандидаты, рассчитанные до 1.7.9, могут содержать завышенный `log_loss` из-за перестановки столбцов `TP / SL / TIMEOUT`; такие исторические строки не следует вручную активировать только по старому gate result. Перезапустите trainer и получите новый candidate либо выполните контролируемое повторное исследовательское обучение.
+
+Начиная с 1.7.11 новые model artifacts сохраняют `hourly_continuity`: сколько timestamps исключено из-за разрыва feature-lookback и label-horizon. Рост этих счетчиков требует проверки market/history sync, а не ослабления gate.

@@ -86,6 +86,7 @@ def test_recovery_loader_reconstructs_candidate_and_absolute_gate(tmp_path: Path
     assert candidate.version == path.stem
     assert candidate.path == path.resolve()
     assert candidate.incumbent_version is None
+    assert candidate.feature_schema_version == "hourly-barrier-v1"
     assert candidate.training_data_profile.symbols == ("BTCUSDT", "ETHUSDT")
     assert gate["passed"] is True
     assert gate["relative"] is None
