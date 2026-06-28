@@ -48,6 +48,14 @@ def test_empty_active_model_path_is_none() -> None:
     assert settings.active_model_path is None
 
 
+def test_recovery_retry_minutes_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="AUTO_TRAIN_RECOVERY_RETRY_MINUTES"):
+        Settings(
+            auto_train_recovery_retry_minutes=0,
+            database_url="postgresql+psycopg://u:p@localhost/db",
+        )
+
+
 def test_production_rejects_demo_and_baseline_defaults() -> None:
     with pytest.raises(ValueError, match="Unsafe production configuration"):
         Settings(

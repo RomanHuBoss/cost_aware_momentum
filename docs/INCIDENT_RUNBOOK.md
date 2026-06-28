@@ -79,3 +79,11 @@ API завершится до readiness. Не использовать `stamp he
 3. Не активировать orphan artifact прямым изменением PostgreSQL и не создавать registry row вручную: same-holdout gate и audit могли не завершиться.
 4. Дождаться следующего штатного training cycle. Отклоненный candidate должен появиться в `model-registry list` с `active=false`; прошедший gate может активироваться автоматически.
 5. Старый orphan artifact можно оставить для forensic review либо удалить после подтверждения нового зарегистрированного candidate.
+
+## Baseline работает, но recovery training не стартует
+
+1. Проверить `/api/v1/status` и trainer heartbeat. Для отсутствующего active artifact ожидается pending trigger `bootstrap_recovery`; для отсутствующей active registry row или active baseline — `bootstrap_training`.
+2. Убедиться, что прошел `AUTO_TRAIN_INITIAL_DELAY_SECONDS`, история содержит минимум bootstrap timestamps, а coverage не ниже `AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO`.
+3. В версии 1.7.3 несвязанный старый `scheduled_retraining`/`material_training_dataset_change` failure не должен блокировать новый bootstrap episode.
+4. Если предыдущая попытка того же bootstrap/recovery episode завершилась технической ошибкой, ждать только `AUTO_TRAIN_RECOVERY_RETRY_MINUTES` (default 15), а не общий `AUTO_TRAIN_RETRY_HOURS`.
+5. Если candidate успешно обучен, но отклонен quality gate, baseline сохраняется, а следующая попытка использует controlled data-change cooldown; не снижать gate ради появления active-модели.

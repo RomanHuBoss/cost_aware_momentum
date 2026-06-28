@@ -1,6 +1,28 @@
 # QA report
 
-Дата проверки версии 1.7.2: 28 июня 2026 г.
+Дата проверки версии 1.7.3: 28 июня 2026 г.
+
+## Итерация 1.7.3 — немедленное bootstrap/recovery training
+
+Подтвержден scheduler gap версии 1.7.2: worker переходил на deterministic baseline при удаленном active artifact, но trainer продолжал применять обычные dataset-change/scheduled triggers и мог наследовать шестичасовой cooldown от несвязанного failure. Исправление выделяет отсутствие пригодной ML-модели в отдельный bootstrap episode.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `3495386c9ed9f056641b1d6a39c2fff7aee7bc02e23b23d08a9ec93481b94852` |
+| Baseline `python -m pytest -q` | PASSED — 88 passed, 3 skipped |
+| Red scheduler tests | PASSED как доказательство gap — 4 failed: отсутствовал `bootstrap_recovery`, применялся `not_enough_new_or_changed_training_data`/общий cooldown |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 96 passed, 3 skipped |
+| recovery scheduler targeted tests | PASSED — 7 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0004_counterfactual_outcomes` |
+| PostgreSQL integration | NOT RUN — отдельная test database отсутствует |
+| Migration | не требуется |
+
+`python -m pip check` в host environment остается FAILED из-за внешнего конфликта `moviepy 2.2.1`/`pillow 12.2.0`, не объявленного данным проектом. Scheduler проверен unit-level с deterministic profiles и mock async DB methods; SQLite/fake application database не применялась.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-model-bootstrap-recovery.md`.
 
 ## Итерация 1.7.2 — recovery после удаления active model artifact
 

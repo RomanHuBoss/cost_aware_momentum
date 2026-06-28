@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     auto_train_model_type: Literal["logistic", "hist_gradient_boosting"] = "logistic"
     auto_train_interval_hours: int = 168
     auto_train_retry_hours: int = 6
+    auto_train_recovery_retry_minutes: int = 15
     auto_train_check_seconds: int = 300
     auto_train_initial_delay_seconds: int = 120
     auto_train_lookback_days: int = 365
@@ -229,6 +230,8 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_INTERVAL_HOURS must be at least 1")
         if self.auto_train_retry_hours < 1:
             raise ValueError("AUTO_TRAIN_RETRY_HOURS must be at least 1")
+        if self.auto_train_recovery_retry_minutes < 1:
+            raise ValueError("AUTO_TRAIN_RECOVERY_RETRY_MINUTES must be at least 1")
         if self.auto_train_check_seconds < 30:
             raise ValueError("AUTO_TRAIN_CHECK_SECONDS must be at least 30")
         if self.auto_train_initial_delay_seconds < 0:

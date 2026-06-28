@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.3 — 2026-06-28
+
+- Trainer now treats an absent active artifact or an active deterministic baseline as an explicit bootstrap/recovery state before normal dataset-change scheduling.
+- A missing usable ML model starts training after the normal startup delay without being blocked by an unrelated previous scheduled/data-change failure.
+- Repeated technical bootstrap/recovery failures use `AUTO_TRAIN_RECOVERY_RETRY_MINUTES` (default 15) instead of the general six-hour retry window.
+- A recovery candidate rejected by quality gates remains inactive and uses the controlled data-change cooldown, preventing a tight retraining loop on the same dataset.
+- Added deterministic scheduler regression tests for missing artifacts, baseline bootstrap, unrelated prior failures and recovery backoff.
+
 ## 1.7.2 — 2026-06-28
 
 - Worker больше не завершается при физическом отсутствии файла active-модели, если baseline явно разрешен и режим не production.

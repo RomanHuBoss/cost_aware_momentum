@@ -81,7 +81,7 @@ python manage.py model-registry activate --version <version>
 
 ## Baseline policy
 
-В non-production baseline может быть разрешен через `ALLOW_BASELINE_MODEL=true`, но каждая рекомендация получает предупреждение, worker heartbeat имеет статус `DEGRADED`, а UI явно показывает effective runtime. Baseline используется при отсутствии active registry row и, начиная с 1.7.2, при физическом отсутствии файла active registry artifact. Это не распространяется на повреждение, hash mismatch или несовместимый bundle. Trainer в recovery-mode может заменить утраченный incumbent только кандидатом, прошедшим абсолютные gates. В production validator требует `ALLOW_BASELINE_MODEL=false`; отсутствие валидной active-модели делает запуск/readiness неуспешным.
+В non-production baseline может быть разрешен через `ALLOW_BASELINE_MODEL=true`, но каждая рекомендация получает предупреждение, worker heartbeat имеет статус `DEGRADED`, а UI явно показывает effective runtime. Baseline используется при отсутствии active registry row, active deterministic baseline и при физическом отсутствии файла active registry artifact. Это не распространяется на повреждение, hash mismatch или несовместимый bundle. Начиная с 1.7.3 trainer распознает такое состояние до обычной dataset-aware scheduling: после startup delay запускается bootstrap/recovery training, несвязанные старые failures не блокируют новый recovery episode, а повторная техническая ошибка получает короткий `AUTO_TRAIN_RECOVERY_RETRY_MINUTES`. Утраченный incumbent может быть заменен только кандидатом, прошедшим абсолютные gates. В production validator требует `ALLOW_BASELINE_MODEL=false`; отсутствие валидной active-модели делает запуск/readiness неуспешным.
 
 ## Известные риски
 

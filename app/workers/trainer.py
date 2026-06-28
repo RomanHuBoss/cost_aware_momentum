@@ -33,6 +33,32 @@ settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
+BOOTSTRAP_TRIGGER_REASONS = frozenset({"bootstrap_training", "bootstrap_recovery"})
+
+
+def _job_trigger(details: object) -> dict[str, object] | None:
+    if not isinstance(details, dict):
+        return None
+    trigger = details.get("trigger")
+    return trigger if isinstance(trigger, dict) else None
+
+
+def _same_bootstrap_episode(latest: JobRun, trigger: dict[str, object]) -> bool:
+    """Return whether a prior job belongs to the current no-model recovery episode.
+
+    A stale scheduled/data-change failure must not delay recovery after the active
+    artifact disappears.  Conversely, repeated failures for the same missing or
+    baseline incumbent need a bounded backoff to avoid a tight training loop.
+    """
+
+    current_reason = str(trigger.get("reason") or "")
+    if current_reason not in BOOTSTRAP_TRIGGER_REASONS:
+        return False
+    previous = _job_trigger(latest.details)
+    if previous is None or str(previous.get("reason") or "") not in BOOTSTRAP_TRIGGER_REASONS:
+        return False
+    return previous.get("active_version") == trigger.get("active_version")
+
 
 class BackgroundTrainer:
     def __init__(self) -> None:
@@ -167,6 +193,15 @@ class BackgroundTrainer:
                 "training_data_profile": profile.to_dict(),
             }
 
+        recovery_notice = (
+            None
+            if settings.active_model_path is not None
+            else recoverable_registry_artifact_notice(
+                active,
+                allow_baseline_model=settings.allow_baseline_model,
+                app_mode=settings.app_mode,
+            )
+        )
         active_profile = TrainingDataProfile.from_mapping(
             (active.metrics or {}).get("training_data_profile") if active else None
         )
@@ -183,7 +218,15 @@ class BackgroundTrainer:
         if active and active.training_end and label_cutoff:
             new_timestamps = await self.timestamp_count(active.training_end, label_cutoff)
 
-        if active is None or active.model_type == "deterministic_baseline":
+        if recovery_notice is not None:
+            trigger = {
+                "reason": "bootstrap_recovery",
+                "active_version": active.version if active else None,
+                "recovery_notice": recovery_notice,
+                "training_data_profile": profile.to_dict(),
+            }
+            trigger_kind = "bootstrap"
+        elif active is None or active.model_type == "deterministic_baseline":
             trigger = {
                 "reason": "bootstrap_training",
                 "active_version": active.version if active else None,
@@ -229,9 +272,29 @@ class BackgroundTrainer:
 
         if latest is not None:
             age = now - latest.started_at
+            if trigger_kind == "bootstrap" and not _same_bootstrap_episode(latest, trigger):
+                return True, trigger
+
+            if trigger_kind == "bootstrap" and latest.status != "SUCCESS":
+                wait = timedelta(minutes=settings.auto_train_recovery_retry_minutes)
+                if age < wait:
+                    return False, {
+                        "reason": "training_recovery_backoff_not_elapsed",
+                        "pending_trigger": trigger,
+                        "last_status": latest.status,
+                        "last_started_at": latest.started_at.isoformat(),
+                        "cooldown_minutes": settings.auto_train_recovery_retry_minutes,
+                        "next_due_at": (latest.started_at + wait).isoformat(),
+                    }
+                return True, trigger
+
             if latest.status != "SUCCESS":
                 wait_hours = settings.auto_train_retry_hours
-            elif trigger_kind == "data_change":
+            elif trigger_kind == "data_change" or (
+                trigger_kind == "bootstrap"
+                and isinstance(latest.details, dict)
+                and latest.details.get("activation_skipped") == "quality_gate_failed"
+            ):
                 wait_hours = settings.auto_train_data_change_cooldown_hours
             else:
                 wait_hours = settings.auto_train_interval_hours
