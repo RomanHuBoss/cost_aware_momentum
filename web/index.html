@@ -24,6 +24,7 @@
         </label>
         <div id="profile-summary" class="profile-summary"></div>
         <button id="profiles-button" class="button secondary" type="button">Профили</button>
+        <button id="trainer-button" class="button secondary" type="button">Обучатель</button>
         <button id="help-button" class="button secondary" type="button">Справка</button>
         <button id="refresh-button" class="button secondary" type="button">Обновить</button>
       </div>
@@ -171,6 +172,23 @@
         <div class="form-full"><button class="button primary" type="submit">Создать профиль</button></div>
       </form>
     </details>
+  </dialog>
+
+  <dialog id="trainer-dialog" class="dialog trainer-dialog">
+    <div class="dialog-header">
+      <div><h2>Обучатель моделей</h2><p>Состояние фонового trainer, готовность данных и безопасный запуск проверки.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Закрыть">×</button>
+    </div>
+    <div id="trainer-content" class="trainer-content" aria-live="polite">
+      <div class="trainer-loading">Загрузка состояния обучателя…</div>
+    </div>
+    <p class="trainer-safety-note">Операторский запуск не отключает минимальную историю, coverage, temporal validation, quality gate и защиту активной модели.</p>
+    <div class="dialog-actions trainer-actions">
+      <button id="trainer-refresh-button" class="button secondary" type="button">Обновить состояние</button>
+      <span class="action-spacer"></span>
+      <button id="trainer-check-button" class="button secondary" type="button">Проверить данные сейчас</button>
+      <button id="trainer-recover-button" class="button primary" type="button">Запустить восстановительное обучение</button>
+    </div>
   </dialog>
 
   <dialog id="help-dialog" class="dialog help-dialog">

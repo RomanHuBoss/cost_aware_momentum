@@ -81,5 +81,9 @@ class TradeCloseRequest(BaseModel):
         return value
 
 
+class TrainerControlRequest(BaseModel):
+    action: Literal["CHECK_NOW", "RECOVER_NOW"]
+
+
 class DemoSeedRequest(BaseModel):
     symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])

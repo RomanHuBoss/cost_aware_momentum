@@ -283,3 +283,56 @@ async def test_registry_artifact_recovery_is_not_scheduled_when_override_is_conf
 
     assert due is False
     assert reason["reason"] == "not_enough_new_or_changed_training_data"
+
+@pytest.mark.asyncio
+async def test_operator_recovery_bypasses_recovery_backoff_without_bypassing_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    profile = training_profile(now)
+    active = active_model(tmp_path / "deleted.joblib", profile)
+    latest = attempt(
+        status="FAILED",
+        started_at=now - timedelta(minutes=5),
+        trigger_reason="bootstrap_recovery",
+        active_version=active.version,
+    )
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=active,
+        latest=latest,
+        profile=profile,
+    )
+
+    due, reason = await trainer.due_reason(force_recovery=True)
+
+    assert due is True
+    assert reason["reason"] == "operator_recovery"
+    assert reason["recovery_reason"] == "bootstrap_recovery"
+    assert reason["active_version"] == active.version
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_does_not_bypass_minimum_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    profile = profile_from_symbol_rows(
+        [("BTCUSDT", 120, now - timedelta(days=5), now)],
+        unique_timestamps=120,
+        minimum_rows_for_coverage=300,
+    )
+    active = active_model(tmp_path / "deleted.joblib", profile)
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=active,
+        latest=None,
+        profile=profile,
+    )
+
+    due, reason = await trainer.due_reason(force_recovery=True)
+
+    assert due is False
+    assert reason["reason"] == "not_enough_history_for_bootstrap"

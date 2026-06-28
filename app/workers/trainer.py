@@ -28,12 +28,20 @@ from app.ml.lifecycle import (
     register_model_candidate,
 )
 from app.ml.runtime_selection import recoverable_registry_artifact_notice
+from app.services.audit import publish_outbox
+from app.services.trainer_control import (
+    TRAINER_CONTROL_ACTIONS,
+    TRAINER_CONTROL_JOB_NAME,
+)
 
 settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-BOOTSTRAP_TRIGGER_REASONS = frozenset({"bootstrap_training", "bootstrap_recovery"})
+BOOTSTRAP_TRIGGER_REASONS = frozenset(
+    {"bootstrap_training", "bootstrap_recovery", "operator_recovery"}
+)
+TRAINER_CONTROL_POLL_SECONDS = 2.0
 
 
 def _job_trigger(details: object) -> dict[str, object] | None:
@@ -69,6 +77,8 @@ class BackgroundTrainer:
             "enabled": settings.auto_train_enabled,
             "last_result": None,
             "next_check_at": None,
+            "control_request": None,
+            "last_control_result": None,
         }
 
     def request_stop(self) -> None:
@@ -98,6 +108,12 @@ class BackgroundTrainer:
             )
             await session.execute(statement)
             await session.commit()
+
+    async def heartbeat_best_effort(self) -> None:
+        try:
+            await self.heartbeat()
+        except Exception:
+            logger.exception("Immediate trainer heartbeat failed")
 
     async def heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -169,7 +185,11 @@ class BackgroundTrainer:
             minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
         )
 
-    async def due_reason(self) -> tuple[bool, dict[str, object]]:
+    async def due_reason(
+        self,
+        *,
+        force_recovery: bool = False,
+    ) -> tuple[bool, dict[str, object]]:
         now = datetime.now(UTC)
         active = await self.active_model()
         latest = await self.latest_attempt()
@@ -218,7 +238,33 @@ class BackgroundTrainer:
         if active and active.training_end and label_cutoff:
             new_timestamps = await self.timestamp_count(active.training_end, label_cutoff)
 
-        if recovery_notice is not None:
+        if force_recovery:
+            if settings.active_model_path is not None:
+                return False, {
+                    "reason": "operator_recovery_blocked_by_active_model_path",
+                    "active_model_path": str(settings.active_model_path),
+                    "training_data_profile": profile.to_dict(),
+                }
+            if recovery_notice is not None:
+                recovery_reason = "bootstrap_recovery"
+            elif active is None or active.model_type == "deterministic_baseline":
+                recovery_reason = "bootstrap_training"
+            else:
+                return False, {
+                    "reason": "operator_recovery_not_required",
+                    "active_version": active.version,
+                    "training_data_profile": profile.to_dict(),
+                }
+            trigger = {
+                "reason": "operator_recovery",
+                "recovery_reason": recovery_reason,
+                "active_version": active.version if active else None,
+                "recovery_notice": recovery_notice,
+                "requested_at": now.isoformat(),
+                "training_data_profile": profile.to_dict(),
+            }
+            trigger_kind = "bootstrap"
+        elif recovery_notice is not None:
             trigger = {
                 "reason": "bootstrap_recovery",
                 "active_version": active.version if active else None,
@@ -270,6 +316,9 @@ class BackgroundTrainer:
                 "training_data_profile": profile.to_dict(),
             }
 
+        if force_recovery:
+            return True, trigger
+
         if latest is not None:
             age = now - latest.started_at
             if trigger_kind == "bootstrap" and not _same_bootstrap_episode(latest, trigger):
@@ -309,6 +358,162 @@ class BackgroundTrainer:
                     "next_due_at": (latest.started_at + wait).isoformat(),
                 }
         return True, trigger
+
+    async def claim_control_request(self) -> JobRun | None:
+        async with SessionFactory() as session, session.begin():
+            job = (
+                await session.execute(
+                    select(JobRun)
+                    .where(
+                        JobRun.job_name == TRAINER_CONTROL_JOB_NAME,
+                        JobRun.status == "PENDING",
+                    )
+                    .order_by(JobRun.started_at)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+            ).scalar_one_or_none()
+            if job is None:
+                return None
+            details = dict(job.details or {})
+            details["accepted_at"] = datetime.now(UTC).isoformat()
+            details["accepted_by"] = settings.trainer_id
+            job.status = "RUNNING"
+            job.worker_id = settings.trainer_id
+            job.details = json_compatible(details)
+            await session.flush()
+            return job
+
+    async def finish_control_request(
+        self,
+        job_id,
+        *,
+        status: str,
+        result: dict[str, object],
+    ) -> None:
+        async with SessionFactory() as session, session.begin():
+            job = (
+                await session.execute(
+                    select(JobRun).where(JobRun.id == job_id).with_for_update()
+                )
+            ).scalar_one()
+            details = dict(job.details or {})
+            details["result"] = json_compatible(result)
+            job.status = status
+            job.finished_at = datetime.now(UTC)
+            job.details = json_compatible(details)
+            await publish_outbox(
+                session,
+                event_type="TRAINER_CONTROL_COMPLETED",
+                aggregate_type="trainer_control",
+                aggregate_id=str(job.id),
+                payload={
+                    "action": details.get("action"),
+                    "status": status,
+                    "training_started": result.get("training_started"),
+                },
+            )
+
+    async def process_control_request(self, job: JobRun) -> None:
+        details = job.details if isinstance(job.details, dict) else {}
+        action = str(details.get("action") or "")
+        self.state.pop("wait_reason", None)
+        self.state.update(
+            {
+                "phase": "CHECKING_DATA",
+                "healthy": True,
+                "control_request": {
+                    "id": str(job.id),
+                    "action": action,
+                    "requested_at": details.get("requested_at"),
+                    "accepted_at": details.get("accepted_at"),
+                },
+            }
+        )
+        await self.heartbeat_best_effort()
+
+        if action not in TRAINER_CONTROL_ACTIONS:
+            result = {
+                "action": action,
+                "training_started": False,
+                "error": "unsupported_trainer_control_action",
+            }
+            self.state.update(
+                {
+                    "phase": "ERROR",
+                    "healthy": False,
+                    "last_control_result": result,
+                    "control_request": None,
+                }
+            )
+            await self.finish_control_request(job.id, status="FAILED", result=result)
+            await self.heartbeat_best_effort()
+            return
+
+        try:
+            due, trigger = await self.due_reason(force_recovery=action == "RECOVER_NOW")
+            if due:
+                training_result = await self.run_training_once(trigger)
+                result = {
+                    "action": action,
+                    "training_started": "skipped" not in training_result,
+                    "trigger": trigger,
+                    "training_result": training_result,
+                }
+                control_status = "FAILED" if training_result.get("error") else "SUCCESS"
+            else:
+                result = {
+                    "action": action,
+                    "training_started": False,
+                    "wait_reason": trigger,
+                }
+                control_status = "SUCCESS"
+                self.state.update(
+                    {
+                        "phase": "WAITING",
+                        "healthy": True,
+                        "wait_reason": trigger,
+                    }
+                )
+            self.state.update(
+                {
+                    "last_control_result": result,
+                    "control_request": None,
+                }
+            )
+            await self.finish_control_request(job.id, status=control_status, result=result)
+        except Exception as exc:
+            result = {
+                "action": action,
+                "training_started": False,
+                "error": str(exc),
+            }
+            self.state.update(
+                {
+                    "phase": "ERROR",
+                    "healthy": False,
+                    "last_control_result": result,
+                    "control_request": None,
+                }
+            )
+            await self.finish_control_request(job.id, status="FAILED", result=result)
+            logger.exception("Trainer control request failed")
+        await self.heartbeat_best_effort()
+
+    async def run_scheduling_iteration(self) -> None:
+        self.state["phase"] = "CHECKING_DATA"
+        self.state.pop("wait_reason", None)
+        due, trigger = await self.due_reason()
+        if due:
+            await self.run_training_once(trigger)
+        else:
+            self.state.update(
+                {
+                    "phase": "WAITING",
+                    "healthy": True,
+                    "wait_reason": trigger,
+                }
+            )
 
     async def create_job(self, scheduled_for: datetime, details: dict[str, object]) -> JobRun:
         async with SessionFactory() as session, session.begin():
@@ -510,26 +715,46 @@ class BackgroundTrainer:
                 await connection.commit()
 
     async def training_loop(self) -> None:
-        if settings.auto_train_initial_delay_seconds:
-            self.state["phase"] = "INITIAL_DELAY"
-            with suppress(TimeoutError):
-                await asyncio.wait_for(
-                    self.stop_event.wait(), timeout=settings.auto_train_initial_delay_seconds
-                )
+        loop = asyncio.get_running_loop()
+        initial_delay = max(0, settings.auto_train_initial_delay_seconds)
+        next_regular_at = loop.time() + initial_delay
+        if initial_delay:
+            self.state.update(
+                {
+                    "phase": "INITIAL_DELAY",
+                    "healthy": True,
+                    "next_check_at": (
+                        datetime.now(UTC) + timedelta(seconds=initial_delay)
+                    ).isoformat(),
+                }
+            )
+
         while not self.stop_event.is_set():
             try:
-                self.state["phase"] = "CHECKING_DATA"
-                due, trigger = await self.due_reason()
-                if due:
-                    await self.run_training_once(trigger)
-                else:
-                    self.state.update(
-                        {
-                            "phase": "WAITING",
-                            "healthy": True,
-                            "wait_reason": trigger,
-                        }
-                    )
+                control_request = await self.claim_control_request()
+                if control_request is not None:
+                    await self.process_control_request(control_request)
+                    next_regular_at = loop.time() + settings.auto_train_check_seconds
+                    self.state["next_check_at"] = (
+                        datetime.now(UTC)
+                        + timedelta(seconds=settings.auto_train_check_seconds)
+                    ).isoformat()
+                    continue
+
+                remaining = next_regular_at - loop.time()
+                if remaining > 0:
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(
+                            self.stop_event.wait(),
+                            timeout=min(TRAINER_CONTROL_POLL_SECONDS, remaining),
+                        )
+                    continue
+
+                await self.run_scheduling_iteration()
+                next_regular_at = loop.time() + settings.auto_train_check_seconds
+                self.state["next_check_at"] = (
+                    datetime.now(UTC) + timedelta(seconds=settings.auto_train_check_seconds)
+                ).isoformat()
             except Exception as exc:
                 self.state.update(
                     {
@@ -539,13 +764,14 @@ class BackgroundTrainer:
                     }
                 )
                 logger.exception("Trainer scheduling iteration failed")
-
-            next_check = datetime.now(UTC) + timedelta(seconds=settings.auto_train_check_seconds)
-            self.state["next_check_at"] = next_check.isoformat()
-            with suppress(TimeoutError):
-                await asyncio.wait_for(
-                    self.stop_event.wait(), timeout=settings.auto_train_check_seconds
-                )
+                next_regular_at = loop.time() + settings.auto_train_check_seconds
+                self.state["next_check_at"] = (
+                    datetime.now(UTC) + timedelta(seconds=settings.auto_train_check_seconds)
+                ).isoformat()
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        self.stop_event.wait(), timeout=TRAINER_CONTROL_POLL_SECONDS
+                    )
 
     async def run(self) -> None:
         if not settings.auto_train_enabled:

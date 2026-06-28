@@ -10,6 +10,33 @@ const state = {
   csrf: readCookie('cam_csrf'),
   eventSource: null,
   universeStatus: null,
+  systemStatus: null,
+  trainerPollTimer: null,
+};
+
+const trainerPhaseLabels = {
+  STARTING: 'запуск процесса',
+  INITIAL_DELAY: 'ожидание первого запуска',
+  CHECKING_DATA: 'проверка готовности данных',
+  LOADING_DATA: 'загрузка обучающей выборки',
+  FITTING: 'обучение модели',
+  REGISTERING: 'регистрация кандидата',
+  ACTIVATING: 'активация модели',
+  WAITING: 'ожидание',
+  ERROR: 'ошибка',
+  STOPPED: 'остановлено',
+  DISABLED: 'отключено',
+};
+
+const trainerWaitLabels = {
+  not_enough_history_for_bootstrap: 'Недостаточно полной часовой истории для первой или восстановительной модели.',
+  insufficient_symbol_history_coverage: 'Недостаточно инструментов с требуемой глубиной истории.',
+  not_enough_new_or_changed_training_data: 'После активной модели накоплено недостаточно новых размеченных часов или изменений набора данных.',
+  not_enough_new_labeled_time: 'После активной модели накоплено недостаточно новых размеченных часов.',
+  training_cooldown_not_elapsed: 'Действует защитная пауза после предыдущей попытки обучения.',
+  training_recovery_backoff_not_elapsed: 'Действует короткая защитная пауза после неудачного восстановления.',
+  operator_recovery_not_required: 'Активный artifact доступен; восстановительное обучение не требуется.',
+  operator_recovery_blocked_by_active_model_path: 'Восстановление заблокировано настройкой ACTIVE_MODEL_PATH.',
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -183,25 +210,13 @@ async function loadStatus() {
     $('#system-state').textContent = baselineActive
       ? 'Система доступна с ограничениями'
       : 'Система доступна';
-    const trainer = status.heartbeats.find(item => item.service === 'trainer');
-    const phaseLabels = {
-      STARTING: 'запуск',
-      INITIAL_DELAY: 'ожидание запуска',
-      CHECKING_DATA: 'проверка истории',
-      LOADING_DATA: 'загрузка данных',
-      FITTING: 'обучение',
-      REGISTERING: 'регистрация модели',
-      ACTIVATING: 'активация модели',
-      WAITING: 'ожидание новых данных',
-      ERROR: 'ошибка',
-      STOPPED: 'остановлено',
-      DISABLED: 'отключено',
-    };
+    state.systemStatus = status;
+    const trainer = [...status.heartbeats].filter(item => item.service === 'trainer').sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
     const trainerPhase = trainer?.details?.phase;
     const waitReason = trainer?.details?.wait_reason || null;
     const lastTrainingResult = trainer?.details?.last_result || null;
     let trainingState = status.auto_training?.enabled
-      ? (phaseLabels[trainerPhase] || 'ожидание trainer')
+      ? (trainerPhaseLabels[trainerPhase] || 'ожидание trainer')
       : 'отключено';
     if (waitReason?.reason === 'training_cooldown_not_elapsed') {
       const nextDue = waitReason.next_due_at
@@ -212,7 +227,7 @@ async function loadStatus() {
         : 'пауза перед повторной проверкой';
     } else if (waitReason?.reason === 'training_recovery_backoff_not_elapsed') {
       trainingState = 'короткая пауза перед повтором восстановления';
-    } else if (lastTrainingResult?.error) {
+    } else if (trainerPhase === 'ERROR' && lastTrainingResult?.error) {
       trainingState = `ошибка: ${lastTrainingResult.error}`;
     }
 
@@ -242,13 +257,181 @@ async function loadStatus() {
       modelDetail += ` · файл ${orphanArtifacts[0]} не зарегистрирован в model registry`;
     }
     $('#model-state').textContent = `Модель: ${effectiveVersion}${modelDetail} · дообучение: ${trainingState}`;
-    const worker = status.heartbeats.find(item => item.service === 'worker');
+    const worker = [...status.heartbeats].filter(item => item.service === 'worker').sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
     state.universeStatus = worker?.details?.universe || null;
     updateUniverseState();
+    renderTrainerDialog(status);
+    return status;
   } catch (error) {
     $('#system-dot').className = 'status-dot bad';
     $('#system-state').textContent = 'Ограниченная готовность';
     $('#model-state').textContent = error.message;
+  }
+}
+
+
+function trainerDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('ru-RU');
+}
+
+function trainerProgressRow(label, current, required, formatter = value => fmt(value, 0)) {
+  const currentNumber = Number(current);
+  const requiredNumber = Number(required);
+  if (!Number.isFinite(currentNumber) || !Number.isFinite(requiredNumber) || requiredNumber <= 0) return '';
+  const percentage = Math.max(0, Math.min(100, currentNumber / requiredNumber * 100));
+  return `<div class="trainer-progress-row"><span class="trainer-progress-label">${escapeHtml(label)}</span><div class="trainer-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${escapeHtml(requiredNumber)}" aria-valuenow="${escapeHtml(currentNumber)}"><div class="trainer-progress-value" style="width:${percentage.toFixed(1)}%"></div></div><span class="trainer-progress-number">${escapeHtml(formatter(currentNumber))} из ${escapeHtml(formatter(requiredNumber))}</span></div>`;
+}
+
+function trainerWaitDescription(waitReason) {
+  if (!waitReason) return { text: 'Trainer еще не сообщил причину ожидания.', progress: '' };
+  const reason = waitReason.reason || 'unknown';
+  const text = trainerWaitLabels[reason] || `Причина ожидания: ${reason}`;
+  let progress = '';
+  if (reason === 'not_enough_history_for_bootstrap') {
+    progress += trainerProgressRow('Уникальные часовые точки', waitReason.timestamps, waitReason.required_timestamps);
+  }
+  if (reason === 'insufficient_symbol_history_coverage') {
+    progress += trainerProgressRow('Инструменты с достаточной историей', waitReason.covered_symbols, waitReason.symbol_count);
+    progress += trainerProgressRow('Покрытие universe', Number(waitReason.coverage_ratio || 0) * 100, Number(waitReason.required_coverage_ratio || 0) * 100, value => `${fmt(value, 1)}%`);
+  }
+  if (['not_enough_new_or_changed_training_data', 'not_enough_new_labeled_time'].includes(reason)) {
+    progress += trainerProgressRow('Новые размеченные часы', waitReason.new_timestamps, waitReason.required_new_timestamps);
+  }
+  const pending = waitReason.pending_trigger;
+  if (pending?.new_timestamps !== undefined && pending?.required_new_timestamps !== undefined) {
+    progress += trainerProgressRow('Новые размеченные часы', pending.new_timestamps, pending.required_new_timestamps);
+  }
+  const nextDue = waitReason.next_due_at ? ` Следующая допустимая попытка: ${trainerDate(waitReason.next_due_at)}.` : '';
+  return { text: `${text}${nextDue}`, progress };
+}
+
+function trainerResultMarkup(status, trainer) {
+  const heartbeatResult = trainer?.details?.last_result || null;
+  const latestJob = status.trainer_control?.latest_training_job || (status.recent_jobs || []).find(job => job.job === 'model_retraining') || null;
+  const result = heartbeatResult || latestJob?.details || null;
+  if (!result && !latestJob) return '<p class="trainer-message">Завершенных попыток обучения в доступной истории нет.</p>';
+
+  const gate = result?.quality_gate || result?.training_result?.quality_gate || null;
+  const candidate = result?.candidate_version || result?.training_result?.candidate_version || '—';
+  const activated = result?.activated ?? result?.training_result?.activated;
+  const error = result?.error || result?.training_result?.error || null;
+  const statusText = error ? 'Ошибка' : (latestJob?.status || 'Завершено');
+  const gateText = gate?.passed === true ? 'пройден' : gate?.passed === false ? 'не пройден' : '—';
+  const reasons = Array.isArray(gate?.reasons) ? gate.reasons.slice(0, 6) : [];
+  return `<dl class="trainer-result-list">
+    <dt>Статус последней попытки</dt><dd>${escapeHtml(statusText)}</dd>
+    <dt>Начало</dt><dd>${escapeHtml(trainerDate(latestJob?.started_at))}</dd>
+    <dt>Завершение</dt><dd>${escapeHtml(trainerDate(latestJob?.finished_at))}</dd>
+    <dt>Кандидат</dt><dd>${escapeHtml(candidate)}</dd>
+    <dt>Quality gate</dt><dd>${escapeHtml(gateText)}</dd>
+    <dt>Активация</dt><dd>${activated === true ? 'выполнена' : activated === false ? 'не выполнена' : '—'}</dd>
+    ${error ? `<dt>Ошибка</dt><dd>${escapeHtml(error)}</dd>` : ''}
+  </dl>${reasons.length ? `<ul class="trainer-reasons">${reasons.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}`;
+}
+
+function renderTrainerDialog(status = state.systemStatus) {
+  const content = $('#trainer-content');
+  if (!content || !status) return;
+  const trainer = [...(status.heartbeats || [])].filter(item => item.service === 'trainer').sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0] || null;
+  const details = trainer?.details || {};
+  const control = status.trainer_control || {};
+  const online = control.trainer_online === true;
+  const enabled = status.auto_training?.enabled === true;
+  const healthy = online && details.healthy !== false && !['ERROR', 'STOPPED', 'DISABLED'].includes(details.phase);
+  const bannerClass = healthy ? 'ok' : online ? 'warn' : 'bad';
+  const processText = !enabled ? 'Автоматическое обучение отключено' : online ? 'Фоновый trainer работает' : 'Фоновый trainer недоступен';
+  const phaseText = trainerPhaseLabels[details.phase] || details.phase || 'нет heartbeat';
+  const wait = trainerWaitDescription(details.wait_reason);
+  const active = status.active_model || {};
+  const runtime = active.worker_runtime || {};
+  const notice = active.worker_notice || {};
+  const latestRequest = control.latest_request || null;
+  const requestActive = latestRequest && ['PENDING', 'RUNNING'].includes(latestRequest.status);
+  const artifactState = active.type === 'deterministic_baseline'
+    ? 'registry baseline'
+    : active.artifact_exists === true ? 'файл доступен' : active.version ? 'файл отсутствует' : 'активной модели нет';
+  const recoveryReasonLabels = {
+    no_active_model: 'активная модель не зарегистрирована',
+    registry_baseline_active: 'активен baseline',
+    active_model_artifact_missing: 'artifact активной модели отсутствует',
+    active_model_artifact_missing_fail_closed: 'artifact отсутствует, но baseline recovery в этом режиме запрещен',
+    active_model_artifact_available: 'artifact активной модели доступен',
+    active_model_path_override: 'задан ACTIVE_MODEL_PATH',
+    auto_training_disabled: 'автоматическое обучение отключено',
+  };
+
+  content.innerHTML = `<div class="trainer-banner ${bannerClass}">
+    <div><strong>${escapeHtml(processText)}</strong><small>${escapeHtml(trainer?.instance || 'trainer heartbeat отсутствует')} · ${escapeHtml(trainer?.status || 'UNKNOWN')}</small></div>
+    <span class="trainer-phase">${escapeHtml(phaseText)}</span>
+  </div>
+  <div class="trainer-grid">
+    <div class="trainer-card"><span>Последний heartbeat</span><strong>${escapeHtml(trainerDate(trainer?.last_seen_at))}</strong></div>
+    <div class="trainer-card"><span>Следующая штатная проверка</span><strong>${escapeHtml(trainerDate(details.next_check_at))}</strong></div>
+    <div class="trainer-card"><span>Эффективная модель</span><strong>${escapeHtml(runtime.version || active.version || '—')}</strong></div>
+    <div class="trainer-card"><span>Artifact</span><strong>${escapeHtml(artifactState)}</strong></div>
+  </div>
+  <section class="trainer-section"><h3>Почему trainer сейчас не обучает</h3><p class="trainer-message">${escapeHtml(wait.text)}</p>${wait.progress}</section>
+  <section class="trainer-section"><h3>Модель и режим восстановления</h3>
+    <dl class="trainer-result-list">
+      <dt>Registry version</dt><dd>${escapeHtml(active.version || '—')}</dd>
+      <dt>Runtime source</dt><dd>${escapeHtml(runtime.source || '—')}</dd>
+      <dt>Fallback notice</dt><dd>${escapeHtml(notice.code || 'нет')}</dd>
+      <dt>Восстановление доступно</dt><dd>${control.recovery_available === true ? 'да' : 'нет'}</dd>
+      <dt>Причина</dt><dd>${escapeHtml(recoveryReasonLabels[control.recovery_reason] || control.recovery_reason || '—')}</dd>
+    </dl>
+  </section>
+  <section class="trainer-section"><h3>Последняя попытка обучения</h3>${trainerResultMarkup(status, trainer)}</section>
+  ${latestRequest ? `<div class="trainer-request"><strong>Последняя команда оператора:</strong> ${escapeHtml(latestRequest.action || '—')} · ${escapeHtml(latestRequest.status || '—')} · ${escapeHtml(trainerDate(latestRequest.requested_at || latestRequest.started_at))}</div>` : ''}`;
+
+  const checkButton = $('#trainer-check-button');
+  const recoverButton = $('#trainer-recover-button');
+  checkButton.disabled = !enabled || !online || requestActive;
+  recoverButton.disabled = !enabled || !online || control.recovery_available !== true || requestActive;
+  checkButton.title = !online ? 'Trainer не запущен или heartbeat устарел' : requestActive ? 'Предыдущая команда еще выполняется' : '';
+  recoverButton.title = control.recovery_available === true
+    ? (requestActive ? 'Предыдущая команда еще выполняется' : '')
+    : (recoveryReasonLabels[control.recovery_reason] || 'Восстановительное обучение сейчас не требуется');
+}
+
+function startTrainerStatusPolling() {
+  clearInterval(state.trainerPollTimer);
+  let remaining = 30;
+  state.trainerPollTimer = setInterval(async () => {
+    remaining -= 1;
+    try {
+      const status = await loadStatus();
+      const request = status?.trainer_control?.latest_request;
+      if (!request || !['PENDING', 'RUNNING'].includes(request.status) || remaining <= 0) {
+        clearInterval(state.trainerPollTimer);
+        state.trainerPollTimer = null;
+      }
+    } catch (_error) {
+      if (remaining <= 0) {
+        clearInterval(state.trainerPollTimer);
+        state.trainerPollTimer = null;
+      }
+    }
+  }, 2000);
+}
+
+async function requestTrainerControl(action) {
+  const checkButton = $('#trainer-check-button');
+  const recoverButton = $('#trainer-recover-button');
+  checkButton.disabled = true;
+  recoverButton.disabled = true;
+  try {
+    const result = await api('/api/v1/admin/trainer-control', {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+    toast(result.created ? 'Команда передана фоновому trainer' : 'Команда trainer уже ожидает выполнения');
+    await loadStatus();
+    startTrainerStatusPolling();
+  } catch (error) {
+    toast(error.message, 'error');
+    renderTrainerDialog();
   }
 }
 
@@ -568,6 +751,10 @@ function bindHelpEvents() {
 document.addEventListener('keydown', event => { if (event.key === 'Escape') hideTooltip(); });
 
 $('#profiles-button').addEventListener('click', () => $('#profiles-dialog').showModal());
+$('#trainer-button').addEventListener('click', async () => { $('#trainer-dialog').showModal(); await loadStatus(); });
+$('#trainer-refresh-button').addEventListener('click', loadStatus);
+$('#trainer-check-button').addEventListener('click', () => requestTrainerControl('CHECK_NOW'));
+$('#trainer-recover-button').addEventListener('click', () => requestTrainerControl('RECOVER_NOW'));
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
 $('#refresh-button').addEventListener('click', loadAll);
 $('#symbol-filter').addEventListener('input', debounce(loadRecommendations, 300));
@@ -585,7 +772,7 @@ function connectEvents() {
   const source = new EventSource('/api/v1/events'); state.eventSource = source;
   let timer;
   source.onmessage = () => { clearTimeout(timer); timer = setTimeout(() => { loadStatus(); loadRecommendations(); }, 400); };
-  ['MARKET_SIGNAL_PUBLISHED','EXECUTION_PLAN_UPDATED','ACTIVE_PROFILE_CHANGED','MANUAL_TRADE_UPDATED','COUNTERFACTUAL_OUTCOME_RESOLVED','COUNTERFACTUAL_PLAN_OUTCOME_RECORDED'].forEach(type => source.addEventListener(type, source.onmessage));
+  ['MARKET_SIGNAL_PUBLISHED','EXECUTION_PLAN_UPDATED','ACTIVE_PROFILE_CHANGED','MANUAL_TRADE_UPDATED','COUNTERFACTUAL_OUTCOME_RESOLVED','COUNTERFACTUAL_PLAN_OUTCOME_RECORDED','TRAINER_CONTROL_REQUESTED','TRAINER_CONTROL_COMPLETED'].forEach(type => source.addEventListener(type, source.onmessage));
   source.onerror = () => { $('#system-dot').className = 'status-dot'; };
 }
 

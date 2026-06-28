@@ -15,6 +15,7 @@
 - optional operator API token;
 - idempotency key для accept/reject/manual fills;
 - Pydantic validation и server-side plan checks;
+- trainer-control mutations требуют signed operator session/API token и CSRF; API записывает только команду в PostgreSQL и не выполняет fitting в request process;
 - bind на localhost по умолчанию.
 
 При публикации наружу используйте TLS reverse proxy, rate limiting, trusted network/VPN и централизованный secret manager. OpenAPI следует ограничить на proxy-уровне.
@@ -23,6 +24,8 @@
 
 События образуют append-only SHA256 chain. Это защита от незаметного изменения, но не замена WORM-хранилищу. Для повышенных требований экспортируйте ежедневный chain head во внешнее неизменяемое хранилище.
 ## Recovery после утраты model artifact
+
+Операторская команда `RECOVER_NOW` также не является обходом artifact integrity или quality gate. Она доступна только при свежем heartbeat trainer и recoverable отсутствии active artifact; в production controlled baseline recovery остается запрещен.
 
 Controlled baseline recovery не является обходом artifact integrity. Он применяется только к физически отсутствующему registry artifact в non-production при `ALLOW_BASELINE_MODEL=true`. Существующий файл с неверным SHA256, поврежденным bundle или несовместимыми metadata остается блокирующей ошибкой. `ACTIVE_MODEL_PATH` также никогда не fallback-ится. В production baseline запрещен validator-ом.
 

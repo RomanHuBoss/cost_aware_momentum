@@ -1,5 +1,29 @@
 # QA report
 
+Дата проверки версии 1.8.0: 28 июня 2026 г.
+
+## Итерация 1.8.0 — operator-visible trainer status and control
+
+Подтвержден UX/operations gap: подробное состояние background trainer существовало только в сыром `/api/v1/status`, а UI показывал одну неинтерактивную строку. Оператор не видел wait reason/progress и не имел поддерживаемого способа запросить немедленную scheduler-проверку либо controlled recovery.
+
+| Проверка | Baseline 1.7.12 | Post-check 1.8.0 |
+|---|---|---|
+| isolated `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | PASSED — 139 passed, 3 skipped, 19 warnings | PASSED — 148 passed, 3 skipped, 19 warnings |
+| trainer operator regression tests | RED — 3 failed: отсутствовали UI contract и `force_recovery` | GREEN — 9 новых tests входят в full suite |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| `alembic heads` | `0005_plan_outcome_invalid_input` | `0005_plan_outcome_invalid_input` |
+| `python manage.py doctor` | NOT RUN до правок | FAILED (environment) — нет `.env`, безопасных credentials, PostgreSQL service и native tools |
+| `python manage.py test --require-integration` | NOT RUN | NOT RUN/UNAVAILABLE — `POSTGRES_ADMIN_URL` и `TEST_DATABASE_URL` не настроены |
+
+Версия 1.8.0 добавляет отдельный dialog «Обучатель моделей», расширенный status contract и authenticated/CSRF-protected PostgreSQL control queue. `CHECK_NOW` повторяет обычную scheduler evaluation. `RECOVER_NOW` доступен только для no-active/baseline/missing recoverable artifact и может пропустить scheduler cooldown, но не minimum history, symbol coverage, temporal validation, quality gates, activation guard или advisory training lock. API не выполняет fitting.
+
+Migration и новые `.env` переменные не требуются. Необходимо перезапустить API и trainer.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-trainer-operator-console.md`.
+
 Дата проверки версии 1.7.12: 28 июня 2026 г.
 
 ## Итерация 1.7.12 — monotonic manual fill chronology

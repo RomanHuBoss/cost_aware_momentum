@@ -13,6 +13,12 @@ from app.api.deps import SessionDep, SettingsDep
 from app.db.health import current_revision, database_health
 from app.db.models import DataQualityIssue, JobRun, ModelRegistry, ServiceHeartbeat
 from app.ml.runtime_selection import CONTROLLED_BASELINE_NOTICE_CODES
+from app.services.trainer_control import (
+    TRAINER_CONTROL_JOB_NAME,
+    control_job_payload,
+    recovery_availability,
+    trainer_heartbeat_is_fresh,
+)
 
 router = APIRouter(tags=["status"])
 
@@ -124,6 +130,30 @@ def assess_model_runtime(
         "fallback_active": fallback_active,
         "degraded": bool(ok and runtime_is_baseline),
         "notice": worker_notice or None,
+    }
+
+
+def latest_service_heartbeat(
+    heartbeats: list[ServiceHeartbeat],
+    service_name: str,
+) -> ServiceHeartbeat | None:
+    return max(
+        (heartbeat for heartbeat in heartbeats if heartbeat.service_name == service_name),
+        key=lambda heartbeat: heartbeat.last_seen_at,
+        default=None,
+    )
+
+
+def job_run_payload(job: JobRun | None) -> dict[str, object] | None:
+    if job is None:
+        return None
+    return {
+        "job": job.job_name,
+        "scheduled_for": job.scheduled_for.isoformat(),
+        "started_at": job.started_at.isoformat(),
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "status": job.status,
+        "details": job.details,
     }
 
 
@@ -273,6 +303,22 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
 async def status(session: SessionDep, settings: SettingsDep) -> dict:
     heartbeats = (await session.execute(select(ServiceHeartbeat))).scalars().all()
     jobs = (await session.execute(select(JobRun).order_by(desc(JobRun.started_at)).limit(20))).scalars().all()
+    latest_control_job = (
+        await session.execute(
+            select(JobRun)
+            .where(JobRun.job_name == TRAINER_CONTROL_JOB_NAME)
+            .order_by(desc(JobRun.started_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    latest_training_job = (
+        await session.execute(
+            select(JobRun)
+            .where(JobRun.job_name == "model_retraining")
+            .order_by(desc(JobRun.started_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     model = (
         await session.execute(
             select(ModelRegistry)
@@ -309,6 +355,19 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
         .scalars()
         .all()
     )
+    trainer_heartbeat = latest_service_heartbeat(heartbeats, "trainer")
+    worker_heartbeat = latest_service_heartbeat(heartbeats, "worker")
+    worker_details = worker_heartbeat.details if worker_heartbeat else {}
+    recovery_available, recovery_reason = recovery_availability(model, settings)
+    artifact_path = Path(model.artifact_path).expanduser() if model and model.artifact_path else None
+    artifact_exists = bool(
+        model
+        and (
+            model.model_type == "deterministic_baseline"
+            or (artifact_path is not None and artifact_path.is_file())
+        )
+    )
+
     return {
         "app_mode": settings.app_mode,
         "universe_config": {
@@ -354,29 +413,22 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "feature_schema": model.feature_schema_version if model else None,
             "artifact_path": model.artifact_path if model else None,
             "artifact_sha256": model.artifact_sha256 if model else None,
+            "artifact_exists": artifact_exists,
             "metrics": model.metrics if model else None,
             "training_data_profile": (model.metrics or {}).get("training_data_profile")
             if model
             else None,
-            "worker_runtime": next(
-                (
-                    heartbeat.details.get("model")
-                    for heartbeat in heartbeats
-                    if heartbeat.service_name == "worker" and heartbeat.details.get("model")
-                ),
-                None,
-            ),
-            "worker_notice": next(
-                (
-                    heartbeat.details.get("model_notice")
-                    for heartbeat in heartbeats
-                    if heartbeat.service_name == "worker"
-                    and heartbeat.details.get("model_notice")
-                ),
-                None,
-            ),
+            "worker_runtime": worker_details.get("model"),
+            "worker_notice": worker_details.get("model_notice"),
             "latest_candidate": candidate_diagnostics(latest_candidate),
             "orphan_artifacts": orphan_model_artifacts(settings.model_dir, registered_artifact_paths),
+        },
+        "trainer_control": {
+            "trainer_online": trainer_heartbeat_is_fresh(trainer_heartbeat, settings),
+            "recovery_available": recovery_available,
+            "recovery_reason": recovery_reason,
+            "latest_request": control_job_payload(latest_control_job),
+            "latest_training_job": job_run_payload(latest_training_job),
         },
         "heartbeats": [
             {
@@ -388,17 +440,7 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             }
             for h in heartbeats
         ],
-        "recent_jobs": [
-            {
-                "job": j.job_name,
-                "scheduled_for": j.scheduled_for.isoformat(),
-                "started_at": j.started_at.isoformat(),
-                "finished_at": j.finished_at.isoformat() if j.finished_at else None,
-                "status": j.status,
-                "details": j.details,
-            }
-            for j in jobs
-        ],
+        "recent_jobs": [job_run_payload(job) for job in jobs],
         "data_quality_issues": [
             {
                 "id": str(i.id),

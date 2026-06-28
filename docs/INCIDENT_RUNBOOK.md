@@ -91,11 +91,14 @@ API завершится до readiness. Не использовать `stamp he
 
 ## Baseline работает, но recovery training не стартует
 
-1. Проверить `/api/v1/status` и trainer heartbeat. Для отсутствующего active artifact ожидается pending trigger `bootstrap_recovery`; для отсутствующей active registry row или active baseline — `bootstrap_training`.
-2. Убедиться, что прошел `AUTO_TRAIN_INITIAL_DELAY_SECONDS`, история содержит минимум bootstrap timestamps, а coverage не ниже `AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO`.
-3. В версии 1.7.3 несвязанный старый `scheduled_retraining`/`material_training_dataset_change` failure не должен блокировать новый bootstrap episode.
-4. Если предыдущая попытка того же bootstrap/recovery episode завершилась технической ошибкой, ждать только `AUTO_TRAIN_RECOVERY_RETRY_MINUTES` (default 15), а не общий `AUTO_TRAIN_RETRY_HOURS`.
-5. Если candidate успешно обучен, но отклонен quality gate, baseline сохраняется, а следующая попытка использует controlled data-change cooldown; не снижать gate ради появления active-модели.
+1. Начиная с 1.8.0 открыть **«Обучатель»** в верхней панели. Проверить свежесть heartbeat, фазу, wait reason и progress. Для отсутствующего active artifact ожидается `bootstrap_recovery`; для отсутствующей active registry row или active baseline — `bootstrap_training`.
+2. Если trainer online, нажать **«Проверить данные сейчас»**. Это немедленно повторит scheduler evaluation и покажет актуальную причину ожидания.
+3. Если active artifact физически отсутствует и кнопка доступна, нажать **«Запустить восстановительное обучение»**. Команда пропускает recovery cooldown, но не minimum timestamps, coverage, temporal validation или quality gate.
+4. Если кнопки disabled, проверить `AUTO_TRAIN_ENABLED`, отсутствие `ACTIVE_MODEL_PATH`, режим baseline recovery и запуск отдельного trainer через `python manage.py run`/`python manage.py trainer`.
+5. История должна содержать минимум bootstrap timestamps, а coverage — быть не ниже `AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO`. Недостаточные данные нельзя обойти операторской командой.
+6. В версии 1.7.3+ несвязанный старый `scheduled_retraining`/`material_training_dataset_change` failure не блокирует новый bootstrap episode. Без операторской команды техническая ошибка того же episode использует `AUTO_TRAIN_RECOVERY_RETRY_MINUTES`.
+7. Если candidate обучен, но отклонен quality gate, baseline сохраняется; не снижать gate ради появления active-модели.
+8. При stale/offline heartbeat endpoint control возвращает HTTP 409. Запустить trainer отдельно и проверить traceback/PostgreSQL, а не повторять кнопку.
 ## Counterfactual plan outcome имеет `INVALID_INPUT`
 
 1. Открыть detail конкретной plan version и зафиксировать `plan_id`, `plan_version` и `validation_error` из `cost_assumptions`/audit.
