@@ -130,6 +130,67 @@ def test_net_rr_and_ev_reference_arithmetic() -> None:
     assert ev_r > 0
 
 
+@pytest.mark.parametrize(
+    ("direction", "stop", "take_profit"),
+    [
+        ("LONG", D("101"), D("110")),
+        ("LONG", D("90"), D("99")),
+        ("SHORT", D("99"), D("90")),
+        ("SHORT", D("110"), D("101")),
+    ],
+)
+def test_net_metrics_reject_inverted_directional_geometry(
+    direction: str, stop: Decimal, take_profit: Decimal
+) -> None:
+    with pytest.raises(ValueError, match="geometry"):
+        net_rr_and_ev(
+            entry=D("100"),
+            stop=stop,
+            take_profit=take_profit,
+            direction=direction,  # type: ignore[arg-type]
+            costs=costs(),
+            p_tp=0.5,
+            p_sl=0.4,
+            p_timeout=0.1,
+        )
+
+
+def test_position_sizing_blocks_inverted_stop_geometry() -> None:
+    plan = calculate_position_plan(
+        effective_capital=D("5000"),
+        risk_rate=D("0.0035"),
+        entry=D("100"),
+        stop=D("101"),
+        take_profit=D("110"),
+        direction="LONG",
+        costs=costs(),
+        constraints=constraints(),
+        leverage=3,
+        capital_verified=True,
+    )
+    assert plan.status == "BLOCKED_INVALID_INPUT"
+    assert plan.qty == D("0")
+    assert plan.notional == D("0")
+    assert plan.actual_stress_loss == D("0")
+    assert plan.limiting_cap == "INVALID_GEOMETRY"
+    assert any("LONG geometry" in warning for warning in plan.warnings)
+
+
+@pytest.mark.parametrize("invalid_price", [D("NaN"), D("Infinity")])
+def test_net_metrics_reject_non_finite_barrier_prices(invalid_price: Decimal) -> None:
+    with pytest.raises(ValueError, match="positive and finite"):
+        net_rr_and_ev(
+            entry=D("100"),
+            stop=D("90"),
+            take_profit=invalid_price,
+            direction="LONG",
+            costs=costs(),
+            p_tp=0.5,
+            p_sl=0.4,
+            p_timeout=0.1,
+        )
+
+
 def test_funding_applies_only_when_settlement_is_crossed() -> None:
     start = datetime(2026, 6, 25, 10, tzinfo=UTC)
     assert projected_funding_rate(

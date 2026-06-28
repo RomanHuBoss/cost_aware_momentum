@@ -205,6 +205,7 @@ async def create_execution_plan(
         risk_rate=profile.risk_rate,
         entry=signal.entry_reference,
         stop=signal.stop_loss,
+        take_profit=signal.take_profit_1,
         direction=signal.direction,
         costs=costs,
         constraints=constraints,
@@ -223,19 +224,23 @@ async def create_execution_plan(
         warnings.append("Срок действия рекомендации истек")
     elif status_override is not None:
         status = status_override
+    elif plan_math.status.startswith("BLOCKED_"):
+        status = plan_math.status
     elif signal.net_rr < settings.min_net_rr or signal.net_ev_r < settings.min_net_ev_r:
         status = "NO_TRADE"
         warnings.append("Недостаточное преимущество после издержек и risk policy")
     else:
         status = plan_math.status
 
-    stop_distance = abs(signal.entry_reference - signal.stop_loss) / signal.entry_reference
-    approximate_liq_distance = Decimal("0.9") / Decimal(max(1, plan_math.leverage))
-    liquidation_buffer = max(Decimal("0"), approximate_liq_distance - stop_distance)
-    if liquidation_buffer < stop_distance:
-        warnings.append("Небольшой оценочный запас до области ликвидации")
-        if plan_math.leverage > 3:
-            status = "BLOCKED_LIQUIDATION"
+    liquidation_buffer = Decimal("0")
+    if plan_math.status != "BLOCKED_INVALID_INPUT":
+        stop_distance = abs(signal.entry_reference - signal.stop_loss) / signal.entry_reference
+        approximate_liq_distance = Decimal("0.9") / Decimal(max(1, plan_math.leverage))
+        liquidation_buffer = max(Decimal("0"), approximate_liq_distance - stop_distance)
+        if liquidation_buffer < stop_distance:
+            warnings.append("Небольшой оценочный запас до области ликвидации")
+            if plan_math.leverage > 3:
+                status = "BLOCKED_LIQUIDATION"
 
     combined_warnings = warnings + [item for item in plan_math.warnings if item not in warnings]
     primary_warning = combined_warnings[0] if combined_warnings else None

@@ -1,6 +1,29 @@
 # QA report
 
-Дата проверки версии 1.7.3: 28 июня 2026 г.
+Дата проверки версии 1.7.4: 28 июня 2026 г.
+
+## Итерация 1.7.4 — fail-closed directional geometry
+
+Подтвержден дефект risk boundary: `stress_downside_rate()` и `upside_rate()` использовали абсолютную разницу цен и принимали инвертированные LONG/SHORT stop/TP как положительные расстояния. В результате corrupted/legacy/imported signal мог получить ненулевой sizing, а ручной fill за stop-границей приводил к необработанной ошибке после введения строгой проверки.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `7a6149eb3e5a3a61350836bbe50717edadea9fbeaf75257a77d654050c6fca54` |
+| Baseline isolated `python -m pytest -q` | PASSED — 96 passed, 3 skipped, 20 warnings |
+| Red risk tests | PASSED как доказательство дефекта — 5 failed: 4 inverted geometries не вызывали ошибку, sizing не принимал `take_profit` и не мог проверить полный контракт |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 103 passed, 3 skipped, 20 warnings |
+| directional risk/outcome targeted tests | PASSED — 37 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0004_counterfactual_outcomes` |
+| `python manage.py doctor` | FAILED (environment) — `.env`, безопасные secrets, PostgreSQL tools/service отсутствуют |
+| PostgreSQL integration | NOT RUN — `POSTGRES_ADMIN_URL`/`TEST_DATABASE_URL` и отдельная test database отсутствуют |
+| Migration / `.env` | не требуется |
+
+Host Python environment до создания изолированного окружения не использовался как проектный oracle: `pip check` выявил внешний конфликт MoviePy/Pillow, Ruff и psycopg отсутствовали. В isolated environment, установленном из `.[dev]`, `pip check` прошел.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-directional-geometry.md`.
 
 ## Итерация 1.7.3 — немедленное bootstrap/recovery training
 

@@ -25,6 +25,7 @@
 | Fail-closed при stale/missing data | Да для live inference | stale candle/ticker, missing features/bid-ask/spec и high spread блокируют публикацию |
 | Dynamic universe | Частично | live selection и актуальная UI-фильтрация есть; historical point-in-time membership snapshots отсутствуют |
 | Издержки, net R/R, EV | Да, базовая модель | fee/slippage/funding scenario/stop reserve; account fee-rate и depth impact пока не подключены полностью |
+| Направленная геометрия entry/SL/TP | Да с 1.7.4 | LONG: `SL < entry < TP`; SHORT: `TP < entry < SL`; risk sizing блокирует invalid/non-finite geometry с нулевым размером |
 | Policy-aware model promotion | Да с 1.5.0 | trades, realized mean R, profit factor, drawdown и incumbent-relative regression limits |
 | Профили капитала и sizing | Да | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps |
 | Компактные плитки и modal actions | Да | `web/*` |

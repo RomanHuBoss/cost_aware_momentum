@@ -51,6 +51,48 @@ def d(value: Decimal | float | int | str) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
+def _direction_sign(direction: Direction) -> Decimal:
+    if direction == "LONG":
+        return Decimal("1")
+    if direction == "SHORT":
+        return Decimal("-1")
+    raise ValueError(f"Unsupported direction: {direction}")
+
+
+def _positive_finite_price(value: Decimal | float | int | str, name: str) -> Decimal:
+    price = d(value)
+    if not price.is_finite() or price <= 0:
+        raise ValueError(f"{name} must be positive and finite")
+    return price
+
+
+def validate_directional_geometry(
+    *,
+    entry: Decimal | float | int | str,
+    direction: Direction,
+    stop: Decimal | float | int | str | None = None,
+    take_profit: Decimal | float | int | str | None = None,
+) -> None:
+    """Reject inverted or non-finite LONG/SHORT price geometry."""
+    entry_price = _positive_finite_price(entry, "entry")
+    stop_price = _positive_finite_price(stop, "stop") if stop is not None else None
+    take_profit_price = (
+        _positive_finite_price(take_profit, "take_profit") if take_profit is not None else None
+    )
+    _direction_sign(direction)
+
+    if direction == "LONG":
+        if stop_price is not None and stop_price >= entry_price:
+            raise ValueError("Invalid LONG geometry: expected stop < entry")
+        if take_profit_price is not None and take_profit_price <= entry_price:
+            raise ValueError("Invalid LONG geometry: expected entry < take_profit")
+    else:
+        if stop_price is not None and stop_price <= entry_price:
+            raise ValueError("Invalid SHORT geometry: expected entry < stop")
+        if take_profit_price is not None and take_profit_price >= entry_price:
+            raise ValueError("Invalid SHORT geometry: expected take_profit < entry")
+
+
 def projected_funding_rate(
     *,
     start_time: datetime,
@@ -75,13 +117,13 @@ def projected_funding_rate(
 
 
 def gross_pnl(direction: Direction, qty: Decimal, entry: Decimal, exit_price: Decimal) -> Decimal:
-    sign = Decimal("1") if direction == "LONG" else Decimal("-1")
+    sign = _direction_sign(direction)
     return sign * d(qty) * (d(exit_price) - d(entry))
 
 
 def funding_cash_flow(direction: Direction, position_value: Decimal, funding_rate: Decimal) -> Decimal:
     """Cash flow from trader perspective. Positive funding means LONG pays and SHORT receives."""
-    sign = Decimal("1") if direction == "LONG" else Decimal("-1")
+    sign = _direction_sign(direction)
     return -sign * d(position_value) * d(funding_rate)
 
 
@@ -90,9 +132,10 @@ def fee_cash(qty: Decimal, executed_price: Decimal, fee_rate: Decimal) -> Decima
 
 
 def stress_downside_rate(entry: Decimal, stop: Decimal, direction: Direction, costs: CostScenario) -> Decimal:
+    validate_directional_geometry(entry=entry, stop=stop, direction=direction)
     entry = d(entry)
     stop = d(stop)
-    price_move = abs(entry - stop) / entry
+    price_move = (entry - stop) / entry if direction == "LONG" else (stop - entry) / entry
     adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
     return (
         price_move
@@ -104,9 +147,10 @@ def stress_downside_rate(entry: Decimal, stop: Decimal, direction: Direction, co
 
 
 def upside_rate(entry: Decimal, take_profit: Decimal, direction: Direction, costs: CostScenario) -> Decimal:
+    validate_directional_geometry(entry=entry, take_profit=take_profit, direction=direction)
     entry = d(entry)
     tp = d(take_profit)
-    price_move = abs(tp - entry) / entry
+    price_move = (tp - entry) / entry if direction == "LONG" else (entry - tp) / entry
     adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
     return price_move - costs.fee_rate_round_trip - costs.slippage_rate - adverse_funding
 
@@ -123,6 +167,12 @@ def net_rr_and_ev(
     p_timeout: float,
     timeout_return_rate: Decimal = Decimal("-0.002"),
 ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    validate_directional_geometry(
+        entry=entry,
+        stop=stop,
+        take_profit=take_profit,
+        direction=direction,
+    )
     downside = stress_downside_rate(entry, stop, direction, costs)
     upside = upside_rate(entry, take_profit, direction, costs)
     rr = Decimal("0") if downside <= 0 else max(Decimal("0"), upside) / downside
@@ -147,6 +197,7 @@ def calculate_position_plan(
     risk_rate: Decimal,
     entry: Decimal,
     stop: Decimal,
+    take_profit: Decimal | None = None,
     direction: Direction,
     costs: CostScenario,
     constraints: InstrumentConstraints,
@@ -165,8 +216,33 @@ def calculate_position_plan(
     leverage = int(min(max(1, leverage), allowed_max_leverage))
     warnings: list[str] = []
 
-    downside = stress_downside_rate(entry, stop, direction, costs)
     risk_budget = effective_capital * risk_rate
+    try:
+        validate_directional_geometry(
+            entry=entry,
+            stop=stop,
+            take_profit=take_profit,
+            direction=direction,
+        )
+        downside = stress_downside_rate(entry, stop, direction, costs)
+    except ValueError as exc:
+        safe_risk_budget = (
+            risk_budget if risk_budget.is_finite() and risk_budget > 0 else Decimal("0")
+        )
+        return PositionPlan(
+            "BLOCKED_INVALID_INPUT",
+            effective_capital,
+            safe_risk_budget,
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
+            leverage,
+            Decimal("0"),
+            "INVALID_GEOMETRY",
+            tuple(warnings + [str(exc)]),
+        )
     if effective_capital <= 0 or risk_budget <= 0 or downside <= 0:
         return PositionPlan(
             "BLOCKED_INVALID_INPUT",

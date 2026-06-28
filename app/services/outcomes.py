@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.locks import acquire_advisory_xact_lock
 from app.db.models import Candle, ExecutionPlan, MarketSignal, PlanOutcome, SignalOutcome
-from app.risk.math import funding_cash_flow, gross_pnl
+from app.risk.math import funding_cash_flow, gross_pnl, validate_directional_geometry
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.market_data import CandleWindow
 
@@ -57,19 +57,6 @@ def _require_aware(value: datetime, name: str) -> None:
         raise ValueError(f"{name} must be timezone-aware")
 
 
-def _validate_geometry(*, direction: Direction, entry: Decimal, stop: Decimal, take_profit: Decimal) -> None:
-    if entry <= 0 or stop <= 0 or take_profit <= 0:
-        raise ValueError("Barrier prices must be positive")
-    if direction == "LONG":
-        if not stop < entry < take_profit:
-            raise ValueError("Invalid LONG geometry: expected stop < entry < take_profit")
-    elif direction == "SHORT":
-        if not take_profit < entry < stop:
-            raise ValueError("Invalid SHORT geometry: expected take_profit < entry < stop")
-    else:
-        raise ValueError(f"Unsupported direction: {direction}")
-
-
 def evaluate_barrier_outcome(
     bars: list[OutcomeBar],
     *,
@@ -95,7 +82,12 @@ def evaluate_barrier_outcome(
     entry = Decimal(entry)
     stop = Decimal(stop)
     take_profit = Decimal(take_profit)
-    _validate_geometry(direction=direction, entry=entry, stop=stop, take_profit=take_profit)
+    validate_directional_geometry(
+        direction=direction,
+        entry=entry,
+        stop=stop,
+        take_profit=take_profit,
+    )
 
     ordered = sorted(bars, key=lambda item: (item.open_time, item.close_time, item.candle_id))
     previous_close: datetime = window_start

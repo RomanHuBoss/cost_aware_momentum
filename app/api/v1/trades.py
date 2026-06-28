@@ -120,9 +120,12 @@ async def manual_entry(
         stop_gap_reserve_rate=Decimal(str(cost_data.get("stop_gap_reserve_rate", "0"))),
         funding_rate=Decimal(str(cost_data.get("funding_rate", "0"))),
     )
-    actual_downside = stress_downside_rate(
-        payload.entry_price, signal.stop_loss, signal.direction, actual_costs
-    )
+    try:
+        actual_downside = stress_downside_rate(
+            payload.entry_price, signal.stop_loss, signal.direction, actual_costs
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     actual_stress_loss = payload.qty * payload.entry_price * actual_downside
     if actual_stress_loss > plan.risk_budget + Decimal("0.00000001"):
         raise HTTPException(status_code=422, detail="Actual fill would exceed the accepted risk budget")

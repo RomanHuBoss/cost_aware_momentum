@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.4 — 2026-06-28
+
+- Risk mathematics now rejects inverted or non-finite LONG/SHORT entry, stop and take-profit geometry instead of converting it into a positive distance with `abs()`.
+- Position sizing accepts the primary take-profit as part of its safety contract and returns `BLOCKED_INVALID_INPUT` with zero quantity/notional for invalid geometry.
+- Execution-plan construction preserves the invalid-input block before policy classification and skips liquidation calculations that would otherwise operate on invalid prices.
+- Manual fills whose actual entry is already beyond the directional stop boundary return HTTP 422 with a diagnostic instead of an unhandled server error.
+- Counterfactual outcome evaluation and risk sizing now use one shared directional-geometry validator.
+- Added regression tests proving fail-closed behavior for invalid LONG and SHORT barriers.
+
 ## 1.7.3 — 2026-06-28
 
 - Trainer now treats an absent active artifact or an active deterministic baseline as an explicit bootstrap/recovery state before normal dataset-change scheduling.
