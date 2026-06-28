@@ -19,7 +19,7 @@
 | Dataset-aware trigger | Да с 1.5.0 | row growth, new-symbol coverage, top-N universe change и legacy profile detection |
 | Training data lineage | Да с 1.5.0 | artifact/registry сохраняют rows, timestamps, full symbol scope, coverage и fingerprints |
 | Progressive historical backfill | Да с 1.5.0 | отдельный `history_backfill` job до target days с batch/page limits и launch-time floor |
-| Безопасное продвижение новой модели | Да с 1.5.0 | common holdout, ML gates, cost-aware policy gates, immutable artifact и atomic activation |
+| Безопасное продвижение новой модели | Да; усилено в 1.7.8 | common holdout, ML/policy gates, immutable artifact, optimistic active-version guard и единая register+activate транзакция |
 | JSON-safe model lifecycle | Да с 1.7.1 | missing/non-finite gate metrics сохраняются как `null`; не прошедший кандидат регистрируется inactive без изменения incumbent |
 | Controlled recovery при отсутствующем active artifact | Да с 1.7.2–1.7.3 | baseline только при явном non-production разрешении; DEGRADED diagnostics; immediate bootstrap/recovery scheduling; short same-episode technical backoff; absolute gates; invalid/hash mismatch остаются fail-closed |
 | Диагностика и controlled recovery orphan model artifact | Да с 1.7.7 | status/UI различают inactive candidate и unregistered `.joblib`; explicit CLI повторно валидирует metadata и absolute gates, production и failed gate остаются blocked |

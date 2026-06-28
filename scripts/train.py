@@ -13,9 +13,9 @@ from app.ml.lifecycle import (
     incumbent_from_registry,
     load_training_candles,
     policy_evaluation_config,
+    register_and_activate_model_candidate,
     register_model_candidate,
 )
-from scripts.model_registry import activate_registered_model
 
 
 async def active_model() -> ModelRegistry | None:
@@ -56,20 +56,23 @@ async def run(args: argparse.Namespace) -> None:
         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
         policy_config=policy_evaluation_config(settings),
     )
-    registry = await register_model_candidate(
-        candidate,
-        source="manual_cli",
-        quality_gate=None,
-        activation_requested=args.activate,
-        actor="training-cli",
-    )
-
     activation = None
     if args.activate:
-        activation = await activate_registered_model(
-            candidate.version,
+        registry, activation = await register_and_activate_model_candidate(
+            candidate,
+            source="manual_cli",
+            quality_gate=None,
             actor="training-cli",
             expected_previous_version=incumbent_model.version if incumbent_model else None,
+            expected_horizon_hours=settings.default_horizon_hours,
+        )
+    else:
+        registry = await register_model_candidate(
+            candidate,
+            source="manual_cli",
+            quality_gate=None,
+            activation_requested=False,
+            actor="training-cli",
         )
 
     print(

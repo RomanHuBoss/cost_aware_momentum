@@ -1,5 +1,34 @@
 # QA report
 
+Дата проверки версии 1.7.8: 28 июня 2026 г.
+
+## Итерация 1.7.8 — atomic model candidate promotion
+
+Подтвержден high-severity lifecycle defect: новый candidate сначала коммитился как inactive с `activation_requested=true`, а затем активировался во второй транзакции. Сбой процесса, БД, audit или outbox между этими операциями оставлял промежуточное registry-состояние и требовал отдельного восстановления.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `df0cbffd190fd0d7575aab141c848b1c1bdfede03998ecd060d422c382bf02d5` |
+| Baseline isolated `python -m pytest -q` | PASSED — 126 passed, 3 skipped, 20 warnings |
+| RED atomic-promotion test | PASSED как доказательство gap — collection error: отсутствовал `register_and_activate_model_candidate` |
+| `python -m pip check` | PASSED — No broken requirements found |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 129 passed, 3 skipped, 20 warnings |
+| targeted atomic/lifecycle/recovery tests | PASSED — 14 passed |
+| `node --check web/js/app.js` | PASSED |
+| `alembic heads` | PASSED — `0005_plan_outcome_invalid_input` |
+| release ZIP / re-extracted full suite | PASSED — one root, clean artifact scan, 129 passed, 3 skipped |
+| `python manage.py doctor` | FAILED (environment) — project-local `.venv`/application environment not configured |
+| PostgreSQL integration | NOT RUN — отдельная test database и `TEST_DATABASE_URL` отсутствуют |
+| Migration / `.env` | не требуется |
+
+Новый atomic service валидирует artifact до mutation, блокирует active-row, проверяет expected incumbent и в одной транзакции выполняет candidate insertion, candidate audit/outbox, incumbent deactivation, activation и activation audit/outbox. Background trainer, manual `train --activate` и новый gate-passed orphan recovery используют этот путь; failed/manual-review candidates остаются inactive.
+
+Host baseline отдельно зафиксирован: внешний MoviePy/Pillow conflict, отсутствующие Ruff/psycopg и 7 collection errors. Production code проверяется в isolated environment из `.[dev]`; SQLite/fake application database не применялась.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-atomic-model-promotion.md`.
+
 Дата проверки версии 1.7.7: 28 июня 2026 г.
 
 ## Итерация 1.7.7 — controlled orphan model recovery and diagnostics

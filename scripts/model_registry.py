@@ -11,7 +11,11 @@ from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import ModelRegistry
 from app.ml.artifact_recovery import load_recovery_candidate
-from app.ml.lifecycle import evaluate_quality_gate, register_model_candidate
+from app.ml.lifecycle import (
+    evaluate_quality_gate,
+    register_and_activate_model_candidate,
+    register_model_candidate,
+)
 from app.ml.runtime import ModelRuntime
 from app.ml.runtime_selection import (
     baseline_fallback_allowed,
@@ -210,20 +214,25 @@ async def recover_artifact(artifact: Path) -> dict[str, object]:
         }
 
     quality_gate = evaluate_quality_gate(candidate, settings)
-    registry = await register_model_candidate(
-        candidate,
-        source="operator_artifact_recovery",
-        quality_gate=quality_gate,
-        activation_requested=bool(quality_gate["passed"]),
-        actor="operator-artifact-recovery",
-        incumbent_recovery=recovery_notice,
-    )
     activation = None
     if quality_gate["passed"]:
-        activation = await activate_registered_model(
-            candidate.version,
+        registry, activation = await register_and_activate_model_candidate(
+            candidate,
+            source="operator_artifact_recovery",
+            quality_gate=quality_gate,
             actor="operator-artifact-recovery",
             expected_previous_version=active.version if active else None,
+            expected_horizon_hours=settings.default_horizon_hours,
+            incumbent_recovery=recovery_notice,
+        )
+    else:
+        registry = await register_model_candidate(
+            candidate,
+            source="operator_artifact_recovery",
+            quality_gate=quality_gate,
+            activation_requested=False,
+            actor="operator-artifact-recovery",
+            incumbent_recovery=recovery_notice,
         )
     return {
         "version": candidate.version,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.8 — 2026-06-28
+
+- New candidate registration and activation now use one PostgreSQL transaction for background trainer, `train --activate` and gate-passed orphan recovery.
+- The active registry row is locked and compared with the expected incumbent before the candidate row is inserted.
+- Candidate audit/outbox events, incumbent deactivation, target activation and activation audit/outbox events commit or roll back together.
+- Artifact SHA256/version/schema/classes/horizon validation still runs before the database promotion transaction.
+- Failed/manual-review candidates continue to be registered inactive through the existing standalone registration path.
+- Added red-to-green unit coverage for single-transaction promotion, rollback on activation-audit failure and concurrent active-version rejection.
+
 ## 1.7.7 — 2026-06-28
 
 - Status API and UI now distinguish a missing active artifact from an inactive registered candidate and from an unregistered `.joblib` present in `MODEL_DIR`.

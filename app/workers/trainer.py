@@ -24,10 +24,10 @@ from app.ml.lifecycle import (
     load_training_candles,
     load_training_data_profile,
     policy_evaluation_config,
+    register_and_activate_model_candidate,
     register_model_candidate,
 )
 from app.ml.runtime_selection import recoverable_registry_artifact_notice
-from scripts.model_registry import activate_registered_model
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -423,32 +423,36 @@ class BackgroundTrainer:
                                 "incumbent_recovery_condition_changed_during_training"
                             )
                     self.state["phase"] = "REGISTERING"
-                    registry = await register_model_candidate(
-                        candidate,
-                        source="background_trainer",
-                        quality_gate=gate,
-                        activation_requested=can_activate,
-                        actor=settings.trainer_id,
-                        incumbent_recovery=incumbent_recovery,
-                    )
-
                     activation: dict[str, object] | None = None
                     activation_skipped: str | None = None
                     if can_activate:
                         self.state["phase"] = "ACTIVATING"
-                        activation = await activate_registered_model(
-                            candidate.version,
+                        registry, activation = await register_and_activate_model_candidate(
+                            candidate,
+                            source="background_trainer",
+                            quality_gate=gate,
                             actor=settings.trainer_id,
                             expected_previous_version=active.version if active else None,
+                            expected_horizon_hours=settings.default_horizon_hours,
+                            incumbent_recovery=incumbent_recovery,
                         )
-                    elif recovery_activation_skipped is not None:
-                        activation_skipped = recovery_activation_skipped
-                    elif settings.active_model_path is not None:
-                        activation_skipped = "ACTIVE_MODEL_PATH override is configured"
-                    elif not settings.auto_train_auto_activate:
-                        activation_skipped = "AUTO_TRAIN_AUTO_ACTIVATE=false"
-                    elif not gate["passed"]:
-                        activation_skipped = "quality_gate_failed"
+                    else:
+                        registry = await register_model_candidate(
+                            candidate,
+                            source="background_trainer",
+                            quality_gate=gate,
+                            activation_requested=False,
+                            actor=settings.trainer_id,
+                            incumbent_recovery=incumbent_recovery,
+                        )
+                        if recovery_activation_skipped is not None:
+                            activation_skipped = recovery_activation_skipped
+                        elif settings.active_model_path is not None:
+                            activation_skipped = "ACTIVE_MODEL_PATH override is configured"
+                        elif not settings.auto_train_auto_activate:
+                            activation_skipped = "AUTO_TRAIN_AUTO_ACTIVATE=false"
+                        elif not gate["passed"]:
+                            activation_skipped = "quality_gate_failed"
 
                     result = {
                         "trigger": trigger,

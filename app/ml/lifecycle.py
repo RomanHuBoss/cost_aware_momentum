@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import joblib
 import pandas as pd
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 
 from app.config import Settings
 from app.db.engine import SessionFactory
@@ -581,6 +581,28 @@ async def register_model_candidate(
     incumbent_recovery: dict[str, Any] | None = None,
 ) -> ModelRegistry:
     digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
+    async with SessionFactory() as session, session.begin():
+        registry = await _register_model_candidate_in_session(
+            session,
+            candidate,
+            digest=digest,
+            source=source,
+            quality_gate=quality_gate,
+            activation_requested=activation_requested,
+            actor=actor,
+            incumbent_recovery=incumbent_recovery,
+        )
+    return registry
+
+
+def _candidate_registry_metrics(
+    candidate: ModelCandidate,
+    *,
+    source: str,
+    quality_gate: dict[str, Any] | None,
+    activation_requested: bool,
+    incumbent_recovery: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     safe_quality_gate = json_compatible(quality_gate)
     metrics = json_compatible(
         {
@@ -602,42 +624,161 @@ async def register_model_candidate(
             "activation_requested": activation_requested,
         }
     )
-    async with SessionFactory() as session, session.begin():
-        registry = ModelRegistry(
-            name=f"Hourly direction-conditional barrier {candidate.model_type} h{candidate.horizon}",
-            version=candidate.version,
-            model_type=f"barrier_{candidate.model_type}",
-            artifact_path=str(candidate.path),
-            artifact_sha256=digest,
-            feature_schema_version="hourly-barrier-v1",
-            calibration_version=f"sigmoid-ovr-{candidate.version}",
-            training_start=candidate.training_start,
-            training_end=candidate.training_end,
-            metrics=metrics,
-            active=False,
+    return metrics, safe_quality_gate
+
+
+async def _register_model_candidate_in_session(
+    session,
+    candidate: ModelCandidate,
+    *,
+    digest: str,
+    source: str,
+    quality_gate: dict[str, Any] | None,
+    activation_requested: bool,
+    actor: str,
+    incumbent_recovery: dict[str, Any] | None,
+) -> ModelRegistry:
+    metrics, safe_quality_gate = _candidate_registry_metrics(
+        candidate,
+        source=source,
+        quality_gate=quality_gate,
+        activation_requested=activation_requested,
+        incumbent_recovery=incumbent_recovery,
+    )
+    registry = ModelRegistry(
+        name=f"Hourly direction-conditional barrier {candidate.model_type} h{candidate.horizon}",
+        version=candidate.version,
+        model_type=f"barrier_{candidate.model_type}",
+        artifact_path=str(candidate.path),
+        artifact_sha256=digest,
+        feature_schema_version="hourly-barrier-v1",
+        calibration_version=f"sigmoid-ovr-{candidate.version}",
+        training_start=candidate.training_start,
+        training_end=candidate.training_end,
+        metrics=metrics,
+        active=False,
+    )
+    session.add(registry)
+    await session.flush()
+    event_type = "MODEL_CANDIDATE_TRAINED"
+    await append_audit_event(
+        session,
+        event_type=event_type,
+        entity_type="model_registry",
+        entity_id=str(registry.id),
+        actor=actor,
+        payload={
+            "version": candidate.version,
+            "source": source,
+            "quality_gate": safe_quality_gate,
+            "activation_requested": activation_requested,
+            "incumbent_recovery": json_compatible(incumbent_recovery),
+        },
+    )
+    await publish_outbox(
+        session,
+        event_type=event_type,
+        aggregate_type="model_registry",
+        aggregate_id=str(registry.id),
+        payload={"version": candidate.version, "source": source},
+    )
+    return registry
+
+
+def _validate_candidate_artifact_for_activation(
+    candidate: ModelCandidate,
+    *,
+    digest: str,
+    expected_horizon_hours: int,
+) -> dict[str, object]:
+    runtime = ModelRuntime(candidate.path, allow_baseline=False)
+    runtime.load(
+        expected_sha256=digest,
+        expected_version=candidate.version,
+        source="model_candidate_atomic_activation",
+    )
+    if runtime.horizon_hours != expected_horizon_hours:
+        raise RuntimeError(
+            f"Model horizon {runtime.horizon_hours} does not match "
+            f"expected horizon {expected_horizon_hours}"
         )
-        session.add(registry)
+    return runtime.metadata()
+
+
+async def register_and_activate_model_candidate(
+    candidate: ModelCandidate,
+    *,
+    source: str,
+    quality_gate: dict[str, Any] | None,
+    actor: str,
+    expected_previous_version: str | None,
+    expected_horizon_hours: int,
+    incumbent_recovery: dict[str, Any] | None = None,
+) -> tuple[ModelRegistry, dict[str, object]]:
+    """Register and activate a new candidate in one PostgreSQL transaction."""
+
+    digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
+    runtime_metadata = _validate_candidate_artifact_for_activation(
+        candidate,
+        digest=digest,
+        expected_horizon_hours=expected_horizon_hours,
+    )
+    async with SessionFactory() as session, session.begin():
+        previous = (
+            await session.execute(
+                select(ModelRegistry)
+                .where(ModelRegistry.active.is_(True))
+                .order_by(desc(ModelRegistry.updated_at))
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        previous_version = previous.version if previous else None
+        if previous_version != expected_previous_version:
+            raise RuntimeError(
+                "Active model changed while the candidate was being evaluated: "
+                f"expected={expected_previous_version}, actual={previous_version}"
+            )
+
+        registry = await _register_model_candidate_in_session(
+            session,
+            candidate,
+            digest=digest,
+            source=source,
+            quality_gate=quality_gate,
+            activation_requested=True,
+            actor=actor,
+            incumbent_recovery=incumbent_recovery,
+        )
+        await session.execute(
+            update(ModelRegistry)
+            .where(ModelRegistry.active.is_(True), ModelRegistry.id != registry.id)
+            .values(active=False)
+        )
+        registry.active = True
         await session.flush()
-        event_type = "MODEL_CANDIDATE_TRAINED"
+        payload: dict[str, object] = {
+            "version": registry.version,
+            "model_type": registry.model_type,
+            "previous_version": (
+                previous.version if previous and previous.id != registry.id else None
+            ),
+            "expected_previous_version": expected_previous_version,
+            "runtime": runtime_metadata,
+        }
         await append_audit_event(
             session,
-            event_type=event_type,
+            event_type="MODEL_ACTIVATED",
             entity_type="model_registry",
             entity_id=str(registry.id),
             actor=actor,
-            payload={
-                "version": candidate.version,
-                "source": source,
-                "quality_gate": safe_quality_gate,
-                "activation_requested": activation_requested,
-                "incumbent_recovery": json_compatible(incumbent_recovery),
-            },
+            payload=payload,
         )
         await publish_outbox(
             session,
-            event_type=event_type,
+            event_type="MODEL_ACTIVATED",
             aggregate_type="model_registry",
             aggregate_id=str(registry.id),
-            payload={"version": candidate.version, "source": source},
+            payload={"version": registry.version},
         )
-    return registry
+    return registry, payload

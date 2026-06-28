@@ -166,20 +166,28 @@ async def test_recover_artifact_registers_and_activates_gate_passed_orphan(
         lambda *_args, **_kwargs: {"passed": True, "reasons": [], "relative": None},
     )
 
-    async def register(*_args: object, **_kwargs: object) -> object:
-        return registered
-
-    async def activate(
-        version: str,
+    async def register_and_activate(
+        candidate_value: object,
         *,
+        source: str,
+        quality_gate: dict[str, object] | None,
         actor: str,
         expected_previous_version: str | None,
-    ) -> dict[str, object]:
-        activations.append((version, expected_previous_version))
-        return {"version": version, "actor": actor}
+        expected_horizon_hours: int,
+        incumbent_recovery: dict[str, object] | None,
+    ) -> tuple[object, dict[str, object]]:
+        assert source == "operator_artifact_recovery"
+        assert quality_gate and quality_gate["passed"] is True
+        assert expected_horizon_hours == 8
+        assert incumbent_recovery is not None
+        activations.append((candidate_value.version, expected_previous_version))
+        return registered, {"version": candidate_value.version, "actor": actor}
 
-    monkeypatch.setattr(model_registry, "register_model_candidate", register)
-    monkeypatch.setattr(model_registry, "activate_registered_model", activate)
+    monkeypatch.setattr(
+        model_registry,
+        "register_and_activate_model_candidate",
+        register_and_activate,
+    )
 
     result = await model_registry.recover_artifact(path)
 

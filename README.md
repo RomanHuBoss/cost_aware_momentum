@@ -1,7 +1,7 @@
 # Cost-aware hourly ML momentum
 
 
-> Версия 1.7.7: интерфейс различает отсутствующую active-модель, зарегистрированный inactive candidate и незарегистрированный `.joblib`. Для безопасного восстановления orphan artifact добавлена команда `model-registry recover-artifact`, которая повторно проверяет metadata, horizon и абсолютный quality gate перед регистрацией и активацией.
+> Версия 1.7.8: регистрация нового model candidate и его auto-activation выполняются одной PostgreSQL-транзакцией. При сбое переключения, audit или outbox candidate не остается наполовину зарегистрированным с `activation_requested=true`; действующая модель сохраняется.
 
 Локальная рекомендательная система для линейных USDT-фьючерсов Bybit. Система получает рыночные данные, строит часовые признаки, формирует LONG/SHORT-кандидаты, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения, а затем показывает оператору исполнимый план. Ордеры на биржу приложение **не отправляет**.
 
@@ -173,6 +173,8 @@ python manage.py model-registry recover-artifact --artifact models/<artifact>.jo
 ```
 
 Команда работает только вне production при `ALLOW_BASELINE_MODEL=true`, требует отсутствующую/базовую active-модель, повторно валидирует task/schema/classes/version/horizon и запускает абсолютный ML/policy gate. Artifact, не прошедший gate, регистрируется inactive и не активируется.
+
+При обновлении с 1.7.7 на 1.7.8 migration и новые `.env` переменные не требуются. Перезапустите API/worker/trainer. Новые candidates, которые должны быть активированы сразу, теперь регистрируются, переключают active-row и создают audit/outbox события одной транзакцией; существующие inactive candidates и ручной rollback работают как раньше.
 
 ## Управление проектом
 
