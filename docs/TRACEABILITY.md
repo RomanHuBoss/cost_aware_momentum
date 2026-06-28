@@ -40,6 +40,7 @@
 | Versioned glossary и доступность | Да | DB glossary, hover/focus/tap tooltips |
 | Одна текущая рекомендация на символ | Да | supersede transaction + PostgreSQL partial unique index |
 | Audit/idempotency/outbox | Да | append-only hash chain, idempotency keys, outbox events, job runs и heartbeats |
+| Release tree / checksum integrity | Да с 1.8.2 | `scripts/release_integrity.py`, `python manage.py release-check`, CI pre-install check; missing/modified/unlisted/forbidden artifacts fail closed |
 | Counterfactual outcome | Да, с intrabar refinement в 1.7.0 | immutable signal outcome и отдельный result для каждой plan version; confirmed hourly path, exact 1/3/5-minute window для hourly TP/SL ambiguity, missing intrabar fail-closed, conservative same-finest-bar SL, API/UI/audit |
 | Event-driven portfolio backtest | Частично | barrier-policy test есть; нет no-fill/partial fills/operator latency/full portfolio simulator |
 | Drift monitoring/fallback | Частично | pre-activation ML/policy gate есть; PSI/live calibration drift и realized-performance auto-rollback остаются roadmap |

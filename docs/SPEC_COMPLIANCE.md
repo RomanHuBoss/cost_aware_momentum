@@ -49,6 +49,8 @@
 | Актуальный universe в UI/API | Исправлено в 1.5.0 | текущие карточки фильтруются по worker universe; status обновляется автоматически |
 | Counterfactual outcome journal | Реализовано с intrabar refinement в 1.7.0 | confirmed hourly path; точечный 1/3/5-minute reconstruction для same-hour TP1/SL; отдельная оценка каждой plan version, audit/outbox/API/UI; missing intrabar и legacy funding timeline fail-closed |
 
+- Release boundary проверяется отдельным fail-closed manifest tool: missing/modified/unlisted files и запрещенные артефакты блокируют упаковку; это не меняет статус research gaps.
+
 ## Частичное соответствие
 
 | Требование | Что есть | Чего не хватает |

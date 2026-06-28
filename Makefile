@@ -1,4 +1,4 @@
-.PHONY: setup configure db-init migrate doctor up api worker trainer test lint backup restore-check report
+.PHONY: setup configure db-init migrate doctor up api worker trainer test lint backup restore-check report release-check
 
 PYTHON ?= python
 
@@ -43,3 +43,6 @@ restore-check:
 
 report:
 	$(PYTHON) manage.py report --output reports/daily_report.json
+
+release-check:
+	$(PYTHON) manage.py release-check

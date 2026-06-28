@@ -26,6 +26,11 @@ jobs:
           CREATE ROLE cost_momentum LOGIN PASSWORD 'cost_momentum';
           CREATE DATABASE cost_momentum_test OWNER cost_momentum;
           SQL
+      - name: Verify clean release tree
+        run: |
+          mkdir -p /tmp/cam-release
+          git archive --format=tar HEAD | tar -xf - -C /tmp/cam-release
+          python manage.py release-check --root /tmp/cam-release
       - run: pip install -e '.[dev]'
       - run: ruff check app scripts tests migrations manage.py
       - run: python -m compileall -q app scripts migrations manage.py

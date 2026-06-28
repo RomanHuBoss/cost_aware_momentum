@@ -81,6 +81,8 @@ def command_tool(args: argparse.Namespace, extras: list[str]) -> int:
     if args.command == "lint":
         python = ensure_venv()
         return run([str(python), "-m", "ruff", "check", "app", "scripts", "tests", "migrations", "manage.py", *extras])
+    if args.command == "release-check":
+        return run([sys.executable, "-B", "-m", "scripts.release_integrity", *extras])
     return command_module(mapping[args.command], extras)
 
 
@@ -109,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
             "backtest",
             "replay",
             "model-registry",
+            "release-check",
         ],
     )
     return parser

@@ -106,7 +106,6 @@ Desktop.ini
 $RECYCLE.BIN/
 
 # Locally generated release/patch artifacts
-/SHA256SUMS
 *.zip
 *.tar
 *.tar.gz

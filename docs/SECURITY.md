@@ -30,4 +30,7 @@
 Controlled baseline recovery не является обходом artifact integrity. Он применяется только к физически отсутствующему registry artifact в non-production при `ALLOW_BASELINE_MODEL=true`. Существующий файл с неверным SHA256, поврежденным bundle или несовместимыми metadata остается блокирующей ошибкой. `ACTIVE_MODEL_PATH` также никогда не fallback-ится. В production baseline запрещен validator-ом.
 
 Команда `model-registry recover-artifact` должна использоваться только для доверенного локального `.joblib`, созданного этим проектом. Формат joblib/pickle не является безопасным для файлов неизвестного происхождения. Recovery требует размещение внутри `MODEL_DIR`, non-production режим, повторную schema/horizon/quality-gate проверку и не активирует failed candidate.
+## Release boundary
+
+Перед публикацией или передачей архива выполняется `python manage.py release-check`. Проверка fail-closed сопоставляет каждый файл с `SHA256SUMS`, выявляет missing/modified/unlisted entries и запрещает `.env`, секретные ключи, virtual environments, caches, `*.egg-info`, dumps, logs, model/runtime artifacts, symlinks и вложенные archives. `python manage.py release-check --write` пересоздает manifest только после успешной проверки чистоты дерева. SHA256 manifest подтверждает целостность конкретного содержимого, но не является внешней цифровой подписью и не доказывает происхождение файла.
 

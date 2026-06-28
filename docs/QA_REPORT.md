@@ -1,5 +1,28 @@
 # QA report
 
+Дата проверки версии 1.8.2: 28 июня 2026 г.
+
+## Итерация 1.8.2 — fail-closed release integrity
+
+Подтвержден release-integrity defect: `SHA256SUMS` исходного ZIP содержал entries для `CHANGELOG.md` и `PATCH_1.8.1.md`, но оба файла отсутствовали. `sha256sum -c SHA256SUMS` завершался exit 1, хотя отчет 1.8.1 утверждал, что файлы созданы.
+
+| Проверка | Baseline 1.8.1 | Post-check 1.8.2 |
+|---|---|---|
+| `python -m pip check` | FAILED (host) — внешний `moviepy`/`Pillow` conflict | FAILED (host) — тот же внешний conflict |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED после установки declared dev dependency | PASSED |
+| `python -m pytest -q` | PASSED — 152 passed, 4 skipped | PASSED — 155 passed, 4 skipped |
+| release-integrity regression | RED — module отсутствовал | GREEN — 3 passed |
+| `sha256sum -c SHA256SUMS` / release check | FAILED — 2 missing files | PASSED после финальной очистки и regeneration |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| `alembic heads` | `0005_plan_outcome_invalid_input` | `0005_plan_outcome_invalid_input` |
+| `python manage.py doctor` | FAILED (environment) | FAILED (environment) — release не содержит `.venv` |
+| PostgreSQL integration | NOT RUN | NOT RUN — отдельная test DB отсутствует |
+
+Версия 1.8.2 восстанавливает канонические changelog/patch files и добавляет stdlib-only `python manage.py release-check`. Проверка выявляет missing/modified/unlisted files, malformed/unsafe manifest entries и запрещенные release artifacts; `--write` атомарно пересоздает manifest только на чистом дереве. Migration, `.env`, API, DB, ML и risk behavior не изменены.
+
+Полный отчет: `docs/ITERATION_REPORT_2026-06-28-release-integrity.md`.
+
 Дата проверки версии 1.8.1: 28 июня 2026 г.
 
 ## Итерация 1.8.1 — recovery зависших trainer-control requests
