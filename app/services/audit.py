@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AuditEvent, OutboxEvent
+from app.json_utils import json_compatible
 
 
 async def append_audit_event(
@@ -19,6 +20,7 @@ async def append_audit_event(
     actor: str,
     payload: dict,
 ) -> AuditEvent:
+    safe_payload = json_compatible(payload)
     # Serialize chain-head updates inside the current PostgreSQL transaction.
     await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 112913404})
     previous = (
@@ -33,10 +35,11 @@ async def append_audit_event(
             "entity_type": entity_type,
             "entity_id": entity_id,
             "actor": actor,
-            "payload": payload,
+            "payload": safe_payload,
             "previous_hash": previous_hash,
         },
         ensure_ascii=False,
+        allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
         default=str,
@@ -48,7 +51,7 @@ async def append_audit_event(
         entity_type=entity_type,
         entity_id=entity_id,
         actor=actor,
-        payload=payload,
+        payload=safe_payload,
         previous_hash=previous_hash,
         event_hash=event_hash,
     )
@@ -64,11 +67,12 @@ async def publish_outbox(
     aggregate_id: str,
     payload: dict,
 ) -> OutboxEvent:
+    safe_payload = json_compatible(payload)
     event = OutboxEvent(
         event_type=event_type,
         aggregate_type=aggregate_type,
         aggregate_id=aggregate_id,
-        payload=payload,
+        payload=safe_payload,
         created_at=datetime.now(UTC),
     )
     session.add(event)

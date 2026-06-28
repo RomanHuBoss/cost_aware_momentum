@@ -67,7 +67,7 @@ Joblib bundle обязан содержать:
 5. artifact регистрируется с SHA256, dataset profile, metrics, quality-gate decision и ссылкой на incumbent;
 6. auto-activation выполняется только при успешном gate и неизменившейся active-version.
 
-Обучение запускается отдельным процессом, поэтому fitting scikit-learn не блокирует FastAPI и hourly inference. Не прошедший gate candidate остается в registry неактивным и может быть изучен вручную.
+Обучение запускается отдельным процессом, поэтому fitting scikit-learn не блокирует FastAPI и hourly inference. Не прошедший gate candidate остается в registry неактивным и может быть изучен вручную. Начиная с 1.7.1 отсутствующие policy metrics и non-finite comparison deltas сохраняются в registry как JSON `null`; внутренние fail-closed сравнения и причины gate при этом не ослабляются.
 
 ## Активация и rollback
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.1 — 2026-06-28
+
+- Исправлен подтвержденный сбой регистрации model candidate в PostgreSQL JSONB при `incumbent_policy_realized_mean_r = -Infinity`.
+- Quality-gate теперь отделяет внутренние fail-closed sentinel-значения от сериализуемого результата и сохраняет отсутствующие/non-finite метрики как JSON `null`.
+- Добавлена рекурсивная нормализация JSON payload для model registry, trainer jobs/heartbeats, audit и outbox; `NaN`/`±Infinity` больше не попадают в JSONB.
+- Сохранена прежняя логика абсолютных и incumbent-relative gate: исправление не ослабляет пороги и не активирует отклоненный кандидат.
+- Добавлены regression tests для incumbent без policy-сделок, отсутствующих candidate policy metrics и вложенных NumPy/non-finite значений.
+- Migration и новые `.env` параметры не требуются.
+
 ## 1.7.0 — 2026-06-28
 
 - Добавлено автоматическое 1/3/5-минутное восстановление порядка TP1/SL для неоднозначных часовых свечей.

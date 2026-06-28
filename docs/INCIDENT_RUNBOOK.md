@@ -62,3 +62,11 @@ API завершится до readiness. Не использовать `stamp he
 3. Заменить `.env`, `SECRET_KEY`, API token и операторский пароль.
 4. Просмотреть audit access и логи reverse proxy.
 5. Никогда не помещать секреты в issue, model artifact, backup manifest или frontend.
+
+## Trainer создал `.joblib`, но candidate отсутствует в registry
+
+1. Сопоставить время файла в `models/` с последним `ops.job_runs` для `model_retraining`.
+2. Если ошибка содержит `InvalidTextRepresentation`, `-Infinity`, `Infinity` или `NaN`, обновить проект минимум до 1.7.1 и перезапустить trainer.
+3. Не активировать orphan artifact прямым изменением PostgreSQL и не создавать registry row вручную: same-holdout gate и audit могли не завершиться.
+4. Дождаться следующего штатного training cycle. Отклоненный candidate должен появиться в `model-registry list` с `active=false`; прошедший gate может активироваться автоматически.
+5. Старый orphan artifact можно оставить для forensic review либо удалить после подтверждения нового зарегистрированного candidate.

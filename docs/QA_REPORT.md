@@ -1,6 +1,26 @@
 # QA report
 
-Дата проверки версии 1.7.0: 28 июня 2026 г.
+Дата проверки версии 1.7.1: 28 июня 2026 г.
+
+## Итерация 1.7.1 — JSON-safe model lifecycle
+
+Подтвержден пользовательский PostgreSQL failure при регистрации candidate: JSONB отвергал `-Infinity` в `quality_gate.relative.incumbent_policy_realized_mean_r`. Исправление отделяет внутренние fail-closed sentinels от сериализуемых значений и нормализует model/trainer/audit JSON payload.
+
+| Проверка | Результат |
+|---|---|
+| Input ZIP SHA-256 | `58e1270f61c0d6efc8e731790e8a5cbe673278d021fe61e7b2d3db9bd80732b6` |
+| Red regression tests | PASSED как доказательство дефекта — 2 tests failed с strict-JSON `-inf` |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED — 77 passed, 3 skipped |
+| lifecycle/json targeted tests | PASSED — 7 passed |
+| `node --check web/js/app.js` | PASSED |
+| PostgreSQL integration | NOT RUN — отдельная test database отсутствует |
+| Migration | не требуется; head остается `0004_counterfactual_outcomes` |
+
+`python -m pip check` в host environment остается FAILED из-за внешнего конфликта `moviepy 2.2.1`/`pillow 12.2.0`, не объявленного данным проектом. Полный отчет: `docs/ITERATION_REPORT_2026-06-28-model-registry-json-safety.md`.
+
+## Историческая проверка версии 1.7.0
 
 ## Baseline до изменений
 

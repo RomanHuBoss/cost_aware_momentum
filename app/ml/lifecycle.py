@@ -16,6 +16,7 @@ from sqlalchemy import desc, func, select
 from app.config import Settings
 from app.db.engine import SessionFactory
 from app.db.models import Candle, ModelRegistry, TickerSnapshot
+from app.json_utils import json_compatible
 from app.ml.data_profile import (
     TrainingDataProfile,
     profile_from_symbol_rows,
@@ -414,65 +415,68 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     metrics = candidate.metrics
     reasons: list[str] = []
 
-    def finite_metric(name: str) -> float:
-        value = metrics.get(name)
-        if value is None or not math.isfinite(float(value)):
-            reasons.append(f"missing_or_non_finite_{name}")
-            return math.inf
-        return float(value)
+    def finite_or_none(value: object) -> float | None:
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if math.isfinite(parsed) else None
 
-    rows = int(metrics.get("rows", 0))
-    log_loss_value = finite_metric("log_loss")
-    brier_value = finite_metric("multiclass_brier")
-    ece_values = [
-        finite_metric("ece_tp"),
-        finite_metric("ece_sl"),
-        finite_metric("ece_timeout"),
+    def required_metric(name: str) -> tuple[float | None, float]:
+        value = finite_or_none(metrics.get(name))
+        if value is None:
+            reasons.append(f"missing_or_non_finite_{name}")
+            return None, math.inf
+        return value, value
+
+    rows = int(metrics.get("rows", 0) or 0)
+    log_loss_value, log_loss_check = required_metric("log_loss")
+    brier_value, brier_check = required_metric("multiclass_brier")
+    ece_pairs = [
+        required_metric("ece_tp"),
+        required_metric("ece_sl"),
+        required_metric("ece_timeout"),
     ]
-    max_ece = max(ece_values)
+    ece_values = [value for value, _ in ece_pairs]
+    max_ece = max(value for value in ece_values if value is not None) if all(
+        value is not None for value in ece_values
+    ) else None
+    max_ece_check = max(check for _, check in ece_pairs)
+
     class_distribution = metrics.get("class_distribution") or {}
     min_class_fraction = min(
         (float(class_distribution.get(label, 0.0)) for label in ("TP", "SL", "TIMEOUT")),
         default=0.0,
     )
     policy_trades = int(metrics.get("policy_trades", 0) or 0)
-    policy_mean_r_value = metrics.get("policy_realized_mean_r")
-    policy_profit_factor_value = metrics.get("policy_profit_factor")
-    policy_drawdown_value = metrics.get("policy_max_drawdown_r")
-    policy_mean_r = (
-        float(policy_mean_r_value)
-        if policy_mean_r_value is not None and math.isfinite(float(policy_mean_r_value))
-        else -math.inf
+    policy_mean_r = finite_or_none(metrics.get("policy_realized_mean_r"))
+    policy_profit_factor = finite_or_none(metrics.get("policy_profit_factor"))
+    policy_drawdown = finite_or_none(metrics.get("policy_max_drawdown_r"))
+    policy_mean_r_check = policy_mean_r if policy_mean_r is not None else -math.inf
+    policy_profit_factor_check = (
+        policy_profit_factor if policy_profit_factor is not None else -math.inf
     )
-    policy_profit_factor = (
-        float(policy_profit_factor_value)
-        if policy_profit_factor_value is not None
-        and math.isfinite(float(policy_profit_factor_value))
-        else -math.inf
-    )
-    policy_drawdown = (
-        float(policy_drawdown_value)
-        if policy_drawdown_value is not None and math.isfinite(float(policy_drawdown_value))
-        else math.inf
-    )
+    policy_drawdown_check = policy_drawdown if policy_drawdown is not None else math.inf
 
     if rows < settings.auto_train_min_holdout_rows:
         reasons.append("holdout_rows_below_minimum")
-    if log_loss_value > settings.auto_train_max_log_loss:
+    if log_loss_check > settings.auto_train_max_log_loss:
         reasons.append("log_loss_above_limit")
-    if brier_value > settings.auto_train_max_multiclass_brier:
+    if brier_check > settings.auto_train_max_multiclass_brier:
         reasons.append("multiclass_brier_above_limit")
-    if max_ece > settings.auto_train_max_ece:
+    if max_ece_check > settings.auto_train_max_ece:
         reasons.append("calibration_error_above_limit")
     if min_class_fraction < settings.auto_train_min_class_fraction:
         reasons.append("holdout_class_fraction_below_minimum")
     if policy_trades < settings.auto_train_min_policy_trades:
         reasons.append("policy_trade_count_below_minimum")
-    if policy_mean_r < settings.auto_train_min_policy_realized_mean_r:
+    if policy_mean_r_check < settings.auto_train_min_policy_realized_mean_r:
         reasons.append("policy_realized_mean_r_below_minimum")
-    if policy_profit_factor < settings.auto_train_min_policy_profit_factor:
+    if policy_profit_factor_check < settings.auto_train_min_policy_profit_factor:
         reasons.append("policy_profit_factor_below_minimum")
-    if policy_drawdown > settings.auto_train_max_policy_drawdown_r:
+    if policy_drawdown_check > settings.auto_train_max_policy_drawdown_r:
         reasons.append("policy_drawdown_above_limit")
 
     relative: dict[str, Any] | None = None
@@ -486,37 +490,37 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     elif incumbent:
         incumbent_log_loss = float(incumbent["log_loss"])
         incumbent_brier = float(incumbent["multiclass_brier"])
-        incumbent_policy_mean_r_value = incumbent.get("policy_realized_mean_r")
-        incumbent_policy_drawdown_value = incumbent.get("policy_max_drawdown_r")
-        incumbent_policy_mean_r = (
-            float(incumbent_policy_mean_r_value)
-            if incumbent_policy_mean_r_value is not None
-            and math.isfinite(float(incumbent_policy_mean_r_value))
-            else -math.inf
+        incumbent_policy_mean_r = finite_or_none(incumbent.get("policy_realized_mean_r"))
+        incumbent_policy_drawdown = finite_or_none(incumbent.get("policy_max_drawdown_r"))
+        incumbent_policy_mean_r_check = (
+            incumbent_policy_mean_r if incumbent_policy_mean_r is not None else -math.inf
         )
-        incumbent_policy_drawdown = (
-            float(incumbent_policy_drawdown_value)
-            if incumbent_policy_drawdown_value is not None
-            and math.isfinite(float(incumbent_policy_drawdown_value))
-            else math.inf
+        incumbent_policy_drawdown_check = (
+            incumbent_policy_drawdown if incumbent_policy_drawdown is not None else math.inf
         )
-        log_loss_delta = log_loss_value - incumbent_log_loss
-        brier_delta = brier_value - incumbent_brier
-        policy_mean_r_delta = policy_mean_r - incumbent_policy_mean_r
-        policy_drawdown_delta = policy_drawdown - incumbent_policy_drawdown
+        log_loss_delta_check = log_loss_check - incumbent_log_loss
+        brier_delta_check = brier_check - incumbent_brier
+        policy_mean_r_delta_check = policy_mean_r_check - incumbent_policy_mean_r_check
+        policy_drawdown_delta_check = policy_drawdown_check - incumbent_policy_drawdown_check
+        log_loss_delta = finite_or_none(log_loss_delta_check)
+        brier_delta = finite_or_none(brier_delta_check)
+        policy_mean_r_delta = finite_or_none(policy_mean_r_delta_check)
+        policy_drawdown_delta = finite_or_none(policy_drawdown_delta_check)
         ml_improved = (
-            log_loss_delta <= -settings.auto_train_min_metric_improvement
-            or brier_delta <= -settings.auto_train_min_metric_improvement
+            log_loss_delta_check <= -settings.auto_train_min_metric_improvement
+            or brier_delta_check <= -settings.auto_train_min_metric_improvement
         )
-        policy_improved = policy_mean_r_delta >= settings.auto_train_min_policy_improvement_r
+        policy_improved = (
+            policy_mean_r_delta_check >= settings.auto_train_min_policy_improvement_r
+        )
         improved = ml_improved or policy_improved
-        if log_loss_delta > settings.auto_train_max_log_loss_regression:
+        if log_loss_delta_check > settings.auto_train_max_log_loss_regression:
             reasons.append("log_loss_regressed_vs_incumbent")
-        if brier_delta > settings.auto_train_max_brier_regression:
+        if brier_delta_check > settings.auto_train_max_brier_regression:
             reasons.append("multiclass_brier_regressed_vs_incumbent")
-        if policy_mean_r_delta < -settings.auto_train_max_policy_mean_r_regression:
+        if policy_mean_r_delta_check < -settings.auto_train_max_policy_mean_r_regression:
             reasons.append("policy_mean_r_regressed_vs_incumbent")
-        if policy_drawdown_delta > settings.auto_train_max_policy_drawdown_regression_r:
+        if policy_drawdown_delta_check > settings.auto_train_max_policy_drawdown_regression_r:
             reasons.append("policy_drawdown_regressed_vs_incumbent")
         if settings.auto_train_require_improvement and not improved:
             reasons.append("no_required_improvement_vs_incumbent")
@@ -539,7 +543,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "improved": improved,
         }
 
-    return {
+    result = {
         "passed": not reasons,
         "reasons": reasons,
         "absolute": {
@@ -564,6 +568,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         },
         "relative": relative,
     }
+    return json_compatible(result)
 
 
 async def register_model_candidate(
@@ -575,23 +580,26 @@ async def register_model_candidate(
     actor: str,
 ) -> ModelRegistry:
     digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
-    metrics = {
-        **candidate.metrics,
-        "task": "barrier_outcome_v1",
-        "horizon_hours": candidate.horizon,
-        "stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
-        "tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,
-        "source": source,
-        "dataset_rows": candidate.dataset_rows,
-        "unique_timestamps": candidate.unique_timestamps,
-        "symbol_count": candidate.symbol_count,
-        "symbol_sample": list(candidate.symbol_sample),
-        "training_data_profile": candidate.training_data_profile.to_dict(),
-        "incumbent_version": candidate.incumbent_version,
-        "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
-        "quality_gate": quality_gate,
-        "activation_requested": activation_requested,
-    }
+    safe_quality_gate = json_compatible(quality_gate)
+    metrics = json_compatible(
+        {
+            **candidate.metrics,
+            "task": "barrier_outcome_v1",
+            "horizon_hours": candidate.horizon,
+            "stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
+            "tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,
+            "source": source,
+            "dataset_rows": candidate.dataset_rows,
+            "unique_timestamps": candidate.unique_timestamps,
+            "symbol_count": candidate.symbol_count,
+            "symbol_sample": list(candidate.symbol_sample),
+            "training_data_profile": candidate.training_data_profile.to_dict(),
+            "incumbent_version": candidate.incumbent_version,
+            "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
+            "quality_gate": safe_quality_gate,
+            "activation_requested": activation_requested,
+        }
+    )
     async with SessionFactory() as session, session.begin():
         registry = ModelRegistry(
             name=f"Hourly direction-conditional barrier {candidate.model_type} h{candidate.horizon}",
@@ -618,7 +626,7 @@ async def register_model_candidate(
             payload={
                 "version": candidate.version,
                 "source": source,
-                "quality_gate": quality_gate,
+                "quality_gate": safe_quality_gate,
                 "activation_requested": activation_requested,
             },
         )

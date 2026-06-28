@@ -2,13 +2,13 @@
 
 Дата проверки: 2026-06-28
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.7.0
+Версия проекта после коррекции: 1.7.1
 
 ## Итог
 
 Проект соответствует спецификации **частично**. Архитектурный и операторский контур реализован существенно лучше исследовательского контура: FastAPI/Uvicorn, PostgreSQL-only, отдельные worker и trainer, ручное исполнение, профили капитала, cost/risk engine, UI, audit и жизненный цикл рекомендаций присутствуют.
 
-Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен.
+Версии 1.3.0–1.5.0 исправили постановку ML, добавили автоматический train → compare → activate pipeline, dataset-aware retraining и progressive history backfill. Версия 1.6.0 закрыла отдельный audit/research gap: worker сохраняет исход market signal и оценку каждой execution-plan version независимо от accept/reject. Версия 1.7.0 разрешает hourly TP/SL ambiguity по точному 1/3/5-минутному path, если он полностью доступен. Версия 1.7.1 исправляет JSONB boundary model lifecycle: candidate с отсутствующими policy metrics регистрируется как неактивный вместо аварийного orphan artifact.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -35,6 +35,7 @@
 | Dataset-aware retraining | Реализовано в 1.5.0 | profile rows/timestamps/symbols/coverage; triggers по backfill и universe change |
 | Фактическое накопление глубокой истории | Реализовано в 1.5.0 | progressive `history_backfill` до target days с batch/page limits и учетом launch time |
 | Экономический gate auto-activation | Реализовано в 1.5.0 | policy trades, realized mean R, profit factor, drawdown и incumbent-relative limits |
+| JSON-safe candidate registration | Исправлено в 1.7.1 | internal fail-closed sentinels не сериализуются; non-finite metrics → `null`; registry/job/audit JSONB защищены |
 | Актуальный universe в UI/API | Исправлено в 1.5.0 | текущие карточки фильтруются по worker universe; status обновляется автоматически |
 | Counterfactual outcome journal | Реализовано с intrabar refinement в 1.7.0 | confirmed hourly path; точечный 1/3/5-minute reconstruction для same-hour TP1/SL; отдельная оценка каждой plan version, audit/outbox/API/UI; missing intrabar и legacy funding timeline fail-closed |
 
@@ -61,7 +62,7 @@
 - историческая модель фактического исполнения по стакану;
 - завершенный paper/shadow forward evidence и доказательство экономического преимущества.
 
-## Состояние машинного обучения и post-event журнала после коррекции 1.7.0
+## Состояние машинного обучения и post-event журнала после коррекции 1.7.1
 
 Технический ML-путь работает end-to-end:
 

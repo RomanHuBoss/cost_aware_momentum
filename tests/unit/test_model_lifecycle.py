@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -111,3 +112,56 @@ def test_quality_gate_blocks_auto_activation_without_incumbent_comparison(tmp_pa
 
     assert result["passed"] is False
     assert "incumbent_comparison_unavailable" in result["reasons"]
+
+
+def test_quality_gate_remains_strict_json_when_incumbent_has_no_policy_trades(
+    tmp_path: Path,
+) -> None:
+    incumbent_metrics = _metrics(log_loss=0.95, brier=0.56)
+    incumbent_metrics.update(
+        {
+            "policy_trades": 0,
+            "policy_realized_mean_r": None,
+            "policy_profit_factor": None,
+            "policy_max_drawdown_r": 0.0,
+        }
+    )
+    candidate = _candidate(
+        tmp_path,
+        metrics=_metrics(log_loss=0.90, brier=0.55),
+        incumbent_metrics=incumbent_metrics,
+    )
+
+    result = evaluate_quality_gate(
+        candidate,
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    json.dumps(result, allow_nan=False)
+    assert result["relative"]["incumbent_policy_realized_mean_r"] is None
+    assert result["relative"]["policy_realized_mean_r_delta"] is None
+    assert result["relative"]["policy_improved"] is True
+
+
+def test_quality_gate_serializes_missing_candidate_policy_metrics_as_null(
+    tmp_path: Path,
+) -> None:
+    metrics = _metrics()
+    metrics.update(
+        {
+            "policy_trades": 0,
+            "policy_realized_mean_r": None,
+            "policy_profit_factor": None,
+            "policy_max_drawdown_r": None,
+        }
+    )
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics=metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    json.dumps(result, allow_nan=False)
+    assert result["absolute"]["policy_realized_mean_r"] is None
+    assert result["absolute"]["policy_profit_factor"] is None
+    assert result["absolute"]["policy_max_drawdown_r"] is None

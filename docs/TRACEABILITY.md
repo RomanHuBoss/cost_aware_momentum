@@ -20,6 +20,7 @@
 | Training data lineage | Да с 1.5.0 | artifact/registry сохраняют rows, timestamps, full symbol scope, coverage и fingerprints |
 | Progressive historical backfill | Да с 1.5.0 | отдельный `history_backfill` job до target days с batch/page limits и launch-time floor |
 | Безопасное продвижение новой модели | Да с 1.5.0 | common holdout, ML gates, cost-aware policy gates, immutable artifact и atomic activation |
+| JSON-safe model lifecycle | Да с 1.7.1 | missing/non-finite gate metrics сохраняются как `null`; не прошедший кандидат регистрируется inactive без изменения incumbent |
 | Fail-closed при stale/missing data | Да для live inference | stale candle/ticker, missing features/bid-ask/spec и high spread блокируют публикацию |
 | Dynamic universe | Частично | live selection и актуальная UI-фильтрация есть; historical point-in-time membership snapshots отсутствуют |
 | Издержки, net R/R, EV | Да, базовая модель | fee/slippage/funding scenario/stop reserve; account fee-rate и depth impact пока не подключены полностью |

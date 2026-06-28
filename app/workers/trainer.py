@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine, engine
 from app.db.locks import lock_key
 from app.db.models import Candle, JobRun, ModelRegistry, ServiceHeartbeat
+from app.json_utils import json_compatible
 from app.logging import configure_logging
 from app.ml.data_profile import TrainingDataProfile, compare_training_profiles
 from app.ml.lifecycle import (
@@ -61,11 +62,11 @@ class BackgroundTrainer:
                     instance_id=settings.trainer_id,
                     last_seen_at=now,
                     status=status,
-                    details=dict(self.state),
+                    details=json_compatible(self.state),
                 )
                 .on_conflict_do_update(
                     index_elements=[ServiceHeartbeat.service_name, ServiceHeartbeat.instance_id],
-                    set_={"last_seen_at": now, "status": status, "details": dict(self.state)},
+                    set_={"last_seen_at": now, "status": status, "details": json_compatible(self.state)},
                 )
             )
             await session.execute(statement)
@@ -253,7 +254,7 @@ class BackgroundTrainer:
                 started_at=datetime.now(UTC),
                 status="RUNNING",
                 worker_id=settings.trainer_id,
-                details=details,
+                details=json_compatible(details),
             )
             session.add(job)
             await session.flush()
@@ -272,7 +273,7 @@ class BackgroundTrainer:
             ).scalar_one()
             job.status = status
             job.finished_at = datetime.now(UTC)
-            job.details = details
+            job.details = json_compatible(details)
 
     async def run_training_once(self, trigger: dict[str, object]) -> dict[str, object]:
         scheduled_for = datetime.now(UTC).replace(microsecond=0)
