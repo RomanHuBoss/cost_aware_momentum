@@ -14,6 +14,7 @@ from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
     MODEL_FEATURE_NAMES,
+    MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
 )
 from app.risk.math import validate_probability_simplex
@@ -104,6 +105,12 @@ class ModelRuntime:
                 raise ValueError(
                     f"Model feature schema mismatch: expected {MODEL_FEATURE_NAMES}, got {artifact_features}"
                 )
+            feature_schema_version = str(bundle.get("feature_schema_version") or "")
+            if feature_schema_version != MODEL_FEATURE_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model feature schema version mismatch: "
+                    f"expected {MODEL_FEATURE_SCHEMA_VERSION}, got {feature_schema_version or 'missing'}"
+                )
             model = bundle["model"]
             classes = [str(item) for item in getattr(model, "classes_", [])]
             if classes != list(OUTCOME_CLASSES):
@@ -121,11 +128,25 @@ class ModelRuntime:
             tp_atr_multiplier = self._artifact_multiplier(
                 bundle, "tp_atr_multiplier", DEFAULT_TP_ATR_MULTIPLIER
             )
+            raw_horizon = bundle.get("horizon_hours")
+            if isinstance(raw_horizon, bool):
+                raise ValueError("Model artifact horizon_hours must be a positive integer")
+            try:
+                horizon_hours = int(raw_horizon)
+                if float(raw_horizon) != float(horizon_hours) or horizon_hours <= 0:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "Model artifact horizon_hours must be a positive integer"
+                ) from exc
+            calibration_version = str(bundle.get("calibration_version") or "").strip()
+            if not calibration_version:
+                raise ValueError("Model artifact calibration_version is required")
             self.bundle = bundle
             self.sha256 = digest
             self.version = version
-            self.calibration_version = str(bundle.get("calibration_version", "unknown"))
-            self.horizon_hours = int(bundle["horizon_hours"])
+            self.calibration_version = calibration_version
+            self.horizon_hours = horizon_hours
             self.model_type = str(bundle.get("model_type", "unknown"))
             self.stop_atr_multiplier = stop_atr_multiplier
             self.tp_atr_multiplier = tp_atr_multiplier
@@ -159,9 +180,21 @@ class ModelRuntime:
         if self.bundle is None:
             raise RuntimeError("No artifact loaded")
         model = self.bundle["model"]
+        missing = [name for name in FEATURE_NAMES if name not in features]
+        if missing:
+            raise ValueError(f"missing model features: {', '.join(missing)}")
+        vector_values_base: list[float] = []
+        for name in FEATURE_NAMES:
+            try:
+                value = float(features[name])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"model feature {name} must be finite") from exc
+            if not math.isfinite(value):
+                raise ValueError(f"model feature {name} must be finite")
+            vector_values_base.append(value)
         scenarios: list[tuple[Direction, float, dict[str, float]]] = []
         for direction, code in (("LONG", 1.0), ("SHORT", -1.0)):
-            vector_values = [float(features.get(name, 0.0)) for name in FEATURE_NAMES] + [code]
+            vector_values = vector_values_base + [code]
             probabilities = model.predict_proba(np.array([vector_values], dtype=float))[0]
             mapping = dict(zip([str(item) for item in model.classes_], probabilities, strict=True))
             p_tp, p_sl, p_timeout = validate_probability_simplex(

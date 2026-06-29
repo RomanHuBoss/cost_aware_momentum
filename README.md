@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.9: research dataset, temporal split, holdout policy и backtest требуют полную пару LONG/SHORT для каждого symbol/timestamp и fail-closed отклоняют неполные directional cohorts.
+> Версия 1.8.10: исправлены знаки funding, temporal/econometric validation, фактический open-risk ручных позиций, revalidation исполнимой цены и fail-closed границы model artifact/runtime.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -16,7 +16,8 @@
 - Decimal-арифметика для денежных и контрактных расчётов.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
-- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный общий portfolio-risk check.
+- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный общий portfolio-risk check. При неблагоприятном изменении цены внутри entry-zone создается новая версия плана с повторным sizing и net-economics.
+- После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
 
 ## Требования
@@ -121,7 +122,7 @@ SQLite и файлового fallback нет. Изменения схемы пр
 - LONG приносит положительный gross P&L при `exit > entry`; SHORT — при `exit < entry`.
 - `fee_rate_round_trip` означает сумму двух одинаковых ставок комиссии: entry-leg и exit-leg.
 - Entry fee считается от entry notional, exit fee — от фактического exit notional.
-- Положительный funding: LONG платит, SHORT получает; отрицательный funding меняет знак.
+- Положительный funding: LONG платит, SHORT получает; отрицательный funding меняет знак. В stress downside входит только неблагоприятный funding; благоприятный cash flow учитывается в outcome/EV, но не уменьшает консервативный риск-знаменатель.
 - Stop-gap reserve относится к downside.
 - Leverage меняет margin requirement, но не экономический edge на notional.
 - Quantity округляется вниз по `qtyStep`; после округления повторно проверяются risk, margin, `minQty` и `minNotional`.
@@ -139,7 +140,7 @@ Train/calibration/final holdout формируются по `decision_time`; lab
 
 ## Research backtest
 
-Research dataset атомарно создает ровно одну LONG- и одну SHORT-строку на symbol/timestamp; если геометрия хотя бы одного направления невалидна, исключается весь cohort. Temporal split, holdout policy и backtest повторно проверяют этот контракт fail-closed. После проверки backtest выбирает не более одного направления по тому же порядку policy, что и production: максимальный net `EV/R`, затем net RR и детерминированный LONG tie-break. Runtime, holdout policy, backtest и Decimal risk math отвергают probabilities вне диапазона `[0, 1]`, с неединичной суммой либо нечисловыми значениями. Комиссия каждой ноги считается от фактического входного/выходного notional; slippage, stop-gap reserve, статический funding-сценарий и policy-пороги задаются отдельно.
+Research dataset атомарно создает ровно одну LONG- и одну SHORT-строку на symbol/timestamp; если геометрия хотя бы одного направления невалидна, исключается весь cohort. До выбора направления все строки проверяются на допустимый target, finite barrier/return, exit index и доступность label; поврежденная проигравшая строка не может исчезнуть из проверки. Temporal split, holdout policy и backtest повторно проверяют этот контракт fail-closed. После проверки backtest выбирает не более одного направления по тому же порядку policy, что и production: максимальный net `EV/R`, затем net RR и детерминированный LONG tie-break. Runtime, holdout policy, backtest и Decimal risk math отвергают probabilities вне диапазона `[0, 1]`, с неединичной суммой либо нечисловыми значениями. Комиссия каждой ноги считается от фактического входного/выходного notional; slippage, stop-gap reserve, статический funding-сценарий и policy-пороги задаются отдельно.
 
 Для горизонта `H` часов капитал делится на `H` равных sleeves. Часовой cohort использует один sleeve и этот капитал не переиспользуется до завершения максимального label horizon. Поэтому перекрывающиеся H-часовые returns не компаундятся как последовательные одночасовые сделки и не создают скрытое H-кратное плечо. PnL зачисляется в equity curve в modeled candle exit time. Метрики concurrency считают реально открытые позиции, а не только новые входы в один timestamp.
 
@@ -174,6 +175,18 @@ python manage.py test --require-integration
 ```
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
+
+
+## Обновление с 1.8.9 на 1.8.10
+
+- Обязательна migration `0006_manual_trade_remaining_risk`; выполните `python manage.py migrate` до запуска API/worker.
+- Новые `.env` переменные не добавлены, но количественные параметры теперь fail-closed отклоняют `NaN`, бесконечность, отрицательные комиссии/slippage/gap reserve, нулевые TTL/age limits и противоречивые risk caps.
+- Положительный funding теперь корректно списывается с LONG и начисляется SHORT в live risk math, holdout policy и research backtest. Старые backtest/policy metrics с funding нельзя сравнивать напрямую без перерасчета.
+- Active artifact должен содержать точный `feature_schema_version=hourly-barrier-contiguous-v3`, положительный целый `horizon_hours`, непустой `calibration_version`, точный class order и полный finite feature vector. Несовместимый artifact блокируется; переобучите/перерегистрируйте старый artifact вместо обхода проверки.
+- При неблагоприятном executable entry внутри разрешенной зоны система создает новую versioned execution plan и пересчитывает qty, risk, RR/EV и liquidation buffer.
+- Manual trade хранит `initial_stress_loss` и `remaining_stress_loss`; portfolio open risk использует фактический риск входа и освобождает его пропорционально закрытому количеству.
+- Counterfactual PlanOutcome использует entry и planning time immutable plan snapshot, а не исходную цену/время signal.
+- Перезапустите API, worker и trainer после migration.
 
 ## Обновление с 1.8.8 на 1.8.9
 

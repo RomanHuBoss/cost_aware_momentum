@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -209,6 +210,62 @@ class Settings(BaseSettings):
             raise ValueError("HORIZONS_HOURS must contain at least one horizon")
         if any(item <= 0 for item in self.horizons_hours):
             raise ValueError("All HORIZONS_HOURS values must be positive")
+        finite_fields = {
+            "DEFAULT_RISK_RATE": self.default_risk_rate,
+            "MAX_TOTAL_OPEN_RISK_RATE": self.max_total_open_risk_rate,
+            "MARGIN_RESERVE_RATE": self.margin_reserve_rate,
+            "MIN_NET_RR": self.min_net_rr,
+            "MIN_NET_EV_R": self.min_net_ev_r,
+            "MAX_SPREAD_BPS": self.max_spread_bps,
+            "FEE_RATE_TAKER": self.fee_rate_taker,
+            "BASE_SLIPPAGE_BPS": self.base_slippage_bps,
+            "STOP_GAP_RESERVE_BPS": self.stop_gap_reserve_bps,
+            "UNIVERSE_MIN_TURNOVER_24H": self.universe_min_turnover_24h,
+            "UNIVERSE_MAX_SPREAD_BPS": self.universe_max_spread_bps,
+            "AUTO_TRAIN_MIN_DATASET_GROWTH_RATIO": self.auto_train_min_dataset_growth_ratio,
+            "AUTO_TRAIN_MIN_UNIVERSE_CHANGE_RATIO": self.auto_train_min_universe_change_ratio,
+            "AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO": self.auto_train_min_symbol_coverage_ratio,
+            "AUTO_TRAIN_MIN_CLASS_FRACTION": self.auto_train_min_class_fraction,
+            "AUTO_TRAIN_MAX_LOG_LOSS": self.auto_train_max_log_loss,
+            "AUTO_TRAIN_MAX_MULTICLASS_BRIER": self.auto_train_max_multiclass_brier,
+            "AUTO_TRAIN_MAX_ECE": self.auto_train_max_ece,
+            "AUTO_TRAIN_MAX_LOG_LOSS_REGRESSION": self.auto_train_max_log_loss_regression,
+            "AUTO_TRAIN_MAX_BRIER_REGRESSION": self.auto_train_max_brier_regression,
+            "AUTO_TRAIN_MIN_METRIC_IMPROVEMENT": self.auto_train_min_metric_improvement,
+            "AUTO_TRAIN_MIN_POLICY_REALIZED_MEAN_R": self.auto_train_min_policy_realized_mean_r,
+            "AUTO_TRAIN_MIN_POLICY_PROFIT_FACTOR": self.auto_train_min_policy_profit_factor,
+            "AUTO_TRAIN_MAX_POLICY_DRAWDOWN_R": self.auto_train_max_policy_drawdown_r,
+            "AUTO_TRAIN_MAX_POLICY_MEAN_R_REGRESSION": self.auto_train_max_policy_mean_r_regression,
+            "AUTO_TRAIN_MAX_POLICY_DRAWDOWN_REGRESSION_R": self.auto_train_max_policy_drawdown_regression_r,
+            "AUTO_TRAIN_MIN_POLICY_IMPROVEMENT_R": self.auto_train_min_policy_improvement_r,
+        }
+        non_finite = [name for name, value in finite_fields.items() if not math.isfinite(float(value))]
+        if non_finite:
+            raise ValueError("Numeric configuration must be finite: " + ", ".join(non_finite))
+        if not 0 < self.default_risk_rate <= 1:
+            raise ValueError("DEFAULT_RISK_RATE must be in (0, 1]")
+        if not 0 < self.max_total_open_risk_rate <= 1:
+            raise ValueError("MAX_TOTAL_OPEN_RISK_RATE must be in (0, 1]")
+        if self.default_risk_rate > self.max_total_open_risk_rate:
+            raise ValueError("DEFAULT_RISK_RATE cannot exceed MAX_TOTAL_OPEN_RISK_RATE")
+        if not 0 <= self.margin_reserve_rate < 1:
+            raise ValueError("MARGIN_RESERVE_RATE must be in [0, 1)")
+        if self.min_net_rr < 0:
+            raise ValueError("MIN_NET_RR cannot be negative")
+        if self.max_spread_bps < 0:
+            raise ValueError("MAX_SPREAD_BPS cannot be negative")
+        if not 0 <= self.fee_rate_taker < 1:
+            raise ValueError("FEE_RATE_TAKER must be in [0, 1)")
+        if self.base_slippage_bps < 0:
+            raise ValueError("BASE_SLIPPAGE_BPS cannot be negative")
+        if self.stop_gap_reserve_bps < 0:
+            raise ValueError("STOP_GAP_RESERVE_BPS cannot be negative")
+        if self.max_ticker_age_seconds <= 0:
+            raise ValueError("MAX_TICKER_AGE_SECONDS must be positive")
+        if self.max_candle_age_seconds <= 0:
+            raise ValueError("MAX_CANDLE_AGE_SECONDS must be positive")
+        if self.signal_ttl_minutes <= 0:
+            raise ValueError("SIGNAL_TTL_MINUTES must be positive")
         if self.default_leverage < 1 or self.max_leverage < self.default_leverage:
             raise ValueError("Leverage policy is inconsistent")
         if self.model_refresh_seconds < 30:

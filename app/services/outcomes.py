@@ -431,6 +431,28 @@ def _funding_rate_for_holding_period(
     )
 
 
+
+
+def _plan_valuation_inputs(
+    plan: ExecutionPlan, signal: MarketSignal
+) -> tuple[Decimal, datetime, str]:
+    snapshot = plan.sizing_snapshot or {}
+    raw_entry = snapshot.get("entry_price", signal.entry_reference)
+    entry_price = positive_finite_decimal(raw_entry, "plan.entry_price")
+    raw_time = snapshot.get("planning_time")
+    if raw_time is None:
+        valuation_start = signal.event_time
+        source = "legacy_signal_event_time"
+    else:
+        try:
+            valuation_start = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("plan.planning_time must be a valid ISO timestamp") from exc
+        source = "execution_plan.sizing_snapshot"
+    _require_aware(valuation_start, "plan.planning_time")
+    return entry_price, valuation_start, source
+
+
 async def _record_plan_outcome(
     session: AsyncSession,
     *,
@@ -439,17 +461,18 @@ async def _record_plan_outcome(
     plan: ExecutionPlan,
     actor: str,
 ) -> PlanOutcome:
-    # These values belong to the already-resolved market outcome rather than the
-    # plan snapshot. If they are corrupted, do not fabricate substitute prices.
-    entry_price = positive_finite_decimal(signal.entry_reference, "signal.entry_reference")
+    # Exit belongs to the resolved market outcome. Entry and valuation start belong
+    # to the immutable execution-plan snapshot because a recalculated plan can use
+    # a later executable price than the original market signal.
     exit_price = positive_finite_decimal(signal_outcome.exit_price, "signal_outcome.exit_price")
 
     try:
+        entry_price, valuation_start, valuation_source = _plan_valuation_inputs(plan, signal)
         fee_rate_round_trip = _cost_value(plan, "fee_rate_round_trip")
         slippage_rate = _cost_value(plan, "slippage_rate")
         stop_gap_reserve_rate = _cost_value(plan, "stop_gap_reserve_rate")
         funding_rate, funding_complete, funding_details = _funding_rate_for_holding_period(
-            plan, start_time=signal.event_time, exit_time=signal_outcome.exit_time
+            plan, start_time=valuation_start, exit_time=signal_outcome.exit_time
         )
         estimate = estimate_plan_outcome(
             direction=signal.direction,
@@ -465,6 +488,9 @@ async def _record_plan_outcome(
             funding_complete=funding_complete,
         )
     except (DecimalException, TypeError, ValueError, OverflowError) as exc:
+        entry_price = positive_finite_decimal(signal.entry_reference, "signal.entry_reference")
+        valuation_start = signal.event_time
+        valuation_source = "invalid_plan_snapshot_fallback"
         funding_rate = Decimal("0")
         funding_details = {
             "source": "invalid_plan_snapshot",
@@ -482,6 +508,8 @@ async def _record_plan_outcome(
             "actual_execution_pnl": False,
             "validation_error": estimate.validation_error,
             "funding": funding_details,
+            "valuation_start_time": valuation_start.isoformat(),
+            "valuation_source": valuation_source,
         }
     else:
         stored_qty = plan.qty
@@ -494,6 +522,8 @@ async def _record_plan_outcome(
             "fee_valuation": "equal_rate_per_leg_on_entry_and_exit_notional",
             "source": "execution_plan.sizing_snapshot.costs",
             "actual_execution_pnl": False,
+            "valuation_start_time": valuation_start.isoformat(),
+            "valuation_source": valuation_source,
         }
 
     row = PlanOutcome(

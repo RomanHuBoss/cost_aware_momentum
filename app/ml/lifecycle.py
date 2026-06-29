@@ -444,7 +444,14 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             return None, math.inf
         return value, value
 
-    rows = int(metrics.get("rows", 0) or 0)
+    def nonnegative_int_metric(name: str) -> int:
+        value = finite_or_none(metrics.get(name))
+        if value is None or value < 0 or not float(value).is_integer():
+            reasons.append(f"missing_or_invalid_{name}")
+            return 0
+        return int(value)
+
+    rows = nonnegative_int_metric("rows")
     log_loss_value, log_loss_check = required_metric("log_loss")
     brier_value, brier_check = required_metric("multiclass_brier")
     ece_pairs = [
@@ -458,12 +465,27 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     ) else None
     max_ece_check = max(check for _, check in ece_pairs)
 
-    class_distribution = metrics.get("class_distribution") or {}
-    min_class_fraction = min(
-        (float(class_distribution.get(label, 0.0)) for label in ("TP", "SL", "TIMEOUT")),
-        default=0.0,
-    )
-    policy_trades = int(metrics.get("policy_trades", 0) or 0)
+    class_distribution = metrics.get("class_distribution")
+    required_classes = {"TP", "SL", "TIMEOUT"}
+    distribution_values: list[float] = []
+    valid_distribution = isinstance(class_distribution, dict) and set(class_distribution) == required_classes
+    if valid_distribution:
+        for label in ("TP", "SL", "TIMEOUT"):
+            value = finite_or_none(class_distribution.get(label))
+            if value is None or not 0.0 <= value <= 1.0:
+                valid_distribution = False
+                break
+            distribution_values.append(value)
+    if valid_distribution and not math.isclose(
+        sum(distribution_values), 1.0, rel_tol=1e-7, abs_tol=1e-9
+    ):
+        valid_distribution = False
+    if not valid_distribution:
+        reasons.append("invalid_holdout_class_distribution")
+        min_class_fraction = 0.0
+    else:
+        min_class_fraction = min(distribution_values)
+    policy_trades = nonnegative_int_metric("policy_trades")
     policy_mean_r = finite_or_none(metrics.get("policy_realized_mean_r"))
     policy_profit_factor = finite_or_none(metrics.get("policy_profit_factor"))
     policy_drawdown = finite_or_none(metrics.get("policy_max_drawdown_r"))
@@ -501,60 +523,92 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             **incumbent,
         }
     elif incumbent:
-        incumbent_log_loss = float(incumbent["log_loss"])
-        incumbent_brier = float(incumbent["multiclass_brier"])
+        incumbent_log_loss = finite_or_none(incumbent.get("log_loss"))
+        incumbent_brier = finite_or_none(incumbent.get("multiclass_brier"))
+        incumbent_policy_trades_value = finite_or_none(incumbent.get("policy_trades"))
+        incumbent_policy_trades = (
+            int(incumbent_policy_trades_value)
+            if incumbent_policy_trades_value is not None
+            and incumbent_policy_trades_value >= 0
+            and incumbent_policy_trades_value.is_integer()
+            else None
+        )
         incumbent_policy_mean_r = finite_or_none(incumbent.get("policy_realized_mean_r"))
         incumbent_policy_drawdown = finite_or_none(incumbent.get("policy_max_drawdown_r"))
-        incumbent_policy_mean_r_check = (
-            incumbent_policy_mean_r if incumbent_policy_mean_r is not None else -math.inf
-        )
-        incumbent_policy_drawdown_check = (
-            incumbent_policy_drawdown if incumbent_policy_drawdown is not None else math.inf
-        )
-        log_loss_delta_check = log_loss_check - incumbent_log_loss
-        brier_delta_check = brier_check - incumbent_brier
-        policy_mean_r_delta_check = policy_mean_r_check - incumbent_policy_mean_r_check
-        policy_drawdown_delta_check = policy_drawdown_check - incumbent_policy_drawdown_check
-        log_loss_delta = finite_or_none(log_loss_delta_check)
-        brier_delta = finite_or_none(brier_delta_check)
-        policy_mean_r_delta = finite_or_none(policy_mean_r_delta_check)
-        policy_drawdown_delta = finite_or_none(policy_drawdown_delta_check)
-        ml_improved = (
-            log_loss_delta_check <= -settings.auto_train_min_metric_improvement
-            or brier_delta_check <= -settings.auto_train_min_metric_improvement
-        )
-        policy_improved = (
-            policy_mean_r_delta_check >= settings.auto_train_min_policy_improvement_r
-        )
-        improved = ml_improved or policy_improved
-        if log_loss_delta_check > settings.auto_train_max_log_loss_regression:
-            reasons.append("log_loss_regressed_vs_incumbent")
-        if brier_delta_check > settings.auto_train_max_brier_regression:
-            reasons.append("multiclass_brier_regressed_vs_incumbent")
-        if policy_mean_r_delta_check < -settings.auto_train_max_policy_mean_r_regression:
-            reasons.append("policy_mean_r_regressed_vs_incumbent")
-        if policy_drawdown_delta_check > settings.auto_train_max_policy_drawdown_regression_r:
-            reasons.append("policy_drawdown_regressed_vs_incumbent")
-        if settings.auto_train_require_improvement and not improved:
-            reasons.append("no_required_improvement_vs_incumbent")
-        relative = {
-            "incumbent_version": candidate.incumbent_version,
-            "candidate_log_loss": log_loss_value,
-            "incumbent_log_loss": incumbent_log_loss,
-            "log_loss_delta": log_loss_delta,
-            "candidate_multiclass_brier": brier_value,
-            "incumbent_multiclass_brier": incumbent_brier,
-            "multiclass_brier_delta": brier_delta,
-            "candidate_policy_realized_mean_r": policy_mean_r,
-            "incumbent_policy_realized_mean_r": incumbent_policy_mean_r,
-            "policy_realized_mean_r_delta": policy_mean_r_delta,
-            "candidate_policy_max_drawdown_r": policy_drawdown,
-            "incumbent_policy_max_drawdown_r": incumbent_policy_drawdown,
-            "policy_max_drawdown_r_delta": policy_drawdown_delta,
-            "ml_improved": ml_improved,
-            "policy_improved": policy_improved,
-            "improved": improved,
-        }
+        invalid_incumbent_fields = [
+            name
+            for name, value in (
+                ("log_loss", incumbent_log_loss),
+                ("multiclass_brier", incumbent_brier),
+                ("policy_trades", incumbent_policy_trades),
+            )
+            if value is None
+        ]
+        if incumbent_policy_trades is not None and incumbent_policy_trades > 0:
+            if incumbent_policy_mean_r is None:
+                invalid_incumbent_fields.append("policy_realized_mean_r")
+            if incumbent_policy_drawdown is None:
+                invalid_incumbent_fields.append("policy_max_drawdown_r")
+        if invalid_incumbent_fields:
+            reasons.append("invalid_incumbent_metrics")
+            relative = {
+                "incumbent_version": candidate.incumbent_version,
+                "invalid_fields": invalid_incumbent_fields,
+            }
+        else:
+            assert incumbent_log_loss is not None
+            assert incumbent_brier is not None
+            incumbent_policy_mean_r_check = (
+                incumbent_policy_mean_r if incumbent_policy_mean_r is not None else -math.inf
+            )
+            incumbent_policy_drawdown_check = (
+                incumbent_policy_drawdown if incumbent_policy_drawdown is not None else math.inf
+            )
+            log_loss_delta_check = log_loss_check - incumbent_log_loss
+            brier_delta_check = brier_check - incumbent_brier
+            policy_mean_r_delta_check = policy_mean_r_check - incumbent_policy_mean_r_check
+            policy_drawdown_delta_check = policy_drawdown_check - incumbent_policy_drawdown_check
+            log_loss_delta = finite_or_none(log_loss_delta_check)
+            brier_delta = finite_or_none(brier_delta_check)
+            policy_mean_r_delta = finite_or_none(policy_mean_r_delta_check)
+            policy_drawdown_delta = finite_or_none(policy_drawdown_delta_check)
+            ml_improved = (
+                log_loss_delta_check <= -settings.auto_train_min_metric_improvement
+                or brier_delta_check <= -settings.auto_train_min_metric_improvement
+            )
+            policy_improved = (
+                policy_mean_r_delta_check >= settings.auto_train_min_policy_improvement_r
+            )
+            improved = ml_improved or policy_improved
+            if log_loss_delta_check > settings.auto_train_max_log_loss_regression:
+                reasons.append("log_loss_regressed_vs_incumbent")
+            if brier_delta_check > settings.auto_train_max_brier_regression:
+                reasons.append("multiclass_brier_regressed_vs_incumbent")
+            if policy_mean_r_delta_check < -settings.auto_train_max_policy_mean_r_regression:
+                reasons.append("policy_mean_r_regressed_vs_incumbent")
+            if policy_drawdown_delta_check > settings.auto_train_max_policy_drawdown_regression_r:
+                reasons.append("policy_drawdown_regressed_vs_incumbent")
+            if settings.auto_train_require_improvement and not improved:
+                reasons.append("no_required_improvement_vs_incumbent")
+            relative = {
+                "incumbent_version": candidate.incumbent_version,
+                "candidate_log_loss": log_loss_value,
+                "incumbent_log_loss": incumbent_log_loss,
+                "log_loss_delta": log_loss_delta,
+                "candidate_multiclass_brier": brier_value,
+                "incumbent_multiclass_brier": incumbent_brier,
+                "multiclass_brier_delta": brier_delta,
+                "candidate_policy_realized_mean_r": policy_mean_r,
+                "incumbent_policy_realized_mean_r": incumbent_policy_mean_r,
+                "policy_realized_mean_r_delta": policy_mean_r_delta,
+                "candidate_policy_max_drawdown_r": policy_drawdown,
+                "incumbent_policy_max_drawdown_r": incumbent_policy_drawdown,
+                "policy_max_drawdown_r_delta": policy_drawdown_delta,
+                "ml_improved": ml_improved,
+                "policy_improved": policy_improved,
+                "improved": improved,
+            }
+
 
     result = {
         "passed": not reasons,

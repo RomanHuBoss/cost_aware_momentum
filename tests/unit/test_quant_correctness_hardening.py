@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.ml.features import latest_feature_snapshot
+from app.ml.features import FEATURE_NAMES, latest_feature_snapshot
 from app.ml.labels import triple_barrier_outcome
 from app.ml.runtime import ModelRuntime, Prediction
 from app.ml.training import (
@@ -109,7 +109,7 @@ def test_runtime_rejects_probability_rows_outside_simplex() -> None:
     runtime.bundle = {"model": InvalidProbabilityModel()}
 
     with pytest.raises(ValueError, match="probabil"):
-        runtime.predict_scenarios({})
+        runtime.predict_scenarios({name: 0.0 for name in FEATURE_NAMES})
 
 
 def test_ev_math_rejects_probability_rows_outside_simplex() -> None:

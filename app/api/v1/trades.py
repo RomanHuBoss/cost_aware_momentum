@@ -13,6 +13,7 @@ from app.api.schemas import ManualEntryRequest, TradeCloseRequest
 from app.db.models import ExecutionPlan, Fill, ManualTrade, MarketSignal
 from app.risk.math import CostScenario, gross_pnl, stress_downside_rate
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.execution import remaining_trade_risk
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 
 router = APIRouter(prefix="/api/v1/trades", tags=["manual trades"])
@@ -60,6 +61,8 @@ async def list_trades(session: SessionDep, status_filter: str | None = None) -> 
                 "entry_price": float(t.entry_price),
                 "qty": float(t.qty),
                 "remaining_qty": float(t.remaining_qty),
+                "initial_stress_loss": float(t.initial_stress_loss),
+                "remaining_stress_loss": float(t.remaining_stress_loss),
                 "leverage": t.leverage,
                 "fees_paid": float(t.fees_paid),
                 "funding_cash_flow": float(t.funding_cash_flow),
@@ -153,6 +156,8 @@ async def manual_entry(
         qty=payload.qty,
         leverage=payload.leverage,
         remaining_qty=payload.qty,
+        initial_stress_loss=actual_stress_loss,
+        remaining_stress_loss=actual_stress_loss,
         fees_paid=payload.fee,
         funding_cash_flow=Decimal("0"),
         realized_pnl=-payload.fee,
@@ -253,6 +258,9 @@ async def close_trade(
     pnl = gross_pnl(trade.direction, payload.qty, trade.entry_price, payload.exit_price)
     net_change = pnl - payload.fee + payload.funding
     trade.remaining_qty -= payload.qty
+    trade.remaining_stress_loss = remaining_trade_risk(
+        trade.initial_stress_loss, trade.qty, trade.remaining_qty
+    )
     trade.fees_paid += payload.fee
     trade.funding_cash_flow += payload.funding
     trade.realized_pnl += net_change
@@ -289,6 +297,7 @@ async def close_trade(
             "funding": str(payload.funding),
             "net_change": str(net_change),
             "remaining_qty": str(trade.remaining_qty),
+            "remaining_stress_loss": str(trade.remaining_stress_loss),
         },
     )
     await publish_outbox(
@@ -303,6 +312,7 @@ async def close_trade(
         "trade_id": str(trade.id),
         "status": trade.status,
         "remaining_qty": float(trade.remaining_qty),
+        "remaining_stress_loss": float(trade.remaining_stress_loss),
         "realized_pnl": float(trade.realized_pnl),
     }
     body = json.dumps(response_dict, ensure_ascii=False).encode()

@@ -51,15 +51,17 @@ Joblib bundle обязан содержать:
 
 - `task=barrier_outcome_v1`;
 - model/version/model_type;
-- точный список feature names и `feature_schema_version=hourly-barrier-contiguous-v3` для новых artifacts; recovery старых schemas сохраняет их исходный marker;
+- точный список feature names и exact current `feature_schema_version=hourly-barrier-contiguous-v3`; artifact со старым/неизвестным schema marker не загружается как совместимый;
 - outcome classes `TP`, `SL`, `TIMEOUT`;
 - horizon и параметры barriers;
 - calibration version и holdout metrics.
 - `temporal_split_schema=decision-and-label-end-purged-v3`, `label_data_end` и diagnostics `hourly_continuity`, отделенные от scheduler-поля `training_end`;
 
-При активации и загрузке проверяются version, SHA256, task, feature names/classes и соответствие `DEFAULT_HORIZON_HOURS`. Начиная с 1.8.8 каждая probability row дополнительно обязана быть finite TP/SL/TIMEOUT simplex; malformed artifact output отвергается fail-closed. Legacy binary-direction artifacts отвергаются.
+При активации и загрузке проверяются version, SHA256, task, exact feature schema, feature names/classes, positive integer horizon, соответствие `DEFAULT_HORIZON_HOURS` и non-empty calibration version. Runtime обязан передать полный finite feature vector; missing/NaN/Infinity feature не заменяется нулем. Начиная с 1.8.8 каждая probability row дополнительно обязана быть finite TP/SL/TIMEOUT simplex; malformed artifact output отвергается fail-closed. Legacy binary-direction artifacts отвергаются.
 
 Начиная с 1.8.9 training dataset формирует directional observation атомарно: если barrier geometry одного направления невалидна, не сохраняется и второе направление того же `decision_time/symbol`. Chronological split, holdout policy и backtest повторно требуют точную пару `LONG + SHORT`, чтобы candidate/incumbent gates не оценивались на входах, недопустимых для production policy.
+
+Начиная с 1.8.10 каждая observation до directional ranking проходит единый metadata contract: заявленное направление совпадает с pair key, target входит в `TP/SL/TIMEOUT`, barrier/return finite, `exit_index` и `label_end_time` валидны, а при наличии path metadata return согласован с barrier outcome. Это не позволяет поврежденной строке скрыться только потому, что другая direction выиграла ranking. Class distribution должна содержать exact finite counts/proportions, а incumbent-relative gate блокируется при non-finite ML/policy metric. Profit factor строится из тех же cohort-weighted realized contributions, что equity/drawdown; concurrency average включает наблюдаемые idle intervals.
 
 
 ## Фоновое переобучение

@@ -366,7 +366,21 @@ class OperatorDecision(Base, UUIDPrimaryKeyMixin):
 
 class ManualTrade(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "manual_trades"
-    __table_args__ = ({"schema": "advisory"},)
+    __table_args__ = (
+        CheckConstraint(
+            "initial_stress_loss >= 0",
+            name="initial_stress_loss_non_negative",
+        ),
+        CheckConstraint(
+            "remaining_stress_loss >= 0",
+            name="remaining_stress_loss_non_negative",
+        ),
+        CheckConstraint(
+            "remaining_stress_loss <= initial_stress_loss",
+            name="remaining_stress_loss_lte_initial",
+        ),
+        {"schema": "advisory"},
+    )
 
     plan_id: Mapped[UUID] = mapped_column(
         ForeignKey("advisory.execution_plans.id"), nullable=False, unique=True
@@ -379,6 +393,8 @@ class ManualTrade(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     leverage: Mapped[int] = mapped_column(Integer, nullable=False)
     remaining_qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    initial_stress_loss: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    remaining_stress_loss: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     fees_paid: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"), nullable=False)
     funding_cash_flow: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"), nullable=False)
     realized_pnl: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"), nullable=False)

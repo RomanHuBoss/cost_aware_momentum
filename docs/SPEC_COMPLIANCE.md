@@ -2,7 +2,7 @@
 
 Дата проверки: 2026-06-29
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.9
+Версия проекта после коррекции: 1.8.10
 
 ## Итог
 
@@ -14,6 +14,7 @@
 Версия 1.8.7 закрывает четыре связанные fail-open ошибки контура принятия: entry-zone проверяется по исполнимому ask/bid вместо last price, read-only capital snapshot имеет строгий age/future-time gate, общий open risk читается и резервируется под глобальным transaction-scoped advisory lock, а стоп за оценочной liquidation boundary блокируется при любом плече.
 Версия 1.8.8 закрывает десять математических и эконометрических boundary-дефектов: stateful features сбрасываются на разрывах и invalid OHLCV, label path валидируется, probabilities проверяются как TP/SL/TIMEOUT simplex во всех вычислительных слоях, directional policy требует парный LONG/SHORT контракт, holdout drawdown строится по modeled exit events, а невалидный exchange max leverage блокируется.
 Версия 1.8.9 закрывает research/live parity gap: barrier dataset сохраняет cohort только при валидной паре LONG/SHORT, а temporal split, holdout policy и backtest независимо fail-closed проверяют точную directional cardinality.
+Версия 1.8.10 исправляет связанный набор математических, эконометрических и lifecycle-дефектов: funding имеет trader-perspective знак для LONG/SHORT, все денежные/cost inputs и directional observations валидируются до ранжирования, class distributions и incumbent metrics fail-closed, runtime требует точный artifact contract и полный finite feature vector, adverse executable entry пересчитывает plan, а фактический риск ручной позиции хранится и уменьшается при partial close. PlanOutcome теперь оценивает конкретную immutable plan version по ее entry/planning time, а release manifest снова самопроверяем.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -28,6 +29,9 @@
 | Хронология ручного исполнения | Исправлено в 1.7.12 | manual-close валидирует entry/latest fill time под row lock до изменения qty, P&L, audit и outbox |
 | Market signal отдельно от execution plan | Реализовано | `MarketSignal`, versioned `ExecutionPlan`, профили капитала |
 | Cost-aware R/R, EV и sizing | Реализовано | комиссии, slippage, stop reserve, funding scenario, min-order/margin/liquidity/portfolio caps |
+| Funding/cost sign and numeric boundary | Исправлено в 1.8.10 | положительный funding: LONG платит, SHORT получает; live/research используют один знак; отрицательные/non-finite costs и invalid horizon/rate блокируются до арифметики |
+| Actual manual-position open risk | Исправлено в 1.8.10 | actual entry/qty определяют `initial_stress_loss`; `remaining_stress_loss` уменьшается пропорционально partial close и участвует в portfolio cap |
+| Adverse executable-entry revalidation | Исправлено в 1.8.10 | future ticker/spec отвергаются; ухудшившийся ask/bid создает новую plan version с повторным sizing, net R/R, EV и liquidation checks |
 | Probability simplex boundary | Исправлено в 1.8.8 | runtime artifact, Decimal EV/R, holdout policy и research backtest требуют finite TP/SL/TIMEOUT probabilities в `[0,1]` с суммой 1 |
 | Directional cohort integrity research/live | Исправлено в 1.8.9 | dataset атомарно формирует `LONG + SHORT`; split, holdout и backtest отвергают missing/duplicate/unknown direction до policy metrics |
 | Acceptance execution/risk revalidation | Исправлено в 1.8.7 | ask для LONG/bid для SHORT, fresh account snapshot, global PostgreSQL advisory lock до open-risk check, stop beyond liquidation fail-closed |
@@ -42,6 +46,8 @@
 | Final holdout и purge gap | Реализовано частично; усилено в 1.7.10 | единичный chronological train/calibration/final-holdout split; overlap очищается по `label_end_time` и embargo, multi-fold walk-forward отсутствует |
 | Непрерывность hourly feature/label windows | Исправлено в 1.7.11; state reset усилен в 1.8.8 | live snapshot требует 24 последовательных валидных часов; gap/duplicate/invalid OHLCV сбрасывает EMA/ATR/rolling state; label path валидируется и сохраняет diagnostics |
 | Model registry и воспроизводимый артефакт | Реализовано | SHA256, feature/task/horizon validation, activation/rollback, одна active-модель |
+| Exact artifact/runtime contract | Усилено в 1.8.10 | exact feature schema version, positive integer horizon, non-empty calibration version, expected classes and complete finite runtime features; zero-imputation отсутствующих признаков запрещена |
+| Fail-closed promotion metrics | Усилено в 1.8.10 | exact finite class distribution и finite incumbent ML/policy metrics; malformed comparison не может пройти или аварийно обойти gate |
 | Реальный runtime active-модели | Реализовано | worker загружает registry-active artifact и обновляет его без перезапуска |
 | Fail-closed для обязательных входов inference | Реализовано | stale candle/ticker, missing features, bid/ask/spec и excessive spread блокируют публикацию |
 | Point-in-time cutoff при inference | Реализовано | `close_time <= cutoff`, `available_at <= cutoff`, spec `valid_from <= cutoff` |
@@ -54,6 +60,7 @@
 | Orphan artifact reconciliation | Реализовано в 1.7.7 | status/UI inventory, explicit non-production recovery inside `MODEL_DIR`, metadata validation, absolute quality gate, guarded registry activation; directory presence alone не активирует model |
 | Актуальный universe в UI/API | Исправлено в 1.5.0 | текущие карточки фильтруются по worker universe; status обновляется автоматически |
 | Counterfactual outcome journal | Реализовано с intrabar refinement в 1.7.0 | confirmed hourly path; точечный 1/3/5-minute reconstruction для same-hour TP1/SL; отдельная оценка каждой plan version, audit/outbox/API/UI; missing intrabar и legacy funding timeline fail-closed |
+| Plan-version valuation semantics | Исправлено в 1.8.10 | counterfactual P&L и funding settlements используют immutable plan `entry_price`/`planning_time`, а не исходные signal values после пересчета plan |
 
 - Release boundary проверяется отдельным fail-closed manifest tool: missing/modified/unlisted files и запрещенные артефакты блокируют упаковку; это не меняет статус research gaps.
 

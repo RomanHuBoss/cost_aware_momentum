@@ -36,8 +36,12 @@ def triple_barrier_outcome(
         raise ValueError(f"Unsupported direction: {direction}")
     stop = _positive_finite(stop, "stop")
     take_profit = _positive_finite(take_profit, "take_profit")
+    if direction == "LONG" and stop >= take_profit:
+        raise ValueError("invalid directional geometry: LONG requires stop < take_profit")
+    if direction == "SHORT" and take_profit >= stop:
+        raise ValueError("invalid directional geometry: SHORT requires take_profit < stop")
     if future_bars.empty:
-        return BarrierOutcome("TIMEOUT", float("nan"), -1, False)
+        raise ValueError("future barrier window cannot be empty")
 
     for i, row in enumerate(future_bars.itertuples(index=False)):
         high = _positive_finite(row.high, "high")

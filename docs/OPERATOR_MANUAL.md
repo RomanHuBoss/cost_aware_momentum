@@ -36,7 +36,7 @@
 
 ## 6. Принятие и отклонение
 
-`Принять` фиксирует решение, но не отправляет ордер. Перед переходом система повторно проверяет expiry, entry-zone, freshness, profile version, margin и portfolio caps. Для LONG зона входа проверяется по текущему ask, для SHORT — по bid; `last_price` не считается гарантированной исполнимой ценой. Read-only account snapshot должен быть свежее `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`. Проверка общего open risk сериализуется в PostgreSQL, поэтому два параллельных принятия не могут независимо использовать один и тот же свободный риск. При изменении входных данных создается новый plan version, старый становится `SUPERSEDED`.
+`Принять` фиксирует решение, но не отправляет ордер. Перед переходом система повторно проверяет expiry, entry-zone, freshness, profile version, margin и portfolio caps. Для LONG зона входа проверяется по текущему ask, для SHORT — по bid; `last_price` не считается гарантированной исполнимой ценой. Read-only account snapshot должен быть свежее `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`. Проверка общего open risk сериализуется в PostgreSQL, поэтому два параллельных принятия не могут независимо использовать один и тот же свободный риск. При изменении входных данных создается новый plan version, старый становится `SUPERSEDED`. Начиная с 1.8.10 adverse executable price не наследует старый размер: новая версия пересчитывает qty, stress loss, margin, liquidation, net R/R и EV. Future-dated ticker или instrument spec блокирует действие.
 
 `Отклонить` требует код причины. Это необходимо для оценки operator selection bias.
 
@@ -45,6 +45,8 @@
 После фактического исполнения на Bybit внесите entry time, fill price, qty, leverage и fee. Частичные/полные выходы вводятся отдельно вместе с fee и funding cash flow. Система рассчитывает gross и realized net P&L, но не сверяет биржевой ордер автоматически без read-only reconciliation.
 
 Время выхода должно соответствовать фактической последовательности: оно не может быть раньше entry или уже сохраненного partial fill. При нескольких fills с одинаковым timestamp используйте одинаковое время; система это допускает. Ошибка хронологии возвращает HTTP 422 и не изменяет remaining qty или P&L.
+
+С версии 1.8.10 при entry сохраняется фактический initial stress loss по fill price и qty. Partial close уменьшает remaining stress loss пропорционально оставшемуся qty; именно это значение входит в общий portfolio open-risk. Поэтому после обновления обязательно выполните migration `0006` до запуска API/worker/trainer.
 
 ## 8. Контрфактический исход
 
@@ -120,3 +122,5 @@ python manage.py model-registry recover-artifact --artifact models/<artifact>.jo
 Начиная с 1.7.9 в `metrics` нового candidate присутствуют `classification_metric_schema=ordered-probability-v2`, `raw_log_loss`, `class_prior_log_loss`, `uniform_log_loss`, `calibration_log_loss_improvement` и `log_loss_skill_vs_prior`. Кандидаты, рассчитанные до 1.7.9, могут содержать завышенный `log_loss` из-за перестановки столбцов `TP / SL / TIMEOUT`; такие исторические строки не следует вручную активировать только по старому gate result. Перезапустите trainer и получите новый candidate либо выполните контролируемое повторное исследовательское обучение.
 
 Начиная с 1.7.11 новые model artifacts сохраняют `hourly_continuity`: сколько timestamps исключено из-за разрыва feature-lookback и label-horizon. Рост этих счетчиков требует проверки market/history sync, а не ослабления gate.
+
+С версии 1.8.10 active artifact обязан иметь exact current feature schema, positive integer horizon, non-empty calibration version и полный finite runtime feature vector. Ошибка `feature_schema_version`, `missing_features` или `non_finite_feature` требует штатного retraining/recovery; не подставляйте нули и не отключайте validator.

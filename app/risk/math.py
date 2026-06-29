@@ -84,6 +84,40 @@ def nonnegative_finite_decimal(value: Decimal | float | int | str, name: str) ->
     return result
 
 
+
+
+def validate_cost_scenario(costs: CostScenario) -> CostScenario:
+    """Normalize and validate all monetary-rate inputs before any risk arithmetic."""
+
+    return CostScenario(
+        fee_rate_round_trip=nonnegative_finite_decimal(
+            costs.fee_rate_round_trip, "fee_rate_round_trip"
+        ),
+        slippage_rate=nonnegative_finite_decimal(costs.slippage_rate, "slippage_rate"),
+        stop_gap_reserve_rate=nonnegative_finite_decimal(
+            costs.stop_gap_reserve_rate, "stop_gap_reserve_rate"
+        ),
+        funding_rate=finite_decimal(costs.funding_rate, "funding_rate"),
+    )
+
+
+def positive_integer(value: object, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    try:
+        if Decimal(str(value)) != Decimal(parsed):
+            raise ValueError(f"{name} must be a positive integer")
+    except (DecimalException, TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return parsed
+
+
 def _safe_positive_finite_decimal(value: object) -> Decimal:
     try:
         result = d(value)  # type: ignore[arg-type]
@@ -179,20 +213,25 @@ def projected_funding_rate(
     current_rate: Decimal,
 ) -> Decimal:
     """Conservative cumulative funding-rate scenario over crossed settlements."""
-    if next_settlement is None or interval_minutes is None or interval_minutes <= 0:
-        return Decimal("0")
-    if start_time.tzinfo is None or next_settlement.tzinfo is None:
+    horizon_value = positive_integer(horizon_hours, "horizon_hours")
+    rate = finite_decimal(current_rate, "current_rate")
+    if start_time.tzinfo is None or start_time.utcoffset() is None:
         raise ValueError("Funding timestamps must be timezone-aware")
-    interval = timedelta(minutes=interval_minutes)
+    if next_settlement is None or interval_minutes is None:
+        return Decimal("0")
+    interval_value = positive_integer(interval_minutes, "interval_minutes")
+    if next_settlement.tzinfo is None or next_settlement.utcoffset() is None:
+        raise ValueError("Funding timestamps must be timezone-aware")
+    interval = timedelta(minutes=interval_value)
     # A settlement exactly at the planning start is already in the past for a
     # position opened after the signal decision. Count only future settlements.
     while next_settlement <= start_time:
         next_settlement += interval
-    end_time = start_time + timedelta(hours=horizon_hours)
+    end_time = start_time + timedelta(hours=horizon_value)
     if next_settlement > end_time:
         return Decimal("0")
     count = 1 + int((end_time - next_settlement).total_seconds() // interval.total_seconds())
-    return d(current_rate) * count
+    return rate * count
 
 
 def gross_pnl(direction: Direction, qty: Decimal, entry: Decimal, exit_price: Decimal) -> Decimal:
@@ -200,10 +239,19 @@ def gross_pnl(direction: Direction, qty: Decimal, entry: Decimal, exit_price: De
     return sign * d(qty) * (d(exit_price) - d(entry))
 
 
+def funding_return_rate(direction: Direction, funding_rate: Decimal | float | int | str) -> Decimal:
+    """Signed return from the trader perspective for one funding scenario.
+
+    A positive exchange funding rate is a debit for LONG and a credit for SHORT.
+    A negative exchange rate reverses those cash flows.
+    """
+
+    return -_direction_sign(direction) * finite_decimal(funding_rate, "funding_rate")
+
+
 def funding_cash_flow(direction: Direction, position_value: Decimal, funding_rate: Decimal) -> Decimal:
     """Cash flow from trader perspective. Positive funding means LONG pays and SHORT receives."""
-    sign = _direction_sign(direction)
-    return -sign * d(position_value) * d(funding_rate)
+    return d(position_value) * funding_return_rate(direction, funding_rate)
 
 
 def fee_cash(qty: Decimal, executed_price: Decimal, fee_rate: Decimal) -> Decimal:
@@ -229,11 +277,13 @@ def normalized_round_trip_fee_rate(
 
 
 def stress_downside_rate(entry: Decimal, stop: Decimal, direction: Direction, costs: CostScenario) -> Decimal:
+    costs = validate_cost_scenario(costs)
     validate_directional_geometry(entry=entry, stop=stop, direction=direction)
     entry = d(entry)
     stop = d(stop)
     price_move = (entry - stop) / entry if direction == "LONG" else (stop - entry) / entry
-    adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
+    signed_funding = funding_return_rate(direction, costs.funding_rate)
+    adverse_funding = max(Decimal("0"), -signed_funding)
     fee_rate = normalized_round_trip_fee_rate(entry, stop, costs.fee_rate_round_trip)
     return (
         price_move
@@ -245,13 +295,14 @@ def stress_downside_rate(entry: Decimal, stop: Decimal, direction: Direction, co
 
 
 def upside_rate(entry: Decimal, take_profit: Decimal, direction: Direction, costs: CostScenario) -> Decimal:
+    costs = validate_cost_scenario(costs)
     validate_directional_geometry(entry=entry, take_profit=take_profit, direction=direction)
     entry = d(entry)
     tp = d(take_profit)
     price_move = (tp - entry) / entry if direction == "LONG" else (entry - tp) / entry
-    adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
+    signed_funding = funding_return_rate(direction, costs.funding_rate)
     fee_rate = normalized_round_trip_fee_rate(entry, tp, costs.fee_rate_round_trip)
-    return price_move - fee_rate - costs.slippage_rate - adverse_funding
+    return price_move - fee_rate - costs.slippage_rate + signed_funding
 
 
 
@@ -296,7 +347,8 @@ def net_rr_and_ev(
     downside = stress_downside_rate(entry, stop, direction, costs)
     upside = upside_rate(entry, take_profit, direction, costs)
     rr = Decimal("0") if downside <= 0 else max(Decimal("0"), upside) / downside
-    adverse_funding = max(Decimal("0"), costs.funding_rate if direction == "LONG" else -costs.funding_rate)
+    signed_funding = funding_return_rate(direction, costs.funding_rate)
+    adverse_funding = max(Decimal("0"), -signed_funding)
     timeout_gross = finite_decimal(timeout_return_rate, "timeout_return_rate")
     timeout_exit = d(entry) * (
         Decimal("1") + timeout_gross if direction == "LONG" else Decimal("1") - timeout_gross
@@ -304,13 +356,14 @@ def net_rr_and_ev(
     timeout_fee_rate = normalized_round_trip_fee_rate(
         entry, timeout_exit, costs.fee_rate_round_trip
     )
-    timeout_net = timeout_gross - timeout_fee_rate - costs.slippage_rate - adverse_funding
+    timeout_net = timeout_gross - timeout_fee_rate - costs.slippage_rate + signed_funding
+    sl_net = -downside + adverse_funding + signed_funding
     p_tp_value, p_sl_value, p_timeout_value = validate_probability_simplex(
         p_tp, p_sl, p_timeout
     )
     ev_rate = (
         p_tp_value * upside
-        - p_sl_value * downside
+        + p_sl_value * sl_net
         + p_timeout_value * timeout_net
     )
     ev_r = Decimal("0") if downside <= 0 else ev_rate / downside

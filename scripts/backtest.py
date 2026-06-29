@@ -19,8 +19,8 @@ from app.ml.training import (
     chronological_split,
     evaluate_model,
     make_barrier_dataset,
-    validate_directional_scenario_pairs,
     validate_outcome_probability_matrix,
+    validate_policy_evaluation_metadata,
 )
 
 HOUR_NS = 3_600_000_000_000
@@ -125,7 +125,7 @@ def _active_trade_statistics(trades: pd.DataFrame) -> tuple[int, float]:
     active = 0
     maximum = 0
     weighted_active = 0.0
-    active_duration = 0.0
+    observed_duration = 0.0
 
     for index, timestamp in enumerate(timestamps):
         # A position closing at a boundary releases capital before a new position
@@ -135,11 +135,11 @@ def _active_trade_statistics(trades: pd.DataFrame) -> tuple[int, float]:
         maximum = max(maximum, active)
         if index + 1 < len(timestamps):
             duration_hours = (timestamps[index + 1] - timestamp).total_seconds() / 3600.0
-            if active > 0 and duration_hours > 0:
+            if duration_hours > 0:
                 weighted_active += active * duration_hours
-                active_duration += duration_hours
+                observed_duration += duration_hours
 
-    mean_active = weighted_active / active_duration if active_duration > 0 else float(maximum)
+    mean_active = weighted_active / observed_duration if observed_duration > 0 else float(maximum)
     return maximum, float(mean_active)
 
 
@@ -187,47 +187,23 @@ def policy_backtest(
         expected_rows=len(meta),
     )
 
-    required_columns = {
-        "decision_time",
-        "symbol",
-        "direction",
-        "target",
-        "exit_index",
-        "realized_gross_return",
-        "barrier_upside_rate",
-        "barrier_downside_rate",
-    }
-    missing_columns = sorted(required_columns - set(meta.columns))
-    if missing_columns:
-        raise ValueError(f"Backtest metadata is missing columns: {missing_columns}")
     if len(probabilities) != len(meta):
         raise ValueError("Prediction rows do not match backtest metadata")
-
-    meta["decision_time"] = pd.to_datetime(meta["decision_time"], utc=True, errors="coerce")
-    if meta["decision_time"].isna().any():
-        raise ValueError("Backtest metadata contains invalid decision_time")
-    exit_index = pd.to_numeric(meta["exit_index"], errors="coerce")
-    if exit_index.isna().any() or (exit_index < 0).any() or (exit_index >= horizon_hours).any():
-        raise ValueError("exit_index must be within the configured label horizon")
-    if not np.allclose(exit_index, np.floor(exit_index)):
-        raise ValueError("exit_index must contain integers")
-    meta["exit_index"] = exit_index.astype(int)
-    meta["exit_time"] = meta["decision_time"] + pd.to_timedelta(meta["exit_index"] + 1, unit="h")
+    meta = validate_policy_evaluation_metadata(
+        meta,
+        context="Backtest",
+        horizon_hours=horizon_hours,
+        require_barrier_return_consistency=True,
+    )
 
     meta["p_tp"] = probabilities[:, indexes["TP"]]
     meta["p_sl"] = probabilities[:, indexes["SL"]]
     meta["p_timeout"] = probabilities[:, indexes["TIMEOUT"]]
 
     is_long = meta["direction"].eq("LONG")
-    if (~meta["direction"].isin(["LONG", "SHORT"])).any():
-        raise ValueError("Backtest metadata contains an unsupported direction")
-    validate_directional_scenario_pairs(meta, context="Backtest")
     fee_rate_per_leg = fee_rate_round_trip / 2.0
-    adverse_funding = np.where(
-        is_long,
-        max(0.0, funding_rate),
-        max(0.0, -funding_rate),
-    )
+    funding_return = np.where(is_long, -funding_rate, funding_rate)
+    adverse_funding = np.maximum(-funding_return, 0.0)
     tp_exit_ratio = np.where(
         is_long,
         1.0 + meta["barrier_upside_rate"],
@@ -261,9 +237,10 @@ def policy_backtest(
     timeout_fee_rate = fee_rate_per_leg * (1.0 + timeout_exit_ratio)
     realized_fee_rate = fee_rate_per_leg * (1.0 + realized_exit_ratio)
     meta["realized_fee_rate"] = realized_fee_rate
+    meta["funding_return_rate"] = funding_return
     meta["adverse_funding_rate"] = adverse_funding
     meta["net_upside_rate"] = (
-        meta["barrier_upside_rate"] - tp_fee_rate - slippage_rate - adverse_funding
+        meta["barrier_upside_rate"] - tp_fee_rate - slippage_rate + funding_return
     )
     meta["stress_downside_rate"] = (
         meta["barrier_downside_rate"]
@@ -273,8 +250,11 @@ def policy_backtest(
         + adverse_funding
     )
     meta["timeout_net_rate"] = (
-        timeout_return_rate - timeout_fee_rate - slippage_rate - adverse_funding
+        timeout_return_rate - timeout_fee_rate - slippage_rate + funding_return
     )
+    meta["sl_net_rate"] = -(
+        meta["barrier_downside_rate"] + sl_fee_rate + slippage_rate + gap_rate
+    ) + funding_return
     meta["net_rr"] = np.where(
         meta["stress_downside_rate"] > 0,
         np.maximum(meta["net_upside_rate"], 0.0) / meta["stress_downside_rate"],
@@ -282,7 +262,7 @@ def policy_backtest(
     )
     meta["expected_net_rate"] = (
         meta["p_tp"] * meta["net_upside_rate"]
-        - meta["p_sl"] * meta["stress_downside_rate"]
+        + meta["p_sl"] * meta["sl_net_rate"]
         + meta["p_timeout"] * meta["timeout_net_rate"]
     )
     meta["expected_ev_r"] = np.where(
@@ -309,7 +289,7 @@ def policy_backtest(
         chosen["realized_gross_return"]
         - chosen["realized_fee_rate"]
         - slippage_rate
-        - chosen["adverse_funding_rate"]
+        + chosen["funding_return_rate"]
         - np.where(chosen["target"] == "SL", gap_rate, 0.0)
     )
     chosen["net_return_without_stop_reserve"] = chosen["net_return"] + np.where(
@@ -335,7 +315,11 @@ def policy_backtest(
             stressed_rows["realized_gross_return"]
             - stressed_rows["realized_fee_rate"] * multiplier
             - slippage_rate * multiplier
-            - stressed_rows["adverse_funding_rate"] * multiplier
+            + np.where(
+                stressed_rows["funding_return_rate"] < 0,
+                stressed_rows["funding_return_rate"] * multiplier,
+                stressed_rows["funding_return_rate"],
+            )
             - np.where(stressed_rows["target"] == "SL", gap_rate * multiplier, 0.0)
         )
         result, _, _ = _simulate_capital_sleeves(

@@ -24,6 +24,10 @@ from app.risk.math import (
     InstrumentConstraints,
     assess_liquidation_proximity,
     calculate_position_plan,
+    net_rr_and_ev,
+    nonnegative_finite_decimal,
+    positive_finite_decimal,
+    stress_downside_rate,
 )
 from app.services.audit import append_audit_event, publish_outbox
 
@@ -56,6 +60,43 @@ def executable_entry_price(
     return price
 
 
+def ticker_snapshot_is_fresh(
+    source_time: datetime,
+    *,
+    now: datetime,
+    max_age_seconds: int,
+) -> bool:
+    """Return true only for timezone-aware snapshots in the closed age interval [0, max]."""
+
+    if max_age_seconds <= 0 or source_time.tzinfo is None or now.tzinfo is None:
+        return False
+    age_seconds = (now - source_time).total_seconds()
+    return 0.0 <= age_seconds <= max_age_seconds
+
+
+def entry_price_is_adverse(
+    *,
+    direction: str,
+    reference: Decimal,
+    executable: Decimal,
+) -> bool:
+    """Detect entry drift that increases stop distance for an already-sized plan."""
+
+    reference_value = positive_finite_decimal(reference, "reference")
+    executable_value = positive_finite_decimal(executable, "executable")
+    if direction == "LONG":
+        return executable_value > reference_value
+    if direction == "SHORT":
+        return executable_value < reference_value
+    raise ValueError(f"Unsupported direction for entry drift: {direction}")
+
+
+def execution_plan_entry_reference(plan: ExecutionPlan, signal: MarketSignal) -> Decimal:
+    snapshot = plan.sizing_snapshot if isinstance(plan.sizing_snapshot, dict) else {}
+    raw_value = snapshot.get("entry_price", signal.entry_reference)
+    return positive_finite_decimal(raw_value, "plan entry reference")
+
+
 async def latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | None:
     return (
         await session.execute(
@@ -67,11 +108,19 @@ async def latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | 
     ).scalar_one_or_none()
 
 
-async def latest_spec(session: AsyncSession, symbol: str) -> InstrumentSpecHistory | None:
+async def latest_spec(
+    session: AsyncSession,
+    symbol: str,
+    *,
+    cutoff: datetime,
+) -> InstrumentSpecHistory | None:
     return (
         await session.execute(
             select(InstrumentSpecHistory)
-            .where(InstrumentSpecHistory.symbol == symbol)
+            .where(
+                InstrumentSpecHistory.symbol == symbol,
+                InstrumentSpecHistory.valid_from <= cutoff,
+            )
             .order_by(desc(InstrumentSpecHistory.valid_from))
             .limit(1)
         )
@@ -146,14 +195,38 @@ async def effective_capital(
     )
 
 
+
+
+def remaining_trade_risk(
+    initial_stress_loss: Decimal, initial_qty: Decimal, remaining_qty: Decimal
+) -> Decimal:
+    """Return the open portion of actual entry risk after partial closes."""
+
+    risk = nonnegative_finite_decimal(initial_stress_loss, "initial_stress_loss")
+    qty = positive_finite_decimal(initial_qty, "initial_qty")
+    remaining = nonnegative_finite_decimal(remaining_qty, "remaining_qty")
+    if remaining > qty:
+        raise ValueError("remaining_qty cannot exceed initial_qty")
+    return risk * remaining / qty
+
+
 async def open_risk_usdt(session: AsyncSession) -> Decimal:
-    """Conservative risk reserved by accepted and entered plans."""
-    result = await session.execute(
+    """Risk reserved by accepted plans plus actual remaining risk of open trades."""
+    accepted_result = await session.execute(
         select(func.coalesce(func.sum(ExecutionPlan.actual_stress_loss), 0)).where(
-            ExecutionPlan.status.in_(["ACCEPTED", "ENTERED", "PARTIAL"])
+            ExecutionPlan.status == "ACCEPTED"
         )
     )
-    return Decimal(str(result.scalar_one()))
+    trade_result = await session.execute(
+        select(func.coalesce(func.sum(ManualTrade.remaining_stress_loss), 0)).where(
+            ManualTrade.status.in_(["OPEN", "PARTIAL"])
+        )
+    )
+    accepted_risk = nonnegative_finite_decimal(
+        accepted_result.scalar_one(), "accepted_plan_risk"
+    )
+    trade_risk = nonnegative_finite_decimal(trade_result.scalar_one(), "open_trade_risk")
+    return accepted_risk + trade_risk
 
 
 async def load_acceptance_risk_state(
@@ -205,17 +278,40 @@ async def reconciliation_issues(session: AsyncSession) -> list[str]:
         .scalars()
         .all()
     )
-    journal = {(row.symbol, row.direction): row.remaining_qty for row in journal_rows}
+    journal: dict[tuple[str, str], Decimal] = {}
+    for row in journal_rows:
+        key = (row.symbol, row.direction)
+        journal[key] = journal.get(key, Decimal("0")) + Decimal(row.remaining_qty)
+
+    exchange: dict[tuple[str, str], Decimal] = {}
     issues: list[str] = []
     for position in exchange_positions:
-        direction = "LONG" if position.side in {"BUY", "LONG"} else "SHORT"
-        journal_qty = journal.get((position.symbol, direction))
-        if journal_qty is None:
-            issues.append(f"Неизвестная биржевая позиция {position.symbol} {direction}")
+        if position.side in {"BUY", "LONG"}:
+            direction = "LONG"
+        elif position.side in {"SELL", "SHORT"}:
+            direction = "SHORT"
+        else:
+            issues.append(f"Неизвестная сторона биржевой позиции {position.symbol}: {position.side}")
             continue
-        tolerance = max(Decimal("0.00000001"), position.qty * Decimal("0.02"))
-        if abs(journal_qty - position.qty) > tolerance:
-            issues.append(f"Расхождение количества {position.symbol} {direction}")
+        key = (position.symbol, direction)
+        exchange[key] = exchange.get(key, Decimal("0")) + Decimal(position.qty)
+
+    for key in sorted(set(exchange) | set(journal)):
+        symbol, direction = key
+        exchange_qty = exchange.get(key)
+        journal_qty = journal.get(key)
+        if exchange_qty is None:
+            issues.append(f"Позиция журнала отсутствует на бирже {symbol} {direction}")
+            continue
+        if journal_qty is None:
+            issues.append(f"Неизвестная биржевая позиция {symbol} {direction}")
+            continue
+        tolerance = max(
+            Decimal("0.00000001"),
+            max(abs(exchange_qty), abs(journal_qty)) * Decimal("0.02"),
+        )
+        if abs(journal_qty - exchange_qty) > tolerance:
+            issues.append(f"Расхождение количества {symbol} {direction}")
     return issues
 
 
@@ -226,6 +322,7 @@ async def create_execution_plan(
     profile: CapitalProfile,
     settings: Settings,
     actor: str = "worker",
+    entry_price: Decimal | None = None,
 ) -> ExecutionPlan:
     current_version = (
         await session.execute(
@@ -235,9 +332,13 @@ async def create_execution_plan(
         )
     ).scalar_one()
     version = int(current_version) + 1
-    ticker = await latest_ticker(session, signal.symbol)
-    spec = await latest_spec(session, signal.symbol)
     now = datetime.now(UTC)
+    ticker = await latest_ticker(session, signal.symbol)
+    spec = await latest_spec(session, signal.symbol, cutoff=now)
+    planning_entry = positive_finite_decimal(
+        entry_price if entry_price is not None else signal.entry_reference,
+        "planning entry",
+    )
 
     c_eff, available_margin, verified, capital_snapshot = await effective_capital(
         session,
@@ -255,7 +356,11 @@ async def create_execution_plan(
         if issues:
             status_override = "BLOCKED_PORTFOLIO"
             warnings.extend(issues)
-    if ticker is None or (now - ticker.source_time).total_seconds() > settings.max_ticker_age_seconds:
+    if ticker is None or not ticker_snapshot_is_fresh(
+        ticker.source_time,
+        now=now,
+        max_age_seconds=settings.max_ticker_age_seconds,
+    ):
         status_override = "BLOCKED_STALE_DATA"
         warnings.append("Текущая цена устарела или отсутствует")
     if spec is None:
@@ -292,16 +397,25 @@ async def create_execution_plan(
     open_risk = await open_risk_usdt(session)
     max_total_risk = c_eff * profile.max_total_risk_rate
     remaining_portfolio_risk = max(Decimal("0"), max_total_risk - open_risk)
+    try:
+        planning_downside_rate = stress_downside_rate(
+            planning_entry,
+            signal.stop_loss,
+            signal.direction,
+            costs,
+        )
+    except ValueError:
+        planning_downside_rate = Decimal("0")
     portfolio_notional_cap = (
-        remaining_portfolio_risk / Decimal(str(signal.stress_downside_rate))
-        if signal.stress_downside_rate > 0
+        remaining_portfolio_risk / planning_downside_rate
+        if planning_downside_rate > 0
         else Decimal("0")
     )
 
     plan_math = calculate_position_plan(
         effective_capital=c_eff,
         risk_rate=profile.risk_rate,
-        entry=signal.entry_reference,
+        entry=planning_entry,
         stop=signal.stop_loss,
         take_profit=signal.take_profit_1,
         direction=signal.direction,
@@ -314,6 +428,23 @@ async def create_execution_plan(
         portfolio_notional_cap=portfolio_notional_cap,
         capital_verified=verified,
     )
+    try:
+        plan_net_rr, plan_net_ev_r, _, _ = net_rr_and_ev(
+            entry=planning_entry,
+            stop=signal.stop_loss,
+            take_profit=signal.take_profit_1,
+            direction=signal.direction,
+            costs=costs,
+            p_tp=signal.p_tp,
+            p_sl=signal.p_sl,
+            p_timeout=signal.p_timeout,
+        )
+    except ValueError as exc:
+        plan_net_rr = Decimal("0")
+        plan_net_ev_r = Decimal("0")
+        warnings.append(f"Некорректная геометрия плана: {exc}")
+        status_override = "BLOCKED_INVALID_INPUT"
+
     if signal.status != "PUBLISHED":
         status = "EXPIRED" if signal.status == "EXPIRED" else "SUPERSEDED"
         warnings.append("Рекомендация больше не является текущей")
@@ -324,7 +455,7 @@ async def create_execution_plan(
         status = status_override
     elif plan_math.status.startswith("BLOCKED_"):
         status = plan_math.status
-    elif signal.net_rr < settings.min_net_rr or signal.net_ev_r < settings.min_net_ev_r:
+    elif plan_net_rr < Decimal(str(settings.min_net_rr)) or plan_net_ev_r < Decimal(str(settings.min_net_ev_r)):
         status = "NO_TRADE"
         warnings.append("Недостаточное преимущество после издержек и risk policy")
     else:
@@ -333,7 +464,7 @@ async def create_execution_plan(
     liquidation_buffer = Decimal("0")
     if plan_math.status != "BLOCKED_INVALID_INPUT":
         liquidation = assess_liquidation_proximity(
-            entry=signal.entry_reference,
+            entry=planning_entry,
             stop=signal.stop_loss,
             leverage=plan_math.leverage,
         )
@@ -369,6 +500,11 @@ async def create_execution_plan(
         primary_warning=primary_warning,
         warnings=combined_warnings,
         sizing_snapshot={
+            "entry_price": str(planning_entry),
+            "planning_time": now.isoformat(),
+            "net_rr": str(plan_net_rr),
+            "net_ev_r": str(plan_net_ev_r),
+            "stress_downside_rate": str(plan_math.stress_downside_rate),
             "capital": capital_snapshot,
             "instrument": {
                 "qty_step": str(constraints.qty_step),

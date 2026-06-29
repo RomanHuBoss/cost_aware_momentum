@@ -7,8 +7,13 @@ import pytest
 from app.api.deps import sign_session, verify_session
 from app.bybit.client import BybitClient
 from app.config import Settings
+from app.ml.features import FEATURE_NAMES
 from app.ml.runtime import ModelRuntime
-from app.ml.training import MODEL_FEATURE_NAMES, TemporalCalibratedBarrierModel
+from app.ml.training import (
+    MODEL_FEATURE_NAMES,
+    MODEL_FEATURE_SCHEMA_VERSION,
+    TemporalCalibratedBarrierModel,
+)
 
 
 class ArtifactStubModel:
@@ -90,6 +95,7 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
             "version": "test-barrier-v1",
             "calibration_version": "test-cal-v1",
             "feature_names": MODEL_FEATURE_NAMES,
+            "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": 1.7,
             "tp_atr_multiplier": 2.9,
@@ -99,7 +105,9 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
 
     runtime = ModelRuntime(path, allow_baseline=False)
     runtime.load(expected_version="test-barrier-v1")
-    prediction = runtime.predict({"ret_1h": 0.03, "atr_pct_14": 0.01})
+    features = {name: 0.0 for name in FEATURE_NAMES}
+    features.update({"ret_1h": 0.03, "atr_pct_14": 0.01})
+    prediction = runtime.predict(features)
 
     assert runtime.is_baseline is False
     assert prediction.p_tp + prediction.p_sl + prediction.p_timeout == pytest.approx(1.0)
@@ -133,6 +141,7 @@ def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) 
             "version": "invalid-multiplier-v1",
             "calibration_version": "stub",
             "feature_names": MODEL_FEATURE_NAMES,
+            "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": float("nan"),
             "tp_atr_multiplier": 2.2,

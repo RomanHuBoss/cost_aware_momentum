@@ -32,7 +32,7 @@ async def portfolio_risk(session: SessionDep) -> dict:
             .where(ManualTrade.status.in_(["OPEN", "PARTIAL"]))
         )
     ).all()
-    total_open_risk = sum((plan.actual_stress_loss for _, plan, _ in rows), Decimal("0"))
+    total_open_risk = sum((trade.remaining_stress_loss for trade, _, _ in rows), Decimal("0"))
     long_notional = sum(
         (trade.remaining_qty * trade.entry_price for trade, _, signal in rows if signal.direction == "LONG"),
         Decimal("0"),
@@ -63,12 +63,12 @@ async def portfolio_risk(session: SessionDep) -> dict:
         )
     reconciliation = await reconciliation_issues(session)
     clusters: dict[str, dict] = {}
-    for trade, plan, signal in rows:
+    for trade, _plan, signal in rows:
         cluster = "BTC" if signal.symbol == "BTCUSDT" else "ETH" if signal.symbol == "ETHUSDT" else "ALT_BETA"
         item = clusters.setdefault(
             cluster, {"risk_usdt": Decimal("0"), "notional": Decimal("0"), "positions": 0}
         )
-        item["risk_usdt"] += plan.actual_stress_loss
+        item["risk_usdt"] += trade.remaining_stress_loss
         item["notional"] += trade.remaining_qty * trade.entry_price
         item["positions"] += 1
     return {
@@ -115,6 +115,7 @@ async def portfolio_risk(session: SessionDep) -> dict:
                 "remaining_qty": float(trade.remaining_qty),
                 "entry_price": float(trade.entry_price),
                 "planned_risk_usdt": float(plan.actual_stress_loss),
+                "remaining_risk_usdt": float(trade.remaining_stress_loss),
             }
             for trade, plan, signal in rows
         ],

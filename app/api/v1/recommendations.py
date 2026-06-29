@@ -24,8 +24,11 @@ from app.db.models import (
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import (
     create_execution_plan,
+    entry_price_is_adverse,
     executable_entry_price,
+    execution_plan_entry_reference,
     load_acceptance_risk_state,
+    ticker_snapshot_is_fresh,
 )
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 
@@ -345,9 +348,14 @@ async def accept_recommendation(
         conflict_reason = "Capital profile version changed"
     ticker = await latest_ticker(session, signal.symbol)
     if conflict_reason is None and (
-        ticker is None or (now - ticker.source_time).total_seconds() > settings.max_ticker_age_seconds
+        ticker is None
+        or not ticker_snapshot_is_fresh(
+            ticker.source_time,
+            now=now,
+            max_age_seconds=settings.max_ticker_age_seconds,
+        )
     ):
-        conflict_reason = "Ticker is stale"
+        conflict_reason = "Ticker is stale or has a future timestamp"
     executable_price = None
     if conflict_reason is None and ticker is not None:
         try:
@@ -358,10 +366,19 @@ async def accept_recommendation(
             )
         except ValueError:
             conflict_reason = "Executable bid/ask price is missing or invalid"
-    if conflict_reason is None and executable_price is not None and not (
+    executable_inside_zone = executable_price is not None and (
         signal.entry_low <= executable_price <= signal.entry_high
-    ):
+    )
+    if conflict_reason is None and executable_price is not None and not executable_inside_zone:
         conflict_reason = "Current executable price is outside entry zone"
+    if conflict_reason is None and executable_price is not None:
+        plan_entry = execution_plan_entry_reference(plan, signal)
+        if entry_price_is_adverse(
+            direction=signal.direction,
+            reference=plan_entry,
+            executable=executable_price,
+        ):
+            conflict_reason = "Executable entry worsened after plan sizing"
 
     risk_state = await load_acceptance_risk_state(
         session,
@@ -401,6 +418,7 @@ async def accept_recommendation(
             profile=profile,
             settings=settings,
             actor=operator,
+            entry_price=executable_price if executable_inside_zone else None,
         )
         if plan.status not in {"ACCEPTED", "ENTERED", "CLOSED"}:
             plan.status = "SUPERSEDED"

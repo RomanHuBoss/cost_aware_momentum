@@ -10,7 +10,11 @@ import pytest
 from app.config import Settings
 from app.ml.artifact_recovery import load_recovery_candidate
 from app.ml.lifecycle import evaluate_quality_gate
-from app.ml.training import MODEL_FEATURE_NAMES, OUTCOME_CLASSES
+from app.ml.training import (
+    MODEL_FEATURE_NAMES,
+    MODEL_FEATURE_SCHEMA_VERSION,
+    OUTCOME_CLASSES,
+)
 
 
 def _passing_metrics() -> dict[str, object]:
@@ -40,7 +44,7 @@ def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8)
             "version": resolved_version,
             "calibration_version": f"sigmoid-ovr-{resolved_version}",
             "feature_names": MODEL_FEATURE_NAMES,
-            "feature_schema_version": "hourly-barrier-v1",
+            "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "horizon_hours": horizon,
             "metrics": _passing_metrics(),
             "training_start": now.isoformat(),
@@ -86,7 +90,7 @@ def test_recovery_loader_reconstructs_candidate_and_absolute_gate(tmp_path: Path
     assert candidate.version == path.stem
     assert candidate.path == path.resolve()
     assert candidate.incumbent_version is None
-    assert candidate.feature_schema_version == "hourly-barrier-v1"
+    assert candidate.feature_schema_version == MODEL_FEATURE_SCHEMA_VERSION
     assert candidate.training_data_profile.symbols == ("BTCUSDT", "ETHUSDT")
     assert gate["passed"] is True
     assert gate["relative"] is None

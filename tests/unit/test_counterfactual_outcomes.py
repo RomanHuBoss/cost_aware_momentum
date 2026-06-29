@@ -402,3 +402,66 @@ async def test_invalid_plan_snapshot_is_persisted_as_zero_valued_outcome(monkeyp
     assert row.estimated_net_pnl == Decimal("0")
     assert row.counterfactual_r is None
     assert row.cost_assumptions["validation_error"] == "qty must be finite"
+
+
+@pytest.mark.asyncio
+async def test_plan_outcome_uses_plan_entry_and_planning_time(monkeypatch) -> None:
+    recorded = SimpleNamespace(row=None)
+
+    class FakeSession:
+        def add(self, row) -> None:
+            recorded.row = row
+
+        async def flush(self) -> None:
+            return None
+
+    async def fake_append_audit_event(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("app.services.outcomes.append_audit_event", fake_append_audit_event)
+    signal = SimpleNamespace(
+        id=uuid4(),
+        direction="LONG",
+        event_time=BASE,
+        entry_reference=Decimal("100"),
+    )
+    signal_outcome = SimpleNamespace(
+        id=uuid4(),
+        outcome="TP",
+        exit_price=Decimal("104"),
+        exit_time=BASE + timedelta(hours=4),
+    )
+    plan = SimpleNamespace(
+        id=uuid4(),
+        version=4,
+        qty=Decimal("1"),
+        actual_stress_loss=Decimal("3"),
+        sizing_snapshot={
+            "entry_price": "101",
+            "planning_time": (BASE + timedelta(hours=2)).isoformat(),
+            "costs": {
+                "fee_rate_round_trip": "0",
+                "slippage_rate": "0",
+                "stop_gap_reserve_rate": "0",
+                "funding_rate_per_settlement": "0.01",
+                "funding_next_settlement": (BASE + timedelta(hours=1)).isoformat(),
+                "funding_interval_minutes": 60,
+            },
+        },
+    )
+
+    row = await _record_plan_outcome(
+        FakeSession(),
+        signal=signal,
+        signal_outcome=signal_outcome,
+        plan=plan,
+        actor="pytest",
+    )
+
+    assert row.entry_price == Decimal("101")
+    assert row.gross_pnl == Decimal("3")
+    assert row.estimated_funding_cash_flow == Decimal("-2.02")
+    assert row.cost_assumptions["funding"]["settlements"] == 2
+    assert row.cost_assumptions["valuation_start_time"] == (
+        BASE + timedelta(hours=2)
+    ).isoformat()

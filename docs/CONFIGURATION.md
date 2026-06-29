@@ -82,6 +82,10 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 - `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`: максимальный возраст read-only snapshot equity/available margin при построении и принятии плана; default `180`, минимум `30`.
 - `FEE_RATE_TAKER`, `BASE_SLIPPAGE_BPS`, `STOP_GAP_RESERVE_BPS`: консервативная модель издержек.
 
+Начиная с 1.8.10 все количественные параметры проходят finite/range validation до запуска. Fee/slippage/reserve не могут быть отрицательными или NaN/Infinity; risk/margin/cap rates обязаны лежать в допустимых диапазонах; ticker/candle age и signal TTL обязаны быть положительными. Некорректное значение останавливает startup с validation error вместо неявного нулевого/отрицательного cost scenario.
+
+Положительный funding rate трактуется с точки зрения трейдера: LONG платит, SHORT получает; отрицательный rate меняет роли. Консервативный downside использует только adverse funding для соответствующего направления, а EV/outcome сохраняют фактический signed cash-flow. Leverage не изменяет edge на notional.
+
 Риск нельзя свободно менять на плитке. Изменение профиля создает новую версию execution plan и не переписывает исторические расчеты. Для `bybit_read_only` профиль не считается подтвержденным только по факту наличия старой строки: snapshot должен быть timezone-aware, не находиться в будущем и укладываться в `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`.
 
 ## Model runtime
@@ -96,6 +100,8 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 | `DEFAULT_HORIZON_HOURS` | горизонт, которому должна соответствовать active live-модель |
 
 Нормальный источник active model — таблица `model.model_registry`. Обучение сохраняет SHA256 и регистрирует artifact inactive. Команда `model-registry activate` проверяет file/hash/version/task/schema/classes/horizon, деактивирует предыдущую версию и создает audit/outbox event. Worker повторяет проверку при загрузке.
+
+В 1.8.10 `schema` означает exact current `feature_schema_version`, horizon обязан быть положительным целым и совпадать с live horizon, `calibration_version` — непустым, а runtime feature mapping — содержать каждое ожидаемое имя с finite value. Отсутствующий/NaN/Infinity feature больше не заменяется нулем. Incompatible artifact необходимо переобучить или восстановить штатным registry flow.
 
 Файл, просто скопированный в `MODEL_DIR`, не становится active. В 1.7.7 status API перечисляет такие orphan artifacts по имени. При отсутствующей usable active-модели их можно обработать через `model-registry recover-artifact --artifact PATH`: команда разрешена только вне production, требует файл внутри `MODEL_DIR`, восстанавливает candidate metadata, выполняет абсолютный quality gate и лишь затем регистрирует/активирует artifact.
 

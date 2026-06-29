@@ -1,5 +1,29 @@
 # QA report
 
+## Release 1.8.10 — 2026-06-29
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in an isolated virtual environment outside the release tree;
+- project installed with `.[dev]`;
+- PostgreSQL integration database was not configured.
+
+| Check | Baseline 1.8.9 | Post-change 1.8.10 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 198 passed, 4 skipped | 252 passed, 4 skipped |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic heads | `0005_plan_outcome_invalid_input` | `0006_manual_trade_remaining_risk` |
+| `python manage.py release-check` | FAILED: manifest referenced four absent files | PASSED after manifest regeneration |
+
+Independent regression evidence was collected in two stages on the unmodified implementation: the initial quantitative/econometric audit produced `33 failed`, and the follow-up boundary/risk/artifact audit produced `20 failed, 32 passed`. After correction, the corresponding audit module reports `53 passed`; the complete suite reports `252 passed, 4 skipped`.
+
+The four skipped tests require an isolated PostgreSQL database and report that `TEST_DATABASE_URL` is not configured. `python manage.py test --require-integration` and migration upgrade/downgrade were therefore NOT RUN. `python manage.py doctor` was NOT RUN because no runtime `.env` or safe PostgreSQL database was configured. Apply Alembic revision `0006_manual_trade_remaining_risk` before starting 1.8.10. No new environment variable is required. Technical correctness does not establish profitability.
+
+---
+
 ## Release 1.8.9 — 2026-06-29
 
 Environment used for reproducible checks:

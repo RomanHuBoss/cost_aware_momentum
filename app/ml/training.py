@@ -167,8 +167,15 @@ def make_barrier_dataset(
     implementation can replace this fallback without changing the model contract.
     """
 
-    if horizon <= 0:
-        raise ValueError("horizon must be positive")
+    if isinstance(horizon, bool) or not isinstance(horizon, (int, np.integer)) or horizon <= 0:
+        raise ValueError("horizon must be a positive integer")
+    for name, value in {
+        "stop_atr_multiplier": stop_atr_multiplier,
+        "tp_atr_multiplier": tp_atr_multiplier,
+    }.items():
+        parsed = float(value)
+        if not np.isfinite(parsed) or parsed <= 0:
+            raise ValueError(f"{name} must be positive and finite")
     frame = build_feature_frame(candles).sort_values(["symbol", "open_time"]).reset_index(drop=True)
     rows: list[dict] = []
     diagnostics: dict[str, int | str] = {
@@ -306,6 +313,121 @@ def validate_directional_scenario_pairs(frame: pd.DataFrame, *, context: str) ->
             f"{context} requires exactly one LONG and one SHORT per decision_time/symbol; "
             f"found {invalid_groups} incomplete or duplicated cohort(s)"
         )
+
+
+def validate_policy_evaluation_metadata(
+    frame: pd.DataFrame,
+    *,
+    context: str,
+    horizon_hours: int | None = None,
+    require_barrier_return_consistency: bool = False,
+) -> pd.DataFrame:
+    """Validate all directional rows before ranking can hide a corrupt scenario."""
+
+    required_columns = {
+        "decision_time",
+        "symbol",
+        "direction",
+        "target",
+        "exit_index",
+        "realized_gross_return",
+        "barrier_upside_rate",
+        "barrier_downside_rate",
+    }
+    missing_columns = sorted(required_columns - set(frame.columns))
+    if missing_columns:
+        raise ValueError(f"{context} metadata is missing columns: {missing_columns}")
+
+    result = frame.copy().reset_index(drop=True)
+    result["decision_time"] = pd.to_datetime(
+        result["decision_time"], utc=True, errors="coerce"
+    )
+    if result["decision_time"].isna().any():
+        raise ValueError(f"{context} contains invalid decision_time")
+    if (~result["direction"].isin(["LONG", "SHORT"])).any():
+        raise ValueError(f"{context} contains an unsupported direction")
+    if (~result["target"].astype(str).isin([str(value) for value in OUTCOME_CLASSES])).any():
+        raise ValueError(f"{context} target contains an unsupported outcome")
+    validate_directional_scenario_pairs(result, context=context)
+
+    exit_index = pd.to_numeric(result["exit_index"], errors="coerce")
+    if (
+        exit_index.isna().any()
+        or not np.isfinite(exit_index.to_numpy(float)).all()
+        or (exit_index < 0).any()
+        or not np.allclose(exit_index, np.floor(exit_index))
+    ):
+        raise ValueError(f"{context} exit_index must contain non-negative integers")
+    if horizon_hours is not None:
+        if horizon_hours <= 0:
+            raise ValueError("horizon_hours must be positive")
+        if (exit_index >= horizon_hours).any():
+            raise ValueError(f"{context} exit_index must be within the configured label horizon")
+    result["exit_index"] = exit_index.astype(int)
+    result["exit_time"] = result["decision_time"] + pd.to_timedelta(
+        result["exit_index"] + 1, unit="h"
+    )
+
+    numeric_columns = [
+        "realized_gross_return",
+        "barrier_upside_rate",
+        "barrier_downside_rate",
+    ]
+    for column in numeric_columns:
+        values = pd.to_numeric(result[column], errors="coerce")
+        if values.isna().any() or not np.isfinite(values.to_numpy(float)).all():
+            raise ValueError(f"{context} {column} must be finite")
+        result[column] = values.astype(float)
+    if (result[["barrier_upside_rate", "barrier_downside_rate"]] <= 0).any().any():
+        raise ValueError(f"{context} barrier rates must be positive")
+
+    is_long = result["direction"].eq("LONG")
+    tp_exit_ratio = np.where(
+        is_long,
+        1.0 + result["barrier_upside_rate"],
+        1.0 - result["barrier_upside_rate"],
+    )
+    sl_exit_ratio = np.where(
+        is_long,
+        1.0 - result["barrier_downside_rate"],
+        1.0 + result["barrier_downside_rate"],
+    )
+    realized_exit_ratio = np.where(
+        is_long,
+        1.0 + result["realized_gross_return"],
+        1.0 - result["realized_gross_return"],
+    )
+    if (tp_exit_ratio <= 0).any() or (sl_exit_ratio <= 0).any() or (realized_exit_ratio <= 0).any():
+        raise ValueError(f"{context} produced a non-positive exit notional ratio")
+
+    if require_barrier_return_consistency:
+        target = result["target"].astype(str)
+        tolerance = 1e-10 + 1e-7 * result[
+            ["barrier_upside_rate", "barrier_downside_rate"]
+        ].max(axis=1)
+        # TP fills must not claim a return above the modeled take-profit barrier.
+        # SL fills may be worse than the barrier because of a real gap, but cannot
+        # claim a favorable or smaller-than-barrier loss under an SL label.
+        tp_mismatch = target.eq("TP") & (
+            (result["realized_gross_return"] <= 0)
+            | (
+                result["realized_gross_return"]
+                > result["barrier_upside_rate"] + tolerance
+            )
+        )
+        sl_mismatch = target.eq("SL") & (
+            result["realized_gross_return"]
+            > -result["barrier_downside_rate"] + tolerance
+        )
+        if tp_mismatch.any() or sl_mismatch.any():
+            raise ValueError(f"{context} realized outcome is inconsistent with its barrier")
+
+    if "label_end_time" in result.columns:
+        label_end = pd.to_datetime(result["label_end_time"], utc=True, errors="coerce")
+        if label_end.isna().any() or (result["exit_time"] > label_end).any():
+            raise ValueError(f"{context} exit_time exceeds label availability")
+        result["label_end_time"] = label_end
+    return result
 
 
 def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSplit:
@@ -541,42 +663,12 @@ def evaluate_policy_model(
         model.classes_,
         expected_rows=len(split.test_meta),
     )
-    meta = split.test_meta.copy().reset_index(drop=True)
-    required_columns = {
-        "decision_time",
-        "symbol",
-        "direction",
-        "target",
-        "exit_index",
-        "realized_gross_return",
-        "barrier_upside_rate",
-        "barrier_downside_rate",
-    }
-    missing_columns = sorted(required_columns - set(meta.columns))
-    if missing_columns:
-        raise ValueError(f"Policy evaluation metadata is missing columns: {missing_columns}")
+    meta = validate_policy_evaluation_metadata(
+        split.test_meta,
+        context="Policy evaluation",
+    )
     for label in OUTCOME_CLASSES:
         meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
-
-    meta["decision_time"] = pd.to_datetime(meta["decision_time"], utc=True, errors="coerce")
-    if meta["decision_time"].isna().any():
-        raise ValueError("Policy evaluation contains invalid decision_time")
-    exit_index = pd.to_numeric(meta["exit_index"], errors="coerce")
-    if exit_index.isna().any() or (exit_index < 0).any() or not np.allclose(
-        exit_index, np.floor(exit_index)
-    ):
-        raise ValueError("Policy evaluation exit_index must contain non-negative integers")
-    meta["exit_index"] = exit_index.astype(int)
-    meta["exit_time"] = meta["decision_time"] + pd.to_timedelta(
-        meta["exit_index"] + 1, unit="h"
-    )
-    if "label_end_time" in meta.columns:
-        label_end = pd.to_datetime(meta["label_end_time"], utc=True, errors="coerce")
-        if label_end.isna().any() or (meta["exit_time"] > label_end).any():
-            raise ValueError("Policy evaluation exit_time exceeds label availability")
-    if (~meta["direction"].isin(["LONG", "SHORT"])).any():
-        raise ValueError("Policy evaluation contains an unsupported direction")
-    validate_directional_scenario_pairs(meta, context="Policy evaluation")
 
     fee_rate_per_leg = config.fee_rate_round_trip / 2.0
     is_long = meta["direction"].eq("LONG")
@@ -692,12 +784,15 @@ def evaluate_policy_model(
         realized_net_rate / trades["stress_downside_rate"],
         0.0,
     )
-    gains = float(trades.loc[trades["realized_r"] > 0, "realized_r"].sum())
-    losses = float(-trades.loc[trades["realized_r"] < 0, "realized_r"].sum())
-    profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
-
     cohort_size = trades.groupby("decision_time")["realized_r"].transform("size")
     trades["realized_r_contribution"] = trades["realized_r"] / cohort_size
+    gains = float(
+        trades.loc[trades["realized_r_contribution"] > 0, "realized_r_contribution"].sum()
+    )
+    losses = float(
+        -trades.loc[trades["realized_r_contribution"] < 0, "realized_r_contribution"].sum()
+    )
+    profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
     exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
     cumulative_r = np.concatenate(([0.0], exit_r.cumsum().to_numpy(float)))
     running_peak = np.maximum.accumulate(cumulative_r)
