@@ -1,5 +1,39 @@
 # QA report
 
+## Release 1.8.5 — 2026-06-29
+
+Environment used for reproducible checks:
+
+- Python 3.13.5;
+- project installed with `.[dev]`;
+- PostgreSQL integration database was not configured.
+
+| Check | Result |
+|---|---:|
+| `python -m pip check` | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q -rs` | 169 passed, 4 skipped |
+| `node --check web/js/app.js` | PASSED |
+| Alembic heads | `0005_plan_outcome_invalid_input` |
+
+The four skipped tests require an isolated PostgreSQL database and explicitly report `TEST_DATABASE_URL is not configured`.
+
+New or expanded regression coverage:
+
+- overlapping full-horizon returns use non-overlapping capital sleeves;
+- simultaneous symbols are equal-weighted inside a cohort;
+- first-period drawdown remains visible;
+- direction selection uses net `EV/R`, not raw expected rate;
+- exit fee uses actual exit notional;
+- live signal geometry accepts artifact stop/TP multipliers;
+- runtime loads and exposes artifact multipliers;
+- projected funding excludes a settlement exactly at the planning start boundary.
+
+No database migration or `.env` change is required. Existing artifacts remain compatible through default barrier multipliers. Backtest results produced before 1.8.5 are not directly comparable because the portfolio accounting semantics changed.
+
+---
+
 ## Release 1.8.4 — 2026-06-29
 
 Environment used for reproducible checks:

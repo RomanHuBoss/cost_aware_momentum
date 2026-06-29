@@ -340,3 +340,15 @@ def test_fee_math_uses_each_barrier_leg_notional() -> None:
     assert short_upside == D("0.09905")
     assert long_rr == long_upside / long_downside
     assert short_rr == short_upside / short_downside
+
+
+def test_projected_funding_excludes_settlement_at_exact_start_boundary() -> None:
+    start = datetime(2026, 6, 25, 16, tzinfo=UTC)
+
+    assert projected_funding_rate(
+        start_time=start,
+        horizon_hours=8,
+        next_settlement=start,
+        interval_minutes=480,
+        current_rate=D("0.0001"),
+    ) == D("0.0001")

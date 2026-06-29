@@ -343,6 +343,7 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         "direction",
         "target",
         "ambiguous",
+        "exit_index",
         "realized_gross_return",
         "barrier_upside_rate",
         "barrier_downside_rate",

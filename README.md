@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.4: LONG/SHORT теперь выбирается по той же чистой экономике `EV/R`, которая публикуется оператору и используется policy quality gate, а не по предварительной беззатратной utility модели.
+> Версия 1.8.5: research backtest использует ту же cost-aware `EV/R` policy, точные комиссии по входному/выходному notional и неперекрывающиеся capital sleeves; live barrier geometry читается из активного model artifact.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -137,9 +137,13 @@ Train/calibration/final holdout формируются по `decision_time`; lab
 
 ## Research backtest
 
-Backtest выбирает не более одного направления на символ и timestamp. Одновременные позиции сначала агрегируются в один равновзвешенный портфельный return за timestamp и только затем компаундятся. Equity curve начинается с исходного капитала `1.0`, поэтому просадка первой сделки не теряется.
+Backtest выбирает не более одного направления на символ и timestamp по тому же порядку policy, что и production: максимальный net `EV/R`, затем net RR и детерминированный tie-break. Комиссия каждой ноги считается от фактического входного/выходного notional; slippage, stop-gap reserve, статический funding-сценарий и policy-пороги задаются отдельно.
 
-Research backtest не моделирует полный historical order book, partial fills и задержку оператора и не является доказательством прибыльности.
+Для горизонта `H` часов капитал делится на `H` равных sleeves. Часовой cohort использует один sleeve и этот капитал не переиспользуется до завершения максимального label horizon. Поэтому перекрывающиеся H-часовые returns не компаундятся как последовательные одночасовые сделки и не создают скрытое H-кратное плечо. PnL зачисляется в equity curve в modeled candle exit time. Метрики concurrency считают реально открытые позиции, а не только новые входы в один timestamp.
+
+`net_return` сохраняет консервативный stop-gap reserve на SL; рядом выводится `net_return_without_stop_gap_reserve`, чтобы не смешивать резерв риска с оценкой результата без gap-буфера.
+
+Research backtest не моделирует intrahorizon mark-to-market, полный historical order book, entry-zone/no-fill, partial fills, фактическую funding timeline и задержку оператора и не является доказательством прибыльности.
 
 ## Режимы
 
@@ -169,13 +173,13 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
-## Обновление с 1.8.3 на 1.8.4
+## Обновление с 1.8.4 на 1.8.5
 
-- DB migration не требуется.
-- Новые `.env` переменные не требуются.
+- DB migration и новые `.env` переменные не требуются.
 - Перезапустите API, worker и trainer после замены файлов.
-- Переобучение artifact не требуется: контракт `TP / SL / TIMEOUT` не изменился.
-- После перезапуска worker оценивает оба направления и публикует сценарий с максимальным текущим net `EV/R`; поэтому направление части рекомендаций может корректно отличаться от 1.8.3.
+- Переобучение artifact не требуется: существующие artifacts без barrier multipliers используют совместимые дефолты `1.15 / 2.20`; новые значения из bundle теперь применяются и в live geometry.
+- Backtest report меняет экономический смысл `net_return`: вместо почасового компаундинга перекрывающихся полногоризонтных returns используется `H` неперекрывающихся capital sleeves. Старые и новые backtest-метрики нельзя напрямую склеивать в один временной ряд.
+- CLI `--minimum-predicted-edge` сохранён как deprecated alias для `--minimum-net-ev-r`; новые запуски должны использовать явное имя EV/R.
 
 ## Ограничения
 

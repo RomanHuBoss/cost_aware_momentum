@@ -10,7 +10,12 @@ import joblib
 import numpy as np
 
 from app.ml.features import FEATURE_NAMES
-from app.ml.training import MODEL_FEATURE_NAMES, OUTCOME_CLASSES
+from app.ml.training import (
+    DEFAULT_STOP_ATR_MULTIPLIER,
+    DEFAULT_TP_ATR_MULTIPLIER,
+    MODEL_FEATURE_NAMES,
+    OUTCOME_CLASSES,
+)
 
 Direction = Literal["LONG", "SHORT"]
 
@@ -38,6 +43,8 @@ class ModelRuntime:
         self.horizon_hours: int | None = None
         self.model_type = "deterministic_baseline"
         self.source = "baseline"
+        self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
+        self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
 
     @property
     def is_baseline(self) -> bool:
@@ -53,6 +60,8 @@ class ModelRuntime:
             "artifact_sha256": self.sha256,
             "baseline": self.is_baseline,
             "source": self.source,
+            "stop_atr_multiplier": self.stop_atr_multiplier,
+            "tp_atr_multiplier": self.tp_atr_multiplier,
         }
 
     def load(
@@ -67,6 +76,8 @@ class ModelRuntime:
         self.horizon_hours = None
         self.model_type = "deterministic_baseline"
         self.source = "baseline"
+        self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
+        self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
         self.version = "baseline-momentum-v1"
         self.calibration_version = "uncalibrated-baseline-v1"
 
@@ -103,12 +114,20 @@ class ModelRuntime:
                 raise RuntimeError(
                     f"Active model version mismatch: registry={expected_version}, artifact={version}"
                 )
+            stop_atr_multiplier = self._artifact_multiplier(
+                bundle, "stop_atr_multiplier", DEFAULT_STOP_ATR_MULTIPLIER
+            )
+            tp_atr_multiplier = self._artifact_multiplier(
+                bundle, "tp_atr_multiplier", DEFAULT_TP_ATR_MULTIPLIER
+            )
             self.bundle = bundle
             self.sha256 = digest
             self.version = version
             self.calibration_version = str(bundle.get("calibration_version", "unknown"))
             self.horizon_hours = int(bundle["horizon_hours"])
             self.model_type = str(bundle.get("model_type", "unknown"))
+            self.stop_atr_multiplier = stop_atr_multiplier
+            self.tp_atr_multiplier = tp_atr_multiplier
             self.source = source
             return
         if not self.allow_baseline:
@@ -116,10 +135,20 @@ class ModelRuntime:
         self.source = source
 
     @staticmethod
-    def _scenario_utility(p_tp: float, p_sl: float, p_timeout: float) -> float:
-        # Direction selection is deliberately cost-agnostic.  The policy layer later
-        # calculates exact net EV using current fees, funding, spread and trade levels.
-        return p_tp * 2.20 - p_sl * 1.15 - p_timeout * 0.20
+    def _artifact_multiplier(bundle: dict[str, Any], key: str, default: float) -> float:
+        value = float(bundle.get(key, default))
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Model artifact {key} must be positive and finite")
+        return value
+
+    def _scenario_utility(self, p_tp: float, p_sl: float, p_timeout: float) -> float:
+        # Compatibility score only. Exact direction selection is performed later by
+        # the cost-aware policy, but this score must still use the artifact geometry.
+        return (
+            p_tp * self.tp_atr_multiplier
+            - p_sl * self.stop_atr_multiplier
+            - p_timeout * 0.20
+        )
 
     def _predict_artifact(self, features: dict[str, float]) -> Prediction:
         scenarios = self._predict_artifact_scenarios(features)

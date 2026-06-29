@@ -22,6 +22,7 @@ from app.db.models import (
 )
 from app.ml.features import BASELINE_FEATURE_SCHEMA_VERSION, latest_feature_snapshot
 from app.ml.runtime import ModelRuntime, Prediction
+from app.ml.training import DEFAULT_STOP_ATR_MULTIPLIER, DEFAULT_TP_ATR_MULTIPLIER
 from app.risk.math import CostScenario, net_rr_and_ev, projected_funding_rate
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import create_execution_plan
@@ -65,6 +66,8 @@ def select_cost_aware_scenario(
     last_price: Decimal,
     atr_pct: Decimal,
     costs: CostScenario,
+    stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
+    tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
 ) -> SignalScenarioEconomics:
     """Select LONG/SHORT by the exact economics published to the operator.
 
@@ -73,14 +76,24 @@ def select_cost_aware_scenario(
     current costs and funding are only available in the signal policy layer.
     """
 
+    stop_multiplier = decimal(stop_atr_multiplier)
+    tp_multiplier = decimal(tp_atr_multiplier)
+    if (
+        not stop_multiplier.is_finite()
+        or not tp_multiplier.is_finite()
+        or stop_multiplier <= 0
+        or tp_multiplier <= 0
+    ):
+        raise ValueError("ATR barrier multipliers must be positive and finite")
+
     candidates: list[SignalScenarioEconomics] = []
     for prediction in predictions:
         reference = ask_price if prediction.direction == "LONG" else bid_price
         reference = reference or last_price
         atr = reference * atr_pct
         zone_half = atr * Decimal("0.12")
-        stop_distance = atr * Decimal("1.15")
-        tp_distance = atr * Decimal("2.20")
+        stop_distance = atr * stop_multiplier
+        tp_distance = atr * tp_multiplier
         tp2_distance = atr * Decimal("3.10")
 
         if prediction.direction == "LONG":
@@ -383,6 +396,8 @@ async def publish_hourly_signals(
             last_price=ticker.last_price,
             atr_pct=decimal(atr_pct),
             costs=costs,
+            stop_atr_multiplier=runtime.stop_atr_multiplier,
+            tp_atr_multiplier=runtime.tp_atr_multiplier,
         )
         prediction = scenario.prediction
         direction = prediction.direction

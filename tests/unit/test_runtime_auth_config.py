@@ -11,6 +11,11 @@ from app.ml.runtime import ModelRuntime
 from app.ml.training import MODEL_FEATURE_NAMES, TemporalCalibratedBarrierModel
 
 
+class ArtifactStubModel:
+    classes_ = np.array(["TP", "SL", "TIMEOUT"])
+
+
+
 def test_postgresql_is_mandatory() -> None:
     with pytest.raises(ValueError):
         Settings(database_url="sqlite:///bad.db")
@@ -86,6 +91,8 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
             "calibration_version": "test-cal-v1",
             "feature_names": MODEL_FEATURE_NAMES,
             "horizon_hours": 8,
+            "stop_atr_multiplier": 1.7,
+            "tp_atr_multiplier": 2.9,
         },
         path,
     )
@@ -97,6 +104,8 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
     assert runtime.is_baseline is False
     assert prediction.p_tp + prediction.p_sl + prediction.p_timeout == pytest.approx(1.0)
     assert prediction.model_version == "test-barrier-v1"
+    assert runtime.stop_atr_multiplier == pytest.approx(1.7)
+    assert runtime.tp_atr_multiplier == pytest.approx(2.9)
 
 
 def test_runtime_rejects_legacy_direction_artifact(tmp_path: Path) -> None:
@@ -112,3 +121,26 @@ def test_runtime_rejects_legacy_direction_artifact(tmp_path: Path) -> None:
     runtime = ModelRuntime(path, allow_baseline=False)
     with pytest.raises(ValueError, match="legacy model task"):
         runtime.load()
+
+
+def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-multiplier.joblib"
+    joblib.dump(
+        {
+            "task": "barrier_outcome_v1",
+            "model": ArtifactStubModel(),
+            "model_type": "stub",
+            "version": "invalid-multiplier-v1",
+            "calibration_version": "stub",
+            "feature_names": MODEL_FEATURE_NAMES,
+            "horizon_hours": 8,
+            "stop_atr_multiplier": float("nan"),
+            "tp_atr_multiplier": 2.2,
+        },
+        path,
+    )
+
+    runtime = ModelRuntime(path, allow_baseline=False)
+    with pytest.raises(ValueError, match="stop_atr_multiplier must be positive and finite"):
+        runtime.load()
+    assert runtime.is_baseline is True

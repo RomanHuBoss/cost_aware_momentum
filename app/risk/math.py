@@ -175,7 +175,9 @@ def projected_funding_rate(
     if start_time.tzinfo is None or next_settlement.tzinfo is None:
         raise ValueError("Funding timestamps must be timezone-aware")
     interval = timedelta(minutes=interval_minutes)
-    while next_settlement < start_time:
+    # A settlement exactly at the planning start is already in the past for a
+    # position opened after the signal decision. Count only future settlements.
+    while next_settlement <= start_time:
         next_settlement += interval
     end_time = start_time + timedelta(hours=horizon_hours)
     if next_settlement > end_time:

@@ -63,3 +63,45 @@ def test_signal_direction_is_selected_by_exact_net_ev_not_fixed_runtime_utility(
     assert selected.prediction.direction == "SHORT"
     assert selected.ev_r == pytest.approx(D("0.1850803635197431200602849368"))
     assert selected.ev_r > D("0.1534")
+
+
+def test_signal_geometry_uses_artifact_barrier_multipliers() -> None:
+    predictions = (
+        Prediction("LONG", 0.80, 0.10, 0.10, 1.0, "fixed-v1", "fixed-cal-v1", ()),
+    )
+    costs = CostScenario(
+        fee_rate_round_trip=D("0"),
+        slippage_rate=D("0"),
+        stop_gap_reserve_rate=D("0"),
+        funding_rate=D("0"),
+    )
+
+    selected = select_cost_aware_scenario(
+        predictions,
+        bid_price=D("100"),
+        ask_price=D("100"),
+        last_price=D("100"),
+        atr_pct=D("0.02"),
+        costs=costs,
+        stop_atr_multiplier=2.0,
+        tp_atr_multiplier=4.0,
+    )
+
+    assert selected.stop == D("96")
+    assert selected.take_profit_1 == D("108")
+
+
+def test_signal_geometry_rejects_non_finite_barrier_multiplier() -> None:
+    prediction = Prediction("LONG", 0.8, 0.1, 0.1, 1.0, "fixed-v1", "fixed-cal-v1", ())
+    costs = CostScenario(D("0"), D("0"), D("0"), D("0"))
+
+    with pytest.raises(ValueError, match="positive and finite"):
+        select_cost_aware_scenario(
+            (prediction,),
+            bid_price=D("100"),
+            ask_price=D("100"),
+            last_price=D("100"),
+            atr_pct=D("0.02"),
+            costs=costs,
+            stop_atr_multiplier=float("nan"),
+        )

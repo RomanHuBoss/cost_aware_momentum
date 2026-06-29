@@ -4,7 +4,7 @@
 
 Модель оценивает распределение исходов `TP first`, `SL first`, `TIMEOUT` отдельно для условного LONG и SHORT на фиксированном горизонте. Она не прогнозирует `NO TRADE`: это решение последующего cost/risk policy engine.
 
-Начиная с 1.8.4 runtime передает policy layer оба распределения. Окончательное направление выбирается по фактическому net `EV/R` с текущими executable bid/ask, комиссиями, slippage, funding и barrier geometry. Предварительная модельная utility используется только как диагностический score и tie-breaker, но не может заменить экономический выбор направления. Это согласует production inference с cost-aware holdout policy, применяемой перед auto-activation.
+Начиная с 1.8.4 runtime передает policy layer оба распределения. Окончательное направление выбирается по фактическому net `EV/R` с текущими executable bid/ask, комиссиями, slippage, funding и barrier geometry. Предварительная модельная utility используется только как диагностический score и tie-breaker, но не может заменить экономический выбор направления. Начиная с 1.8.5 live stop/TP1 geometry и compatibility score используют `stop_atr_multiplier` / `tp_atr_multiplier` активного artifact, что устраняет latent train/serve skew при нестандартных barriers.
 
 ## Доступные модели
 
@@ -41,7 +41,7 @@ Artifact хранит:
 - распределение классов и долю ambiguous labels;
 - training-data profile: число candle rows/timestamps/символов, полный список символов, временные границы, coverage и SHA256-подписи;
 - cost-aware holdout policy metrics: число сделок, trade rate, expected EV, realized mean/total R, win rate, profit factor и max drawdown;
-- barrier-policy net return, win rate, max drawdown, no-trade rate и cost stress x1.5/x2 в backtest report.
+- barrier-policy net return, win rate, max drawdown, no-trade rate и cost stress x1.5/x2 в backtest report; начиная с 1.8.5 backtest применяет cost-aware EV/R selection, exit-notional-aware fees и H неперекрывающихся capital sleeves.
 
 Порог сделки не должен выбираться по accuracy.
 
@@ -96,7 +96,7 @@ python manage.py model-registry activate --version <version>
 - hourly ambiguity в post-event журнале уточняется 1/3/5-минутным путем, но training labels пока сохраняют консервативное hourly правило;
 - разрывы hourly history теперь исключаются, но pipeline пока не выполняет автоматическое targeted backfill/repair конкретного gap перед training;
 - операторский выбор создает selection bias;
-- backtest не является доказательством прибыли и не заменяет paper/shadow forward test;
+- backtest не является доказательством прибыли и не заменяет paper/shadow forward test; capital sleeves устраняют overlap leverage, но не моделируют intrahorizon mark-to-market, no-fill, partial fills и historical orderbook;
 - полноценные PSI/feature/probability drift gates и автоматический rollback по realized performance еще не реализованы; текущий trainer использует holdout quality gate до активации.
 
 ## Post-event counterfactual evaluation
@@ -104,7 +104,7 @@ python manage.py model-registry activate --version <version>
 Начиная с версии 1.6.0 worker независимо от accept/reject разрешает первичный outcome каждого market signal: `TP`, `SL` или `TIMEOUT`. Версия 1.7.0 добавляет intrabar reconstruction для hourly ambiguity. Evaluation использует directional primary-barrier семантику:
 
 - confirmed hourly last-price candles как базовый путь;
-- непрерывный путь от `event_time` до первого barrier hit или точного конца горизонта;
+- непрерывный hourly path от `event_time` до первого barrier hit или точного конца горизонта; поскольку `publish_time` может быть позже часовой границы, первый hourly bar содержит небольшой pre-publication interval, который нельзя устранить без tick/actual-fill path;
 - hourly TP+SL вызывает точечную загрузку полного confirmed 1/3/5-минутного окна;
 - неполный intrabar path оставляет outcome pending;
 - TP+SL внутри одного самого мелкого бара трактуется как SL и помечается ambiguous;
