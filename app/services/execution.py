@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -7,6 +8,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.db.locks import acquire_advisory_xact_lock
 from app.db.models import (
     AccountEquitySnapshot,
     CapitalProfile,
@@ -17,8 +19,41 @@ from app.db.models import (
     PositionSnapshot,
     TickerSnapshot,
 )
-from app.risk.math import CostScenario, InstrumentConstraints, calculate_position_plan
+from app.risk.math import (
+    CostScenario,
+    InstrumentConstraints,
+    assess_liquidation_proximity,
+    calculate_position_plan,
+)
 from app.services.audit import append_audit_event, publish_outbox
+
+
+@dataclass(frozen=True)
+class AcceptanceRiskState:
+    open_risk_usdt: Decimal
+    effective_capital: Decimal
+    available_margin: Decimal | None
+    capital_verified: bool
+    capital_snapshot: dict
+
+
+def executable_entry_price(
+    *,
+    direction: str,
+    bid_price: Decimal | None,
+    ask_price: Decimal | None,
+) -> Decimal:
+    """Return the current marketable entry side; never fall back to last price."""
+
+    if direction == "LONG":
+        price = ask_price
+    elif direction == "SHORT":
+        price = bid_price
+    else:
+        raise ValueError(f"Unsupported direction for executable entry: {direction}")
+    if price is None or not price.is_finite() or price <= 0:
+        raise ValueError("Current executable entry price is missing or invalid")
+    return price
 
 
 async def latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | None:
@@ -44,7 +79,11 @@ async def latest_spec(session: AsyncSession, symbol: str) -> InstrumentSpecHisto
 
 
 async def effective_capital(
-    session: AsyncSession, profile: CapitalProfile
+    session: AsyncSession,
+    profile: CapitalProfile,
+    *,
+    now: datetime | None = None,
+    max_snapshot_age_seconds: int = 180,
 ) -> tuple[Decimal, Decimal | None, bool, dict]:
     if profile.mode in {"manual", "paper"} or not profile.source_account_id:
         return (
@@ -67,6 +106,29 @@ async def effective_capital(
     ).scalar_one_or_none()
     if snapshot is None:
         return Decimal("0"), Decimal("0"), False, {"source": "bybit", "missing_snapshot": True}
+    current_time = now or datetime.now(UTC)
+    source_time = snapshot.source_time
+    if source_time.tzinfo is None or current_time.tzinfo is None:
+        age_seconds: float | None = None
+    else:
+        age_seconds = (current_time - source_time).total_seconds()
+    if (
+        age_seconds is None
+        or age_seconds < 0
+        or age_seconds > max_snapshot_age_seconds
+    ):
+        return (
+            Decimal("0"),
+            Decimal("0"),
+            False,
+            {
+                "source": "bybit",
+                "stale_snapshot": True,
+                "snapshot_time": source_time.isoformat(),
+                "snapshot_age_seconds": age_seconds,
+                "max_snapshot_age_seconds": max_snapshot_age_seconds,
+            },
+        )
     capital = min(profile.allocated_capital, snapshot.equity, snapshot.day_start_equity)
     return (
         capital,
@@ -78,6 +140,8 @@ async def effective_capital(
             "equity": str(snapshot.equity),
             "day_start_equity": str(snapshot.day_start_equity),
             "snapshot_time": snapshot.source_time.isoformat(),
+            "snapshot_age_seconds": age_seconds,
+            "max_snapshot_age_seconds": max_snapshot_age_seconds,
         },
     )
 
@@ -90,6 +154,32 @@ async def open_risk_usdt(session: AsyncSession) -> Decimal:
         )
     )
     return Decimal(str(result.scalar_one()))
+
+
+async def load_acceptance_risk_state(
+    session: AsyncSession,
+    *,
+    profile: CapitalProfile,
+    now: datetime,
+    max_snapshot_age_seconds: int,
+) -> AcceptanceRiskState:
+    """Serialize the global risk check and read all acceptance inputs under that lock."""
+
+    await acquire_advisory_xact_lock(session, "execution_risk_accept", "global")
+    current_open_risk = await open_risk_usdt(session)
+    capital, available_margin, verified, snapshot = await effective_capital(
+        session,
+        profile,
+        now=now,
+        max_snapshot_age_seconds=max_snapshot_age_seconds,
+    )
+    return AcceptanceRiskState(
+        open_risk_usdt=current_open_risk,
+        effective_capital=capital,
+        available_margin=available_margin,
+        capital_verified=verified,
+        capital_snapshot=snapshot,
+    )
 
 
 async def reconciliation_issues(session: AsyncSession) -> list[str]:
@@ -149,9 +239,17 @@ async def create_execution_plan(
     spec = await latest_spec(session, signal.symbol)
     now = datetime.now(UTC)
 
-    c_eff, available_margin, verified, capital_snapshot = await effective_capital(session, profile)
+    c_eff, available_margin, verified, capital_snapshot = await effective_capital(
+        session,
+        profile,
+        now=now,
+        max_snapshot_age_seconds=settings.max_account_snapshot_age_seconds,
+    )
     warnings: list[str] = list(signal.warnings or [])
     status_override: str | None = None
+    if profile.mode == "bybit_read_only" and not verified:
+        status_override = "BLOCKED_STALE_DATA"
+        warnings.append("Снимок капитала отсутствует, устарел или имеет некорректное время")
     if profile.mode == "bybit_read_only":
         issues = await reconciliation_issues(session)
         if issues:
@@ -234,10 +332,16 @@ async def create_execution_plan(
 
     liquidation_buffer = Decimal("0")
     if plan_math.status != "BLOCKED_INVALID_INPUT":
-        stop_distance = abs(signal.entry_reference - signal.stop_loss) / signal.entry_reference
-        approximate_liq_distance = Decimal("0.9") / Decimal(max(1, plan_math.leverage))
-        liquidation_buffer = max(Decimal("0"), approximate_liq_distance - stop_distance)
-        if liquidation_buffer < stop_distance:
+        liquidation = assess_liquidation_proximity(
+            entry=signal.entry_reference,
+            stop=signal.stop_loss,
+            leverage=plan_math.leverage,
+        )
+        liquidation_buffer = liquidation.buffer_rate
+        if liquidation.stop_beyond_estimated_liquidation:
+            warnings.append("Стоп находится за оценочной областью ликвидации")
+            status = "BLOCKED_LIQUIDATION"
+        elif liquidation.narrow_buffer:
             warnings.append("Небольшой оценочный запас до области ликвидации")
             if plan_math.leverage > 3:
                 status = "BLOCKED_LIQUIDATION"

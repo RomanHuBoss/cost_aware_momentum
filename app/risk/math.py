@@ -27,6 +27,15 @@ class InstrumentConstraints:
 
 
 @dataclass(frozen=True)
+class LiquidationAssessment:
+    stop_distance_rate: Decimal
+    estimated_liquidation_distance_rate: Decimal
+    buffer_rate: Decimal
+    stop_beyond_estimated_liquidation: bool
+    narrow_buffer: bool
+
+
+@dataclass(frozen=True)
 class PositionPlan:
     status: str
     effective_capital: Decimal
@@ -278,6 +287,35 @@ def net_rr_and_ev(
     ev_rate = d(p_tp) * upside - d(p_sl) * downside + d(p_timeout) * timeout_net
     ev_r = Decimal("0") if downside <= 0 else ev_rate / downside
     return rr, ev_r, downside, upside
+
+
+def assess_liquidation_proximity(
+    *,
+    entry: Decimal | float | int | str,
+    stop: Decimal | float | int | str,
+    leverage: int,
+) -> LiquidationAssessment:
+    """Conservative distance check against an approximate isolated liquidation boundary."""
+
+    entry_price = positive_finite_decimal(entry, "entry")
+    stop_price = positive_finite_decimal(stop, "stop")
+    try:
+        leverage_value = int(leverage)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("leverage must be a positive integer") from exc
+    if leverage_value < 1:
+        raise ValueError("leverage must be a positive integer")
+
+    stop_distance = abs(entry_price - stop_price) / entry_price
+    estimated_liquidation_distance = Decimal("0.9") / Decimal(leverage_value)
+    buffer_rate = max(Decimal("0"), estimated_liquidation_distance - stop_distance)
+    return LiquidationAssessment(
+        stop_distance_rate=stop_distance,
+        estimated_liquidation_distance_rate=estimated_liquidation_distance,
+        buffer_rate=buffer_rate,
+        stop_beyond_estimated_liquidation=stop_distance >= estimated_liquidation_distance,
+        narrow_buffer=buffer_rate < stop_distance,
+    )
 
 
 def floor_to_step(value: Decimal, step: Decimal) -> Decimal:

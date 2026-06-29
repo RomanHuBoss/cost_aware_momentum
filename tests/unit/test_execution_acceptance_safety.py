@@ -1,0 +1,261 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+import app.services.execution as execution
+from app.config import Settings
+from app.risk.math import assess_liquidation_proximity
+from app.services.execution import effective_capital, executable_entry_price, load_acceptance_risk_state
+
+D = Decimal
+
+
+class _ScalarResult:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> object:
+        return self._value
+
+
+@pytest.mark.parametrize(
+    ("direction", "bid", "ask", "expected"),
+    [
+        ("LONG", D("100.00"), D("101.25"), D("101.25")),
+        ("SHORT", D("99.75"), D("101.00"), D("99.75")),
+    ],
+)
+def test_executable_entry_uses_adverse_order_book_side(
+    direction: str,
+    bid: Decimal,
+    ask: Decimal,
+    expected: Decimal,
+) -> None:
+    assert executable_entry_price(direction=direction, bid_price=bid, ask_price=ask) == expected
+
+
+@pytest.mark.parametrize(
+    ("direction", "bid", "ask"),
+    [
+        ("LONG", D("100"), None),
+        ("SHORT", None, D("101")),
+        ("LONG", D("100"), D("NaN")),
+        ("SHORT", D("0"), D("101")),
+    ],
+)
+def test_executable_entry_fails_closed_on_missing_or_invalid_side(
+    direction: str,
+    bid: Decimal | None,
+    ask: Decimal | None,
+) -> None:
+    with pytest.raises(ValueError, match="executable"):
+        executable_entry_price(direction=direction, bid_price=bid, ask_price=ask)
+
+
+async def test_effective_capital_rejects_stale_exchange_snapshot() -> None:
+    now = datetime(2026, 6, 29, 12, 0, tzinfo=UTC)
+    snapshot = SimpleNamespace(
+        equity=D("1200"),
+        day_start_equity=D("1100"),
+        available_margin=D("800"),
+        source_time=now - timedelta(seconds=181),
+    )
+    session = SimpleNamespace(execute=AsyncMock(return_value=_ScalarResult(snapshot)))
+    profile = SimpleNamespace(
+        mode="bybit_read_only",
+        source_account_id="account-1",
+        allocated_capital=D("1000"),
+        capital_verified=True,
+    )
+
+    capital, available_margin, verified, diagnostics = await effective_capital(
+        session,
+        profile,
+        now=now,
+        max_snapshot_age_seconds=180,
+    )
+
+    assert capital == D("0")
+    assert available_margin == D("0")
+    assert verified is False
+    assert diagnostics["stale_snapshot"] is True
+    assert diagnostics["snapshot_age_seconds"] == pytest.approx(181.0)
+
+
+async def test_acceptance_risk_state_acquires_global_lock_before_reading_risk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    async def fake_lock(session: object, namespace: str, value: str) -> None:
+        del session
+        events.append(f"lock:{namespace}:{value}")
+
+    async def fake_open_risk(session: object) -> Decimal:
+        del session
+        events.append("open-risk")
+        return D("12.5")
+
+    async def fake_effective_capital(*args: object, **kwargs: object) -> tuple:
+        del args, kwargs
+        events.append("capital")
+        return D("1000"), D("500"), True, {"source": "bybit"}
+
+    monkeypatch.setattr(execution, "acquire_advisory_xact_lock", fake_lock)
+    monkeypatch.setattr(execution, "open_risk_usdt", fake_open_risk)
+    monkeypatch.setattr(execution, "effective_capital", fake_effective_capital)
+
+    state = await load_acceptance_risk_state(
+        object(),
+        profile=object(),
+        now=datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
+        max_snapshot_age_seconds=180,
+    )
+
+    assert events == ["lock:execution_risk_accept:global", "open-risk", "capital"]
+    assert state.open_risk_usdt == D("12.5")
+    assert state.effective_capital == D("1000")
+    assert state.capital_verified is True
+
+
+def test_stop_beyond_estimated_liquidation_is_detected_at_low_leverage() -> None:
+    assessment = assess_liquidation_proximity(
+        entry=D("100"),
+        stop=D("65"),
+        leverage=3,
+    )
+
+    assert assessment.stop_distance_rate == D("0.35")
+    assert assessment.estimated_liquidation_distance_rate == D("0.3")
+    assert assessment.buffer_rate == D("0")
+    assert assessment.stop_beyond_estimated_liquidation is True
+
+
+def test_account_snapshot_age_policy_rejects_unsafe_threshold() -> None:
+    with pytest.raises(ValueError, match="MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS"):
+        Settings(
+            max_account_snapshot_age_seconds=29,
+            database_url="postgresql+psycopg://u:p@localhost/db",
+        )
+
+
+class _ScalarOneResult:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar_one(self) -> object:
+        return self._value
+
+
+async def _build_plan_for_safety_case(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    profile_mode: str,
+    stop_loss: Decimal,
+    capital_result: tuple[Decimal, Decimal | None, bool, dict],
+):
+    from uuid import uuid4
+
+    signal = SimpleNamespace(
+        id=uuid4(),
+        symbol="BTCUSDT",
+        warnings=[],
+        fee_rate_round_trip=D("0.0011"),
+        slippage_rate=D("0.0003"),
+        funding_rate_scenario=D("0"),
+        stress_downside_rate=D("0.36"),
+        status="PUBLISHED",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        net_rr=D("1.5"),
+        net_ev_r=D("0.1"),
+        entry_reference=D("100"),
+        stop_loss=stop_loss,
+        take_profit_1=D("120"),
+        direction="LONG",
+    )
+    profile = SimpleNamespace(
+        id=uuid4(),
+        mode=profile_mode,
+        source_account_id="account-1" if profile_mode == "bybit_read_only" else None,
+        allocated_capital=D("10000"),
+        capital_verified=profile_mode != "bybit_read_only",
+        max_leverage=3,
+        default_leverage=3,
+        max_total_risk_rate=D("0.02"),
+        risk_rate=D("0.01"),
+        margin_reserve_rate=D("0.25"),
+        version=1,
+    )
+    ticker = SimpleNamespace(
+        source_time=datetime.now(UTC),
+        turnover_24h=D("100000000"),
+        funding_rate=D("0"),
+        next_funding_time=None,
+    )
+    spec = SimpleNamespace(
+        qty_step=D("0.001"),
+        min_qty=D("0.001"),
+        min_notional=D("5"),
+        max_qty=D("100000"),
+        max_leverage=D("100"),
+        funding_interval_minutes=480,
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_ScalarOneResult(0)),
+        add=lambda value: None,
+        flush=AsyncMock(),
+    )
+
+    monkeypatch.setattr(execution, "latest_ticker", AsyncMock(return_value=ticker))
+    monkeypatch.setattr(execution, "latest_spec", AsyncMock(return_value=spec))
+    monkeypatch.setattr(execution, "effective_capital", AsyncMock(return_value=capital_result))
+    monkeypatch.setattr(execution, "open_risk_usdt", AsyncMock(return_value=D("0")))
+    monkeypatch.setattr(execution, "reconciliation_issues", AsyncMock(return_value=[]))
+    monkeypatch.setattr(execution, "append_audit_event", AsyncMock())
+    monkeypatch.setattr(execution, "publish_outbox", AsyncMock())
+
+    settings = Settings(database_url="postgresql+psycopg://u:p@localhost/db")
+    return await execution.create_execution_plan(
+        session,
+        signal=signal,
+        profile=profile,
+        settings=settings,
+    )
+
+
+async def test_execution_plan_blocks_stop_beyond_liquidation_at_leverage_three(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("65"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+    )
+
+    assert plan.status == "BLOCKED_LIQUIDATION"
+    assert "Стоп находится за оценочной областью ликвидации" in plan.warnings
+
+
+async def test_execution_plan_blocks_unverified_bybit_capital_as_stale_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="bybit_read_only",
+        stop_loss=D("98"),
+        capital_result=(
+            D("0"),
+            D("0"),
+            False,
+            {"source": "bybit", "stale_snapshot": True},
+        ),
+    )
+
+    assert plan.status == "BLOCKED_STALE_DATA"
+    assert any("Снимок капитала" in warning for warning in plan.warnings)

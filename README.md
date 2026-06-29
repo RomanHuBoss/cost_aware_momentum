@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.6: почасовой инференс диагностирует каждый отсев, повторяет неполный результат до пяти раз и показывает оператору точное распределение исполнимых, NO TRADE и заблокированных планов.
+> Версия 1.8.7: принятие рекомендации проверяет исполнимый ask/bid, свежесть account snapshot и общий риск под PostgreSQL advisory lock; стоп за оценочной ликвидацией всегда блокируется.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -15,6 +15,7 @@
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
 - Decimal-арифметика для денежных и контрактных расчётов.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии или превышении риска.
+- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный общий portfolio-risk check.
 - Нативный запуск без Docker, Redis и Celery.
 
 ## Требования
@@ -172,6 +173,16 @@ python manage.py test --require-integration
 ```
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
+
+## Обновление с 1.8.6 на 1.8.7
+
+- DB migration не требуется.
+- Добавлена необязательная переменная `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`; безопасный default — `180`. Для явной конфигурации перенесите ее из `.env.example` в локальный `.env`.
+- Перезапустите API и worker после замены файлов.
+- При `Принять` entry-zone проверяется по текущему ask для LONG и bid для SHORT. `last_price` сохраняется только как диагностика и больше не считается ценой немедленного входа.
+- Read-only capital profile блокируется, если snapshot equity/available margin отсутствует, старше лимита либо имеет некорректное время.
+- Конкурентные accept-запросы сериализуются глобальным transaction-scoped PostgreSQL advisory lock до чтения open risk и капитала.
+- Stop-loss за консервативно оцененной областью ликвидации получает `BLOCKED_LIQUIDATION` при любом плече, включая 1–3x.
 
 ## Обновление с 1.8.5 на 1.8.6
 

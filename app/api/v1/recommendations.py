@@ -22,7 +22,11 @@ from app.db.models import (
     TickerSnapshot,
 )
 from app.services.audit import append_audit_event, publish_outbox
-from app.services.execution import create_execution_plan, effective_capital, open_risk_usdt
+from app.services.execution import (
+    create_execution_plan,
+    executable_entry_price,
+    load_acceptance_risk_state,
+)
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 
 router = APIRouter(prefix="/api/v1/recommendations", tags=["recommendations"])
@@ -344,13 +348,31 @@ async def accept_recommendation(
         ticker is None or (now - ticker.source_time).total_seconds() > settings.max_ticker_age_seconds
     ):
         conflict_reason = "Ticker is stale"
-    elif conflict_reason is None and ticker is not None and not (
-        signal.entry_low <= ticker.last_price <= signal.entry_high
+    executable_price = None
+    if conflict_reason is None and ticker is not None:
+        try:
+            executable_price = executable_entry_price(
+                direction=signal.direction,
+                bid_price=ticker.bid_price,
+                ask_price=ticker.ask_price,
+            )
+        except ValueError:
+            conflict_reason = "Executable bid/ask price is missing or invalid"
+    if conflict_reason is None and executable_price is not None and not (
+        signal.entry_low <= executable_price <= signal.entry_high
     ):
-        conflict_reason = "Current price is outside entry zone"
+        conflict_reason = "Current executable price is outside entry zone"
 
-    current_open_risk = await open_risk_usdt(session)
-    current_capital, _, _, _ = await effective_capital(session, profile)
+    risk_state = await load_acceptance_risk_state(
+        session,
+        profile=profile,
+        now=now,
+        max_snapshot_age_seconds=settings.max_account_snapshot_age_seconds,
+    )
+    current_open_risk = risk_state.open_risk_usdt
+    current_capital = risk_state.effective_capital
+    if conflict_reason is None and profile.mode == "bybit_read_only" and not risk_state.capital_verified:
+        conflict_reason = "Account capital snapshot is stale or missing"
     if (
         conflict_reason is None
         and current_open_risk + plan.actual_stress_loss > current_capital * profile.max_total_risk_rate
@@ -417,7 +439,11 @@ async def accept_recommendation(
         decided_at=now,
         context_snapshot={
             "ticker_time": ticker.source_time.isoformat() if ticker else None,
-            "current_price": str(ticker.last_price) if ticker else None,
+            "current_price": str(executable_price) if executable_price is not None else None,
+            "last_price": str(ticker.last_price) if ticker else None,
+            "bid_price": str(ticker.bid_price) if ticker else None,
+            "ask_price": str(ticker.ask_price) if ticker else None,
+            "capital_snapshot": risk_state.capital_snapshot,
             "profile_version": profile.version,
             "plan_version": plan.version,
             "current_open_risk": str(current_open_risk),

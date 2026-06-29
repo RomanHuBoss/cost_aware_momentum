@@ -1,5 +1,37 @@
 # QA report
 
+## Release 1.8.7 — 2026-06-29
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in an isolated virtual environment outside the release tree;
+- project installed with `.[dev]`;
+- PostgreSQL integration database was not configured.
+
+| Check | Baseline 1.8.6 | Post-change 1.8.7 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q -rs` | 172 passed, 4 skipped | 184 passed, 4 skipped |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic heads | `0005_plan_outcome_invalid_input` | `0005_plan_outcome_invalid_input` |
+| Release integrity | FAILED: missing `PATCH_1.8.6.md` | PASSED after clean manifest regeneration |
+
+The four skipped tests require an isolated PostgreSQL database and explicitly report `TEST_DATABASE_URL is not configured`. `python manage.py doctor` and `python manage.py test --require-integration` were not run because no safe local PostgreSQL test configuration was available.
+
+New regression coverage:
+
+- LONG acceptance uses ask and SHORT uses bid; invalid executable side fails closed;
+- stale read-only account snapshot returns zero unverified capital and blocks the execution plan;
+- acceptance acquires the global transaction advisory lock before reading open risk/capital;
+- a stop beyond the estimated liquidation boundary blocks at leverage 3 as well as at higher leverage;
+- unsafe account snapshot age configuration is rejected.
+
+Red evidence: the new test module failed during collection because `assess_liquidation_proximity` did not exist. Green evidence: `12 passed` separately. No database migration is required. `.env.example` adds `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS=180`; the default is backward compatible. Technical correctness does not establish profitability.
+
+---
+
 ## Release 1.8.5 — 2026-06-29
 
 Environment used for reproducible checks:

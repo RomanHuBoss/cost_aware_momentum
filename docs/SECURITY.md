@@ -14,6 +14,7 @@
 - отдельный CSRF cookie/header для mutating requests;
 - optional operator API token;
 - idempotency key для accept/reject/manual fills;
+- accept выполняет fail-closed server-side revalidation исполнимого bid/ask, возраста account snapshot и portfolio risk под transaction-scoped PostgreSQL advisory lock;
 - Pydantic validation и server-side plan checks;
 - trainer-control mutations требуют signed operator session/API token и CSRF; API записывает только команду в PostgreSQL и не выполняет fitting в request process;
 - bind на localhost по умолчанию.

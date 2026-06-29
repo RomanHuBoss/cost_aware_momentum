@@ -26,14 +26,14 @@
 | JSON-safe model lifecycle | Да с 1.7.1 | missing/non-finite gate metrics сохраняются как `null`; не прошедший кандидат регистрируется inactive без изменения incumbent |
 | Controlled recovery при отсутствующем active artifact | Да с 1.7.2–1.7.3 | baseline только при явном non-production разрешении; DEGRADED diagnostics; immediate bootstrap/recovery scheduling; short same-episode technical backoff; absolute gates; invalid/hash mismatch остаются fail-closed |
 | Диагностика и controlled recovery orphan model artifact | Да с 1.7.7 | status/UI различают inactive candidate и unregistered `.joblib`; explicit CLI повторно валидирует metadata и absolute gates, production и failed gate остаются blocked |
-| Fail-closed при stale/missing data | Да для live inference | stale candle/ticker, missing/non-contiguous features, bid-ask/spec и high spread блокируют публикацию |
+| Fail-closed при stale/missing data | Да; accept усилен в 1.8.7 | stale candle/ticker, missing/non-contiguous features, bid-ask/spec и high spread блокируют публикацию; stale/missing/future account snapshot блокирует execution plan и accept |
 | Dynamic universe | Частично | live selection и актуальная UI-фильтрация есть; historical point-in-time membership snapshots отсутствуют |
 | Издержки, net R/R, EV | Да, базовая модель | fee/slippage/funding scenario/stop reserve; account fee-rate и depth impact пока не подключены полностью |
-| Направленная геометрия entry/SL/TP | Да с 1.7.4 | LONG: `SL < entry < TP`; SHORT: `TP < entry < SL`; risk sizing блокирует invalid/non-finite geometry с нулевым размером |
+| Направленная геометрия entry/SL/TP | Да с 1.7.4; liquidation fail-open закрыт в 1.8.7 | LONG: `SL < entry < TP`; SHORT: `TP < entry < SL`; invalid geometry блокируется, а stop за оценочной liquidation boundary всегда получает `BLOCKED_LIQUIDATION` |
 | Числовая граница position sizing | Да с 1.7.5 | non-finite/invalid capital, risk, costs, margin, caps и instrument constraints дают finite zero-sized `BLOCKED_INVALID_INPUT` без исключений |
 | Числовая граница counterfactual plan valuation | Да с 1.7.6 | invalid qty/stress/cost/funding snapshot сохраняется как zero-valued `INVALID_INPUT`; поврежденная plan version не блокирует остальные outcomes |
 | Policy-aware model promotion | Да с 1.5.0 | trades, realized mean R, profit factor, drawdown и incumbent-relative regression limits |
-| Профили капитала и sizing | Да | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps |
+| Профили капитала и sizing | Да; accept concurrency усилена в 1.8.7 | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps; executable ask/bid recheck и global advisory lock защищают общий open risk |
 | Компактные плитки и modal actions | Да | `web/*` |
 | Актуальность status/universe UI | Да с 1.5.0 | периодическое обновление и фильтрация текущих рекомендаций по worker universe |
 | Operator-visible trainer status/control | Да с 1.8.0; stale request recovery с 1.8.1 | heartbeat, phase, next check, wait progress, artifact, latest training/control jobs; CSRF-protected `CHECK_NOW`/`RECOVER_NOW`; abandoned `RUNNING` определяется по age+heartbeat, старый claim терминализируется и late completion отклоняется |

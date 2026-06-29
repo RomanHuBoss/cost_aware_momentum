@@ -79,9 +79,10 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 - `MARGIN_RESERVE_RATE`: доля свободной маржи, недоступная sizing engine.
 - `MIN_NET_RR`, `MIN_NET_EV_R`: policy thresholds после издержек.
 - `MAX_SPREAD_BPS`: блокирующий/предупреждающий лимит спреда.
+- `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`: максимальный возраст read-only snapshot equity/available margin при построении и принятии плана; default `180`, минимум `30`.
 - `FEE_RATE_TAKER`, `BASE_SLIPPAGE_BPS`, `STOP_GAP_RESERVE_BPS`: консервативная модель издержек.
 
-Риск нельзя свободно менять на плитке. Изменение профиля создает новую версию execution plan и не переписывает исторические расчеты.
+Риск нельзя свободно менять на плитке. Изменение профиля создает новую версию execution plan и не переписывает исторические расчеты. Для `bybit_read_only` профиль не считается подтвержденным только по факту наличия старой строки: snapshot должен быть timezone-aware, не находиться в будущем и укладываться в `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`.
 
 ## Model runtime
 

@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     min_net_ev_r: float = 0.05
     max_spread_bps: float = 18.0
     max_ticker_age_seconds: int = 120
+    max_account_snapshot_age_seconds: int = 180
     max_candle_age_seconds: int = 4200
     signal_ttl_minutes: int = 90
     fee_rate_taker: float = 0.00055
@@ -212,6 +213,8 @@ class Settings(BaseSettings):
             raise ValueError("Leverage policy is inconsistent")
         if self.model_refresh_seconds < 30:
             raise ValueError("MODEL_REFRESH_SECONDS must be at least 30")
+        if self.max_account_snapshot_age_seconds < 30:
+            raise ValueError("MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS must be at least 30")
         if self.initial_backfill_bars < self.universe_min_history_bars:
             raise ValueError("INITIAL_BACKFILL_BARS must cover UNIVERSE_MIN_HISTORY_BARS")
         if self.history_backfill_target_days < 30:
