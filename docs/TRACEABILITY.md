@@ -8,13 +8,13 @@
 | Ручное исполнение, без order API | Да | public/read-only Bybit client; accept/fills — журнал, не ордер |
 | Хронология фактических manual fills | Да с 1.7.12 | close под row lock; `fill_time` не раньше entry и последнего fill; invalid chronology отклоняется до mutation |
 | Closed-candle cutoff | Да | confirmed candles; `close_time` и `available_at` ограничены event cutoff |
-| Строгая hourly continuity для features/labels | Да с 1.7.11 | 24 последовательных перехода для feature snapshot; ровно N следующих hourly candles для label; gaps/duplicates fail-closed/excluded с diagnostics |
+| Строгая hourly continuity для features/labels | Да с 1.7.11; segmented state с 1.8.8 | 24 последовательных валидных часов; gap/duplicate/invalid OHLCV сбрасывает EMA/ATR/rolling state; invalid future bar исключает label с diagnostics |
 | Market signal отдельно от execution plan | Да | отдельные ORM-объекты и versioned profile recalculation |
 | NO TRADE — policy, не класс модели | Да с 1.3.0; направление согласовано в 1.8.4 | ML выдает TP/SL/TIMEOUT для LONG и SHORT; `publish_hourly_signals` выбирает направление по текущему net EV/R и затем применяет execution gates |
 | Direction-specific TP/SL/TIMEOUT | Да с 1.3.0 | `make_barrier_dataset`, `TemporalCalibratedBarrierModel` |
 | Logistic baseline и nonlinear candidate | Да с 1.3.0 | logistic и HistGradientBoostingClassifier |
 | Временная calibration | Да с 1.3.0 | later calibration window, sigmoid OVR |
-| Корректный порядок классов в probabilistic metrics | Да с 1.7.9 | class-order-safe log loss для `TP / SL / TIMEOUT`; raw/calibrated и prior/uniform benchmarks |
+| Корректный порядок классов и probability simplex | Да с 1.7.9; boundary усилена в 1.8.8 | class-order-safe log loss; runtime, holdout, EV/R math и backtest отвергают non-finite/out-of-range/non-unit probabilities |
 | Purging и final holdout | Частично; усилено в 1.7.10 | один chronological split; overlap очищается по фактическому `label_end_time` плюс horizon-hour embargo, но нет полноценного multi-fold walk-forward |
 | Model registry/hash/activation/rollback | Да с 1.3.0 | SHA256 validation, activation CLI, unique active index, audit/outbox |
 | Worker использует active registry model | Да с 1.3.0 | periodic reload и runtime/registry readiness match |
@@ -32,8 +32,8 @@
 | Направленная геометрия entry/SL/TP | Да с 1.7.4; liquidation fail-open закрыт в 1.8.7 | LONG: `SL < entry < TP`; SHORT: `TP < entry < SL`; invalid geometry блокируется, а stop за оценочной liquidation boundary всегда получает `BLOCKED_LIQUIDATION` |
 | Числовая граница position sizing | Да с 1.7.5 | non-finite/invalid capital, risk, costs, margin, caps и instrument constraints дают finite zero-sized `BLOCKED_INVALID_INPUT` без исключений |
 | Числовая граница counterfactual plan valuation | Да с 1.7.6 | invalid qty/stress/cost/funding snapshot сохраняется как zero-valued `INVALID_INPUT`; поврежденная plan version не блокирует остальные outcomes |
-| Policy-aware model promotion | Да с 1.5.0 | trades, realized mean R, profit factor, drawdown и incumbent-relative regression limits |
-| Профили капитала и sizing | Да; accept concurrency усилена в 1.8.7 | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps; executable ask/bid recheck и global advisory lock защищают общий open risk |
+| Policy-aware model promotion | Да с 1.5.0; exit-time accounting с 1.8.8 | один direction по `EV/R → net RR → LONG`; realized R/drawdown по modeled exit events; incumbent-relative regression limits |
+| Профили капитала и sizing | Да; numeric boundary усилена в 1.8.8 | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps; `max_leverage < 1` блокируется; executable ask/bid recheck и global advisory lock защищают общий open risk |
 | Компактные плитки и modal actions | Да | `web/*` |
 | Актуальность status/universe UI | Да с 1.5.0 | периодическое обновление и фильтрация текущих рекомендаций по worker universe |
 | Operator-visible trainer status/control | Да с 1.8.0; stale request recovery с 1.8.1 | heartbeat, phase, next check, wait progress, artifact, latest training/control jobs; CSRF-protected `CHECK_NOW`/`RECOVER_NOW`; abandoned `RUNNING` определяется по age+heartbeat, старый claim терминализируется и late completion отклоняется |

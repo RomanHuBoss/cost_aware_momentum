@@ -15,7 +15,12 @@ from app.asyncio_compat import run_with_compatible_event_loop
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import BacktestRun, Candle
-from app.ml.training import chronological_split, evaluate_model, make_barrier_dataset
+from app.ml.training import (
+    chronological_split,
+    evaluate_model,
+    make_barrier_dataset,
+    validate_outcome_probability_matrix,
+)
 
 HOUR_NS = 3_600_000_000_000
 
@@ -174,14 +179,13 @@ def policy_backtest(
     if not math.isfinite(minimum_net_ev_r):
         raise ValueError("minimum_net_ev_r must be finite")
 
-    probabilities = model.predict_proba(split.x_test)
-    classes = [str(item) for item in model.classes_]
-    missing_classes = [label for label in ("TP", "SL", "TIMEOUT") if label not in classes]
-    if missing_classes:
-        raise ValueError(f"Model is missing required outcome classes: {missing_classes}")
-    indexes = {label: classes.index(label) for label in ("TP", "SL", "TIMEOUT")}
-
     meta = split.test_meta.copy().reset_index(drop=True)
+    probabilities, indexes = validate_outcome_probability_matrix(
+        model.predict_proba(split.x_test),
+        model.classes_,
+        expected_rows=len(meta),
+    )
+
     required_columns = {
         "decision_time",
         "symbol",

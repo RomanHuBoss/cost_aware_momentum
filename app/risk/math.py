@@ -254,6 +254,27 @@ def upside_rate(entry: Decimal, take_profit: Decimal, direction: Direction, cost
     return price_move - fee_rate - costs.slippage_rate - adverse_funding
 
 
+
+def validate_probability_simplex(
+    p_tp: Decimal | float | int | str,
+    p_sl: Decimal | float | int | str,
+    p_timeout: Decimal | float | int | str,
+    *,
+    tolerance: Decimal = Decimal("1e-8"),
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Return finite probabilities only when they form a valid simplex."""
+
+    values = (
+        finite_decimal(p_tp, "p_tp"),
+        finite_decimal(p_sl, "p_sl"),
+        finite_decimal(p_timeout, "p_timeout"),
+    )
+    if any(value < 0 or value > 1 for value in values):
+        raise ValueError("probabilities must each be within [0, 1]")
+    if abs(sum(values, Decimal("0")) - Decimal("1")) > tolerance:
+        raise ValueError("probabilities must sum to 1")
+    return values
+
 def net_rr_and_ev(
     *,
     entry: Decimal,
@@ -284,7 +305,14 @@ def net_rr_and_ev(
         entry, timeout_exit, costs.fee_rate_round_trip
     )
     timeout_net = timeout_gross - timeout_fee_rate - costs.slippage_rate - adverse_funding
-    ev_rate = d(p_tp) * upside - d(p_sl) * downside + d(p_timeout) * timeout_net
+    p_tp_value, p_sl_value, p_timeout_value = validate_probability_simplex(
+        p_tp, p_sl, p_timeout
+    )
+    ev_rate = (
+        p_tp_value * upside
+        - p_sl_value * downside
+        + p_timeout_value * timeout_net
+    )
     ev_r = Decimal("0") if downside <= 0 else ev_rate / downside
     return rr, ev_r, downside, upside
 
@@ -376,6 +404,8 @@ def calculate_position_plan(
             else None
         )
         max_leverage = positive_finite_decimal(constraints.max_leverage, "max_leverage")
+        if max_leverage < 1:
+            raise ValueError("max_leverage must be at least 1")
         requested_leverage = max(1, int(leverage))
         leverage = (
             requested_leverage if Decimal(requested_leverage) <= max_leverage else max(1, int(max_leverage))

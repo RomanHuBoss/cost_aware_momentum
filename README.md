@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.7: принятие рекомендации проверяет исполнимый ask/bid, свежесть account snapshot и общий риск под PostgreSQL advisory lock; стоп за оценочной ликвидацией всегда блокируется.
+> Версия 1.8.8: feature-state сбрасывается на разрывах/поврежденных свечах, вероятности TP/SL/TIMEOUT проходят строгую simplex-проверку, а holdout policy учитывает результат по времени выхода.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -14,7 +14,8 @@
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
 - Decimal-арифметика для денежных и контрактных расчётов.
-- Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии или превышении риска.
+- Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.
+- Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный общий portfolio-risk check.
 - Нативный запуск без Docker, Redis и Celery.
 
@@ -134,11 +135,11 @@ SQLite и файлового fallback нет. Изменения схемы пр
 - `decision_time` — её закрытие и момент доступности признаков;
 - `label_end_time` — закрытие последней свечи label horizon.
 
-Train/calibration/final holdout формируются по `decision_time`; labels предыдущего окна обязаны завершиться раньше следующего окна. Новые artifacts используют `feature_schema_version=hourly-barrier-contiguous-v3` и `temporal_split_schema=decision-and-label-end-purged-v3`.
+Train/calibration/final holdout формируются по `decision_time`; labels предыдущего окна обязаны завершиться раньше следующего окна. Stateful features сбрасывают состояние на gap, duplicate или невалидной OHLCV-свече; label-window с нечисловой/некогерентной ценой исключается. Новые artifacts используют `feature_schema_version=hourly-barrier-contiguous-v3` и `temporal_split_schema=decision-and-label-end-purged-v3`.
 
 ## Research backtest
 
-Backtest выбирает не более одного направления на символ и timestamp по тому же порядку policy, что и production: максимальный net `EV/R`, затем net RR и детерминированный tie-break. Комиссия каждой ноги считается от фактического входного/выходного notional; slippage, stop-gap reserve, статический funding-сценарий и policy-пороги задаются отдельно.
+Backtest выбирает не более одного направления на символ и timestamp по тому же порядку policy, что и production: максимальный net `EV/R`, затем net RR и детерминированный LONG tie-break. Runtime, holdout policy, backtest и Decimal risk math отвергают probabilities вне диапазона `[0, 1]`, с неединичной суммой либо нечисловыми значениями. Комиссия каждой ноги считается от фактического входного/выходного notional; slippage, stop-gap reserve, статический funding-сценарий и policy-пороги задаются отдельно.
 
 Для горизонта `H` часов капитал делится на `H` равных sleeves. Часовой cohort использует один sleeve и этот капитал не переиспользуется до завершения максимального label horizon. Поэтому перекрывающиеся H-часовые returns не компаундятся как последовательные одночасовые сделки и не создают скрытое H-кратное плечо. PnL зачисляется в equity curve в modeled candle exit time. Метрики concurrency считают реально открытые позиции, а не только новые входы в один timestamp.
 
@@ -173,6 +174,16 @@ python manage.py test --require-integration
 ```
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
+
+## Обновление с 1.8.7 на 1.8.8
+
+- DB migration и новые `.env` переменные не требуются.
+- Перезапустите API, worker и trainer после замены файлов.
+- Переобучение рекомендуется: исправлена реализация уже заявленной strict-hourly feature schema, и строки после восстановленного разрыва больше не наследуют EMA/rolling state из старого сегмента.
+- Невалидная OHLCV-свеча в обязательном feature/label window теперь блокирует inference или исключается из dataset вместо clip/timeout fallback.
+- Active artifact с probabilities вне TP/SL/TIMEOUT simplex теперь отвергается fail-closed; нормальные calibrated artifacts совместимы.
+- Holdout policy metrics `policy_realized_total_r` и `policy_max_drawdown_r` теперь формируются по modeled exit time и equal-weight decision cohorts; старые и новые значения нельзя напрямую объединять.
+- Биржевой `max_leverage < 1` считается невалидным instrument constraint и дает `BLOCKED_INVALID_INPUT`, а не молча заменяется на 1x.
 
 ## Обновление с 1.8.6 на 1.8.7
 

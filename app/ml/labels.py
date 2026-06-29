@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -16,6 +17,13 @@ class BarrierOutcome:
     ambiguous: bool
 
 
+def _positive_finite(value: object, name: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise ValueError(f"invalid prices: {name} must be positive and finite")
+    return parsed
+
+
 def triple_barrier_outcome(
     future_bars: pd.DataFrame,
     *,
@@ -24,11 +32,19 @@ def triple_barrier_outcome(
     take_profit: float,
     conservative_ambiguity: bool = True,
 ) -> BarrierOutcome:
+    if direction not in ("LONG", "SHORT"):
+        raise ValueError(f"Unsupported direction: {direction}")
+    stop = _positive_finite(stop, "stop")
+    take_profit = _positive_finite(take_profit, "take_profit")
     if future_bars.empty:
         return BarrierOutcome("TIMEOUT", float("nan"), -1, False)
+
     for i, row in enumerate(future_bars.itertuples(index=False)):
-        high = float(row.high)
-        low = float(row.low)
+        high = _positive_finite(row.high, "high")
+        low = _positive_finite(row.low, "low")
+        close = _positive_finite(row.close, "close")
+        if high < low or high < close or low > close:
+            raise ValueError("invalid prices: expected low <= close <= high")
         if direction == "LONG":
             tp_hit, sl_hit = high >= take_profit, low <= stop
         else:
@@ -40,4 +56,9 @@ def triple_barrier_outcome(
             return BarrierOutcome("TP", take_profit, i, False)
         if sl_hit:
             return BarrierOutcome("SL", stop, i, False)
-    return BarrierOutcome("TIMEOUT", float(future_bars.iloc[-1]["close"]), len(future_bars) - 1, False)
+    return BarrierOutcome(
+        "TIMEOUT",
+        _positive_finite(future_bars.iloc[-1]["close"], "close"),
+        len(future_bars) - 1,
+        False,
+    )

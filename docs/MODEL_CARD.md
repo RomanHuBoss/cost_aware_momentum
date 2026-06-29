@@ -4,7 +4,7 @@
 
 Модель оценивает распределение исходов `TP first`, `SL first`, `TIMEOUT` отдельно для условного LONG и SHORT на фиксированном горизонте. Она не прогнозирует `NO TRADE`: это решение последующего cost/risk policy engine.
 
-Начиная с 1.8.4 runtime передает policy layer оба распределения. Окончательное направление выбирается по фактическому net `EV/R` с текущими executable bid/ask, комиссиями, slippage, funding и barrier geometry. Предварительная модельная utility используется только как диагностический score и tie-breaker, но не может заменить экономический выбор направления. Начиная с 1.8.5 live stop/TP1 geometry и compatibility score используют `stop_atr_multiplier` / `tp_atr_multiplier` активного artifact, что устраняет latent train/serve skew при нестандартных barriers.
+Начиная с 1.8.4 runtime передает policy layer оба распределения. Окончательное направление выбирается по фактическому net `EV/R` с текущими executable bid/ask, комиссиями, slippage, funding и barrier geometry. Предварительная модельная utility используется только как диагностический score и не участвует в production tie-break: порядок выбора зафиксирован как `EV/R → net RR → LONG`. Начиная с 1.8.5 live stop/TP1 geometry и compatibility score используют `stop_atr_multiplier` / `tp_atr_multiplier` активного artifact, что устраняет latent train/serve skew при нестандартных barriers.
 
 ## Доступные модели
 
@@ -15,7 +15,7 @@
 ## Данные и метки
 
 - confirmed hourly last-price candles из PostgreSQL;
-- rolling point-in-time features без использования будущих строк; начиная с 1.7.11 полный 24-часовой lookback обязан состоять из последовательных hourly timestamps;
+- rolling point-in-time features без использования будущих строк; начиная с 1.8.8 gap, duplicate или invalid OHLCV сбрасывает stateful EMA/ATR/rolling segment, а полный 24-часовой lookback обязан состоять из последовательных валидных hourly timestamps;
 - два сценария на каждый symbol/time: LONG и SHORT;
 - ATR-based stop/TP barriers;
 - при одновременном касании TP и SL внутри часовой свечи используется консервативный исход SL;
@@ -25,7 +25,7 @@
 
 ## Разбиение и калибровка
 
-До split dataset builder исключает timestamp, если 24-часовой feature-lookback или следующие N label-candles содержат пропуск/дубликат; счетчики сохраняются в `hourly_continuity`. Данные делятся хронологически на train, более позднее calibration window и final holdout. Начиная с 1.7.10 каждая строка хранит фактический `label_end_time`: train/calibration observation исключается, если ее будущий barrier-window достигает следующего окна. После границы дополнительно сохраняется embargo не меньше горизонта в часах. Отсутствующий, невалидный или не более поздний `label_end_time` блокирует split fail-closed. В каждой calibration class должна присутствовать TP/SL/TIMEOUT. Вероятности калибруются one-vs-rest sigmoid и затем нормируются.
+До split dataset builder исключает timestamp, если 24-часовой feature-lookback или следующие N label-candles содержат пропуск, дубликат либо невалидную OHLCV-геометрию; stateful feature calculations не пересекают такой разрыв, а счетчики сохраняются в `hourly_continuity`. Данные делятся хронологически на train, более позднее calibration window и final holdout. Начиная с 1.7.10 каждая строка хранит фактический `label_end_time`: train/calibration observation исключается, если ее будущий barrier-window достигает следующего окна. После границы дополнительно сохраняется embargo не меньше горизонта в часах. Отсутствующий, невалидный или не более поздний `label_end_time` блокирует split fail-closed. В каждой calibration class должна присутствовать TP/SL/TIMEOUT. Вероятности калибруются one-vs-rest sigmoid и затем нормируются.
 
 Текущая поставка не реализует многооконный expanding/rolling walk-forward и OOF aggregation; поэтому final holdout является необходимой, но недостаточной проверкой.
 
@@ -40,7 +40,7 @@ Artifact хранит:
 - raw и calibrated log loss, улучшение после calibration, class-prior benchmark, uniform benchmark и skill относительно class prior;
 - распределение классов и долю ambiguous labels;
 - training-data profile: число candle rows/timestamps/символов, полный список символов, временные границы, coverage и SHA256-подписи;
-- cost-aware holdout policy metrics: число сделок, trade rate, expected EV, realized mean/total R, win rate, profit factor и max drawdown;
+- cost-aware holdout policy metrics: число сделок, trade rate, expected EV, realized mean/total R, win rate, profit factor и max drawdown; начиная с 1.8.8 realized total R/drawdown агрегируются по modeled exit time и equal-weight decision cohorts;
 - barrier-policy net return, win rate, max drawdown, no-trade rate и cost stress x1.5/x2 в backtest report; начиная с 1.8.5 backtest применяет cost-aware EV/R selection, exit-notional-aware fees и H неперекрывающихся capital sleeves.
 
 Порог сделки не должен выбираться по accuracy.
@@ -51,13 +51,13 @@ Joblib bundle обязан содержать:
 
 - `task=barrier_outcome_v1`;
 - model/version/model_type;
-- точный список feature names и `feature_schema_version=hourly-barrier-contiguous-v2` для новых artifacts; recovery старых `hourly-barrier-v1` сохраняет их исходный marker;
+- точный список feature names и `feature_schema_version=hourly-barrier-contiguous-v3` для новых artifacts; recovery старых schemas сохраняет их исходный marker;
 - outcome classes `TP`, `SL`, `TIMEOUT`;
 - horizon и параметры barriers;
 - calibration version и holdout metrics.
-- `temporal_split_schema=label-end-purged-v2`, `label_data_end` и diagnostics `hourly_continuity`, отделенные от scheduler-поля `training_end`;
+- `temporal_split_schema=decision-and-label-end-purged-v3`, `label_data_end` и diagnostics `hourly_continuity`, отделенные от scheduler-поля `training_end`;
 
-При активации и загрузке проверяются version, SHA256, task, feature schema, classes и соответствие `DEFAULT_HORIZON_HOURS`. Legacy binary-direction artifacts отвергаются.
+При активации и загрузке проверяются version, SHA256, task, feature names/classes и соответствие `DEFAULT_HORIZON_HOURS`. Начиная с 1.8.8 каждая probability row дополнительно обязана быть finite TP/SL/TIMEOUT simplex; malformed artifact output отвергается fail-closed. Legacy binary-direction artifacts отвергаются.
 
 
 ## Фоновое переобучение
@@ -94,7 +94,7 @@ python manage.py model-registry activate --version <version>
 - калибровка и costs деградируют при смене режима;
 - cross-sectional dependence уменьшает эффективный размер выборки;
 - hourly ambiguity в post-event журнале уточняется 1/3/5-минутным путем, но training labels пока сохраняют консервативное hourly правило;
-- разрывы hourly history теперь исключаются, но pipeline пока не выполняет автоматическое targeted backfill/repair конкретного gap перед training;
+- разрывы и invalid hourly bars исключаются и сбрасывают feature state, но pipeline пока не выполняет автоматическое targeted backfill/repair конкретного gap перед training;
 - операторский выбор создает selection bias;
 - backtest не является доказательством прибыли и не заменяет paper/shadow forward test; capital sleeves устраняют overlap leverage, но не моделируют intrahorizon mark-to-market, no-fill, partial fills и historical orderbook;
 - полноценные PSI/feature/probability drift gates и автоматический rollback по realized performance еще не реализованы; текущий trainer использует holdout quality gate до активации.

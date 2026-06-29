@@ -16,6 +16,7 @@ from app.ml.training import (
     MODEL_FEATURE_NAMES,
     OUTCOME_CLASSES,
 )
+from app.risk.math import validate_probability_simplex
 
 Direction = Literal["LONG", "SHORT"]
 
@@ -163,10 +164,13 @@ class ModelRuntime:
             vector_values = [float(features.get(name, 0.0)) for name in FEATURE_NAMES] + [code]
             probabilities = model.predict_proba(np.array([vector_values], dtype=float))[0]
             mapping = dict(zip([str(item) for item in model.classes_], probabilities, strict=True))
+            p_tp, p_sl, p_timeout = validate_probability_simplex(
+                mapping["TP"], mapping["SL"], mapping["TIMEOUT"]
+            )
             outcome = {
-                "p_tp": float(mapping["TP"]),
-                "p_sl": float(mapping["SL"]),
-                "p_timeout": float(mapping["TIMEOUT"]),
+                "p_tp": float(p_tp),
+                "p_sl": float(p_sl),
+                "p_timeout": float(p_timeout),
             }
             utility = self._scenario_utility(**outcome)
             scenarios.append((direction, utility, outcome))

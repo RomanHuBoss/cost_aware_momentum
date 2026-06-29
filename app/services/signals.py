@@ -76,6 +76,11 @@ def select_cost_aware_scenario(
     current costs and funding are only available in the signal policy layer.
     """
 
+    prediction_rows = list(predictions)
+    directions = [prediction.direction for prediction in prediction_rows]
+    if len(prediction_rows) != 2 or set(directions) != {"LONG", "SHORT"}:
+        raise ValueError("Exactly one LONG and one SHORT directional prediction are required")
+
     stop_multiplier = decimal(stop_atr_multiplier)
     tp_multiplier = decimal(tp_atr_multiplier)
     if (
@@ -87,9 +92,10 @@ def select_cost_aware_scenario(
         raise ValueError("ATR barrier multipliers must be positive and finite")
 
     candidates: list[SignalScenarioEconomics] = []
-    for prediction in predictions:
+    for prediction in prediction_rows:
         reference = ask_price if prediction.direction == "LONG" else bid_price
-        reference = reference or last_price
+        if reference is None or reference <= 0:
+            raise ValueError("Executable bid/ask prices must be positive for LONG and SHORT scenarios")
         atr = reference * atr_pct
         zone_half = atr * Decimal("0.12")
         stop_distance = atr * stop_multiplier
@@ -138,7 +144,6 @@ def select_cost_aware_scenario(
         key=lambda item: (
             item.ev_r,
             item.net_rr,
-            item.prediction.score,
             item.prediction.direction == "LONG",
         ),
     )

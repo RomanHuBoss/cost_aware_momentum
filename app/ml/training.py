@@ -15,6 +15,7 @@ from app.ml.features import (
     FEATURE_LOOKBACK_HOURS,
     FEATURE_NAMES,
     FEATURE_WINDOW_START_COLUMN,
+    MARKET_BAR_VALID_COLUMN,
     build_feature_frame,
 )
 from app.ml.labels import triple_barrier_outcome
@@ -178,6 +179,7 @@ def make_barrier_dataset(
         "labeled_timestamps": 0,
         "skipped_feature_gap_timestamps": 0,
         "skipped_label_gap_timestamps": 0,
+        "skipped_invalid_label_bar_timestamps": 0,
     }
     hourly = pd.Timedelta(1, unit="h")
 
@@ -193,7 +195,7 @@ def make_barrier_dataset(
                 continue
 
             future = group.iloc[index + 1 : index + 1 + horizon][
-                ["open_time", "close_time", "high", "low", "close"]
+                ["open_time", "close_time", "high", "low", "close", MARKET_BAR_VALID_COLUMN]
             ]
             if len(future) < horizon:
                 continue
@@ -214,6 +216,9 @@ def make_barrier_dataset(
                 expected_close_times
             ):
                 diagnostics["skipped_label_gap_timestamps"] += 1
+                continue
+            if not future[MARKET_BAR_VALID_COLUMN].all():
+                diagnostics["skipped_invalid_label_bar_timestamps"] += 1
                 continue
 
             values = [current.get(name) for name in FEATURE_NAMES]
@@ -374,28 +379,45 @@ def _expected_calibration_error(y_true: np.ndarray, probabilities: np.ndarray, b
     return float(np.dot(errors, weights)) if weights else 0.0
 
 
+def validate_outcome_probability_matrix(
+    probabilities: np.ndarray,
+    classes: np.ndarray | list[str],
+    *,
+    expected_rows: int | None = None,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Validate and index an exact TP/SL/TIMEOUT probability simplex."""
+
+    labels = [str(label) for label in classes]
+    if len(labels) != len(set(labels)):
+        raise ValueError("Model outcome classes must be unique")
+    required = [str(label) for label in OUTCOME_CLASSES]
+    if sorted(labels) != sorted(required):
+        raise ValueError(f"Model must declare exactly the required outcome classes: {required}")
+
+    values = np.asarray(probabilities, dtype=float)
+    if values.ndim != 2 or values.shape[1] != len(labels):
+        raise ValueError("probability matrix shape does not match declared classes")
+    if expected_rows is not None and values.shape[0] != expected_rows:
+        raise ValueError("probability rows do not match expected observations")
+    if not np.isfinite(values).all():
+        raise ValueError("probability matrix contains non-finite values")
+    if ((values < 0.0) | (values > 1.0)).any():
+        raise ValueError("probability matrix contains values outside [0, 1]")
+    if not np.allclose(values.sum(axis=1), 1.0, rtol=1e-7, atol=1e-9):
+        raise ValueError("probability rows must sum to 1")
+    return values, {label: labels.index(label) for label in required}
+
+
 def _ordered_multiclass_log_loss(
     y_true: np.ndarray, probabilities: np.ndarray, classes: np.ndarray
 ) -> float:
     """Calculate multiclass log loss without reordering declared probability columns."""
 
-    labels = [str(label) for label in classes]
-    if len(labels) != len(set(labels)):
-        raise ValueError("Model outcome classes must be unique")
-
     targets = np.asarray(y_true, dtype=str)
-    values = np.asarray(probabilities, dtype=float)
-    if values.ndim != 2 or values.shape != (len(targets), len(labels)):
-        raise ValueError("Probability matrix shape does not match targets and declared classes")
-    if not np.isfinite(values).all():
-        raise ValueError("Probability matrix contains non-finite values")
-    if ((values < 0.0) | (values > 1.0)).any():
-        raise ValueError("Probability matrix contains values outside [0, 1]")
-    if not np.allclose(values.sum(axis=1), 1.0, rtol=1e-7, atol=1e-9):
-        raise ValueError("Probability rows must sum to 1")
-
-    class_to_index = {label: index for index, label in enumerate(labels)}
-    unknown = sorted(set(targets) - set(labels))
+    values, class_to_index = validate_outcome_probability_matrix(
+        probabilities, classes, expected_rows=len(targets)
+    )
+    unknown = sorted(set(targets) - set(class_to_index))
     if unknown:
         raise ValueError(f"Targets contain unknown outcome classes: {unknown}")
 
@@ -407,7 +429,6 @@ def _ordered_multiclass_log_loss(
     true_probabilities = values[np.arange(len(targets)), true_indexes]
     epsilon = np.finfo(float).eps
     return float(-np.mean(np.log(np.clip(true_probabilities, epsilon, 1.0))))
-
 
 def _class_prior_probabilities(y_train: np.ndarray, classes: np.ndarray, rows: int) -> np.ndarray:
     labels = np.asarray(classes, dtype=str)
@@ -468,19 +489,63 @@ def evaluate_policy_model(
     split: DatasetSplit,
     config: PolicyEvaluationConfig,
 ) -> dict[str, object]:
-    """Evaluate the same cost-aware direction policy used by live inference.
+    """Evaluate the live cost-aware direction policy on exit-time realized events."""
 
-    This is deliberately a compact holdout utility check, not a replacement for
-    the event-driven portfolio backtest.  It prevents auto-activation based only
-    on classification metrics when a candidate would produce no tradable edge
-    after the configured fees, slippage and stop reserve.
-    """
+    config_values = {
+        "fee_rate_round_trip": config.fee_rate_round_trip,
+        "slippage_rate": config.slippage_rate,
+        "stop_gap_reserve_rate": config.stop_gap_reserve_rate,
+        "min_net_rr": config.min_net_rr,
+        "min_net_ev_r": config.min_net_ev_r,
+        "timeout_return_rate": config.timeout_return_rate,
+    }
+    for name, value in config_values.items():
+        if not np.isfinite(float(value)):
+            raise ValueError(f"{name} must be finite")
+    for name in ("fee_rate_round_trip", "slippage_rate", "stop_gap_reserve_rate", "min_net_rr"):
+        if float(config_values[name]) < 0:
+            raise ValueError(f"{name} must be non-negative")
 
-    probabilities = model.predict_proba(split.x_test)
-    class_to_index = {label: index for index, label in enumerate(model.classes_)}
+    probabilities, class_to_index = validate_outcome_probability_matrix(
+        model.predict_proba(split.x_test),
+        model.classes_,
+        expected_rows=len(split.test_meta),
+    )
     meta = split.test_meta.copy().reset_index(drop=True)
-    for label in model.classes_:
+    required_columns = {
+        "decision_time",
+        "symbol",
+        "direction",
+        "target",
+        "exit_index",
+        "realized_gross_return",
+        "barrier_upside_rate",
+        "barrier_downside_rate",
+    }
+    missing_columns = sorted(required_columns - set(meta.columns))
+    if missing_columns:
+        raise ValueError(f"Policy evaluation metadata is missing columns: {missing_columns}")
+    for label in OUTCOME_CLASSES:
         meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
+
+    meta["decision_time"] = pd.to_datetime(meta["decision_time"], utc=True, errors="coerce")
+    if meta["decision_time"].isna().any():
+        raise ValueError("Policy evaluation contains invalid decision_time")
+    exit_index = pd.to_numeric(meta["exit_index"], errors="coerce")
+    if exit_index.isna().any() or (exit_index < 0).any() or not np.allclose(
+        exit_index, np.floor(exit_index)
+    ):
+        raise ValueError("Policy evaluation exit_index must contain non-negative integers")
+    meta["exit_index"] = exit_index.astype(int)
+    meta["exit_time"] = meta["decision_time"] + pd.to_timedelta(
+        meta["exit_index"] + 1, unit="h"
+    )
+    if "label_end_time" in meta.columns:
+        label_end = pd.to_datetime(meta["label_end_time"], utc=True, errors="coerce")
+        if label_end.isna().any() or (meta["exit_time"] > label_end).any():
+            raise ValueError("Policy evaluation exit_time exceeds label availability")
+    if (~meta["direction"].isin(["LONG", "SHORT"])).any():
+        raise ValueError("Policy evaluation contains an unsupported direction")
 
     fee_rate_per_leg = config.fee_rate_round_trip / 2.0
     is_long = meta["direction"].eq("LONG")
@@ -546,28 +611,42 @@ def evaluate_policy_model(
         meta["expected_net_rate"] / meta["stress_downside_rate"],
         0.0,
     )
+    meta["direction_tiebreak"] = is_long.astype(int)
 
-    selected_index = meta.groupby(["decision_time", "symbol"], sort=False)["expected_ev_r"].idxmax()
-    selected = meta.loc[selected_index].sort_values(["decision_time", "symbol"]).reset_index(drop=True)
+    selected = (
+        meta.sort_values(
+            ["decision_time", "symbol", "expected_ev_r", "net_rr", "direction_tiebreak"],
+            ascending=[True, True, False, False, False],
+            kind="mergesort",
+        )
+        .groupby(["decision_time", "symbol"], as_index=False)
+        .head(1)
+        .sort_values(["decision_time", "symbol"], kind="mergesort")
+        .reset_index(drop=True)
+    )
     selected["actionable"] = (selected["net_rr"] >= config.min_net_rr) & (
         selected["expected_ev_r"] >= config.min_net_ev_r
     )
     trades = selected[selected["actionable"]].copy()
 
+    empty_metrics: dict[str, object] = {
+        "policy_candidates": int(len(selected)),
+        "policy_trades": 0,
+        "policy_trade_rate": 0.0,
+        "policy_mean_expected_ev_r": None,
+        "policy_realized_mean_r": None,
+        "policy_realized_total_r": 0.0,
+        "policy_win_rate": None,
+        "policy_profit_factor": None,
+        "policy_max_drawdown_r": 0.0,
+        "policy_event_periods": 0,
+    }
     if trades.empty:
-        return {
-            "policy_candidates": int(len(selected)),
-            "policy_trades": 0,
-            "policy_trade_rate": 0.0,
-            "policy_mean_expected_ev_r": None,
-            "policy_realized_mean_r": None,
-            "policy_realized_total_r": 0.0,
-            "policy_win_rate": None,
-            "policy_profit_factor": None,
-            "policy_max_drawdown_r": 0.0,
-        }
+        return empty_metrics
 
     outcome = trades["target"].astype(str)
+    if (~outcome.isin(OUTCOME_CLASSES)).any():
+        raise ValueError("Policy evaluation target contains an unsupported outcome")
     realized_net_rate = np.where(
         outcome == "TP",
         trades["net_upside_rate"],
@@ -585,8 +664,11 @@ def evaluate_policy_model(
     gains = float(trades.loc[trades["realized_r"] > 0, "realized_r"].sum())
     losses = float(-trades.loc[trades["realized_r"] < 0, "realized_r"].sum())
     profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
-    hourly_r = trades.groupby("decision_time", sort=True)["realized_r"].mean()
-    cumulative_r = np.concatenate(([0.0], hourly_r.cumsum().to_numpy(float)))
+
+    cohort_size = trades.groupby("decision_time")["realized_r"].transform("size")
+    trades["realized_r_contribution"] = trades["realized_r"] / cohort_size
+    exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
+    cumulative_r = np.concatenate(([0.0], exit_r.cumsum().to_numpy(float)))
     running_peak = np.maximum.accumulate(cumulative_r)
     drawdown = running_peak - cumulative_r
 
@@ -596,8 +678,9 @@ def evaluate_policy_model(
         "policy_trade_rate": float(len(trades) / len(selected)) if len(selected) else 0.0,
         "policy_mean_expected_ev_r": float(trades["expected_ev_r"].mean()),
         "policy_realized_mean_r": float(trades["realized_r"].mean()),
-        "policy_realized_total_r": float(trades["realized_r"].sum()),
+        "policy_realized_total_r": float(exit_r.sum()),
         "policy_win_rate": float((trades["realized_r"] > 0).mean()),
         "policy_profit_factor": float(profit_factor),
         "policy_max_drawdown_r": float(drawdown.max()) if len(drawdown) else 0.0,
+        "policy_event_periods": int(len(exit_r)),
     }

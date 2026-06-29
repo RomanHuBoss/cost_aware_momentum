@@ -2,7 +2,7 @@
 
 Дата проверки: 2026-06-29
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.7
+Версия проекта после коррекции: 1.8.8
 
 ## Итог
 
@@ -12,6 +12,7 @@
 Версия 1.8.0 закрывает операторский UX/operations gap trainer: отдельное окно показывает heartbeat, фазу, wait reason, data-readiness и последние результаты, а authenticated PostgreSQL-backed commands позволяют немедленно повторить scheduler check либо запустить ограниченный recovery без выполнения обучения в API и без обхода model gates.
 Версия 1.8.1 закрывает crash-recovery gap этой очереди: stale `RUNNING` request больше не блокирует enqueue навсегда. Система требует одновременно истекший пяти-минутный claim window и stale/missing heartbeat владельца, фиксирует прежнюю попытку как `FAILED`, создает новый linked retry, пишет audit/outbox и отвергает late completion по claim-token.
 Версия 1.8.7 закрывает четыре связанные fail-open ошибки контура принятия: entry-zone проверяется по исполнимому ask/bid вместо last price, read-only capital snapshot имеет строгий age/future-time gate, общий open risk читается и резервируется под глобальным transaction-scoped advisory lock, а стоп за оценочной liquidation boundary блокируется при любом плече.
+Версия 1.8.8 закрывает десять математических и эконометрических boundary-дефектов: stateful features сбрасываются на разрывах и invalid OHLCV, label path валидируется, probabilities проверяются как TP/SL/TIMEOUT simplex во всех вычислительных слоях, directional policy требует парный LONG/SHORT контракт, holdout drawdown строится по modeled exit events, а невалидный exchange max leverage блокируется.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -26,6 +27,7 @@
 | Хронология ручного исполнения | Исправлено в 1.7.12 | manual-close валидирует entry/latest fill time под row lock до изменения qty, P&L, audit и outbox |
 | Market signal отдельно от execution plan | Реализовано | `MarketSignal`, versioned `ExecutionPlan`, профили капитала |
 | Cost-aware R/R, EV и sizing | Реализовано | комиссии, slippage, stop reserve, funding scenario, min-order/margin/liquidity/portfolio caps |
+| Probability simplex boundary | Исправлено в 1.8.8 | runtime artifact, Decimal EV/R, holdout policy и research backtest требуют finite TP/SL/TIMEOUT probabilities в `[0,1]` с суммой 1 |
 | Acceptance execution/risk revalidation | Исправлено в 1.8.7 | ask для LONG/bid для SHORT, fresh account snapshot, global PostgreSQL advisory lock до open-risk check, stop beyond liquidation fail-closed |
 | Directional geometry fail-closed | Исправлено в 1.7.4 | единый validator LONG/SHORT для risk, sizing и outcome; invalid plan получает `BLOCKED_INVALID_INPUT` и нулевой размер |
 | Numeric sizing inputs fail-closed | Исправлено в 1.7.5 | finite/positive capital, risk and instrument constraints; finite non-negative costs/margin/caps; invalid values дают zero-sized `BLOCKED_INVALID_INPUT` |
@@ -36,7 +38,7 @@
 | ML-задача TP/SL/TIMEOUT, а не NO TRADE | Исправлено в 1.3.0 | direction-conditional barrier dataset и трехклассовая модель |
 | Временная калибровка | Исправлено в 1.3.0 | отдельное более позднее calibration window, sigmoid OVR |
 | Final holdout и purge gap | Реализовано частично; усилено в 1.7.10 | единичный chronological train/calibration/final-holdout split; overlap очищается по `label_end_time` и embargo, multi-fold walk-forward отсутствует |
-| Непрерывность hourly feature/label windows | Исправлено в 1.7.11 | live feature snapshot требует 24 последовательных hourly transitions; training/backtest требуют ровно N следующих часов и сохраняют gap diagnostics |
+| Непрерывность hourly feature/label windows | Исправлено в 1.7.11; state reset усилен в 1.8.8 | live snapshot требует 24 последовательных валидных часов; gap/duplicate/invalid OHLCV сбрасывает EMA/ATR/rolling state; label path валидируется и сохраняет diagnostics |
 | Model registry и воспроизводимый артефакт | Реализовано | SHA256, feature/task/horizon validation, activation/rollback, одна active-модель |
 | Реальный runtime active-модели | Реализовано | worker загружает registry-active artifact и обновляет его без перезапуска |
 | Fail-closed для обязательных входов inference | Реализовано | stale candle/ticker, missing features, bid/ask/spec и excessive spread блокируют публикацию |
@@ -44,7 +46,7 @@
 | Фоновое переобучение и auto-activation | Реализовано с 1.4.0 | rolling window, immutable candidates, same-holdout comparison, guarded atomic activation |
 | Dataset-aware retraining | Реализовано в 1.5.0 | profile rows/timestamps/symbols/coverage; triggers по backfill и universe change |
 | Фактическое накопление глубокой истории | Реализовано в 1.5.0 | progressive `history_backfill` до target days с batch/page limits и учетом launch time |
-| Экономический gate auto-activation | Реализовано в 1.5.0 | policy trades, realized mean R, profit factor, drawdown и incumbent-relative limits |
+| Экономический gate auto-activation | Реализовано в 1.5.0; exit-time accounting исправлен в 1.8.8 | policy trades, realized mean/total R, profit factor и drawdown считаются по modeled exit events; incumbent-relative limits сохранены |
 | JSON-safe candidate registration | Исправлено в 1.7.1 | internal fail-closed sentinels не сериализуются; non-finite metrics → `null`; registry/job/audit JSONB защищены |
 | Recovery после утраты active artifact | Реализовано в 1.7.2–1.7.3 | explicit non-production baseline fallback, DEGRADED diagnostics, immediate bootstrap/recovery trigger after startup delay, short technical retry backoff, strict integrity boundary и absolute gates |
 | Orphan artifact reconciliation | Реализовано в 1.7.7 | status/UI inventory, explicit non-production recovery inside `MODEL_DIR`, metadata validation, absolute quality gate, guarded registry activation; directory presence alone не активирует model |

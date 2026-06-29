@@ -68,6 +68,7 @@ def test_signal_direction_is_selected_by_exact_net_ev_not_fixed_runtime_utility(
 def test_signal_geometry_uses_artifact_barrier_multipliers() -> None:
     predictions = (
         Prediction("LONG", 0.80, 0.10, 0.10, 1.0, "fixed-v1", "fixed-cal-v1", ()),
+        Prediction("SHORT", 0.10, 0.80, 0.10, -1.0, "fixed-v1", "fixed-cal-v1", ()),
     )
     costs = CostScenario(
         fee_rate_round_trip=D("0"),
@@ -92,12 +93,15 @@ def test_signal_geometry_uses_artifact_barrier_multipliers() -> None:
 
 
 def test_signal_geometry_rejects_non_finite_barrier_multiplier() -> None:
-    prediction = Prediction("LONG", 0.8, 0.1, 0.1, 1.0, "fixed-v1", "fixed-cal-v1", ())
+    predictions = (
+        Prediction("LONG", 0.8, 0.1, 0.1, 1.0, "fixed-v1", "fixed-cal-v1", ()),
+        Prediction("SHORT", 0.1, 0.8, 0.1, -1.0, "fixed-v1", "fixed-cal-v1", ()),
+    )
     costs = CostScenario(D("0"), D("0"), D("0"), D("0"))
 
     with pytest.raises(ValueError, match="positive and finite"):
         select_cost_aware_scenario(
-            (prediction,),
+            predictions,
             bid_price=D("100"),
             ask_price=D("100"),
             last_price=D("100"),
