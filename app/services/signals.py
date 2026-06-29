@@ -290,6 +290,7 @@ async def publish_hourly_signals(
     runtime: ModelRuntime,
     event_time: datetime | None = None,
     symbols: Iterable[str] | None = None,
+    diagnostics: dict[str, object] | None = None,
 ) -> list[MarketSignal]:
     now = datetime.now(UTC)
     event_time = event_time or now.replace(minute=0, second=0, microsecond=0)
@@ -299,13 +300,35 @@ async def publish_hourly_signals(
     await expire_old_signals(session)
     selected_symbols = list(symbols if symbols is not None else settings.symbols)
 
+    def count(reason: str, amount: int = 1) -> None:
+        if diagnostics is None:
+            return
+        skip_counts = diagnostics.setdefault("skip_counts", {})
+        assert isinstance(skip_counts, dict)
+        skip_counts[reason] = int(skip_counts.get(reason, 0)) + amount
+
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "event_time": event_time.isoformat(),
+                "symbols_total": len(selected_symbols),
+                "profiles_total": len(profiles),
+                "skip_counts": {},
+                "existing_current_hour": 0,
+                "published": 0,
+                "plan_status_counts": {},
+            }
+        )
+
     for symbol in selected_symbols:
         ticker = await _latest_ticker(session, symbol)
         if ticker is None:
+            count("missing_ticker")
             logger.warning("Skipping symbol without ticker", extra={"symbol": symbol})
             continue
         ticker_age = (now - ticker.source_time).total_seconds()
         if ticker_age < 0 or ticker_age > settings.max_ticker_age_seconds:
+            count("stale_ticker")
             logger.warning(
                 "Skipping symbol with stale ticker",
                 extra={"symbol": symbol, "ticker_age_seconds": ticker_age},
@@ -313,6 +336,7 @@ async def publish_hourly_signals(
             continue
         spec = await _latest_spec(session, symbol, cutoff=event_time)
         if spec is None:
+            count("missing_instrument_spec")
             logger.warning("Skipping symbol without point-in-time instrument spec", extra={"symbol": symbol})
             continue
         frame = await _candles_frame(
@@ -322,6 +346,7 @@ async def publish_hourly_signals(
             limit=max(100, settings.initial_backfill_bars),
         )
         if len(frame) < settings.universe_min_history_bars:
+            count("insufficient_candle_history")
             logger.warning(
                 "Skipping symbol with insufficient candle history",
                 extra={"symbol": symbol, "bars": len(frame)},
@@ -330,6 +355,7 @@ async def publish_hourly_signals(
         snapshot = latest_feature_snapshot(frame)
         missing_flags = [flag for flag in snapshot.quality_flags if flag.startswith("MISSING_")]
         if not snapshot.values or missing_flags:
+            count("incomplete_feature_vector")
             logger.warning(
                 "Skipping symbol with incomplete or non-contiguous feature vector",
                 extra={"symbol": symbol, "quality_flags": list(snapshot.quality_flags)},
@@ -342,6 +368,7 @@ async def publish_hourly_signals(
             latest_candle_close = latest_candle_close.replace(tzinfo=UTC)
         data_age = (event_time - latest_candle_close).total_seconds()
         if data_age < 0 or data_age > settings.max_candle_age_seconds:
+            count("stale_candle_cutoff")
             logger.warning(
                 "Skipping symbol with stale candle cutoff",
                 extra={"symbol": symbol, "data_age_seconds": data_age, "event_time": event_time.isoformat()},
@@ -350,9 +377,11 @@ async def publish_hourly_signals(
 
         spread_bps = _spread_bps(ticker)
         if spread_bps is None:
+            count("missing_executable_bid_ask")
             logger.warning("Skipping symbol without executable bid/ask", extra={"symbol": symbol})
             continue
         if spread_bps > settings.max_spread_bps:
+            count("spread_above_execution_limit")
             logger.info(
                 "Skipping symbol above executable spread limit",
                 extra={"symbol": symbol, "spread_bps": spread_bps},
@@ -364,6 +393,7 @@ async def publish_hourly_signals(
             and ticker.next_funding_time <= now + timedelta(hours=settings.default_horizon_hours)
             and spec.funding_interval_minutes is None
         ):
+            count("unknown_funding_interval")
             logger.warning(
                 "Skipping symbol because funding settlement is in horizon but interval is unknown",
                 extra={"symbol": symbol},
@@ -423,6 +453,10 @@ async def publish_hourly_signals(
             await session.execute(select(MarketSignal).where(MarketSignal.natural_key == natural_key))
         ).scalar_one_or_none()
         if existing:
+            if diagnostics is not None:
+                diagnostics["existing_current_hour"] = int(
+                    diagnostics.get("existing_current_hour", 0)
+                ) + 1
             continue
 
         superseded = await supersede_published_signals(
@@ -524,6 +558,22 @@ async def publish_hourly_signals(
                 payload={"symbol": symbol, "replacement_signal_id": str(signal.id)},
             )
         for profile in profiles:
-            await create_execution_plan(session, signal=signal, profile=profile, settings=settings)
+            plan = await create_execution_plan(
+                session, signal=signal, profile=profile, settings=settings
+            )
+            if diagnostics is not None:
+                status_counts = diagnostics.setdefault("plan_status_counts", {})
+                assert isinstance(status_counts, dict)
+                status_counts[plan.status] = int(status_counts.get(plan.status, 0)) + 1
         published.append(signal)
+        if diagnostics is not None:
+            diagnostics["published"] = len(published)
+
+    if diagnostics is not None:
+        skip_counts = diagnostics.get("skip_counts")
+        diagnostics["skipped_total"] = (
+            sum(int(value) for value in skip_counts.values())
+            if isinstance(skip_counts, dict)
+            else 0
+        )
     return published

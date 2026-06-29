@@ -11,7 +11,15 @@ from sqlalchemy import desc, func, select
 
 from app.api.deps import SessionDep, SettingsDep
 from app.db.health import current_revision, database_health
-from app.db.models import DataQualityIssue, JobRun, ModelRegistry, ServiceHeartbeat
+from app.db.models import (
+    CapitalProfile,
+    DataQualityIssue,
+    ExecutionPlan,
+    JobRun,
+    MarketSignal,
+    ModelRegistry,
+    ServiceHeartbeat,
+)
 from app.ml.runtime_selection import CONTROLLED_BASELINE_NOTICE_CODES
 from app.services.trainer_control import (
     TRAINER_CONTROL_JOB_NAME,
@@ -302,6 +310,7 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
 
 @router.get("/api/v1/status")
 async def status(session: SessionDep, settings: SettingsDep) -> dict:
+    now = datetime.now(UTC)
     heartbeats = (await session.execute(select(ServiceHeartbeat))).scalars().all()
     jobs = (await session.execute(select(JobRun).order_by(desc(JobRun.started_at)).limit(20))).scalars().all()
     latest_control_job = (
@@ -316,6 +325,14 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
         await session.execute(
             select(JobRun)
             .where(JobRun.job_name == "model_retraining")
+            .order_by(desc(JobRun.started_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    latest_inference_job = (
+        await session.execute(
+            select(JobRun)
+            .where(JobRun.job_name == "hourly_inference")
             .order_by(desc(JobRun.started_at))
             .limit(1)
         )
@@ -368,6 +385,49 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             or (artifact_path is not None and artifact_path.is_file())
         )
     )
+
+    active_profile = (
+        await session.execute(select(CapitalProfile).where(CapitalProfile.active.is_(True)).limit(1))
+    ).scalar_one_or_none()
+    current_signal_count = int(
+        (
+            await session.execute(
+                select(func.count(MarketSignal.id)).where(
+                    MarketSignal.status == "PUBLISHED",
+                    MarketSignal.expires_at > now,
+                )
+            )
+        ).scalar_one()
+    )
+    plan_status_counts: dict[str, int] = {}
+    if active_profile is not None:
+        ranked_plans = (
+            select(
+                ExecutionPlan.signal_id.label("signal_id"),
+                ExecutionPlan.status.label("status"),
+                func.row_number()
+                .over(
+                    partition_by=ExecutionPlan.signal_id,
+                    order_by=desc(ExecutionPlan.version),
+                )
+                .label("plan_rank"),
+            )
+            .where(ExecutionPlan.profile_id == active_profile.id)
+            .subquery()
+        )
+        plan_rows = (
+            await session.execute(
+                select(ranked_plans.c.status, func.count())
+                .join(MarketSignal, MarketSignal.id == ranked_plans.c.signal_id)
+                .where(
+                    ranked_plans.c.plan_rank == 1,
+                    MarketSignal.status == "PUBLISHED",
+                    MarketSignal.expires_at > now,
+                )
+                .group_by(ranked_plans.c.status)
+            )
+        ).all()
+        plan_status_counts = {str(status): int(count) for status, count in plan_rows}
 
     return {
         "app_mode": settings.app_mode,
@@ -431,6 +491,21 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "stale_after_seconds": trainer_control_stale_after_seconds(settings),
             "latest_request": control_job_payload(latest_control_job),
             "latest_training_job": job_run_payload(latest_training_job),
+        },
+        "recommendation_summary": {
+            "generated_at": now.isoformat(),
+            "active_profile_id": str(active_profile.id) if active_profile else None,
+            "active_profile_name": active_profile.name if active_profile else None,
+            "current_signal_count": current_signal_count,
+            "plan_status_counts": plan_status_counts,
+            "actionable_or_limited_count": sum(
+                plan_status_counts.get(status, 0) for status in ("ACTIONABLE", "LIMITED")
+            ),
+            "no_trade_count": plan_status_counts.get("NO_TRADE", 0),
+            "blocked_count": sum(
+                count for status, count in plan_status_counts.items() if status.startswith("BLOCKED")
+            ),
+            "latest_hourly_inference": job_run_payload(latest_inference_job),
         },
         "heartbeats": [
             {

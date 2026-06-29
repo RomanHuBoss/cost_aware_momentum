@@ -37,6 +37,22 @@ configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
+def should_retry_incomplete_inference(
+    details: dict[str, object], *, max_retries: int
+) -> bool:
+    """Return true when an hourly inference covered only part of its universe."""
+
+    try:
+        retry_count = int(details.get("inference_retry_count", 0))
+        symbols_total = int(details.get("symbols_total", 0))
+        covered_symbols = int(details.get("published", 0)) + int(
+            details.get("existing_current_hour", 0)
+        )
+    except (TypeError, ValueError):
+        return False
+    return symbols_total > 0 and covered_symbols < symbols_total and retry_count < max_retries
+
+
 class Worker:
     def __init__(self) -> None:
         self.stop_event = asyncio.Event()
@@ -169,7 +185,16 @@ class Worker:
                 job.finished_at = now
                 job.details = {"error": str(exc)}
 
-    async def run_job(self, job_name: str, scheduled_for: datetime, coro) -> dict:
+    async def run_job(
+        self,
+        job_name: str,
+        scheduled_for: datetime,
+        coro,
+        *,
+        retry_incomplete_success: bool = False,
+        retry_after_seconds: int = 60,
+        max_inference_retries: int = 5,
+    ) -> dict:
         try:
             async with (
                 SessionFactory() as session,
@@ -185,8 +210,25 @@ class Worker:
                         )
                     )
                 ).scalar_one_or_none()
+                retry_count = 0
+                is_incomplete_retry = False
                 if existing and existing.status == "SUCCESS":
-                    return {"skipped": "already_completed"}
+                    details = existing.details or {}
+                    retry_count = int(details.get("inference_retry_count", 0))
+                    incomplete_retryable = bool(
+                        retry_incomplete_success
+                        and should_retry_incomplete_inference(
+                            details, max_retries=max_inference_retries
+                        )
+                    )
+                    cooldown_elapsed = bool(
+                        existing.finished_at
+                        and (datetime.now(UTC) - existing.finished_at).total_seconds()
+                        >= retry_after_seconds
+                    )
+                    if not (incomplete_retryable and cooldown_elapsed):
+                        return {"skipped": "already_completed", "previous_details": details}
+                    is_incomplete_retry = True
                 now = datetime.now(UTC)
                 job = existing or JobRun(
                     job_name=job_name,
@@ -204,6 +246,9 @@ class Worker:
                     job.status = "RUNNING"
                     job.worker_id = settings.worker_id
                 result = await coro(session)
+                if is_incomplete_retry:
+                    result = dict(result or {})
+                    result["inference_retry_count"] = retry_count + 1
                 job.status = "SUCCESS"
                 job.finished_at = datetime.now(UTC)
                 job.details = result or {}
@@ -355,20 +400,30 @@ class Worker:
 
     async def inference_job(self, event_time: datetime) -> dict:
         async def task(session):
+            diagnostics: dict[str, object] = {}
             published = await publish_hourly_signals(
                 session,
                 settings=settings,
                 runtime=self.runtime,
                 event_time=event_time,
                 symbols=self.active_symbols,
+                diagnostics=diagnostics,
             )
             return {
                 "universe_symbols": len(self.active_symbols),
                 "published": len(published),
                 "signal_ids": [str(item.id) for item in published],
+                **diagnostics,
             }
 
-        return await self.run_job("hourly_inference", event_time, task)
+        return await self.run_job(
+            "hourly_inference",
+            event_time,
+            task,
+            retry_incomplete_success=True,
+            retry_after_seconds=max(30, settings.market_poll_seconds),
+            max_inference_retries=5,
+        )
 
     async def catchup_inference_job(self, reason: str) -> dict:
         """Publish missing current-hour signals after a universe bootstrap/change.
@@ -383,12 +438,14 @@ class Worker:
         scheduled = now.replace(second=0, microsecond=0)
 
         async def task(session):
+            diagnostics: dict[str, object] = {}
             published = await publish_hourly_signals(
                 session,
                 settings=settings,
                 runtime=self.runtime,
                 event_time=event_time,
                 symbols=self.active_symbols,
+                diagnostics=diagnostics,
             )
             return {
                 "reason": reason,
@@ -396,6 +453,7 @@ class Worker:
                 "universe_symbols": len(self.active_symbols),
                 "published": len(published),
                 "signal_ids": [str(item.id) for item in published],
+                **diagnostics,
             }
 
         return await self.run_job("universe_catchup_inference", scheduled, task)

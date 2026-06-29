@@ -438,14 +438,18 @@ async function requestTrainerControl(action) {
 function updateUniverseState() {
   const universe = state.universeStatus;
   const cards = state.recommendations.length;
+  const summary = state.systemStatus?.recommendation_summary || null;
+  const planText = summary
+    ? ` · исполнимых ${Number(summary.actionable_or_limited_count || 0)} · без сделки ${Number(summary.no_trade_count || 0)} · блокировано ${Number(summary.blocked_count || 0)}`
+    : '';
   if (!universe) {
-    $('#universe-state').textContent = `Universe: данные worker еще не получены · карточек ${cards}`;
+    $('#universe-state').textContent = `Universe: данные worker еще не получены · карточек ${cards}${planText}`;
     return;
   }
   const selected = Number(universe.selected_count || 0);
   const eligible = Number(universe.eligible_before_limit || selected);
   const mode = universe.mode === 'dynamic' ? 'динамический' : 'статический';
-  $('#universe-state').textContent = `Universe: ${selected} из ${eligible} · ${mode} · карточек ${cards}`;
+  $('#universe-state').textContent = `Universe: ${selected} из ${eligible} · ${mode} · карточек ${cards}${planText}`;
 }
 
 async function loadAll() {
@@ -507,6 +511,22 @@ function renderRecommendations() {
   else items.sort((a, b) => b.net_ev_r - a.net_ev_r);
   const groups = { active: [], watch: [], blocked: [], 'no-trade': [] };
   items.forEach(item => groups[classify(item)].push(item));
+  const inference = state.systemStatus?.recommendation_summary?.latest_hourly_inference;
+  const inferenceDetails = inference?.details || {};
+  const skipCounts = inferenceDetails.skip_counts || {};
+  const topSkip = Object.entries(skipCounts).sort((a, b) => Number(b[1]) - Number(a[1]))[0];
+  const activeEmpty = $('#active-empty');
+  if (groups.active.length === 0) {
+    if (groups.watch.length > 0) {
+      activeEmpty.textContent = `Исполнимые планы есть, но ${groups.watch.length} сейчас вне зоны входа — они находятся в разделе «Наблюдение».`;
+    } else if (groups['no-trade'].length > 0) {
+      activeEmpty.textContent = `Сигналы рассчитаны, но ${groups['no-trade'].length} не прошли пороги чистого RR/EV и находятся в разделе «Без сделки».`;
+    } else if (topSkip) {
+      activeEmpty.textContent = `Последний инференс не опубликовал сигналы. Основная причина: ${topSkip[0]} (${topSkip[1]}).`;
+    } else {
+      activeEmpty.textContent = 'Сейчас нет исполнимых рекомендаций в зоне входа.';
+    }
+  }
   for (const [group, groupItems] of Object.entries(groups)) {
     const id = group === 'no-trade' ? 'no-trade' : group;
     $(`#${id}-grid`).innerHTML = groupItems.map(item => tileHtml(item, group)).join('');
