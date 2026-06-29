@@ -197,7 +197,17 @@ def test_policy_drawdown_is_booked_at_exit_time_not_decision_time() -> None:
             },
         ]
     )
-    probabilities = np.tile(np.asarray([[0.80, 0.10, 0.10]]), (2, 1))
+    counterparts = meta.copy()
+    counterparts["direction"] = "SHORT"
+    meta = pd.concat([meta, counterparts], ignore_index=True)
+    probabilities = np.asarray(
+        [
+            [0.80, 0.10, 0.10],
+            [0.80, 0.10, 0.10],
+            [0.10, 0.80, 0.10],
+            [0.10, 0.80, 0.10],
+        ]
+    )
     split, model = _policy_split(meta, probabilities)
 
     metrics = evaluate_policy_model(model, split, _policy_config())

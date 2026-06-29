@@ -40,7 +40,7 @@ Artifact хранит:
 - raw и calibrated log loss, улучшение после calibration, class-prior benchmark, uniform benchmark и skill относительно class prior;
 - распределение классов и долю ambiguous labels;
 - training-data profile: число candle rows/timestamps/символов, полный список символов, временные границы, coverage и SHA256-подписи;
-- cost-aware holdout policy metrics: число сделок, trade rate, expected EV, realized mean/total R, win rate, profit factor и max drawdown; начиная с 1.8.8 realized total R/drawdown агрегируются по modeled exit time и equal-weight decision cohorts;
+- cost-aware holdout policy metrics: число сделок, trade rate, expected EV, realized mean/total R, win rate, profit factor и max drawdown; начиная с 1.8.8 realized total R/drawdown агрегируются по modeled exit time и equal-weight decision cohorts; начиная с 1.8.9 каждый cohort до оценки обязан содержать ровно одну LONG- и одну SHORT-строку;
 - barrier-policy net return, win rate, max drawdown, no-trade rate и cost stress x1.5/x2 в backtest report; начиная с 1.8.5 backtest применяет cost-aware EV/R selection, exit-notional-aware fees и H неперекрывающихся capital sleeves.
 
 Порог сделки не должен выбираться по accuracy.
@@ -58,6 +58,8 @@ Joblib bundle обязан содержать:
 - `temporal_split_schema=decision-and-label-end-purged-v3`, `label_data_end` и diagnostics `hourly_continuity`, отделенные от scheduler-поля `training_end`;
 
 При активации и загрузке проверяются version, SHA256, task, feature names/classes и соответствие `DEFAULT_HORIZON_HOURS`. Начиная с 1.8.8 каждая probability row дополнительно обязана быть finite TP/SL/TIMEOUT simplex; malformed artifact output отвергается fail-closed. Legacy binary-direction artifacts отвергаются.
+
+Начиная с 1.8.9 training dataset формирует directional observation атомарно: если barrier geometry одного направления невалидна, не сохраняется и второе направление того же `decision_time/symbol`. Chronological split, holdout policy и backtest повторно требуют точную пару `LONG + SHORT`, чтобы candidate/incumbent gates не оценивались на входах, недопустимых для production policy.
 
 
 ## Фоновое переобучение

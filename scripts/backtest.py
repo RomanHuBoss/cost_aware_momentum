@@ -19,6 +19,7 @@ from app.ml.training import (
     chronological_split,
     evaluate_model,
     make_barrier_dataset,
+    validate_directional_scenario_pairs,
     validate_outcome_probability_matrix,
 )
 
@@ -220,6 +221,7 @@ def policy_backtest(
     is_long = meta["direction"].eq("LONG")
     if (~meta["direction"].isin(["LONG", "SHORT"])).any():
         raise ValueError("Backtest metadata contains an unsupported direction")
+    validate_directional_scenario_pairs(meta, context="Backtest")
     fee_rate_per_leg = fee_rate_round_trip / 2.0
     adverse_funding = np.where(
         is_long,

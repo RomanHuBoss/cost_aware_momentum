@@ -180,6 +180,7 @@ def make_barrier_dataset(
         "skipped_feature_gap_timestamps": 0,
         "skipped_label_gap_timestamps": 0,
         "skipped_invalid_label_bar_timestamps": 0,
+        "skipped_incomplete_direction_pair_timestamps": 0,
     }
     hourly = pd.Timedelta(1, unit="h")
 
@@ -230,7 +231,7 @@ def make_barrier_dataset(
                 continue
             label_end_time = future.iloc[-1]["close_time"]
 
-            rows_before = len(rows)
+            direction_rows: list[dict] = []
             for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
                 if direction == "LONG":
                     stop = entry - atr * stop_atr_multiplier
@@ -241,7 +242,8 @@ def make_barrier_dataset(
                     take_profit = entry - atr * tp_atr_multiplier
                     sign = -1.0
                 if stop <= 0 or take_profit <= 0:
-                    continue
+                    direction_rows = []
+                    break
                 result = triple_barrier_outcome(
                     future,
                     direction=direction,
@@ -270,13 +272,40 @@ def make_barrier_dataset(
                         "barrier_downside_rate": float(abs(entry - stop) / entry),
                     }
                 )
-                rows.append(row)
-            if len(rows) > rows_before:
+                direction_rows.append(row)
+            if len(direction_rows) == 2:
+                rows.extend(direction_rows)
                 diagnostics["labeled_timestamps"] += 1
+            else:
+                diagnostics["skipped_incomplete_direction_pair_timestamps"] += 1
 
     dataset = pd.DataFrame.from_records(rows)
     dataset.attrs["hourly_continuity"] = diagnostics
     return dataset
+
+
+def validate_directional_scenario_pairs(frame: pd.DataFrame, *, context: str) -> None:
+    """Require one LONG and one SHORT row for every decision-time/symbol cohort."""
+
+    required_columns = {"decision_time", "symbol", "direction"}
+    missing_columns = sorted(required_columns - set(frame.columns))
+    if missing_columns:
+        raise ValueError(f"{context} is missing directional-pair columns: {missing_columns}")
+    if frame.empty:
+        return
+
+    invalid_groups = 0
+    for directions in frame.groupby(
+        ["decision_time", "symbol"], dropna=False, sort=False
+    )["direction"]:
+        values = [str(value) for value in directions[1]]
+        if len(values) != 2 or set(values) != {"LONG", "SHORT"}:
+            invalid_groups += 1
+    if invalid_groups:
+        raise ValueError(
+            f"{context} requires exactly one LONG and one SHORT per decision_time/symbol; "
+            f"found {invalid_groups} incomplete or duplicated cohort(s)"
+        )
 
 
 def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSplit:
@@ -311,6 +340,7 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         raise ValueError("Chronological split contains invalid decision_time or label_end_time")
     if (frame["label_end_time"] <= frame["decision_time"]).any():
         raise ValueError("Every label_end_time must be later than its decision_time")
+    validate_directional_scenario_pairs(frame, context="Chronological split")
 
     frame = frame.sort_values(["decision_time", "symbol", "direction"]).reset_index(drop=True)
     unique_times = pd.Index(frame["decision_time"].drop_duplicates().sort_values())
@@ -546,6 +576,7 @@ def evaluate_policy_model(
             raise ValueError("Policy evaluation exit_time exceeds label availability")
     if (~meta["direction"].isin(["LONG", "SHORT"])).any():
         raise ValueError("Policy evaluation contains an unsupported direction")
+    validate_directional_scenario_pairs(meta, context="Policy evaluation")
 
     fee_rate_per_leg = config.fee_rate_round_trip / 2.0
     is_long = meta["direction"].eq("LONG")

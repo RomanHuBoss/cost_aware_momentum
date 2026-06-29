@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.8: feature-state сбрасывается на разрывах/поврежденных свечах, вероятности TP/SL/TIMEOUT проходят строгую simplex-проверку, а holdout policy учитывает результат по времени выхода.
+> Версия 1.8.9: research dataset, temporal split, holdout policy и backtest требуют полную пару LONG/SHORT для каждого symbol/timestamp и fail-closed отклоняют неполные directional cohorts.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -139,7 +139,7 @@ Train/calibration/final holdout формируются по `decision_time`; lab
 
 ## Research backtest
 
-Backtest выбирает не более одного направления на символ и timestamp по тому же порядку policy, что и production: максимальный net `EV/R`, затем net RR и детерминированный LONG tie-break. Runtime, holdout policy, backtest и Decimal risk math отвергают probabilities вне диапазона `[0, 1]`, с неединичной суммой либо нечисловыми значениями. Комиссия каждой ноги считается от фактического входного/выходного notional; slippage, stop-gap reserve, статический funding-сценарий и policy-пороги задаются отдельно.
+Research dataset атомарно создает ровно одну LONG- и одну SHORT-строку на symbol/timestamp; если геометрия хотя бы одного направления невалидна, исключается весь cohort. Temporal split, holdout policy и backtest повторно проверяют этот контракт fail-closed. После проверки backtest выбирает не более одного направления по тому же порядку policy, что и production: максимальный net `EV/R`, затем net RR и детерминированный LONG tie-break. Runtime, holdout policy, backtest и Decimal risk math отвергают probabilities вне диапазона `[0, 1]`, с неединичной суммой либо нечисловыми значениями. Комиссия каждой ноги считается от фактического входного/выходного notional; slippage, stop-gap reserve, статический funding-сценарий и policy-пороги задаются отдельно.
 
 Для горизонта `H` часов капитал делится на `H` равных sleeves. Часовой cohort использует один sleeve и этот капитал не переиспользуется до завершения максимального label horizon. Поэтому перекрывающиеся H-часовые returns не компаундятся как последовательные одночасовые сделки и не создают скрытое H-кратное плечо. PnL зачисляется в equity curve в modeled candle exit time. Метрики concurrency считают реально открытые позиции, а не только новые входы в один timestamp.
 
@@ -174,6 +174,14 @@ python manage.py test --require-integration
 ```
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
+
+## Обновление с 1.8.8 на 1.8.9
+
+- DB migration и новые `.env` переменные не требуются.
+- Перезапустите API, worker и trainer после замены файлов.
+- Переобучение рекомендуется: dataset теперь исключает весь symbol/timestamp cohort, если невозможно корректно построить хотя бы один из LONG/SHORT сценариев.
+- Temporal split, holdout policy и research backtest теперь fail-closed отклоняют входные данные без точной пары `LONG + SHORT`; ранее односторонние cohorts могли смещать policy metrics и candidate/incumbent comparison.
+- Исторические research/holdout metrics, рассчитанные на неполных directional cohorts, не следует объединять с результатами 1.8.9 без повторного расчета.
 
 ## Обновление с 1.8.7 на 1.8.8
 

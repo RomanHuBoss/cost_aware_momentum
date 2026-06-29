@@ -15,6 +15,7 @@
 | Logistic baseline и nonlinear candidate | Да с 1.3.0 | logistic и HistGradientBoostingClassifier |
 | Временная calibration | Да с 1.3.0 | later calibration window, sigmoid OVR |
 | Корректный порядок классов и probability simplex | Да с 1.7.9; boundary усилена в 1.8.8 | class-order-safe log loss; runtime, holdout, EV/R math и backtest отвергают non-finite/out-of-range/non-unit probabilities |
+| Полная directional-пара в research/lifecycle | Да с 1.8.9 | `make_barrier_dataset` атомарно сохраняет LONG+SHORT; chronological split, holdout и backtest требуют ровно одну строку каждого направления на `decision_time/symbol` |
 | Purging и final holdout | Частично; усилено в 1.7.10 | один chronological split; overlap очищается по фактическому `label_end_time` плюс horizon-hour embargo, но нет полноценного multi-fold walk-forward |
 | Model registry/hash/activation/rollback | Да с 1.3.0 | SHA256 validation, activation CLI, unique active index, audit/outbox |
 | Worker использует active registry model | Да с 1.3.0 | periodic reload и runtime/registry readiness match |

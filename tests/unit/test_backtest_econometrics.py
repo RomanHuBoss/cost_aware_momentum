@@ -23,10 +23,26 @@ class CertainTpModel:
 
 
 def _split(meta: pd.DataFrame) -> DatasetSplit:
-    values = np.zeros((len(meta), len(MODEL_FEATURE_NAMES)), dtype=float)
-    values[:, -1] = np.where(meta["direction"].eq("LONG"), 1.0, -1.0)
-    targets = meta["target"].to_numpy()
-    return DatasetSplit(values, targets, values, targets, values, targets, meta)
+    paired_rows = meta.to_dict(orient="records")
+    for (_, _), cohort in meta.groupby(["decision_time", "symbol"], sort=False):
+        directions = set(cohort["direction"].astype(str))
+        if directions == {"LONG"}:
+            counterpart = cohort.iloc[0].to_dict()
+            counterpart.update(
+                {
+                    "direction": "SHORT",
+                    "target": "SL",
+                    "realized_gross_return": -0.20,
+                    "barrier_upside_rate": 0.001,
+                    "barrier_downside_rate": 0.20,
+                }
+            )
+            paired_rows.append(counterpart)
+    paired_meta = pd.DataFrame(paired_rows)
+    values = np.zeros((len(paired_meta), len(MODEL_FEATURE_NAMES)), dtype=float)
+    values[:, -1] = np.where(paired_meta["direction"].eq("LONG"), 1.0, -1.0)
+    targets = paired_meta["target"].to_numpy()
+    return DatasetSplit(values, targets, values, targets, values, targets, paired_meta)
 
 
 def _run(model, meta: pd.DataFrame, *, horizon_hours: int = 1, round_trip_cost_bps: float = 0.0):

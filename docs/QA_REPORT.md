@@ -1,5 +1,28 @@
 # QA report
 
+## Release 1.8.9 — 2026-06-29
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in an isolated virtual environment outside the release tree;
+- project installed with `.[dev]`;
+- PostgreSQL integration database was not configured.
+
+| Check | Baseline 1.8.8 | Post-change 1.8.9 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 194 passed, 4 skipped | 198 passed, 4 skipped |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic heads | `0005_plan_outcome_invalid_input` | `0005_plan_outcome_invalid_input` |
+
+New regression module `tests/unit/test_directional_pair_integrity.py` independently reproduces four manifestations of one research/live parity defect. Red evidence on unmodified 1.8.8: `4 failed`. Green evidence after correction: `4 passed`.
+
+The four skipped tests require an isolated PostgreSQL database and report that `TEST_DATABASE_URL` is not configured. `python manage.py doctor` and `python manage.py test --require-integration` were attempted and classified as UNAVAILABLE: both stopped before their checks with `Виртуальная среда не найдена`, because the clean release tree intentionally has no local `.venv`; no safe PostgreSQL test database was configured. No migration, API or `.env` change is required. Model retraining and recalculation of research metrics are recommended because incomplete directional cohorts are now removed atomically. Technical correctness does not establish profitability.
+
+---
+
 ## Release 1.8.8 — 2026-06-29
 
 Environment used for reproducible checks:

@@ -2,7 +2,7 @@
 
 Дата проверки: 2026-06-29
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.8
+Версия проекта после коррекции: 1.8.9
 
 ## Итог
 
@@ -13,6 +13,7 @@
 Версия 1.8.1 закрывает crash-recovery gap этой очереди: stale `RUNNING` request больше не блокирует enqueue навсегда. Система требует одновременно истекший пяти-минутный claim window и stale/missing heartbeat владельца, фиксирует прежнюю попытку как `FAILED`, создает новый linked retry, пишет audit/outbox и отвергает late completion по claim-token.
 Версия 1.8.7 закрывает четыре связанные fail-open ошибки контура принятия: entry-zone проверяется по исполнимому ask/bid вместо last price, read-only capital snapshot имеет строгий age/future-time gate, общий open risk читается и резервируется под глобальным transaction-scoped advisory lock, а стоп за оценочной liquidation boundary блокируется при любом плече.
 Версия 1.8.8 закрывает десять математических и эконометрических boundary-дефектов: stateful features сбрасываются на разрывах и invalid OHLCV, label path валидируется, probabilities проверяются как TP/SL/TIMEOUT simplex во всех вычислительных слоях, directional policy требует парный LONG/SHORT контракт, holdout drawdown строится по modeled exit events, а невалидный exchange max leverage блокируется.
+Версия 1.8.9 закрывает research/live parity gap: barrier dataset сохраняет cohort только при валидной паре LONG/SHORT, а temporal split, holdout policy и backtest независимо fail-closed проверяют точную directional cardinality.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -28,6 +29,7 @@
 | Market signal отдельно от execution plan | Реализовано | `MarketSignal`, versioned `ExecutionPlan`, профили капитала |
 | Cost-aware R/R, EV и sizing | Реализовано | комиссии, slippage, stop reserve, funding scenario, min-order/margin/liquidity/portfolio caps |
 | Probability simplex boundary | Исправлено в 1.8.8 | runtime artifact, Decimal EV/R, holdout policy и research backtest требуют finite TP/SL/TIMEOUT probabilities в `[0,1]` с суммой 1 |
+| Directional cohort integrity research/live | Исправлено в 1.8.9 | dataset атомарно формирует `LONG + SHORT`; split, holdout и backtest отвергают missing/duplicate/unknown direction до policy metrics |
 | Acceptance execution/risk revalidation | Исправлено в 1.8.7 | ask для LONG/bid для SHORT, fresh account snapshot, global PostgreSQL advisory lock до open-risk check, stop beyond liquidation fail-closed |
 | Directional geometry fail-closed | Исправлено в 1.7.4 | единый validator LONG/SHORT для risk, sizing и outcome; invalid plan получает `BLOCKED_INVALID_INPUT` и нулевой размер |
 | Numeric sizing inputs fail-closed | Исправлено в 1.7.5 | finite/positive capital, risk and instrument constraints; finite non-negative costs/margin/caps; invalid values дают zero-sized `BLOCKED_INVALID_INPUT` |
