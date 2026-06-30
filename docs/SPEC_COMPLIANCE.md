@@ -1,5 +1,11 @@
 # Проверка соответствия спецификации версии 1.3
 
+## Статус версии 1.8.17 — execution economics integrity
+
+Версия 1.8.17 закрывает связанный набор contract/fail-closed дефектов: market-signal и execution-plan economics сериализуются как разные области; break-even согласован с трёхисходной моделью `TP / SL / TIMEOUT`; plan economics повторно вычисляется из immutable snapshot и не показывается при нарушении целостности; read-only профиль без account link и неизвестный profile mode больше не получают manual-capital fallback.
+
+Статус общей спецификации остаётся частичным. Полный multi-fold walk-forward, PBO/DSR, point-in-time исторические instrument specs/orderbook, no-fill/partial-fill simulator, live drift control и forward paper/shadow evidence этой итерацией не реализованы.
+
 ## 1.8.16 status change
 
 Закрыт связанный execution-safety gap спецификации: перед `ACCEPTED` план больше не доверяет устаревшим capital/risk/margin/funding/spec значениям, а новые price levels всегда проходят текущий `tickSize`. При изменении входов система fail-closed создает новую plan version либо блокирует действие. Advisory-only и PostgreSQL-only границы не изменены.

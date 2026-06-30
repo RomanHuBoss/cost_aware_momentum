@@ -277,6 +277,26 @@ async def test_execution_plan_blocks_unverified_bybit_capital_as_stale_data(
     assert plan.status == "BLOCKED_STALE_DATA"
     assert any("Снимок капитала" in warning for warning in plan.warnings)
 
+
+async def test_execution_plan_snapshot_persists_three_outcome_economics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+    )
+
+    snapshot = plan.sizing_snapshot
+    assert snapshot["economics_schema_version"] == "tp-sl-timeout-v1"
+    assert D(snapshot["upside_rate"]).is_finite()
+    assert D(snapshot["timeout_net_rate"]).is_finite()
+    assert D(snapshot["break_even_tp_probability"]).is_finite()
+    assert snapshot["break_even_probability_semantics"] == (
+        "P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed"
+    )
+
 class _NoRowsResult:
     def scalar_one_or_none(self) -> object | None:
         return None

@@ -23,8 +23,10 @@ from app.risk.math import (
     CostScenario,
     InstrumentConstraints,
     assess_liquidation_proximity,
+    break_even_tp_probability,
     calculate_position_plan,
     finite_decimal,
+    net_outcome_rates,
     net_rr_and_ev,
     nonnegative_finite_decimal,
     positive_finite_decimal,
@@ -358,7 +360,7 @@ async def effective_capital(
     now: datetime | None = None,
     max_snapshot_age_seconds: int = 180,
 ) -> tuple[Decimal, Decimal | None, bool, dict]:
-    if profile.mode in {"manual", "paper"} or not profile.source_account_id:
+    if profile.mode in {"manual", "paper"}:
         return (
             profile.allocated_capital,
             None,
@@ -369,10 +371,31 @@ async def effective_capital(
                 "verified": profile.capital_verified,
             },
         )
+    if profile.mode != "bybit_read_only":
+        return (
+            Decimal("0"),
+            Decimal("0"),
+            False,
+            {
+                "source": "invalid-profile",
+                "invalid_profile_mode": profile.mode,
+            },
+        )
+    source_account_id = str(profile.source_account_id or "").strip()
+    if not source_account_id:
+        return (
+            Decimal("0"),
+            Decimal("0"),
+            False,
+            {
+                "source": "bybit",
+                "missing_source_account_id": True,
+            },
+        )
     snapshot = (
         await session.execute(
             select(AccountEquitySnapshot)
-            .where(AccountEquitySnapshot.account_id == profile.source_account_id)
+            .where(AccountEquitySnapshot.account_id == source_account_id)
             .order_by(desc(AccountEquitySnapshot.source_time))
             .limit(1)
         )
@@ -674,6 +697,9 @@ async def create_execution_plan(
         portfolio_notional_cap=portfolio_notional_cap,
         capital_verified=verified,
     )
+    plan_upside_rate: Decimal | None = None
+    plan_timeout_net_rate: Decimal | None = None
+    plan_break_even_tp_probability: Decimal | None = None
     try:
         plan_net_rr, plan_net_ev_r, _, _ = net_rr_and_ev(
             entry=planning_entry,
@@ -683,6 +709,21 @@ async def create_execution_plan(
             costs=costs,
             p_tp=signal.p_tp,
             p_sl=signal.p_sl,
+            p_timeout=signal.p_timeout,
+        )
+        plan_outcomes = net_outcome_rates(
+            entry=planning_entry,
+            stop=signal.stop_loss,
+            take_profit=signal.take_profit_1,
+            direction=signal.direction,
+            costs=costs,
+        )
+        plan_upside_rate = plan_outcomes.upside_rate
+        plan_timeout_net_rate = plan_outcomes.timeout_net_rate
+        plan_break_even_tp_probability = break_even_tp_probability(
+            downside_rate=plan_outcomes.downside_rate,
+            upside_rate=plan_outcomes.upside_rate,
+            timeout_net_rate=plan_outcomes.timeout_net_rate,
             p_timeout=signal.p_timeout,
         )
     except ValueError as exc:
@@ -748,9 +789,22 @@ async def create_execution_plan(
         sizing_snapshot={
             "entry_price": str(planning_entry),
             "planning_time": now.isoformat(),
+            "economics_schema_version": "tp-sl-timeout-v1",
             "net_rr": str(plan_net_rr),
             "net_ev_r": str(plan_net_ev_r),
             "stress_downside_rate": str(plan_math.stress_downside_rate),
+            "upside_rate": str(plan_upside_rate) if plan_upside_rate is not None else None,
+            "timeout_net_rate": (
+                str(plan_timeout_net_rate) if plan_timeout_net_rate is not None else None
+            ),
+            "break_even_tp_probability": (
+                str(plan_break_even_tp_probability)
+                if plan_break_even_tp_probability is not None
+                else None
+            ),
+            "break_even_probability_semantics": (
+                "P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed"
+            ),
             "capital": capital_snapshot,
             "instrument": {
                 "tick_size": str(spec.tick_size) if spec is not None else None,

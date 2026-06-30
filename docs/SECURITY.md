@@ -1,5 +1,11 @@
 # Security boundary
 
+## Fail-closed profile and economics boundary in 1.8.17
+
+Capital-profile mode is an allow-list, not a fallback. `manual` and `paper` use configured allocated capital; `bybit_read_only` requires a non-empty `source_account_id` and a fresh matching account snapshot. Unknown/legacy modes and missing account links return zero capital, zero available margin and `verified=false`. This prevents malformed database state from silently becoming an executable manual-capital plan.
+
+Execution-plan economics is treated as integrity-sensitive operator data. The API recomputes it from immutable snapshot inputs and withholds the values when non-finite, missing or inconsistent data is detected. The control is diagnostic and fail-closed; it does not authenticate a malicious database writer and does not replace PostgreSQL access controls, audit-chain review or backups.
+
 ## Граница исполнения
 
 Приложение является advisory-only. `app/bybit/client.py` намеренно содержит только HTTP GET. Запрещено добавлять `/v5/order/create`, amend, cancel, batch order или withdrawal endpoints без отдельного архитектурного решения и review.

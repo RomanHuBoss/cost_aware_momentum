@@ -1,5 +1,15 @@
 # Трассировка требований спецификации
 
+## 1.8.17 trace additions
+
+| Requirement | Implementation | Verification |
+|---|---|---|
+| Market signal remains capital-independent while plan economics follows planning inputs | `app/services/execution.py`, `app/api/serializers.py`, `web/js/app.js` | `test_detail_distinguishes_signal_and_execution_plan_economics`, snapshot-persistence regression |
+| Break-even matches `TP / SL / TIMEOUT` EV | `app/risk/math.py`, `app/api/serializers.py` | exact zero-EV identity, non-binary API regression, 1,000 randomized independent identities |
+| Corrupted plan economics is not presented as valid | `app/api/serializers.py`, `web/js/app.js` | `test_corrupted_execution_plan_economics_snapshot_is_not_presented_as_valid` |
+| Read-only and unknown profile modes fail closed | `app/services/execution.py` | missing-account and unknown-mode regressions |
+| Operator can distinguish scope and nullable integrity state | `web/js/app.js` | frontend contract regression plus `node --check` |
+
 ## 1.8.16 trace additions
 
 | Requirement | Implementation | Verification |

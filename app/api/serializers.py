@@ -11,13 +11,201 @@ from app.db.models import (
     SignalOutcome,
     TickerSnapshot,
 )
+from app.risk.math import (
+    CostScenario,
+    break_even_tp_probability,
+    finite_decimal,
+    net_outcome_rates,
+    net_rr_and_ev,
+    positive_finite_decimal,
+)
 from app.services.execution import executable_entry_price
+
+BREAK_EVEN_SEMANTICS = "P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed"
+_ECONOMICS_TOLERANCE = Decimal("1e-12")
 
 
 def number(value):
     if isinstance(value, Decimal):
         return float(value)
     return value
+
+
+def _close_decimal(left: Decimal, right: Decimal) -> bool:
+    return abs(left - right) <= _ECONOMICS_TOLERANCE
+
+
+def _break_even_payload(
+    *,
+    downside_rate: Decimal,
+    upside_rate: Decimal,
+    timeout_net_rate: Decimal,
+    p_timeout: float | Decimal,
+) -> dict:
+    threshold = break_even_tp_probability(
+        downside_rate=downside_rate,
+        upside_rate=upside_rate,
+        timeout_net_rate=timeout_net_rate,
+        p_timeout=p_timeout,
+    )
+    timeout_probability = finite_decimal(p_timeout, "p_timeout")
+    maximum = Decimal("1") - timeout_probability
+    return {
+        "break_even_tp_probability": number(threshold),
+        "break_even_probability": number(threshold),
+        "break_even_probability_semantics": BREAK_EVEN_SEMANTICS,
+        "break_even_probability_feasible": Decimal("0") <= threshold <= maximum,
+        "max_feasible_tp_probability": number(maximum),
+    }
+
+
+def signal_economics_dict(signal: MarketSignal) -> dict:
+    """Serialize capital-independent signal economics with three-outcome break-even math."""
+
+    try:
+        costs = CostScenario(
+            fee_rate_round_trip=finite_decimal(
+                signal.fee_rate_round_trip, "fee_rate_round_trip"
+            ),
+            slippage_rate=finite_decimal(signal.slippage_rate, "slippage_rate"),
+            # The stored signal downside already includes the configured reserve.
+            # This zero is used only to recover TP and TIMEOUT net outcomes.
+            stop_gap_reserve_rate=Decimal("0"),
+            funding_rate=finite_decimal(
+                signal.funding_rate_scenario, "funding_rate_scenario"
+            ),
+        )
+        outcome_rates = net_outcome_rates(
+            entry=signal.entry_reference,
+            stop=signal.stop_loss,
+            take_profit=signal.take_profit_1,
+            direction=signal.direction,
+            costs=costs,
+        )
+        downside = positive_finite_decimal(
+            signal.stress_downside_rate, "stress_downside_rate"
+        )
+        break_even = _break_even_payload(
+            downside_rate=downside,
+            upside_rate=outcome_rates.upside_rate,
+            timeout_net_rate=outcome_rates.timeout_net_rate,
+            p_timeout=signal.p_timeout,
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        break_even = {
+            "break_even_tp_probability": None,
+            "break_even_probability": None,
+            "break_even_probability_semantics": BREAK_EVEN_SEMANTICS,
+            "break_even_probability_feasible": False,
+            "max_feasible_tp_probability": None,
+        }
+    return {
+        "scope": "MARKET_SIGNAL_REFERENCE",
+        "gross_rr": signal.gross_rr,
+        "net_rr": signal.net_rr,
+        "net_ev_r": signal.net_ev_r,
+        "gross_edge_rate": signal.gross_edge_rate,
+        "fee_rate_round_trip": signal.fee_rate_round_trip,
+        "slippage_rate": signal.slippage_rate,
+        "funding_rate_scenario": signal.funding_rate_scenario,
+        "stress_downside_rate": signal.stress_downside_rate,
+        **break_even,
+    }
+
+
+def execution_plan_economics_dict(signal: MarketSignal, plan: ExecutionPlan) -> dict:
+    """Recompute and verify economics from the immutable execution-plan snapshot."""
+
+    invalid = {
+        "scope": "EXECUTION_PLAN_SNAPSHOT",
+        "available": False,
+        "integrity_status": "INVALID_SNAPSHOT",
+        "entry_price": None,
+        "net_rr": None,
+        "net_ev_r": None,
+        "stress_downside_rate": None,
+        "upside_rate": None,
+        "timeout_net_rate": None,
+        "break_even_tp_probability": None,
+        "break_even_probability": None,
+        "break_even_probability_semantics": BREAK_EVEN_SEMANTICS,
+        "break_even_probability_feasible": False,
+        "max_feasible_tp_probability": None,
+    }
+    try:
+        snapshot = plan.sizing_snapshot
+        if not isinstance(snapshot, dict):
+            return invalid
+        cost_values = snapshot.get("costs")
+        if not isinstance(cost_values, dict):
+            return invalid
+        entry = positive_finite_decimal(snapshot.get("entry_price"), "entry_price")
+        costs = CostScenario(
+            fee_rate_round_trip=finite_decimal(
+                cost_values.get("fee_rate_round_trip"), "fee_rate_round_trip"
+            ),
+            slippage_rate=finite_decimal(cost_values.get("slippage_rate"), "slippage_rate"),
+            stop_gap_reserve_rate=finite_decimal(
+                cost_values.get("stop_gap_reserve_rate"), "stop_gap_reserve_rate"
+            ),
+            funding_rate=finite_decimal(cost_values.get("funding_rate"), "funding_rate"),
+        )
+        net_rr, net_ev_r, downside, upside = net_rr_and_ev(
+            entry=entry,
+            stop=signal.stop_loss,
+            take_profit=signal.take_profit_1,
+            direction=signal.direction,
+            costs=costs,
+            p_tp=signal.p_tp,
+            p_sl=signal.p_sl,
+            p_timeout=signal.p_timeout,
+        )
+        outcome_rates = net_outcome_rates(
+            entry=entry,
+            stop=signal.stop_loss,
+            take_profit=signal.take_profit_1,
+            direction=signal.direction,
+            costs=costs,
+        )
+        stored_values = {
+            "net_rr": finite_decimal(snapshot.get("net_rr"), "stored net_rr"),
+            "net_ev_r": finite_decimal(snapshot.get("net_ev_r"), "stored net_ev_r"),
+            "stress_downside_rate": finite_decimal(
+                snapshot.get("stress_downside_rate"), "stored stress_downside_rate"
+            ),
+        }
+        expected_values = {
+            "net_rr": net_rr,
+            "net_ev_r": net_ev_r,
+            "stress_downside_rate": downside,
+        }
+        if any(
+            not _close_decimal(stored_values[key], expected_values[key])
+            for key in expected_values
+        ):
+            return invalid
+        break_even = _break_even_payload(
+            downside_rate=downside,
+            upside_rate=upside,
+            timeout_net_rate=outcome_rates.timeout_net_rate,
+            p_timeout=signal.p_timeout,
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        return invalid
+
+    return {
+        "scope": "EXECUTION_PLAN_SNAPSHOT",
+        "available": True,
+        "integrity_status": "VERIFIED",
+        "economics_schema_version": snapshot.get("economics_schema_version", "legacy-recomputed"),
+        "entry_price": number(entry),
+        "net_rr": number(net_rr),
+        "net_ev_r": number(net_ev_r),
+        "stress_downside_rate": number(downside),
+        "upside_rate": number(upside),
+        "timeout_net_rate": number(outcome_rates.timeout_net_rate),
+        **break_even,
+    }
 
 
 def profile_dict(profile: CapitalProfile) -> dict:
@@ -71,6 +259,7 @@ def tile_dict(
     seconds = max(0, int((signal.expires_at - now).total_seconds()))
     state = entry_state(signal, ticker)
     presentation_direction = "NO_TRADE" if plan.status == "NO_TRADE" else signal.direction
+    plan_economics = execution_plan_economics_dict(signal, plan)
     return {
         "signal_id": str(signal.id),
         "plan_id": str(plan.id),
@@ -92,8 +281,12 @@ def tile_dict(
         },
         "stop_loss": number(signal.stop_loss),
         "main_take_profit": number(signal.take_profit_1),
+        "economics_scope": "MARKET_SIGNAL_REFERENCE",
         "net_rr": signal.net_rr,
         "net_ev_r": signal.net_ev_r,
+        "execution_net_rr": plan_economics["net_rr"],
+        "execution_net_ev_r": plan_economics["net_ev_r"],
+        "execution_economics_integrity": plan_economics["integrity_status"],
         "risk_usdt": number(plan.actual_stress_loss),
         "risk_budget_usdt": number(plan.risk_budget),
         "notional": number(plan.notional),
@@ -116,6 +309,8 @@ def detail_dict(
     signal: MarketSignal, plan: ExecutionPlan, profile: CapitalProfile, ticker: TickerSnapshot | None
 ) -> dict:
     tile = tile_dict(signal, plan, profile, ticker)
+    signal_economics = signal_economics_dict(signal)
+    plan_economics = execution_plan_economics_dict(signal, plan)
     tile.update(
         {
             "trading_plan": {
@@ -158,15 +353,8 @@ def detail_dict(
                 "sizing_snapshot": plan.sizing_snapshot,
             },
             "economics": {
-                "gross_rr": signal.gross_rr,
-                "net_rr": signal.net_rr,
-                "net_ev_r": signal.net_ev_r,
-                "gross_edge_rate": signal.gross_edge_rate,
-                "fee_rate_round_trip": signal.fee_rate_round_trip,
-                "slippage_rate": signal.slippage_rate,
-                "funding_rate_scenario": signal.funding_rate_scenario,
-                "stress_downside_rate": signal.stress_downside_rate,
-                "break_even_probability": 1 / (1 + signal.net_rr) if signal.net_rr > 0 else None,
+                **signal_economics,
+                "execution_plan": plan_economics,
             },
             "model": {
                 "p_tp_before_sl": signal.p_tp,

@@ -1,5 +1,11 @@
 # Архитектура
 
+## Execution economics integrity in 1.8.17
+
+`MarketSignal` remains the capital-independent policy result at its published reference geometry. `ExecutionPlan` remains account-dependent and now persists a versioned `TP / SL / TIMEOUT` economics snapshot for the actual planning entry and projected costs. API serialization recomputes plan `net R/R`, `EV/R`, downside, upside and TIMEOUT outcome from immutable inputs and exposes them only when the stored core values agree within a strict Decimal tolerance.
+
+The break-even threshold solves the same three-outcome EV equation used by policy while holding `P(TIMEOUT)` fixed and assigning `P(SL)=1-P(TP)-P(TIMEOUT)`. It is not the binary shortcut `1/(1+R/R)`. A malformed/non-finite snapshot is presented as `INVALID_SNAPSHOT`, never as valid economics. Capital-profile dispatch is explicit: only `manual`, `paper` and a correctly linked `bybit_read_only` profile can provide capital; unknown modes or a missing read-only account link return zero capital and block the plan.
+
 ## Fresh acceptance and exchange-price geometry in 1.8.16
 
 Signal publication now consumes the point-in-time instrument `tickSize`. Entry-zone bounds are rounded outward; stops are rounded away from entry and take-profit levels toward entry. EV and net R/R are calculated only after this conservative discrete-price transformation. Invalid or unaligned executable references block publication instead of leaking an unusable manual price.

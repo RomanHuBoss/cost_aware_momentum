@@ -1,5 +1,11 @@
 # Model card — barrier outcome model v1
 
+## Three-outcome decision threshold in 1.8.17
+
+The UI break-even value is a policy diagnostic, not a new model probability and not a training metric. For fixed `P(TIMEOUT)=q`, net TP outcome `U`, positive SL downside `D` and net TIMEOUT outcome `T`, the displayed threshold is `(D(1-q)-qT)/(U+D)`, with `P(SL)=1-q-P(TP)`. The value is marked infeasible when it lies outside `[0, 1-q]`.
+
+Market-signal economics uses the published reference entry and signal cost scenario. Execution-plan economics uses the saved planning entry and account-time cost scenario. This separation prevents capital/profile changes from being misread as a change in the model's direction or probability distribution. It does not establish calibration quality, causal validity or profitability.
+
 ## Live exchange-geometry policy in 1.8.16
 
 Model probabilities remain continuous-price TP/SL/TIMEOUT estimates, while live signal publication now maps ATR barriers to the current exchange `tickSize` before policy evaluation. Stops round away from entry and TP toward entry, then net R/R and EV are recomputed. This prevents optimistic live geometry but does not make historical labels tick-spec-aware: historical point-in-time instrument-spec reconstruction remains a research limitation and should be addressed before claiming exact train/live execution parity.

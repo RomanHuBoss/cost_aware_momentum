@@ -1,5 +1,30 @@
 # QA report
 
+## Release 1.8.17 — 2026-06-30
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in isolated virtual environment `/mnt/data/cam_audit_venv`;
+- project installed with `.[dev]`;
+- no disposable PostgreSQL integration database or application `.env` was configured.
+
+| Check | Baseline 1.8.16 | Post-change 1.8.17 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 296 passed, 4 skipped, 19 warnings | 304 passed, 4 skipped, 19 warnings |
+| explicit unchanged-code regressions | 4 failed | 4 passed |
+| new focused/acceptance tests | not present | 8 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic head | `0006_manual_trade_remaining_risk` | `0006_manual_trade_remaining_risk` |
+| independent break-even identities | not run | PASSED — 1,000/1,000 |
+| release integrity | input archive had no `SHA256SUMS` | PASSED — 154/154 after manifest regeneration |
+
+The explicit red suite proved four unchanged 1.8.16 defects: the API omitted execution-plan economics, exposed the binary break-even shortcut, and returned allocated manual capital for both a read-only profile without an account link and an unknown legacy mode. The same four tests pass after correction. Additional tests cover exact zero-EV mathematics, signal/plan scope separation, snapshot persistence and corruption handling, UI labels/null safety, and the fail-closed profile cases.
+
+The four skipped tests require a separate PostgreSQL database. `python manage.py test --require-integration` and `python manage.py doctor` were NOT RUN because no safe `TEST_DATABASE_URL`, application `.env`, or disposable PostgreSQL instance was available. No migration was added. Technical correctness does not establish strategy profitability.
+
 ## Release 1.8.16 — 2026-06-30
 
 Environment used for reproducible checks:

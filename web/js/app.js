@@ -488,8 +488,8 @@ function tileHtml(item, section) {
       <div class="level"><span>Основной TP ${helpButton('tp')}</span><strong>${fmtPrice(item.main_take_profit)}</strong></div>
     </div>
     <div class="metric-grid">
-      <div class="metric"><span class="help-term">Чистый доход/риск ${helpButton('rr_net')}</span><strong>${fmt(item.net_rr, 2)}</strong></div>
-      <div class="metric"><span class="help-term">Ожидаемый результат ${helpButton('ev_net_r')}</span><strong>${item.net_ev_r >= 0 ? '+' : ''}${fmt(item.net_ev_r, 2)}R</strong></div>
+      <div class="metric"><span class="help-term">Net R/R сигнала ${helpButton('rr_net')}</span><strong>${fmt(item.net_rr, 2)}</strong></div>
+      <div class="metric"><span class="help-term">Net EV сигнала ${helpButton('ev_net_r')}</span><strong>${item.net_ev_r >= 0 ? '+' : ''}${fmt(item.net_ev_r, 2)}R</strong></div>
       <div class="metric"><span class="help-term">Риск ${helpButton('risk_usdt')}</span><strong>${fmt(item.risk_usdt, 2)} USDT</strong></div>
       <div class="metric"><span class="help-term">Позиция ${helpButton('notional')}</span><strong>${fmt(item.notional, 2)} USDT</strong></div>
     </div>${warning}
@@ -588,6 +588,21 @@ function renderDetail() {
   } else if (state.detailTab === 'economics') {
     const outcome = d.counterfactual_outcome;
     const planOutcome = outcome?.plan;
+    const planEconomics = d.economics.execution_plan || {};
+    const signalBreakEven = d.economics.break_even_tp_probability;
+    const signalBreakEvenText = signalBreakEven === null || signalBreakEven === undefined
+      ? '—'
+      : `${fmt(signalBreakEven * 100, 1)}%`;
+    const planBreakEven = planEconomics.break_even_tp_probability;
+    const planCard = planEconomics.available ? `<section class="detail-card"><h3>Execution plan · сохраненный расчет</h3>${dataList([
+      ['Цена расчета', fmtPrice(planEconomics.entry_price)], ['Net R/R плана', fmt(planEconomics.net_rr, 3)],
+      ['Net EV плана', `${planEconomics.net_ev_r >= 0 ? '+' : ''}${fmt(planEconomics.net_ev_r, 3)}R`],
+      ['Порог P(TP) при текущем P(timeout)', planBreakEven === null || planBreakEven === undefined ? '—' : `${fmt(planBreakEven * 100, 1)}%`],
+      ['Стресс-downside плана', `${fmt(planEconomics.stress_downside_rate * 100, 3)}%`],
+      ['Целевой net outcome', `${fmt(planEconomics.upside_rate * 100, 3)}%`],
+      ['Timeout net outcome', `${fmt(planEconomics.timeout_net_rate * 100, 3)}%`],
+    ])}<p class="section-note">Эти значения пересчитаны из immutable snapshot выбранной версии плана и проверены против сохраненных Net R/R, EV и downside.</p></section>`
+      : `<section class="detail-card"><h3>Execution plan · сохраненный расчет</h3><p>Экономика плана не показана: snapshot отсутствует, поврежден или не проходит проверку целостности.</p></section>`;
     const valuationLabels = { VALUED: 'Рассчитано', NOT_SIZED: 'Без безопасного размера', FUNDING_UNAVAILABLE: 'Funding timeline недоступен', INVALID_INPUT: 'Некорректный snapshot плана' };
     const outcomeCard = outcome ? `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3>${dataList([
       ['Исход первичного барьера', escapeHtml(outcome.outcome)], ['Цена выхода', fmtPrice(outcome.exit_price)],
@@ -596,11 +611,11 @@ function renderDetail() {
       ['Оценочный net P&L', planOutcome ? `${fmt(planOutcome.estimated_net_pnl, 4)} USDT` : '—'],
       ['Контрфактический результат', planOutcome?.counterfactual_r === null || planOutcome?.counterfactual_r === undefined ? '—' : `${fmt(planOutcome.counterfactual_r, 4)}R`],
     ])}<p class="section-note">Это автоматическая оценка TP1/SL/TIMEOUT по подтвержденным часовым свечам и сохраненным предположениям плана, а не фактический P&L ручного исполнения.</p></section>` : `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3><p>Еще не определен: горизонт не завершен, барьер не достигнут либо не хватает подтвержденной свечи.</p></section>`;
-    html = `<div class="detail-grid"><section class="detail-card"><h3>Доход и риск</h3>${dataList([
-      ['Gross R/R', fmt(d.economics.gross_rr, 2)], ['Net R/R', fmt(d.economics.net_rr, 2)],
-      ['Net EV', `${d.economics.net_ev_r >= 0 ? '+' : ''}${fmt(d.economics.net_ev_r, 3)}R`], ['Break-even вероятность', `${fmt(d.economics.break_even_probability * 100, 1)}%`],
-      ['Стресс-downside', `${fmt(d.economics.stress_downside_rate * 100, 3)}%`],
-    ])}</section><section class="detail-card"><h3>Издержки</h3>${dataList([
+    html = `<div class="detail-grid"><section class="detail-card"><h3>Market signal · reference</h3>${dataList([
+      ['Gross R/R сигнала', fmt(d.economics.gross_rr, 2)], ['Net R/R сигнала', fmt(d.economics.net_rr, 2)],
+      ['Net EV сигнала', `${d.economics.net_ev_r >= 0 ? '+' : ''}${fmt(d.economics.net_ev_r, 3)}R`], ['Порог P(TP) при текущем P(timeout)', signalBreakEvenText],
+      ['Стресс-downside сигнала', `${fmt(d.economics.stress_downside_rate * 100, 3)}%`],
+    ])}<p class="section-note">Порог безубыточности решает трехисходное уравнение TP/SL/TIMEOUT при фиксированном P(timeout); это не бинарная формула 1/(1+R/R).</p></section>${planCard}<section class="detail-card"><h3>Издержки сигнала</h3>${dataList([
       ['Комиссии round-trip', `${fmt(d.economics.fee_rate_round_trip * 100, 4)}%`], ['Slippage', `${fmt(d.economics.slippage_rate * 100, 4)}%`],
       ['Funding-сценарий', `${fmt(d.economics.funding_rate_scenario * 100, 4)}%`], ['Gross edge', `${fmt(d.economics.gross_edge_rate * 100, 3)}%`],
     ])}<p class="section-note">Spread не прибавляется повторно, когда он уже отражен в исполнимой цене.</p></section>${outcomeCard}</div>`;

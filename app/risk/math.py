@@ -56,6 +56,13 @@ class PositionPlan:
         }
 
 
+@dataclass(frozen=True)
+class NetOutcomeRates:
+    downside_rate: Decimal
+    upside_rate: Decimal
+    timeout_net_rate: Decimal
+
+
 def d(value: Decimal | float | int | str) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
@@ -319,6 +326,88 @@ def upside_rate(entry: Decimal, take_profit: Decimal, direction: Direction, cost
     return price_move - fee_rate - costs.slippage_rate + recognized_funding
 
 
+def timeout_net_return_rate(
+    *,
+    entry: Decimal,
+    direction: Direction,
+    costs: CostScenario,
+    timeout_return_rate: Decimal = Decimal("-0.002"),
+) -> Decimal:
+    """Return the net TIMEOUT outcome rate normalized by entry notional."""
+
+    costs = validate_cost_scenario(costs)
+    entry = _positive_finite_price(entry, "entry")
+    _direction_sign(direction)
+    timeout_gross = finite_decimal(timeout_return_rate, "timeout_return_rate")
+    timeout_exit = entry * (
+        Decimal("1") + timeout_gross if direction == "LONG" else Decimal("1") - timeout_gross
+    )
+    timeout_fee_rate = normalized_round_trip_fee_rate(
+        entry, timeout_exit, costs.fee_rate_round_trip
+    )
+    recognized_funding = pretrade_funding_return_rate(direction, costs.funding_rate)
+    return timeout_gross - timeout_fee_rate - costs.slippage_rate + recognized_funding
+
+
+def net_outcome_rates(
+    *,
+    entry: Decimal,
+    stop: Decimal,
+    take_profit: Decimal,
+    direction: Direction,
+    costs: CostScenario,
+    timeout_return_rate: Decimal = Decimal("-0.002"),
+) -> NetOutcomeRates:
+    """Return the three mutually exclusive net outcome rates used by EV."""
+
+    validate_directional_geometry(
+        entry=entry,
+        stop=stop,
+        take_profit=take_profit,
+        direction=direction,
+    )
+    return NetOutcomeRates(
+        downside_rate=stress_downside_rate(entry, stop, direction, costs),
+        upside_rate=upside_rate(entry, take_profit, direction, costs),
+        timeout_net_rate=timeout_net_return_rate(
+            entry=entry,
+            direction=direction,
+            costs=costs,
+            timeout_return_rate=timeout_return_rate,
+        ),
+    )
+
+
+def break_even_tp_probability(
+    *,
+    downside_rate: Decimal | float | int | str,
+    upside_rate: Decimal | float | int | str,
+    timeout_net_rate: Decimal | float | int | str,
+    p_timeout: Decimal | float | int | str,
+) -> Decimal:
+    """Solve the three-outcome EV equation for the TP probability.
+
+    ``p_timeout`` is held fixed and ``p_sl`` is the residual
+    ``1 - p_timeout - p_tp``.  The returned threshold is intentionally not
+    clamped; callers can compare it with ``[0, 1 - p_timeout]`` to determine
+    whether the break-even point is feasible on the probability simplex.
+    """
+
+    downside = positive_finite_decimal(downside_rate, "downside_rate")
+    upside = finite_decimal(upside_rate, "upside_rate")
+    timeout_net = finite_decimal(timeout_net_rate, "timeout_net_rate")
+    timeout_probability = finite_decimal(p_timeout, "p_timeout")
+    if timeout_probability < 0 or timeout_probability > 1:
+        raise ValueError("p_timeout must be within [0, 1]")
+    denominator = upside + downside
+    if denominator <= 0:
+        raise ValueError("upside_rate + downside_rate must be positive")
+    return (
+        downside * (Decimal("1") - timeout_probability)
+        - timeout_probability * timeout_net
+    ) / denominator
+
+
 
 def validate_probability_simplex(
     p_tp: Decimal | float | int | str,
@@ -352,24 +441,18 @@ def net_rr_and_ev(
     p_timeout: float,
     timeout_return_rate: Decimal = Decimal("-0.002"),
 ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-    validate_directional_geometry(
+    rates = net_outcome_rates(
         entry=entry,
         stop=stop,
         take_profit=take_profit,
         direction=direction,
+        costs=costs,
+        timeout_return_rate=timeout_return_rate,
     )
-    downside = stress_downside_rate(entry, stop, direction, costs)
-    upside = upside_rate(entry, take_profit, direction, costs)
+    downside = rates.downside_rate
+    upside = rates.upside_rate
     rr = Decimal("0") if downside <= 0 else max(Decimal("0"), upside) / downside
-    recognized_funding = pretrade_funding_return_rate(direction, costs.funding_rate)
-    timeout_gross = finite_decimal(timeout_return_rate, "timeout_return_rate")
-    timeout_exit = d(entry) * (
-        Decimal("1") + timeout_gross if direction == "LONG" else Decimal("1") - timeout_gross
-    )
-    timeout_fee_rate = normalized_round_trip_fee_rate(
-        entry, timeout_exit, costs.fee_rate_round_trip
-    )
-    timeout_net = timeout_gross - timeout_fee_rate - costs.slippage_rate + recognized_funding
+    timeout_net = rates.timeout_net_rate
     sl_net = -downside
     p_tp_value, p_sl_value, p_timeout_value = validate_probability_simplex(
         p_tp, p_sl, p_timeout
