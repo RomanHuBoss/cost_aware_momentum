@@ -27,7 +27,7 @@ DEFAULT_TP_ATR_MULTIPLIER = 2.20
 MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
-POLICY_METRIC_SCHEMA = "exit-time-realized-gap-horizon-sleeves-v3"
+POLICY_METRIC_SCHEMA = "exit-time-open-gap-propagated-horizon-sleeves-v4"
 
 
 class TemporalCalibratedBarrierModel:
@@ -343,6 +343,7 @@ def validate_policy_evaluation_metadata(
         "direction",
         "target",
         "exit_index",
+        "exit_at_open",
         "realized_gross_return",
         "barrier_upside_rate",
         "barrier_downside_rate",
@@ -377,15 +378,12 @@ def validate_policy_evaluation_metadata(
         if (exit_index >= horizon_hours).any():
             raise ValueError(f"{context} exit_index must be within the configured label horizon")
     result["exit_index"] = exit_index.astype(int)
-    if "exit_at_open" in result.columns:
-        valid_open_flags = result["exit_at_open"].map(
-            lambda value: isinstance(value, (bool, np.bool_))
-        )
-        if not valid_open_flags.all():
-            raise ValueError(f"{context} exit_at_open must contain booleans")
-        result["exit_at_open"] = result["exit_at_open"].astype(bool)
-    else:
-        result["exit_at_open"] = False
+    valid_open_flags = result["exit_at_open"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+    )
+    if not valid_open_flags.all():
+        raise ValueError(f"{context} exit_at_open must contain booleans")
+    result["exit_at_open"] = result["exit_at_open"].astype(bool)
     target = result["target"].astype(str)
     if (target.eq("TIMEOUT") & result["exit_at_open"]).any():
         raise ValueError(f"{context} TIMEOUT cannot exit at bar open")
@@ -483,7 +481,7 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
     if purge_hours < 0:
         raise ValueError("purge_rows must be non-negative")
 
-    required_columns = {"decision_time", "label_end_time"}
+    required_columns = {"decision_time", "label_end_time", "exit_at_open"}
     missing_columns = sorted(required_columns - set(frame.columns))
     if missing_columns:
         raise ValueError(f"Chronological split requires columns: {missing_columns}")
@@ -499,6 +497,12 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         raise ValueError("Chronological split contains invalid decision_time or label_end_time")
     if (frame["label_end_time"] <= frame["decision_time"]).any():
         raise ValueError("Every label_end_time must be later than its decision_time")
+    valid_open_flags = frame["exit_at_open"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+    )
+    if not valid_open_flags.all():
+        raise ValueError("Chronological split exit_at_open must contain booleans")
+    frame["exit_at_open"] = frame["exit_at_open"].astype(bool)
     validate_directional_scenario_pairs(frame, context="Chronological split")
 
     frame = frame.sort_values(["decision_time", "symbol", "direction"]).reset_index(drop=True)
@@ -538,6 +542,7 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         "target",
         "ambiguous",
         "exit_index",
+        "exit_at_open",
         "realized_gross_return",
         "barrier_upside_rate",
         "barrier_downside_rate",

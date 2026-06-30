@@ -23,6 +23,9 @@ class CertainTpModel:
 
 
 def _split(meta: pd.DataFrame) -> DatasetSplit:
+    meta = meta.copy()
+    if "exit_at_open" not in meta.columns:
+        meta["exit_at_open"] = False
     paired_rows = meta.to_dict(orient="records")
     for (_, _), cohort in meta.groupby(["decision_time", "symbol"], sort=False):
         directions = set(cohort["direction"].astype(str))

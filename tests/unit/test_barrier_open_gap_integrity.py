@@ -13,6 +13,7 @@ from app.ml.training import (
     OUTCOME_CLASSES,
     DatasetSplit,
     PolicyEvaluationConfig,
+    chronological_split,
     evaluate_policy_model,
     validate_policy_evaluation_metadata,
 )
@@ -151,6 +152,88 @@ def test_exact_gap_exit_time_is_preserved_in_policy_metadata() -> None:
     short_row = validated.loc[validated["direction"] == "SHORT"].iloc[0]
     assert long_row["exit_time"] == BASE
     assert short_row["exit_time"] == BASE + timedelta(hours=1)
+
+
+def test_chronological_split_preserves_open_gap_exit_metadata() -> None:
+    rows: list[dict[str, object]] = []
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    for hour in range(420):
+        decision_time = start + timedelta(hours=hour)
+        for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
+            row: dict[str, object] = {name: 0.0 for name in MODEL_FEATURE_NAMES}
+            row["scenario_direction"] = direction_code
+            row.update(
+                {
+                    "open_time": decision_time - timedelta(hours=1),
+                    "decision_time": decision_time,
+                    "label_end_time": decision_time + timedelta(hours=1),
+                    "symbol": "BTCUSDT",
+                    "direction": direction,
+                    "target": "SL" if direction == "LONG" else "TP",
+                    "ambiguous": False,
+                    "exit_index": 0,
+                    "exit_at_open": hour == 419 and direction == "LONG",
+                    "realized_gross_return": -0.02 if direction == "LONG" else 0.02,
+                    "barrier_upside_rate": 0.02,
+                    "barrier_downside_rate": 0.02,
+                }
+            )
+            rows.append(row)
+
+    split = chronological_split(pd.DataFrame(rows), purge_rows=0)
+
+    assert "exit_at_open" in split.test_meta.columns
+    final_long = split.test_meta.loc[
+        (split.test_meta["decision_time"] == start + timedelta(hours=419))
+        & (split.test_meta["direction"] == "LONG")
+    ].iloc[0]
+    assert bool(final_long["exit_at_open"]) is True
+    validated = validate_policy_evaluation_metadata(
+        split.test_meta,
+        context="Chronological split gap regression",
+        horizon_hours=1,
+    )
+    assert validated.loc[final_long.name, "exit_time"] == final_long["decision_time"]
+
+
+def test_chronological_split_rejects_missing_open_gap_exit_metadata() -> None:
+    rows: list[dict[str, object]] = []
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    for hour in range(420):
+        decision_time = start + timedelta(hours=hour)
+        for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
+            row: dict[str, object] = {name: 0.0 for name in MODEL_FEATURE_NAMES}
+            row["scenario_direction"] = direction_code
+            row.update(
+                {
+                    "open_time": decision_time - timedelta(hours=1),
+                    "decision_time": decision_time,
+                    "label_end_time": decision_time + timedelta(hours=1),
+                    "symbol": "BTCUSDT",
+                    "direction": direction,
+                    "target": "TP",
+                    "ambiguous": False,
+                    "exit_index": 0,
+                    "realized_gross_return": 0.02,
+                    "barrier_upside_rate": 0.02,
+                    "barrier_downside_rate": 0.02,
+                }
+            )
+            rows.append(row)
+
+    with pytest.raises(ValueError, match="exit_at_open"):
+        chronological_split(pd.DataFrame(rows), purge_rows=0)
+
+
+def test_policy_metadata_rejects_missing_open_gap_exit_contract() -> None:
+    legacy_meta = _gap_split().test_meta.drop(columns=["exit_at_open"])
+
+    with pytest.raises(ValueError, match="exit_at_open"):
+        validate_policy_evaluation_metadata(
+            legacy_meta,
+            context="Missing open-gap metadata",
+            horizon_hours=1,
+        )
 
 
 def test_policy_gate_uses_realized_gap_loss_without_capping_at_stress_barrier() -> None:

@@ -50,6 +50,9 @@ class RowProbabilityModel:
 
 
 def _split(meta: pd.DataFrame, probabilities: np.ndarray) -> tuple[DatasetSplit, RowProbabilityModel]:
+    meta = meta.copy()
+    if "exit_at_open" not in meta.columns:
+        meta["exit_at_open"] = False
     values = np.zeros((len(meta), len(MODEL_FEATURE_NAMES)), dtype=float)
     values[:, -1] = np.where(meta["direction"].eq("LONG"), 1.0, -1.0)
     targets = meta["target"].astype(str).to_numpy()
@@ -79,6 +82,7 @@ def _pair(*, short_target: str = "SL", short_gross: float = -0.01) -> pd.DataFra
                 "direction": "LONG",
                 "target": "TP",
                 "exit_index": 0,
+                "exit_at_open": False,
                 "realized_gross_return": 0.02,
                 "barrier_upside_rate": 0.02,
                 "barrier_downside_rate": 0.01,
@@ -90,6 +94,7 @@ def _pair(*, short_target: str = "SL", short_gross: float = -0.01) -> pd.DataFra
                 "direction": "SHORT",
                 "target": short_target,
                 "exit_index": 0,
+                "exit_at_open": False,
                 "realized_gross_return": short_gross,
                 "barrier_upside_rate": 0.01,
                 "barrier_downside_rate": 0.01,

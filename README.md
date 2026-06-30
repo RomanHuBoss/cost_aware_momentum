@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.12: barrier path учитывает упорядоченный open, opening-gap получает корректные цену/время, а realized policy/backtest/PlanOutcome больше не списывают уже реализованный gap повторно.
+> Версия 1.8.13: chronological split сохраняет обязательный `exit_at_open`, policy/backtest fail-closed отклоняют устаревший metadata contract, а promotion gate не сравнивает исправленные метрики с ошибочными v3.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -176,6 +176,14 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
+
+## Обновление с 1.8.12 на 1.8.13
+
+- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
+- `chronological_split` теперь требует boolean `exit_at_open` и передает его в final-holdout metadata. Opening-gap exit больше не теряется между label dataset и policy/backtest evaluation.
+- `validate_policy_evaluation_metadata` больше не подставляет `False` при отсутствии поля: неполный или legacy metadata contract блокируется до расчета метрик.
+- Policy metrics имеют schema `exit-time-open-gap-propagated-horizon-sleeves-v4`. Метрики v3 из 1.8.12 потенциально содержат сдвиг opening exits к закрытию часа и не допускаются к auto-activation comparison.
+- Переобучите candidate и пересчитайте holdout/backtest metrics. Перезапустите trainer; API/worker behavior и PostgreSQL schema не изменились.
 
 ## Обновление с 1.8.11 на 1.8.12
 

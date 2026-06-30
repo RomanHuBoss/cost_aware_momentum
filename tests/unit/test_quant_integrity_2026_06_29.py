@@ -41,6 +41,7 @@ def _policy_split() -> DatasetSplit:
                     "direction": direction,
                     "target": "TP",
                     "exit_index": 0,
+                    "exit_at_open": False,
                     "realized_gross_return": 0.01,
                     "barrier_upside_rate": 0.01,
                     "barrier_downside_rate": 0.01,
@@ -66,7 +67,7 @@ def test_policy_evaluation_scales_overlapping_hourly_decisions_by_horizon_sleeve
         ),
         horizon_hours=2,
     )
-    assert metrics["policy_metric_schema"] == "exit-time-realized-gap-horizon-sleeves-v3"
+    assert metrics["policy_metric_schema"] == "exit-time-open-gap-propagated-horizon-sleeves-v4"
     assert metrics["policy_capital_sleeves"] == 2
     assert metrics["policy_realized_total_r"] == pytest.approx(1.0)
 

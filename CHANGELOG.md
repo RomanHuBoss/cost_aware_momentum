@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.8.13 — 2026-06-30
+
+### Fixed
+
+- Preserved `exit_at_open` through the production chronological dataset split instead of silently dropping opening-gap timing before holdout evaluation.
+- Rejected training/policy/backtest metadata that omits the required opening-exit flag, preventing a silent fallback that shifted all exits to candle close.
+- Bumped the policy metric contract to `exit-time-open-gap-propagated-horizon-sleeves-v4`, so corrected metrics cannot be compared or auto-promoted against affected v3 evidence.
+
+### Compatibility
+
+- No migration or environment-variable change; Alembic head remains `0006_manual_trade_remaining_risk`.
+- Manual research `DatasetSplit.test_meta` inputs must include boolean `exit_at_open` for every row.
+- Recompute candidate/incumbent holdout and research backtest metrics before comparison; v3 policy metrics are intentionally rejected.
+
+### Tests
+
+- Added four red-to-green regressions for split propagation, missing-field rejection and policy-schema isolation.
+
 ## 1.8.12 — 2026-06-30
 
 ### Fixed

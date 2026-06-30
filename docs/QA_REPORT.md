@@ -1,5 +1,29 @@
 # QA report
 
+## Release 1.8.13 — 2026-06-30
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in an isolated project virtual environment;
+- project installed with `.[dev]`;
+- no isolated PostgreSQL integration database was configured.
+
+| Check | Baseline 1.8.12 | Post-change 1.8.13 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 272 passed, 4 skipped, 19 warnings | 276 passed, 4 skipped, 19 warnings |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic heads | `0006_manual_trade_remaining_risk` | `0006_manual_trade_remaining_risk` |
+| release integrity | PASSED — 147/147 | PASSED — 149/149 |
+
+Four focused regressions failed on the unmodified behavior for the intended reasons: `exit_at_open` was dropped by chronological split, missing split metadata was accepted, direct policy validation silently defaulted the field to `False`, and the affected v3 metric schema remained current. All four pass after correction; the lifecycle gate accepts v4 and rejects v3.
+
+The four skipped tests require an isolated PostgreSQL database and report that `TEST_DATABASE_URL` is not configured. `python manage.py test --require-integration`, migration upgrade/downgrade and `python manage.py doctor` were NOT RUN because no safe PostgreSQL/runtime configuration was available. No migration or `.env` change is required. Candidate/incumbent holdout and research backtest metrics must be recomputed under v4. Technical correctness does not establish strategy profitability.
+
+---
+
 ## Release 1.8.12 — 2026-06-30
 
 Environment used for reproducible checks:

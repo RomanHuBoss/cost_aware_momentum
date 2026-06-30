@@ -11,7 +11,7 @@
 | Строгая hourly continuity для features/labels | Да с 1.7.11; segmented state с 1.8.8 | 24 последовательных валидных часов; gap/duplicate/invalid OHLCV сбрасывает EMA/ATR/rolling state; invalid future bar исключает label с diagnostics |
 | Market signal отдельно от execution plan | Да | отдельные ORM-объекты и versioned profile recalculation |
 | NO TRADE — policy, не класс модели | Да с 1.3.0; направление согласовано в 1.8.4 | ML выдает TP/SL/TIMEOUT для LONG и SHORT; `publish_hourly_signals` выбирает направление по текущему net EV/R и затем применяет execution gates |
-| Direction-specific TP/SL/TIMEOUT | Да с 1.3.0; gap path исправлен в 1.8.12 | `make_barrier_dataset`, `TemporalCalibratedBarrierModel`; favorable open-gap capped at TP, adverse stop-gap valued at open, metadata stores `exit_at_open` |
+| Direction-specific TP/SL/TIMEOUT | Да с 1.3.0; gap path исправлен в 1.8.12, propagation в 1.8.13 | `make_barrier_dataset`, `chronological_split`, `TemporalCalibratedBarrierModel`; favorable open-gap capped at TP, adverse stop-gap valued at open, split требует и сохраняет `exit_at_open` |
 | Logistic baseline и nonlinear candidate | Да с 1.3.0 | logistic и HistGradientBoostingClassifier |
 | Временная calibration | Да с 1.3.0 | later calibration window, sigmoid OVR |
 | Корректный порядок классов и probability simplex | Да с 1.7.9; boundary усилена в 1.8.8 | class-order-safe log loss; runtime, holdout, EV/R math и backtest отвергают non-finite/out-of-range/non-unit probabilities |
@@ -20,7 +20,7 @@
 | Model registry/hash/activation/rollback | Да с 1.3.0 | SHA256 validation, activation CLI, unique active index, audit/outbox |
 | Worker использует active registry model | Да с 1.3.0 | periodic reload и runtime/registry readiness match |
 | Exact artifact contract и inference features | Усилено в 1.8.10 | exact schema/horizon/calibration/classes; every required runtime feature must be present and finite, without silent zero-imputation |
-| Fail-closed class/incumbent promotion metrics | Усилено в 1.8.12 | malformed class/incumbent metrics блокируют comparison; schema `exit-time-realized-gap-horizon-sleeves-v3`, horizon/capital sleeves обязаны совпадать с candidate artifact; realized SL не подменяется planned stress loss |
+| Fail-closed class/incumbent promotion metrics | Усилено в 1.8.13 | malformed class/incumbent metrics блокируют comparison; schema `exit-time-open-gap-propagated-horizon-sleeves-v4`, horizon/capital sleeves обязаны совпадать с candidate artifact; affected v3 metrics отвергаются |
 | Фоновое периодическое переобучение | Да с 1.4.0 | rolling lookback, minimum-new-time gate и guarded auto-activation |
 | Dataset-aware trigger | Да с 1.5.0 | row growth, new-symbol coverage, top-N universe change и legacy profile detection |
 | Training data lineage | Да с 1.5.0 | artifact/registry сохраняют rows, timestamps, full symbol scope, coverage и fingerprints |
@@ -37,7 +37,7 @@
 | Направленная геометрия entry/SL/TP | Да с 1.7.4; liquidation fail-open закрыт в 1.8.7 | LONG: `SL < entry < TP`; SHORT: `TP < entry < SL`; invalid geometry блокируется, а stop за оценочной liquidation boundary всегда получает `BLOCKED_LIQUIDATION` |
 | Числовая граница position sizing | Да с 1.7.5 | non-finite/invalid capital, risk, costs, margin, caps и instrument constraints дают finite zero-sized `BLOCKED_INVALID_INPUT` без исключений |
 | Числовая граница counterfactual plan valuation | Да с 1.7.6 | invalid qty/stress/cost/funding snapshot сохраняется как zero-valued `INVALID_INPUT`; поврежденная plan version не блокирует остальные outcomes |
-| Policy-aware model promotion | Усилено в 1.8.12 | один direction по `EV/R → net RR → LONG`; exit-time R path делит capital на H sleeves, сохраняет open-time exits и учитывает realized gap loss; promotion отвергает legacy/mismatched metric schema |
+| Policy-aware model promotion | Усилено в 1.8.13 | один direction по `EV/R → net RR → LONG`; exit-time R path делит capital на H sleeves, split сохраняет open-time exits и учитывает realized gap loss; promotion отвергает v3/legacy/mismatched metric schema |
 | Профили капитала и sizing | Да; numeric boundary усилена в 1.8.8 | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps; `max_leverage < 1` блокируется; executable ask/bid recheck и global advisory lock защищают общий open risk |
 | Пересчет при adverse executable entry | Да с 1.8.10 | future ticker/spec блокируются; adverse ask/bid создает новую plan version и повторно проверяет qty, stress loss, margin, liquidation, R/R and EV |
 | Компактные плитки и modal actions | Да | `web/*` |

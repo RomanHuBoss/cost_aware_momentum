@@ -141,6 +141,9 @@ def test_direction_selector_requires_one_long_and_one_short_scenario() -> None:
 
 
 def _policy_split(meta: pd.DataFrame, probabilities: np.ndarray) -> tuple[DatasetSplit, object]:
+    meta = meta.copy()
+    if "exit_at_open" not in meta.columns:
+        meta["exit_at_open"] = False
     x = np.zeros((len(meta), len(MODEL_FEATURE_NAMES)), dtype=float)
     x[:, -1] = np.where(meta["direction"].eq("LONG"), 1.0, -1.0)
     y = meta["target"].to_numpy()

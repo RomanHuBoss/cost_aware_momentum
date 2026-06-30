@@ -52,7 +52,7 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "exit-time-realized-gap-horizon-sleeves-v3",
+        "policy_metric_schema": "exit-time-open-gap-propagated-horizon-sleeves-v4",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,
@@ -69,6 +69,28 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
     assert result["passed"] is True
     assert result["reasons"] == []
     assert result["relative"] is None
+
+
+def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
+    metrics = _metrics()
+    metrics["policy_metric_schema"] = "exit-time-open-gap-propagated-horizon-sleeves-v4"
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics=metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is True
+    assert "invalid_policy_metric_schema" not in result["reasons"]
+
+    legacy_metrics = _metrics()
+    legacy_metrics["policy_metric_schema"] = "exit-time-realized-gap-horizon-sleeves-v3"
+    legacy_result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics=legacy_metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+    assert legacy_result["passed"] is False
+    assert "invalid_policy_metric_schema" in legacy_result["reasons"]
 
 
 def test_quality_gate_rejects_candidate_without_required_improvement(tmp_path: Path) -> None:

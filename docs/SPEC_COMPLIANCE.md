@@ -2,7 +2,7 @@
 
 Дата проверки: 2026-06-30
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.12
+Версия проекта после коррекции: 1.8.13
 
 ## Итог
 
@@ -17,6 +17,8 @@
 Версия 1.8.10 исправляет связанный набор математических, эконометрических и lifecycle-дефектов: funding имеет trader-perspective знак для LONG/SHORT, все денежные/cost inputs и directional observations валидируются до ранжирования, class distributions и incumbent metrics fail-closed, runtime требует точный artifact contract и полный finite feature vector, adverse executable entry пересчитывает plan, а фактический риск ручной позиции хранится и уменьшается при partial close. PlanOutcome теперь оценивает конкретную immutable plan version по ее entry/planning time, а release manifest снова самопроверяем.
 Версия 1.8.11 закрывает следующий quant-integrity слой: holdout policy больше не считает каждый перекрывающийся H-часовой сигнал полнокапитальной независимой ставкой, promotion gate требует точную policy-metric schema/horizon, TP/TIMEOUT/label-end metadata проверяются на математическую согласованность, funding execution-plan пересчитывается от фактического planning time, leverage не усекается до целого, outcome bars обязаны иметь точный interval и когерентный OHLC, а manual fills не могут быть future-dated.
 Версия 1.8.12 закрывает open-gap integrity gap: barrier labels и counterfactual outcomes используют упорядоченный open раньше unordered high/low, adverse stop gap оценивается по наблюдаемой цене открытия, opening exit time не сдвигается к close, а realized policy/backtest/PlanOutcome уменьшают stop-gap reserve на уже реализованную ценой часть.
+
+Версия 1.8.13 закрывает обнаруженную регрессию propagation: `chronological_split` в 1.8.12 удалял `exit_at_open` перед final holdout, после чего validator молча подставлял `False`. Теперь поле обязательно и сохраняется, а policy metric contract повышен до `exit-time-open-gap-propagated-horizon-sleeves-v4`, чтобы затронутые v3-метрики не участвовали в auto-activation comparison.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -49,7 +51,7 @@
 | Непрерывность hourly feature/label windows | Исправлено в 1.7.11; state reset усилен в 1.8.8 | live snapshot требует 24 последовательных валидных часов; gap/duplicate/invalid OHLCV сбрасывает EMA/ATR/rolling state; label path валидируется и сохраняет diagnostics |
 | Model registry и воспроизводимый артефакт | Реализовано | SHA256, feature/task/horizon validation, activation/rollback, одна active-модель |
 | Exact artifact/runtime contract | Усилено в 1.8.10 | exact feature schema version, positive integer horizon, non-empty calibration version, expected classes and complete finite runtime features; zero-imputation отсутствующих признаков запрещена |
-| Fail-closed promotion metrics | Усилено в 1.8.12 | exact finite class distribution и incumbent metrics; policy metrics обязаны иметь `exit-time-realized-gap-horizon-sleeves-v3`, horizon/sleeves равны artifact horizon; realized SL использует фактический return; legacy comparison блокируется |
+| Fail-closed promotion metrics | Усилено в 1.8.13 | exact finite class distribution и incumbent metrics; policy metadata обязана содержать boolean `exit_at_open`; metrics имеют `exit-time-open-gap-propagated-horizon-sleeves-v4`, horizon/sleeves равны artifact horizon; v3/legacy comparison блокируется |
 | Реальный runtime active-модели | Реализовано | worker загружает registry-active artifact и обновляет его без перезапуска |
 | Fail-closed для обязательных входов inference | Реализовано | stale candle/ticker, missing features, bid/ask/spec и excessive spread блокируют публикацию |
 | Point-in-time cutoff при inference | Реализовано | `close_time <= cutoff`, `available_at <= cutoff`, spec `valid_from <= cutoff` |
