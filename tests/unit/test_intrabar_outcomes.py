@@ -16,11 +16,14 @@ from app.services.outcomes import (
 BASE = datetime(2026, 6, 28, 12, tzinfo=UTC)
 
 
-def hourly_bar(*, high: str = "105", low: str = "97", close: str = "101") -> OutcomeBar:
+def hourly_bar(
+    *, high: str = "105", low: str = "97", close: str = "101", open: str | None = None
+) -> OutcomeBar:
     return OutcomeBar(
         candle_id=100,
         open_time=BASE,
         close_time=BASE + timedelta(hours=1),
+        open=Decimal(open or close),
         high=Decimal(high),
         low=Decimal(low),
         close=Decimal(close),
@@ -33,6 +36,7 @@ def intrabar(
     high: str,
     low: str,
     close: str,
+    open: str | None = None,
     minutes: int = 5,
 ) -> OutcomeBar:
     start = BASE + timedelta(minutes=index * minutes)
@@ -40,6 +44,7 @@ def intrabar(
         candle_id=1000 + index,
         open_time=start,
         close_time=start + timedelta(minutes=minutes),
+        open=Decimal(open or close),
         high=Decimal(high),
         low=Decimal(low),
         close=Decimal(close),
@@ -110,7 +115,7 @@ def test_intrabar_path_resolves_hourly_ambiguity_to_first_sl() -> None:
 
 def test_short_intrabar_path_preserves_directional_geometry() -> None:
     path = [intrabar(index, high="101", low="97", close="99") for index in range(12)]
-    path[1] = intrabar(1, high="101", low="95.8", close="96")
+    path[1] = intrabar(1, high="101", low="95.8", close="96", open="99")
     path[8] = intrabar(8, high="103.2", low="98", close="102")
 
     result = evaluate_barrier_outcome_with_intrabar(
@@ -236,6 +241,7 @@ async def test_ambiguous_window_discovery_targets_only_source_hour() -> None:
         id=100,
         open_time=BASE,
         close_time=BASE + timedelta(hours=1),
+        open=Decimal("101"),
         high=Decimal("105"),
         low=Decimal("97"),
         close=Decimal("101"),

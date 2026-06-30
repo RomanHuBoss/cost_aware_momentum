@@ -239,6 +239,20 @@ def policy_backtest(
     meta["realized_fee_rate"] = realized_fee_rate
     meta["funding_return_rate"] = funding_return
     meta["adverse_funding_rate"] = adverse_funding
+    target_is_sl = meta["target"].eq("SL")
+    meta["embedded_stop_gap_rate"] = np.where(
+        target_is_sl,
+        np.maximum(
+            -meta["realized_gross_return"] - meta["barrier_downside_rate"],
+            0.0,
+        ),
+        0.0,
+    )
+    meta["realized_stop_gap_reserve_rate"] = np.where(
+        target_is_sl,
+        np.maximum(gap_rate - meta["embedded_stop_gap_rate"], 0.0),
+        0.0,
+    )
     meta["net_upside_rate"] = (
         meta["barrier_upside_rate"] - tp_fee_rate - slippage_rate + funding_return
     )
@@ -290,10 +304,10 @@ def policy_backtest(
         - chosen["realized_fee_rate"]
         - slippage_rate
         + chosen["funding_return_rate"]
-        - np.where(chosen["target"] == "SL", gap_rate, 0.0)
+        - chosen["realized_stop_gap_reserve_rate"]
     )
-    chosen["net_return_without_stop_reserve"] = chosen["net_return"] + np.where(
-        chosen["target"] == "SL", gap_rate, 0.0
+    chosen["net_return_without_stop_reserve"] = (
+        chosen["net_return"] + chosen["realized_stop_gap_reserve_rate"]
     )
     traded = chosen[chosen["traded"]].copy()
 
@@ -311,6 +325,14 @@ def policy_backtest(
 
     def stressed(multiplier: float) -> float:
         stressed_rows = traded.copy()
+        stressed_gap_reserve = np.where(
+            stressed_rows["target"].eq("SL"),
+            np.maximum(
+                gap_rate * multiplier - stressed_rows["embedded_stop_gap_rate"],
+                0.0,
+            ),
+            0.0,
+        )
         stressed_rows["stressed_net_return"] = (
             stressed_rows["realized_gross_return"]
             - stressed_rows["realized_fee_rate"] * multiplier
@@ -320,7 +342,7 @@ def policy_backtest(
                 stressed_rows["funding_return_rate"] * multiplier,
                 stressed_rows["funding_return_rate"],
             )
-            - np.where(stressed_rows["target"] == "SL", gap_rate * multiplier, 0.0)
+            - stressed_gap_reserve
         )
         result, _, _ = _simulate_capital_sleeves(
             stressed_rows,
@@ -348,6 +370,7 @@ def policy_backtest(
         "round_trip_cost_bps": round_trip_cost_bps,
         "slippage_bps": slippage_bps,
         "stop_gap_reserve_bps": stop_gap_reserve_bps,
+        "stop_gap_reserve_accounting": "residual_after_realized_gap_v1",
         "funding_rate": funding_rate,
         "timeout_return_rate": timeout_return_rate,
         "minimum_net_rr": minimum_net_rr,

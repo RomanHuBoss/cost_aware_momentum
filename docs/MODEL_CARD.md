@@ -54,7 +54,8 @@ Joblib bundle обязан содержать:
 - точный список feature names и exact current `feature_schema_version=hourly-barrier-contiguous-v3`; artifact со старым/неизвестным schema marker не загружается как совместимый;
 - outcome classes `TP`, `SL`, `TIMEOUT`;
 - horizon и параметры barriers;
-- calibration version и holdout metrics.
+- calibration version и holdout metrics;
+- для новых artifacts `label_path_schema_version=ohlc-open-first-stop-gap-v1`;
 - `temporal_split_schema=decision-and-label-end-purged-v3`, `label_data_end` и diagnostics `hourly_continuity`, отделенные от scheduler-поля `training_end`;
 
 При активации и загрузке проверяются version, SHA256, task, exact feature schema, feature names/classes, positive integer horizon, соответствие `DEFAULT_HORIZON_HOURS` и non-empty calibration version. Runtime обязан передать полный finite feature vector; missing/NaN/Infinity feature не заменяется нулем. Начиная с 1.8.8 каждая probability row дополнительно обязана быть finite TP/SL/TIMEOUT simplex; malformed artifact output отвергается fail-closed. Legacy binary-direction artifacts отвергаются.
@@ -63,6 +64,8 @@ Joblib bundle обязан содержать:
 
 Начиная с 1.8.10 каждая observation до directional ranking проходит единый metadata contract: заявленное направление совпадает с pair key, target входит в `TP/SL/TIMEOUT`, barrier/return finite, `exit_index` и `label_end_time` валидны, а при наличии path metadata return согласован с barrier outcome. Это не позволяет поврежденной строке скрыться только потому, что другая direction выиграла ranking. Class distribution должна содержать exact finite counts/proportions, а incumbent-relative gate блокируется при non-finite ML/policy metric. Profit factor строится из тех же cohort-weighted realized contributions, что equity/drawdown; concurrency average включает наблюдаемые idle intervals.
 Начиная с 1.8.11 TP return обязан совпадать с take-profit barrier в tolerance, TIMEOUT обязан оставаться строго между TP/SL barriers, а `label_end_time` — точно равняться `decision_time + horizon`. Holdout policy делит realized R contribution на H capital sleeves и публикует schema `exit-time-horizon-sleeves-v2`; candidate/incumbent без совпадающих schema/horizon не допускаются к auto-activation. Это требует перерасчета policy metrics после обновления.
+
+Начиная с 1.8.12 label path использует schema `ohlc-open-first-stop-gap-v1`: полный OHLC валидируется, `open` разрешается раньше unordered `high/low`, adverse SL gap получает наблюдаемую цену открытия, favorable TP gap ограничивается target, а `exit_at_open` сохраняет точный modeled exit time. Promotion metrics публикуют `exit-time-realized-gap-horizon-sleeves-v3`; realized SL использует фактический return, а stop-gap reserve после известного выхода уменьшается на уже встроенный в цену gap. Metrics v2 и v3 нельзя смешивать без пересчета.
 
 
 ## Фоновое переобучение
@@ -98,7 +101,7 @@ python manage.py model-registry activate --version <version>
 
 - калибровка и costs деградируют при смене режима;
 - cross-sectional dependence уменьшает эффективный размер выборки;
-- hourly ambiguity в post-event журнале уточняется 1/3/5-минутным путем, но training labels пока сохраняют консервативное hourly правило;
+- после упорядоченного open hourly ambiguity в post-event журнале уточняется 1/3/5-минутным путем; если полного intrabar path нет, дальнейшие TP/SL touches внутри бара остаются консервативно неупорядоченными;
 - разрывы и invalid hourly bars исключаются и сбрасывают feature state, но pipeline пока не выполняет автоматическое targeted backfill/repair конкретного gap перед training;
 - операторский выбор создает selection bias;
 - backtest не является доказательством прибыли и не заменяет paper/shadow forward test; capital sleeves устраняют overlap leverage, но не моделируют intrahorizon mark-to-market, no-fill, partial fills и historical orderbook;
@@ -108,7 +111,7 @@ python manage.py model-registry activate --version <version>
 
 Начиная с версии 1.6.0 worker независимо от accept/reject разрешает первичный outcome каждого market signal: `TP`, `SL` или `TIMEOUT`. Версия 1.7.0 добавляет intrabar reconstruction для hourly ambiguity. Evaluation использует directional primary-barrier семантику:
 
-- confirmed hourly last-price candles как базовый путь;
+- confirmed hourly last-price candles как базовый путь; open проверяется и разрешается раньше unordered high/low;
 - непрерывный hourly path от `event_time` до первого barrier hit или точного конца горизонта; поскольку `publish_time` может быть позже часовой границы, первый hourly bar содержит небольшой pre-publication interval, который нельзя устранить без tick/actual-fill path;
 - hourly TP+SL вызывает точечную загрузку полного confirmed 1/3/5-минутного окна;
 - неполный intrabar path оставляет outcome pending;
@@ -116,7 +119,7 @@ python manage.py model-registry activate --version <version>
 - missing bar не заменяется TIMEOUT;
 - outcome сохраняется один раз и не редактируется решением оператора.
 
-Для каждой execution-plan version сохраняется отдельный estimate по ее immutable qty/risk/cost snapshot. Комиссии входа/выхода применяются к соответствующим notionals, stop-gap reserve — только к SL. Funding включает только settlement timestamps, пересеченные гипотетическим holding period, когда timeline присутствует в snapshot. Legacy-планы без такого timeline получают `FUNDING_UNAVAILABLE` и не получают counterfactual R.
+Для каждой execution-plan version сохраняется отдельный estimate по ее immutable qty/risk/cost snapshot. Комиссии входа/выхода применяются к соответствующим notionals. Для SL stop-gap reserve уменьшается на adverse gap, уже встроенный в наблюдаемую modeled exit price; остаток сохраняется как консервативный буфер. Funding включает только settlement timestamps, пересеченные гипотетическим holding period, когда timeline присутствует в snapshot. Legacy-планы без такого timeline получают `FUNDING_UNAVAILABLE` и не получают counterfactual R.
 
 Начиная с 1.7.6 non-finite qty/stress loss, отрицательные либо non-finite costs и поврежденный funding timeline не создают `NaN`-метрики и не прерывают worker batch. Такая plan version получает terminal `INVALID_INPUT`, нулевые оценочные денежные значения, `counterfactual_r=null` и диагностический `validation_error`. Валидный market outcome сохраняется отдельно; это не исправляет исходные данные и не превращает нулевую оценку в фактический P&L.
 

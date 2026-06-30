@@ -7,7 +7,7 @@ from app.ml.labels import triple_barrier_outcome
 
 
 def test_ambiguous_bar_is_conservative() -> None:
-    bars = pd.DataFrame([{"high": 105.0, "low": 95.0, "close": 102.0}])
+    bars = pd.DataFrame([{"open": 102.0, "high": 105.0, "low": 95.0, "close": 102.0}])
     result = triple_barrier_outcome(bars, direction="LONG", stop=98.0, take_profit=104.0)
     assert result.outcome == "SL"
     assert result.ambiguous is True
@@ -16,8 +16,8 @@ def test_ambiguous_bar_is_conservative() -> None:
 def test_short_barrier_order() -> None:
     bars = pd.DataFrame(
         [
-            {"high": 101.0, "low": 99.0, "close": 100.0},
-            {"high": 100.0, "low": 95.0, "close": 96.0},
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+            {"open": 100.0, "high": 100.0, "low": 95.0, "close": 96.0},
         ]
     )
     result = triple_barrier_outcome(bars, direction="SHORT", stop=103.0, take_profit=96.0)

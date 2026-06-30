@@ -23,7 +23,7 @@ from app.services.market_data import CandleWindow
 
 Direction = Literal["LONG", "SHORT"]
 Outcome = Literal["TP", "SL", "TIMEOUT"]
-EVALUATION_VERSION = "primary-barrier-intrabar-v3"
+EVALUATION_VERSION = "primary-barrier-intrabar-open-gap-v4"
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ class OutcomeBar:
     candle_id: int
     open_time: datetime
     close_time: datetime
+    open: Decimal
     high: Decimal
     low: Decimal
     close: Decimal
@@ -90,10 +91,11 @@ def evaluate_barrier_outcome(
 ) -> BarrierEvaluation | None:
     """Resolve the primary TP/SL/TIMEOUT outcome from confirmed hourly bars.
 
-    The evaluator matches the model-label contract: TP1 is the primary take-profit
-    barrier and a same-hour TP/SL touch is resolved conservatively as SL.  TIMEOUT
-    is emitted only when the confirmed candle ending exactly at ``horizon_end`` is
-    present; incomplete history remains unresolved instead of fabricating an exit.
+    The evaluator matches the model-label contract: the bar open is resolved first,
+    TP1 is the primary take-profit barrier, and a later same-bar TP/SL touch is
+    resolved conservatively as SL. TIMEOUT is emitted only when the confirmed candle
+    ending exactly at ``horizon_end`` is present; incomplete history remains
+    unresolved instead of fabricating an exit.
     """
 
     _require_aware(window_start, "window_start")
@@ -129,18 +131,56 @@ def evaluate_barrier_outcome(
         if item.close_time > horizon_end:
             break
         if (
-            item.high <= 0
+            item.open <= 0
+            or item.high <= 0
             or item.low <= 0
             or item.close <= 0
             or item.high < item.low
+            or not item.low <= item.open <= item.high
             or not item.low <= item.close <= item.high
         ):
             raise ValueError("Outcome bar contains invalid OHLC prices")
 
         if direction == "LONG":
+            if item.open <= stop:
+                return BarrierEvaluation(
+                    outcome="SL",
+                    exit_price=item.open,
+                    exit_time=item.open_time,
+                    source_candle_id=item.candle_id,
+                    bars_evaluated=index,
+                    ambiguous=False,
+                )
+            if item.open >= take_profit:
+                return BarrierEvaluation(
+                    outcome="TP",
+                    exit_price=take_profit,
+                    exit_time=item.open_time,
+                    source_candle_id=item.candle_id,
+                    bars_evaluated=index,
+                    ambiguous=False,
+                )
             tp_hit = item.high >= take_profit
             sl_hit = item.low <= stop
         else:
+            if item.open >= stop:
+                return BarrierEvaluation(
+                    outcome="SL",
+                    exit_price=item.open,
+                    exit_time=item.open_time,
+                    source_candle_id=item.candle_id,
+                    bars_evaluated=index,
+                    ambiguous=False,
+                )
+            if item.open <= take_profit:
+                return BarrierEvaluation(
+                    outcome="TP",
+                    exit_price=take_profit,
+                    exit_time=item.open_time,
+                    source_candle_id=item.candle_id,
+                    bars_evaluated=index,
+                    ambiguous=False,
+                )
             tp_hit = item.low <= take_profit
             sl_hit = item.high >= stop
 
@@ -286,12 +326,14 @@ def estimate_plan_outcome(
     stop_gap_reserve_rate: Decimal,
     funding_rate: Decimal,
     funding_complete: bool = True,
+    stop_price: Decimal | None = None,
 ) -> PlanOutcomeEstimate:
     """Estimate a counterfactual plan result from its immutable sizing snapshot.
 
-    This is an evaluation estimate, not actual execution P&L.  It uses the plan's
-    stored fee/slippage/funding assumptions; the stop-gap reserve is charged only
-    for an SL outcome.  An unsized plan receives the market outcome but no fake R.
+    This is an evaluation estimate, not actual execution P&L. It uses the plan's
+    stored fee/slippage/funding assumptions. For an SL outcome, a supplied modeled
+    stop lets the evaluator charge only the part of the reserve not already embedded
+    in a worse gap exit. An unsized plan receives the market outcome but no fake R.
     Invalid numeric plan inputs are persisted as a zero-valued fail-closed result
     instead of emitting NaN/Infinity or aborting the whole outcome job.
     """
@@ -316,6 +358,8 @@ def estimate_plan_outcome(
             stop_gap_reserve_rate, "stop_gap_reserve_rate"
         )
         funding_rate = finite_decimal(funding_rate, "funding_rate")
+        if stop_price is not None:
+            stop_price = positive_finite_decimal(stop_price, "stop_price")
     except ValueError as exc:
         return _invalid_plan_estimate(str(exc))
 
@@ -339,7 +383,29 @@ def estimate_plan_outcome(
         trading_costs = (entry_notional + exit_notional) * fee_rate_per_leg
         trading_costs += entry_notional * slippage_rate
         if outcome == "SL":
-            trading_costs += entry_notional * stop_gap_reserve_rate
+            applied_gap_reserve_rate = stop_gap_reserve_rate
+            if stop_price is not None:
+                if direction == "LONG":
+                    if stop_price >= entry_price:
+                        raise ValueError("LONG stop_price must be below entry_price")
+                    if exit_price > stop_price:
+                        raise ValueError("LONG SL exit_price must not be above stop_price")
+                else:
+                    if stop_price <= entry_price:
+                        raise ValueError("SHORT stop_price must be above entry_price")
+                    if exit_price < stop_price:
+                        raise ValueError("SHORT SL exit_price must not be below stop_price")
+                barrier_downside_rate = abs(entry_price - stop_price) / entry_price
+                realized_gross_rate = gross / entry_notional
+                embedded_gap_rate = max(
+                    Decimal("0"),
+                    -realized_gross_rate - barrier_downside_rate,
+                )
+                applied_gap_reserve_rate = max(
+                    Decimal("0"),
+                    stop_gap_reserve_rate - embedded_gap_rate,
+                )
+            trading_costs += entry_notional * applied_gap_reserve_rate
         funding = funding_cash_flow(direction, entry_notional, funding_rate)
         net = gross - trading_costs + funding
         counterfactual_r = (
@@ -498,6 +564,7 @@ async def _record_plan_outcome(
             stop_gap_reserve_rate=stop_gap_reserve_rate,
             funding_rate=funding_rate,
             funding_complete=funding_complete,
+            stop_price=signal.stop_loss,
         )
     except (DecimalException, TypeError, ValueError, OverflowError) as exc:
         entry_price = positive_finite_decimal(signal.entry_reference, "signal.entry_reference")
@@ -529,6 +596,8 @@ async def _record_plan_outcome(
             "fee_rate_round_trip": str(fee_rate_round_trip),
             "slippage_rate": str(slippage_rate),
             "stop_gap_reserve_rate": str(stop_gap_reserve_rate),
+            "stop_gap_reserve_accounting": "residual_after_realized_gap_v1",
+            "stop_price": str(signal.stop_loss),
             "funding_rate": str(funding_rate),
             "funding": funding_details,
             "fee_valuation": "equal_rate_per_leg_on_entry_and_exit_notional",
@@ -639,6 +708,7 @@ async def find_ambiguous_intrabar_windows(
                 candle_id=row.id,
                 open_time=row.open_time,
                 close_time=row.close_time,
+                open=row.open,
                 high=row.high,
                 low=row.low,
                 close=row.close,
@@ -752,6 +822,7 @@ async def resolve_counterfactual_outcomes(
                 candle_id=row.id,
                 open_time=row.open_time,
                 close_time=row.close_time,
+                open=row.open,
                 high=row.high,
                 low=row.low,
                 close=row.close,
@@ -802,6 +873,7 @@ async def resolve_counterfactual_outcomes(
                             candle_id=row.id,
                             open_time=row.open_time,
                             close_time=row.close_time,
+                            open=row.open,
                             high=row.high,
                             low=row.low,
                             close=row.close,

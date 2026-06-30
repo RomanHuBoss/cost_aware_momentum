@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.8.12 — 2026-06-30
+
+### Fixed
+
+- Resolved candle opens before unordered intrabar high/low in training labels and counterfactual outcomes.
+- Capped favorable opening TP gaps at the modeled target while valuing adverse stop gaps at the observed open price and open timestamp.
+- Required coherent full OHLC (`low <= open/close <= high`) for barrier paths.
+- Preserved exact opening-gap exit time through policy metadata instead of shifting it to candle close.
+- Used realized SL returns in promotion metrics instead of capping every loss at the planned stress barrier.
+- Prevented double counting of stop-gap reserve when the realized exit price already contains part or all of the gap loss in holdout policy, research backtest and plan-outcome valuation.
+
+### Compatibility
+
+- No migration or environment-variable change; Alembic head remains `0006_manual_trade_remaining_risk`.
+- Policy metrics use `exit-time-realized-gap-horizon-sleeves-v3`; v2 payloads must be recomputed before automatic promotion comparisons.
+- New artifacts record `label_path_schema_version=ohlc-open-first-stop-gap-v1`.
+- New counterfactual evaluations use `primary-barrier-intrabar-open-gap-v4`.
+
+### Tests
+
+- Added eight red-to-green barrier/open-gap, timestamp, promotion, backtest and plan-valuation regressions in `tests/unit/test_barrier_open_gap_integrity.py`.
+
 ## 1.8.11 — 2026-06-29
 
 ### Fixed

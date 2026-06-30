@@ -86,7 +86,7 @@ def test_invalid_price_inside_required_feature_window_blocks_snapshot() -> None:
 
 
 def test_barrier_label_rejects_non_finite_future_bar() -> None:
-    future = pd.DataFrame([{"high": float("nan"), "low": 99.0, "close": 100.0}])
+    future = pd.DataFrame([{"open": 100.0, "high": float("nan"), "low": 99.0, "close": 100.0}])
 
     with pytest.raises(ValueError, match="invalid prices"):
         triple_barrier_outcome(

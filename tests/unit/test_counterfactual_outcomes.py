@@ -19,12 +19,13 @@ from app.services.outcomes import (
 BASE = datetime(2026, 6, 28, 12, tzinfo=UTC)
 
 
-def bar(hour: int, *, high: str, low: str, close: str) -> OutcomeBar:
+def bar(hour: int, *, high: str, low: str, close: str, open: str | None = None) -> OutcomeBar:
     start = BASE + timedelta(hours=hour)
     return OutcomeBar(
         candle_id=hour + 1,
         open_time=start,
         close_time=start + timedelta(hours=1),
+        open=Decimal(open or close),
         high=Decimal(high),
         low=Decimal(low),
         close=Decimal(close),
@@ -35,7 +36,7 @@ def test_long_tp_resolves_before_horizon() -> None:
     result = evaluate_barrier_outcome(
         [
             bar(0, high="103", low="99", close="102"),
-            bar(1, high="104.5", low="101", close="104"),
+            bar(1, high="104.5", low="101", close="104", open="102"),
         ],
         direction="LONG",
         entry=Decimal("100"),
@@ -364,6 +365,7 @@ async def test_invalid_plan_snapshot_is_persisted_as_zero_valued_outcome(monkeyp
         direction="LONG",
         event_time=BASE,
         entry_reference=Decimal("100"),
+        stop_loss=Decimal("98"),
     )
     signal_outcome = SimpleNamespace(
         id=uuid4(),
@@ -424,6 +426,7 @@ async def test_plan_outcome_uses_plan_entry_and_planning_time(monkeypatch) -> No
         direction="LONG",
         event_time=BASE,
         entry_reference=Decimal("100"),
+        stop_loss=Decimal("98"),
     )
     signal_outcome = SimpleNamespace(
         id=uuid4(),

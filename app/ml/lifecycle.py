@@ -26,8 +26,10 @@ from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
+    LABEL_PATH_SCHEMA_VERSION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
+    POLICY_METRIC_SCHEMA,
     PolicyEvaluationConfig,
     TemporalCalibratedBarrierModel,
     chronological_split,
@@ -387,6 +389,7 @@ def build_model_candidate(
         "calibration_version": f"sigmoid-ovr-{generated_version}",
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+        "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "temporal_split_schema": "decision-and-label-end-purged-v3",
         "label_data_end": label_data_end.isoformat(),
         "horizon_hours": horizon,
@@ -502,7 +505,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         policy_profit_factor if policy_profit_factor is not None else -math.inf
     )
     policy_drawdown_check = policy_drawdown if policy_drawdown is not None else math.inf
-    expected_policy_schema = "exit-time-horizon-sleeves-v2"
+    expected_policy_schema = POLICY_METRIC_SCHEMA
     if metrics.get("policy_metric_schema") != expected_policy_schema:
         reasons.append("invalid_policy_metric_schema")
     policy_horizon = finite_or_none(metrics.get("policy_horizon_hours"))

@@ -26,6 +26,8 @@ DEFAULT_STOP_ATR_MULTIPLIER = 1.15
 DEFAULT_TP_ATR_MULTIPLIER = 2.20
 MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
+LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
+POLICY_METRIC_SCHEMA = "exit-time-realized-gap-horizon-sleeves-v3"
 
 
 class TemporalCalibratedBarrierModel:
@@ -204,7 +206,15 @@ def make_barrier_dataset(
                 continue
 
             future = group.iloc[index + 1 : index + 1 + horizon][
-                ["open_time", "close_time", "high", "low", "close", MARKET_BAR_VALID_COLUMN]
+                [
+                    "open_time",
+                    "close_time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    MARKET_BAR_VALID_COLUMN,
+                ]
             ]
             if len(future) < horizon:
                 continue
@@ -275,6 +285,7 @@ def make_barrier_dataset(
                         "target": result.outcome,
                         "ambiguous": bool(result.ambiguous),
                         "exit_index": int(result.exit_index),
+                        "exit_at_open": bool(result.exit_at_open),
                         "realized_gross_return": float(realized_return),
                         "barrier_upside_rate": float(abs(take_profit - entry) / entry),
                         "barrier_downside_rate": float(abs(entry - stop) / entry),
@@ -289,6 +300,7 @@ def make_barrier_dataset(
 
     dataset = pd.DataFrame.from_records(rows)
     dataset.attrs["hourly_continuity"] = diagnostics
+    dataset.attrs["label_path_schema"] = LABEL_PATH_SCHEMA_VERSION
     return dataset
 
 
@@ -365,8 +377,21 @@ def validate_policy_evaluation_metadata(
         if (exit_index >= horizon_hours).any():
             raise ValueError(f"{context} exit_index must be within the configured label horizon")
     result["exit_index"] = exit_index.astype(int)
+    if "exit_at_open" in result.columns:
+        valid_open_flags = result["exit_at_open"].map(
+            lambda value: isinstance(value, (bool, np.bool_))
+        )
+        if not valid_open_flags.all():
+            raise ValueError(f"{context} exit_at_open must contain booleans")
+        result["exit_at_open"] = result["exit_at_open"].astype(bool)
+    else:
+        result["exit_at_open"] = False
+    target = result["target"].astype(str)
+    if (target.eq("TIMEOUT") & result["exit_at_open"]).any():
+        raise ValueError(f"{context} TIMEOUT cannot exit at bar open")
+    exit_offset_hours = result["exit_index"] + (~result["exit_at_open"]).astype(int)
     result["exit_time"] = result["decision_time"] + pd.to_timedelta(
-        result["exit_index"] + 1, unit="h"
+        exit_offset_hours, unit="h"
     )
 
     numeric_columns = [
@@ -402,7 +427,6 @@ def validate_policy_evaluation_metadata(
         raise ValueError(f"{context} produced a non-positive exit notional ratio")
 
     if require_barrier_return_consistency:
-        target = result["target"].astype(str)
         tolerance = 1e-10 + 1e-7 * result[
             ["barrier_upside_rate", "barrier_downside_rate"]
         ].max(axis=1)
@@ -737,7 +761,7 @@ def evaluate_policy_model(
         1.0 + config.timeout_return_rate,
         1.0 - config.timeout_return_rate,
     )
-    realized_timeout_exit_ratio = np.where(
+    realized_exit_ratio = np.where(
         is_long,
         1.0 + meta["realized_gross_return"],
         1.0 - meta["realized_gross_return"],
@@ -746,7 +770,7 @@ def evaluate_policy_model(
         (tp_exit_ratio <= 0).any()
         or (sl_exit_ratio <= 0).any()
         or (timeout_exit_ratio <= 0).any()
-        or (realized_timeout_exit_ratio <= 0).any()
+        or (realized_exit_ratio <= 0).any()
     ):
         raise ValueError("Policy evaluation produced a non-positive exit notional ratio")
     tp_fee_rate = fee_rate_per_leg * (1.0 + tp_exit_ratio)
@@ -764,10 +788,26 @@ def evaluate_policy_model(
     meta["timeout_net_rate"] = (
         config.timeout_return_rate - timeout_fee_rate - config.slippage_rate
     )
-    meta["realized_timeout_net_rate"] = (
+    meta["realized_fee_rate"] = fee_rate_per_leg * (1.0 + realized_exit_ratio)
+    target = meta["target"].astype(str)
+    embedded_stop_gap = np.where(
+        target.eq("SL"),
+        np.maximum(
+            -meta["realized_gross_return"] - meta["barrier_downside_rate"],
+            0.0,
+        ),
+        0.0,
+    )
+    meta["realized_stop_gap_reserve_rate"] = np.where(
+        target.eq("SL"),
+        np.maximum(config.stop_gap_reserve_rate - embedded_stop_gap, 0.0),
+        0.0,
+    )
+    meta["realized_net_rate"] = (
         meta["realized_gross_return"]
-        - fee_rate_per_leg * (1.0 + realized_timeout_exit_ratio)
+        - meta["realized_fee_rate"]
         - config.slippage_rate
+        - meta["realized_stop_gap_reserve_rate"]
     )
     meta["net_rr"] = np.where(
         meta["stress_downside_rate"] > 0,
@@ -803,7 +843,7 @@ def evaluate_policy_model(
     trades = selected[selected["actionable"]].copy()
 
     empty_metrics: dict[str, object] = {
-        "policy_metric_schema": "exit-time-horizon-sleeves-v2",
+        "policy_metric_schema": POLICY_METRIC_SCHEMA,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
@@ -823,18 +863,9 @@ def evaluate_policy_model(
     outcome = trades["target"].astype(str)
     if (~outcome.isin(OUTCOME_CLASSES)).any():
         raise ValueError("Policy evaluation target contains an unsupported outcome")
-    realized_net_rate = np.where(
-        outcome == "TP",
-        trades["net_upside_rate"],
-        np.where(
-            outcome == "SL",
-            -trades["stress_downside_rate"],
-            trades["realized_timeout_net_rate"],
-        ),
-    )
     trades["realized_r"] = np.where(
         trades["stress_downside_rate"] > 0,
-        realized_net_rate / trades["stress_downside_rate"],
+        trades["realized_net_rate"] / trades["stress_downside_rate"],
         0.0,
     )
     cohort_size = trades.groupby("decision_time")["realized_r"].transform("size")
@@ -854,7 +885,7 @@ def evaluate_policy_model(
     drawdown = running_peak - cumulative_r
 
     return {
-        "policy_metric_schema": "exit-time-horizon-sleeves-v2",
+        "policy_metric_schema": POLICY_METRIC_SCHEMA,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),

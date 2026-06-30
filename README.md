@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.11: policy-gate нормализован по горизонту, funding пересчитывается на момент создания плана, а temporal/OHLC/manual-fill/leverage границы усилены fail-closed.
+> Версия 1.8.12: barrier path учитывает упорядоченный open, opening-gap получает корректные цену/время, а realized policy/backtest/PlanOutcome больше не списывают уже реализованный gap повторно.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -144,7 +144,7 @@ Research dataset атомарно создает ровно одну LONG- и о
 
 Для горизонта `H` часов капитал делится на `H` равных sleeves. Часовой cohort использует один sleeve и этот капитал не переиспользуется до завершения максимального label horizon. Поэтому перекрывающиеся H-часовые returns не компаундятся как последовательные одночасовые сделки и не создают скрытое H-кратное плечо. PnL зачисляется в equity curve в modeled candle exit time. Метрики concurrency считают реально открытые позиции, а не только новые входы в один timestamp.
 
-`net_return` сохраняет консервативный stop-gap reserve на SL; рядом выводится `net_return_without_stop_gap_reserve`, чтобы не смешивать резерв риска с оценкой результата без gap-буфера.
+`net_return` сохраняет консервативный stop-gap reserve на SL только в части, еще не встроенной в наблюдаемую gap-цену выхода; рядом выводится `net_return_without_stop_gap_reserve`, чтобы отделить остаточный риск-буфер от результата без него.
 
 Research backtest не моделирует intrahorizon mark-to-market, полный historical order book, entry-zone/no-fill, partial fills, фактическую funding timeline и задержку оператора и не является доказательством прибыльности.
 
@@ -176,6 +176,16 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
+
+## Обновление с 1.8.11 на 1.8.12
+
+- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
+- Label/outcome path теперь валидирует полный OHLC и разрешает `open` раньше unordered `high/low`: favorable TP gap ограничивается target, adverse SL gap оценивается по open.
+- Opening-gap exit получает точное `open_time`, а dataset сохраняет `exit_at_open`; это исключает искусственный сдвиг realized P&L и funding к закрытию свечи.
+- Holdout policy, research backtest и PlanOutcome используют realized SL return; stop-gap reserve уменьшается на gap, уже содержащийся в фактической modeled exit price.
+- Policy metrics имеют schema `exit-time-realized-gap-horizon-sleeves-v3`, новые counterfactual outcomes — `primary-barrier-intrabar-open-gap-v4`.
+- Новые model artifacts сохраняют `label_path_schema_version=ohlc-open-first-stop-gap-v1`; существующие artifacts остаются runtime-совместимыми по features/classes, однако candidate/incumbent и исторические backtest/policy metrics необходимо пересчитать перед сравнением.
+- Перезапустите API, worker и trainer; переобучите candidate и пересчитайте research/holdout metrics.
 
 ## Обновление с 1.8.10 на 1.8.11
 

@@ -254,7 +254,7 @@ def test_mean_concurrent_trades_includes_idle_time() -> None:
 def test_triple_barrier_rejects_empty_future_window() -> None:
     with pytest.raises(ValueError, match="future|empty"):
         triple_barrier_outcome(
-            pd.DataFrame(columns=["high", "low", "close"]),
+            pd.DataFrame(columns=["open", "high", "low", "close"]),
             direction="LONG",
             stop=98.0,
             take_profit=102.0,
@@ -262,7 +262,7 @@ def test_triple_barrier_rejects_empty_future_window() -> None:
 
 
 def test_triple_barrier_rejects_inverted_directional_barriers() -> None:
-    bars = pd.DataFrame([{"high": 101.0, "low": 99.0, "close": 100.0}])
+    bars = pd.DataFrame([{"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}])
     with pytest.raises(ValueError, match="geometry|stop|take_profit"):
         triple_barrier_outcome(
             bars,

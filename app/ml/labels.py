@@ -15,6 +15,7 @@ class BarrierOutcome:
     exit_price: float
     exit_index: int
     ambiguous: bool
+    exit_at_open: bool
 
 
 def _positive_finite(value: object, name: str) -> float:
@@ -42,27 +43,52 @@ def triple_barrier_outcome(
         raise ValueError("invalid directional geometry: SHORT requires take_profit < stop")
     if future_bars.empty:
         raise ValueError("future barrier window cannot be empty")
+    required_columns = {"open", "high", "low", "close"}
+    missing_columns = sorted(required_columns - set(future_bars.columns))
+    if missing_columns:
+        raise ValueError(f"future barrier window is missing OHLC columns: {missing_columns}")
 
     for i, row in enumerate(future_bars.itertuples(index=False)):
+        open_price = _positive_finite(row.open, "open")
         high = _positive_finite(row.high, "high")
         low = _positive_finite(row.low, "low")
         close = _positive_finite(row.close, "close")
-        if high < low or high < close or low > close:
-            raise ValueError("invalid prices: expected low <= close <= high")
+        if high < low or not low <= open_price <= high or not low <= close <= high:
+            raise ValueError("invalid prices: expected low <= open/close <= high")
+
+        # The candle open is the first observable point of the bar. Resolve an
+        # opening gap before using unordered intrabar extrema. Favorable TP gaps
+        # are capped at the modeled target, while adverse stop gaps use the open
+        # because a stop cannot guarantee its trigger price.
         if direction == "LONG":
+            if open_price <= stop:
+                return BarrierOutcome("SL", open_price, i, False, True)
+            if open_price >= take_profit:
+                return BarrierOutcome("TP", take_profit, i, False, True)
             tp_hit, sl_hit = high >= take_profit, low <= stop
         else:
+            if open_price >= stop:
+                return BarrierOutcome("SL", open_price, i, False, True)
+            if open_price <= take_profit:
+                return BarrierOutcome("TP", take_profit, i, False, True)
             tp_hit, sl_hit = low <= take_profit, high >= stop
         if tp_hit and sl_hit:
             outcome: Outcome = "SL" if conservative_ambiguity else "TP"
-            return BarrierOutcome(outcome, stop if outcome == "SL" else take_profit, i, True)
+            return BarrierOutcome(
+                outcome,
+                stop if outcome == "SL" else take_profit,
+                i,
+                True,
+                False,
+            )
         if tp_hit:
-            return BarrierOutcome("TP", take_profit, i, False)
+            return BarrierOutcome("TP", take_profit, i, False, False)
         if sl_hit:
-            return BarrierOutcome("SL", stop, i, False)
+            return BarrierOutcome("SL", stop, i, False, False)
     return BarrierOutcome(
         "TIMEOUT",
         _positive_finite(future_bars.iloc[-1]["close"], "close"),
         len(future_bars) - 1,
+        False,
         False,
     )
