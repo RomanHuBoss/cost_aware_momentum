@@ -1,5 +1,13 @@
 # Архитектура
 
+## Account/profile scope integrity in 1.8.18
+
+- `manual` and `paper` profiles use independent risk scopes keyed by `profile_id`.
+- `bybit_read_only` profiles linked to the same `source_account_id` intentionally share risk, active-symbol conflict and reconciliation scope.
+- Acceptance advisory locks use the same deterministic scope key; unrelated profiles no longer serialize or contaminate one another.
+- `PositionSnapshot.account_id` is mandatory and indexed with `source_time`; equity and position rows are joined only inside one account identity.
+- The advisory-only boundary is unchanged: no order create/amend/cancel path was added.
+
 ## Execution economics integrity in 1.8.17
 
 `MarketSignal` remains the capital-independent policy result at its published reference geometry. `ExecutionPlan` remains account-dependent and now persists a versioned `TP / SL / TIMEOUT` economics snapshot for the actual planning entry and projected costs. API serialization recomputes plan `net R/R`, `EV/R`, downside, upside and TIMEOUT outcome from immutable inputs and exposes them only when the stored core values agree within a strict Decimal tolerance.

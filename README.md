@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.17: экономика market signal и execution plan показана раздельно; break-even для `TP / SL / TIMEOUT` рассчитывается по трёхисходному EV, а повреждённые snapshots и некорректные read-only профили блокируются fail-closed.
+> Версия 1.8.18: portfolio risk, manual journal, read-only positions и reconciliation изолированы по профилю или биржевому аккаунту; снимки позиций теперь имеют обязательный `account_id`.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -17,13 +17,13 @@
 - Market-signal economics остается независимой от капитала; account-dependent execution-plan economics пересчитывается отдельно и проверяется по immutable snapshot перед показом.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
-- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный общий portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, funding, текущие `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
+- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, funding, текущие `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
 
-## Обновление с 1.8.16 до 1.8.17
+## Обновление с 1.8.17 до 1.8.18
 
-Миграции БД и новые переменные окружения не требуются. Перезапустите API/worker после замены файлов. Старые планы без `economics_schema_version` остаются читаемыми: API пересчитывает их экономику из сохранённых entry/cost inputs и показывает её только при успешной проверке целостности. Read-only профиль без `source_account_id` теперь намеренно блокируется с нулевым доступным капиталом.
+До запуска API/worker выполните `python manage.py migrate`. Миграция `0007_position_account_scope` добавляет обязательный `account_id` к read-only position snapshots и индекс `(account_id, source_time)`. Исторические записи источника `bybit-read-only` связываются с поддерживаемым аккаунтом `bybit-unified`; записи иных legacy-источников получают `legacy-unknown` и не участвуют в reconciliation конкретного аккаунта. Новых `.env` переменных нет.
 
 ## Требования
 

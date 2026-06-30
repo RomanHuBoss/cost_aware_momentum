@@ -71,7 +71,35 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert (await session.execute(select(CapitalProfile))).scalars().all()
         assert len((await session.execute(select(UIGlossary))).scalars().all()) >= 10
         revision = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert revision == "0005_plan_outcome_invalid_input"
+        assert revision == "0007_position_account_scope"
+        account_column = (
+            await session.execute(
+                text(
+                    """
+                    SELECT is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'advisory'
+                      AND table_name = 'position_snapshots'
+                      AND column_name = 'account_id'
+                    """
+                )
+            )
+        ).scalar_one()
+        assert account_column == "NO"
+        position_index_definition = (
+            await session.execute(
+                text(
+                    """
+                    SELECT indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = 'advisory'
+                      AND indexname = 'ix_position_account_time'
+                    """
+                )
+            )
+        ).scalar_one()
+        assert "account_id" in position_index_definition
+        assert "source_time" in position_index_definition
         index_definition = (
             await session.execute(
                 text(

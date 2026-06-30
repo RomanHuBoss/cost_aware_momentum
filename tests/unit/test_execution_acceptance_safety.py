@@ -98,7 +98,7 @@ async def test_effective_capital_rejects_stale_exchange_snapshot() -> None:
     assert diagnostics["snapshot_age_seconds"] == pytest.approx(181.0)
 
 
-async def test_acceptance_risk_state_acquires_global_lock_before_reading_risk(
+async def test_acceptance_risk_state_acquires_account_lock_before_reading_risk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -107,8 +107,8 @@ async def test_acceptance_risk_state_acquires_global_lock_before_reading_risk(
         del session
         events.append(f"lock:{namespace}:{value}")
 
-    async def fake_open_risk(session: object) -> Decimal:
-        del session
+    async def fake_open_risk(session: object, *, profile: object) -> Decimal:
+        del session, profile
         events.append("open-risk")
         return D("12.5")
 
@@ -121,14 +121,19 @@ async def test_acceptance_risk_state_acquires_global_lock_before_reading_risk(
     monkeypatch.setattr(execution, "open_risk_usdt", fake_open_risk)
     monkeypatch.setattr(execution, "effective_capital", fake_effective_capital)
 
+    profile = SimpleNamespace(
+        id="profile-1",
+        mode="bybit_read_only",
+        source_account_id="account-1",
+    )
     state = await load_acceptance_risk_state(
         object(),
-        profile=object(),
+        profile=profile,
         now=datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
         max_snapshot_age_seconds=180,
     )
 
-    assert events == ["lock:execution_risk_accept:global", "open-risk", "capital"]
+    assert events == ["lock:execution_risk_accept:account:account-1", "open-risk", "capital"]
     assert state.open_risk_usdt == D("12.5")
     assert state.effective_capital == D("1000")
     assert state.capital_verified is True

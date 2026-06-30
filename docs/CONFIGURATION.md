@@ -1,5 +1,9 @@
 # Конфигурация
 
+## 1.8.18 account-scope migration
+
+Новых переменных окружения нет. Для `bybit_read_only` профиля `source_account_id` остается обязательным и должен совпадать с identity, используемой account sync (`bybit-unified` в текущем single-account connector). Перед запуском версии 1.8.18 примените migration `0007_position_account_scope`.
+
 ## 1.8.14 validation changes
 
 - `DEFAULT_HORIZON_HOURS` must be a positive integer included in `HORIZONS_HOURS`.

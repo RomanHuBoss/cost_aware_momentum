@@ -1,5 +1,9 @@
 # Security boundary
 
+## Cross-profile isolation in 1.8.18
+
+Risk acceptance, active-symbol conflict, position reconciliation and portfolio display no longer use global unscoped account state. Manual/paper profiles are isolated by profile identity; read-only profiles share state only when their explicit `source_account_id` matches. Missing account identity remains fail-closed. No trading or withdrawal API capability was introduced.
+
 ## Fail-closed profile and economics boundary in 1.8.17
 
 Capital-profile mode is an allow-list, not a fallback. `manual` and `paper` use configured allocated capital; `bybit_read_only` requires a non-empty `source_account_id` and a fresh matching account snapshot. Unknown/legacy modes and missing account links return zero capital, zero available margin and `verified=false`. This prevents malformed database state from silently becoming an executable manual-capital plan.

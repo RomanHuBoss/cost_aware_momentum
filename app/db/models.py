@@ -419,8 +419,13 @@ class Fill(Base, UUIDPrimaryKeyMixin):
 
 class PositionSnapshot(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "position_snapshots"
-    __table_args__ = (Index("ix_position_symbol_time", "symbol", "source_time"), {"schema": "advisory"})
+    __table_args__ = (
+        Index("ix_position_symbol_time", "symbol", "source_time"),
+        Index("ix_position_account_time", "account_id", "source_time"),
+        {"schema": "advisory"},
+    )
 
+    account_id: Mapped[str] = mapped_column(String(120), nullable=False)
     symbol: Mapped[str] = mapped_column(String(40), nullable=False)
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False)

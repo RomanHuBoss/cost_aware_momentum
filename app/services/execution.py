@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -457,17 +457,67 @@ def remaining_trade_risk(
     return risk * remaining / qty
 
 
-async def open_risk_usdt(session: AsyncSession) -> Decimal:
-    """Risk reserved by accepted plans plus actual remaining risk of open trades."""
-    accepted_result = await session.execute(
-        select(func.coalesce(func.sum(ExecutionPlan.actual_stress_loss), 0)).where(
-            ExecutionPlan.status == "ACCEPTED"
+def risk_scope_key(profile: CapitalProfile) -> str:
+    """Return the serialization/risk scope for a capital profile.
+
+    Manual and paper profiles own independent hypothetical journals. Read-only
+    profiles linked to the same exchange account intentionally share one risk
+    scope because their accepted plans and journal entries consume the same
+    account-level capacity.
+    """
+
+    mode = str(getattr(profile, "mode", "")).strip()
+    if mode == "bybit_read_only":
+        account_id = str(getattr(profile, "source_account_id", "") or "").strip()
+        if not account_id:
+            raise ValueError("bybit_read_only profile requires source_account_id")
+        return f"account:{account_id}"
+    if mode in {"manual", "paper"}:
+        profile_id = getattr(profile, "id", None)
+        if profile_id is None:
+            raise ValueError("Capital profile requires id for risk scoping")
+        return f"profile:{profile_id}"
+    raise ValueError(f"Unsupported capital profile mode: {mode or '<missing>'}")
+
+
+def execution_plan_scope_clause(profile: CapitalProfile):
+    """SQL predicate selecting plans that consume the same risk capacity."""
+
+    mode = str(getattr(profile, "mode", "")).strip()
+    if mode == "bybit_read_only":
+        account_id = str(getattr(profile, "source_account_id", "") or "").strip()
+        if not account_id:
+            raise ValueError("bybit_read_only profile requires source_account_id")
+        return and_(
+            CapitalProfile.mode == "bybit_read_only",
+            CapitalProfile.source_account_id == account_id,
         )
+    if mode in {"manual", "paper"}:
+        profile_id = getattr(profile, "id", None)
+        if profile_id is None:
+            raise ValueError("Capital profile requires id for risk scoping")
+        return ExecutionPlan.profile_id == profile_id
+    raise ValueError(f"Unsupported capital profile mode: {mode or '<missing>'}")
+
+
+async def open_risk_usdt(
+    session: AsyncSession,
+    *,
+    profile: CapitalProfile,
+) -> Decimal:
+    """Return risk reserved inside the profile's account/profile scope."""
+
+    scope_clause = execution_plan_scope_clause(profile)
+    accepted_result = await session.execute(
+        select(func.coalesce(func.sum(ExecutionPlan.actual_stress_loss), 0))
+        .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
+        .where(ExecutionPlan.status == "ACCEPTED", scope_clause)
     )
     trade_result = await session.execute(
-        select(func.coalesce(func.sum(ManualTrade.remaining_stress_loss), 0)).where(
-            ManualTrade.status.in_(["OPEN", "PARTIAL"])
-        )
+        select(func.coalesce(func.sum(ManualTrade.remaining_stress_loss), 0))
+        .join(ExecutionPlan, ManualTrade.plan_id == ExecutionPlan.id)
+        .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
+        .where(ManualTrade.status.in_(["OPEN", "PARTIAL"]), scope_clause)
     )
     accepted_risk = nonnegative_finite_decimal(
         accepted_result.scalar_one(), "accepted_plan_risk"
@@ -483,10 +533,14 @@ async def load_acceptance_risk_state(
     now: datetime,
     max_snapshot_age_seconds: int,
 ) -> AcceptanceRiskState:
-    """Serialize the global risk check and read all acceptance inputs under that lock."""
+    """Serialize and read acceptance inputs inside one account/profile scope."""
 
-    await acquire_advisory_xact_lock(session, "execution_risk_accept", "global")
-    current_open_risk = await open_risk_usdt(session)
+    await acquire_advisory_xact_lock(
+        session,
+        "execution_risk_accept",
+        risk_scope_key(profile),
+    )
+    current_open_risk = await open_risk_usdt(session, profile=profile)
     capital, available_margin, verified, snapshot = await effective_capital(
         session,
         profile,
@@ -502,11 +556,27 @@ async def load_acceptance_risk_state(
     )
 
 
-async def reconciliation_issues(session: AsyncSession) -> list[str]:
-    """Compare the latest read-only exchange snapshot with the manual journal."""
+async def reconciliation_issues(
+    session: AsyncSession,
+    *,
+    profile: CapitalProfile,
+) -> list[str]:
+    """Compare one read-only account snapshot with its account-scoped journal."""
+
+    if profile.mode in {"manual", "paper"}:
+        return []
+    if profile.mode != "bybit_read_only":
+        return [f"Неподдерживаемый режим профиля: {profile.mode}"]
+    account_id = str(profile.source_account_id or "").strip()
+    if not account_id:
+        return ["Для read-only профиля не задан source_account_id"]
+
     account_snapshot = (
         await session.execute(
-            select(AccountEquitySnapshot).order_by(desc(AccountEquitySnapshot.source_time)).limit(1)
+            select(AccountEquitySnapshot)
+            .where(AccountEquitySnapshot.account_id == account_id)
+            .order_by(desc(AccountEquitySnapshot.source_time))
+            .limit(1)
         )
     ).scalar_one_or_none()
     if account_snapshot is None:
@@ -514,14 +584,28 @@ async def reconciliation_issues(session: AsyncSession) -> list[str]:
     exchange_positions = (
         (
             await session.execute(
-                select(PositionSnapshot).where(PositionSnapshot.source_time == account_snapshot.source_time)
+                select(PositionSnapshot).where(
+                    PositionSnapshot.account_id == account_id,
+                    PositionSnapshot.source_time == account_snapshot.source_time,
+                )
             )
         )
         .scalars()
         .all()
     )
     journal_rows = (
-        (await session.execute(select(ManualTrade).where(ManualTrade.status.in_(["OPEN", "PARTIAL"]))))
+        (
+            await session.execute(
+                select(ManualTrade)
+                .join(ExecutionPlan, ManualTrade.plan_id == ExecutionPlan.id)
+                .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
+                .where(
+                    ManualTrade.status.in_(["OPEN", "PARTIAL"]),
+                    CapitalProfile.mode == "bybit_read_only",
+                    CapitalProfile.source_account_id == account_id,
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -604,7 +688,7 @@ async def create_execution_plan(
         status_override = "BLOCKED_STALE_DATA"
         warnings.append("Снимок капитала отсутствует, устарел или имеет некорректное время")
     if profile.mode == "bybit_read_only":
-        issues = await reconciliation_issues(session)
+        issues = await reconciliation_issues(session, profile=profile)
         if issues:
             status_override = "BLOCKED_PORTFOLIO"
             warnings.extend(issues)
@@ -663,7 +747,7 @@ async def create_execution_plan(
 
     turnover = ticker.turnover_24h if ticker and ticker.turnover_24h else Decimal("0")
     liquidity_cap = max(Decimal("0"), turnover * Decimal("0.0001")) if turnover else None
-    open_risk = await open_risk_usdt(session)
+    open_risk = await open_risk_usdt(session, profile=profile)
     max_total_risk = c_eff * profile.max_total_risk_rate
     remaining_portfolio_risk = max(Decimal("0"), max_total_risk - open_risk)
     try:

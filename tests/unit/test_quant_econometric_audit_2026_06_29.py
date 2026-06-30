@@ -419,7 +419,7 @@ async def test_reconciliation_sums_multiple_manual_trades_for_same_position() ->
         )
     )
 
-    assert await execution.reconciliation_issues(session) == []
+    assert await execution.reconciliation_issues(session, profile=SimpleNamespace(id="profile-1", mode="bybit_read_only", source_account_id="account-1")) == []
 
 
 async def test_reconciliation_flags_journal_position_missing_on_exchange() -> None:
@@ -436,7 +436,7 @@ async def test_reconciliation_flags_journal_position_missing_on_exchange() -> No
         )
     )
 
-    issues = await execution.reconciliation_issues(session)
+    issues = await execution.reconciliation_issues(session, profile=SimpleNamespace(id="profile-1", mode="bybit_read_only", source_account_id="account-1"))
     assert any("BTCUSDT" in issue and "журнал" in issue.lower() for issue in issues)
 
 
@@ -624,7 +624,10 @@ async def test_open_risk_uses_accepted_plan_and_actual_remaining_trade_risk() ->
         )
     )
 
-    result = await execution.open_risk_usdt(session)
+    result = await execution.open_risk_usdt(
+        session,
+        profile=SimpleNamespace(id="profile-1", mode="manual", source_account_id=None),
+    )
 
     assert result == D("11.75")
     first_statement = str(session.execute.await_args_list[0].args[0])

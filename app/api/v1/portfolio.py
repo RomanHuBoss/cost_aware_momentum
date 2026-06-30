@@ -14,7 +14,7 @@ from app.db.models import (
     MarketSignal,
     PositionSnapshot,
 )
-from app.services.execution import reconciliation_issues
+from app.services.execution import execution_plan_scope_clause, reconciliation_issues
 
 router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
 
@@ -24,14 +24,20 @@ async def portfolio_risk(session: SessionDep) -> dict:
     active_profile = (
         await session.execute(select(CapitalProfile).where(CapitalProfile.active.is_(True)).limit(1))
     ).scalar_one_or_none()
-    rows = (
-        await session.execute(
-            select(ManualTrade, ExecutionPlan, MarketSignal)
-            .join(ExecutionPlan, ManualTrade.plan_id == ExecutionPlan.id)
-            .join(MarketSignal, ExecutionPlan.signal_id == MarketSignal.id)
-            .where(ManualTrade.status.in_(["OPEN", "PARTIAL"]))
-        )
-    ).all()
+    rows = []
+    if active_profile is not None:
+        rows = (
+            await session.execute(
+                select(ManualTrade, ExecutionPlan, MarketSignal)
+                .join(ExecutionPlan, ManualTrade.plan_id == ExecutionPlan.id)
+                .join(MarketSignal, ExecutionPlan.signal_id == MarketSignal.id)
+                .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
+                .where(
+                    ManualTrade.status.in_(["OPEN", "PARTIAL"]),
+                    execution_plan_scope_clause(active_profile),
+                )
+            )
+        ).all()
     total_open_risk = sum((trade.remaining_stress_loss for trade, _, _ in rows), Decimal("0"))
     long_notional = sum(
         (trade.remaining_qty * trade.entry_price for trade, _, signal in rows if signal.direction == "LONG"),
@@ -43,25 +49,38 @@ async def portfolio_risk(session: SessionDep) -> dict:
     )
     capital = active_profile.allocated_capital if active_profile else Decimal("0")
     risk_limit = capital * active_profile.max_total_risk_rate if active_profile else Decimal("0")
-    account_snapshot = (
-        await session.execute(
-            select(AccountEquitySnapshot).order_by(desc(AccountEquitySnapshot.source_time)).limit(1)
-        )
-    ).scalar_one_or_none()
+    account_snapshot = None
     exchange_positions = []
-    if account_snapshot is not None:
-        exchange_positions = (
-            (
-                await session.execute(
-                    select(PositionSnapshot).where(
-                        PositionSnapshot.source_time == account_snapshot.source_time
+    reconciliation: list[str] = []
+    if active_profile is not None:
+        reconciliation = await reconciliation_issues(session, profile=active_profile)
+    if (
+        active_profile is not None
+        and active_profile.mode == "bybit_read_only"
+        and active_profile.source_account_id
+    ):
+        account_id = active_profile.source_account_id
+        account_snapshot = (
+            await session.execute(
+                select(AccountEquitySnapshot)
+                .where(AccountEquitySnapshot.account_id == account_id)
+                .order_by(desc(AccountEquitySnapshot.source_time))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if account_snapshot is not None:
+            exchange_positions = (
+                (
+                    await session.execute(
+                        select(PositionSnapshot).where(
+                            PositionSnapshot.account_id == account_id,
+                            PositionSnapshot.source_time == account_snapshot.source_time,
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-    reconciliation = await reconciliation_issues(session)
     clusters: dict[str, dict] = {}
     for trade, _plan, signal in rows:
         cluster = "BTC" if signal.symbol == "BTCUSDT" else "ETH" if signal.symbol == "ETHUSDT" else "ALT_BETA"

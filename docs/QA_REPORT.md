@@ -1,5 +1,28 @@
 # QA report
 
+## Release 1.8.18 — 2026-06-30
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in isolated virtual environment `/mnt/data/cam_audit_venv`;
+- project installed with `.[dev]`;
+- no disposable PostgreSQL integration database or application `.env` was configured.
+
+| Check | Baseline 1.8.17 | Post-change 1.8.18 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 304 passed, 4 skipped, 19 warnings | 314 passed, 4 skipped, 19 warnings |
+| focused account-scope regressions | 7 failed on unchanged code | 10 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic head | `0006_manual_trade_remaining_risk` | `0007_position_account_scope` |
+| `python manage.py release-check` | FAILED — manifest missing; generated caches also rejected | PASSED — 157/157 |
+
+The red run proved the missing position account identity, global risk/reconciliation contracts and absence of a deterministic profile/account scope. Post-change tests cover manual/paper isolation, shared read-only account risk, fail-closed missing account identity, account-stamped ingestion and profile-scoped portfolio API behavior.
+
+The four skipped tests require a separate PostgreSQL database. `python manage.py test --require-integration`, migration upgrade/downgrade and `python manage.py doctor` were NOT RUN successfully because no safe `TEST_DATABASE_URL`, application `.env` or project-local `.venv` was configured. Apply migration `0007_position_account_scope` before starting 1.8.18. Technical correctness does not establish strategy profitability.
+
 ## Release 1.8.17 — 2026-06-30
 
 Environment used for reproducible checks:

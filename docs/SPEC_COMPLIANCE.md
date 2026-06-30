@@ -1,5 +1,11 @@
 # Проверка соответствия спецификации версии 1.3
 
+## Статус версии 1.8.18 — account/profile scope integrity
+
+Закрыт подтвержденный portfolio/reconciliation gap: capital profile теперь является явной границей для manual/paper риска, а `source_account_id` — границей для read-only аккаунта. Portfolio API, acceptance risk, active-symbol conflict и reconciliation используют одну семантику scope. Position snapshots сохраняют account identity через migration `0007_position_account_scope`.
+
+Общий статус спецификации остается частичным. Эта итерация не реализует multi-fold walk-forward, PBO/DSR, исторический point-in-time orderbook/spec store, no-fill/partial-fill simulator, live drift control или forward profitability evidence.
+
 ## Статус версии 1.8.17 — execution economics integrity
 
 Версия 1.8.17 закрывает связанный набор contract/fail-closed дефектов: market-signal и execution-plan economics сериализуются как разные области; break-even согласован с трёхисходной моделью `TP / SL / TIMEOUT`; plan economics повторно вычисляется из immutable snapshot и не показывается при нарушении целостности; read-only профиль без account link и неизвестный profile mode больше не получают manual-capital fallback.

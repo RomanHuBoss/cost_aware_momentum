@@ -1,5 +1,16 @@
 # Трассировка требований спецификации
 
+## 1.8.18 trace additions
+
+| Requirement / invariant | Implementation | Verification |
+|---|---|---|
+| Manual/paper risk isolation | `risk_scope_key`, `execution_plan_scope_clause`, scoped `open_risk_usdt` | `tests/unit/test_account_scope_integrity_2026_06_30.py` |
+| Shared risk for profiles linked to one exchange account | account-scoped SQL predicates and advisory-lock key | same regression module; acceptance safety test |
+| Account-specific reconciliation | filtered equity, positions and manual journal in `reconciliation_issues` | account reconciliation regressions |
+| Position snapshot account identity | ORM field, account sync propagation, migration `0007_position_account_scope` | ORM/sync tests; PostgreSQL integration assertions |
+| Scope-consistent API behavior | portfolio endpoint and same-symbol acceptance conflict use shared scope predicate | portfolio API regression plus full suite |
+| Release reproducibility | regenerated `SHA256SUMS`, patch and iteration reports | `python manage.py release-check` |
+
 ## 1.8.17 trace additions
 
 | Requirement | Implementation | Verification |

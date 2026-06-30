@@ -28,6 +28,8 @@ from app.services.audit import append_audit_event, publish_outbox
 
 logger = logging.getLogger(__name__)
 
+BYBIT_READ_ONLY_ACCOUNT_ID = "bybit-unified"
+
 
 @dataclass(frozen=True)
 class CandleWindow:
@@ -647,7 +649,7 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
         await session.execute(
             select(AccountEquitySnapshot)
             .where(
-                AccountEquitySnapshot.account_id == "bybit-unified",
+                AccountEquitySnapshot.account_id == BYBIT_READ_ONLY_ACCOUNT_ID,
                 AccountEquitySnapshot.source_time >= day_start,
             )
             .order_by(AccountEquitySnapshot.source_time)
@@ -657,7 +659,7 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
     day_start_equity = first_today.day_start_equity if first_today else equity
     session.add(
         AccountEquitySnapshot(
-            account_id="bybit-unified",
+            account_id=BYBIT_READ_ONLY_ACCOUNT_ID,
             equity=equity,
             available_margin=available,
             day_start_equity=day_start_equity,
@@ -673,6 +675,7 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
             continue
         session.add(
             PositionSnapshot(
+                account_id=BYBIT_READ_ONLY_ACCOUNT_ID,
                 symbol=item.get("symbol"),
                 side=(item.get("side") or "").upper(),
                 qty=size,
@@ -687,7 +690,7 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
         update(CapitalProfile)
         .where(
             CapitalProfile.mode == "bybit_read_only",
-            CapitalProfile.source_account_id == "bybit-unified",
+            CapitalProfile.source_account_id == BYBIT_READ_ONLY_ACCOUNT_ID,
         )
         .values(capital_verified=True)
     )
@@ -695,7 +698,7 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
         session,
         event_type="ACCOUNT_SNAPSHOT_UPDATED",
         aggregate_type="account",
-        aggregate_id="bybit-unified",
+        aggregate_id=BYBIT_READ_ONLY_ACCOUNT_ID,
         payload={"equity": str(equity), "available_margin": str(available), "positions": len(positions)},
     )
     return {

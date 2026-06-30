@@ -28,6 +28,7 @@ from app.services.execution import (
     entry_price_is_adverse,
     executable_entry_price,
     execution_plan_entry_reference,
+    execution_plan_scope_clause,
     funding_rate_for_plan,
     latest_spec,
     load_acceptance_risk_state,
@@ -437,10 +438,12 @@ async def accept_recommendation(
             await session.execute(
                 select(ExecutionPlan.id)
                 .join(MarketSignal, ExecutionPlan.signal_id == MarketSignal.id)
+                .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
                 .where(
                     MarketSignal.symbol == signal.symbol,
                     ExecutionPlan.id != plan.id,
                     ExecutionPlan.status.in_(["ACCEPTED", "ENTERED", "PARTIAL"]),
+                    execution_plan_scope_clause(profile),
                 )
                 .limit(1)
             )
