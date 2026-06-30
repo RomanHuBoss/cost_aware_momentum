@@ -48,6 +48,26 @@ def _decimal(value: object, default: str = "0") -> Decimal:
     return Decimal(str(value))
 
 
+def _finite_decimal_or_none(value: object) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        result = Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return None
+    return result if result.is_finite() else None
+
+
+def _positive_decimal_or_none(value: object) -> Decimal | None:
+    result = _finite_decimal_or_none(value)
+    return result if result is not None and result > 0 else None
+
+
+def _nonnegative_decimal_or_none(value: object) -> Decimal | None:
+    result = _finite_decimal_or_none(value)
+    return result if result is not None and result >= 0 else None
+
+
 async def sync_instruments(session: AsyncSession, client: BybitClient) -> int:
     now = datetime.now(UTC)
     items = await client.get_instruments("linear")
@@ -529,39 +549,28 @@ async def sync_tickers(
         symbol = item.get("symbol")
         if not symbol or (symbols is not None and symbol not in symbols):
             continue
-        last_price = _decimal(item.get("lastPrice"))
-        if last_price <= 0:
+        last_price = _positive_decimal_or_none(item.get("lastPrice"))
+        if last_price is None:
             continue
+        bid_price = _positive_decimal_or_none(item.get("bid1Price"))
+        ask_price = _positive_decimal_or_none(item.get("ask1Price"))
+        if bid_price is None or ask_price is None or ask_price < bid_price:
+            bid_price = None
+            ask_price = None
         values_list.append(
             {
                 "symbol": symbol,
                 "source_time": now,
                 "received_at": now,
                 "last_price": last_price,
-                "mark_price": _decimal(item.get("markPrice"))
-                if item.get("markPrice") not in (None, "")
-                else None,
-                "index_price": _decimal(item.get("indexPrice"))
-                if item.get("indexPrice") not in (None, "")
-                else None,
-                "bid_price": _decimal(item.get("bid1Price"))
-                if item.get("bid1Price") not in (None, "")
-                else None,
-                "ask_price": _decimal(item.get("ask1Price"))
-                if item.get("ask1Price") not in (None, "")
-                else None,
-                "turnover_24h": _decimal(item.get("turnover24h"))
-                if item.get("turnover24h") not in (None, "")
-                else None,
-                "volume_24h": _decimal(item.get("volume24h"))
-                if item.get("volume24h") not in (None, "")
-                else None,
-                "open_interest": _decimal(item.get("openInterest"))
-                if item.get("openInterest") not in (None, "")
-                else None,
-                "funding_rate": _decimal(item.get("fundingRate"))
-                if item.get("fundingRate") not in (None, "")
-                else None,
+                "mark_price": _positive_decimal_or_none(item.get("markPrice")),
+                "index_price": _positive_decimal_or_none(item.get("indexPrice")),
+                "bid_price": bid_price,
+                "ask_price": ask_price,
+                "turnover_24h": _nonnegative_decimal_or_none(item.get("turnover24h")),
+                "volume_24h": _nonnegative_decimal_or_none(item.get("volume24h")),
+                "open_interest": _nonnegative_decimal_or_none(item.get("openInterest")),
+                "funding_rate": _finite_decimal_or_none(item.get("fundingRate")),
                 "next_funding_time": _dt_ms(item.get("nextFundingTime")),
                 "raw": item,
             }

@@ -1,5 +1,12 @@
 # Руководство оператора
 
+## Quote and target semantics in 1.8.15
+
+Статус зоны входа рассчитывается по ask для LONG и bid для SHORT. Если bid/ask отсутствует, non-finite или инвертирован, плитка показывает отсутствие исполнимой цены, а публикация/принятие блокируются.
+
+Текущий план содержит один тейк-профит TP1 на 100% позиции. Не интерпретируйте nullable TP2-поля старых записей как действующую рекомендацию: полноценный partial-exit path пока не входит в labels, EV/R, sizing и outcome accounting.
+
+
 ## Execution-plan lifecycle hardening in 1.8.14
 
 A plan in `ACCEPTED`, `ENTERED`, `PARTIAL` or `CLOSED` is immutable to recalculation. The API returns HTTP 409 instead of creating a parallel plan, and bulk profile recalculation skips those states. Complete the current trade/decision lifecycle before requesting a new recommendation. This prevents duplicate reservation and ambiguous plan ownership.

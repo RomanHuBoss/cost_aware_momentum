@@ -23,9 +23,14 @@ from app.db.models import (
 from app.ml.features import BASELINE_FEATURE_SCHEMA_VERSION, latest_feature_snapshot
 from app.ml.runtime import ModelRuntime, Prediction
 from app.ml.training import DEFAULT_STOP_ATR_MULTIPLIER, DEFAULT_TP_ATR_MULTIPLIER
-from app.risk.math import CostScenario, net_rr_and_ev, projected_funding_rate
+from app.risk.math import (
+    CostScenario,
+    net_rr_and_ev,
+    positive_finite_decimal,
+    projected_funding_rate,
+)
 from app.services.audit import append_audit_event, publish_outbox
-from app.services.execution import create_execution_plan
+from app.services.execution import create_execution_plan, validated_bid_ask
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +56,7 @@ class SignalScenarioEconomics:
     entry_high: Decimal
     stop: Decimal
     take_profit_1: Decimal
-    take_profit_2: Decimal
+    take_profit_2: Decimal | None
     net_rr: Decimal
     ev_r: Decimal
     downside: Decimal
@@ -81,6 +86,9 @@ def select_cost_aware_scenario(
     if len(prediction_rows) != 2 or set(directions) != {"LONG", "SHORT"}:
         raise ValueError("Exactly one LONG and one SHORT directional prediction are required")
 
+    bid, ask = validated_bid_ask(bid_price=bid_price, ask_price=ask_price)
+    positive_finite_decimal(last_price, "last_price")
+    atr_pct = positive_finite_decimal(atr_pct, "atr_pct")
     stop_multiplier = decimal(stop_atr_multiplier)
     tp_multiplier = decimal(tp_atr_multiplier)
     if (
@@ -93,23 +101,18 @@ def select_cost_aware_scenario(
 
     candidates: list[SignalScenarioEconomics] = []
     for prediction in prediction_rows:
-        reference = ask_price if prediction.direction == "LONG" else bid_price
-        if reference is None or reference <= 0:
-            raise ValueError("Executable bid/ask prices must be positive for LONG and SHORT scenarios")
+        reference = ask if prediction.direction == "LONG" else bid
         atr = reference * atr_pct
         zone_half = atr * Decimal("0.12")
         stop_distance = atr * stop_multiplier
         tp_distance = atr * tp_multiplier
-        tp2_distance = atr * Decimal("3.10")
 
         if prediction.direction == "LONG":
             stop = reference - stop_distance
             tp1 = reference + tp_distance
-            tp2 = reference + tp2_distance
         else:
             stop = reference + stop_distance
             tp1 = reference - tp_distance
-            tp2 = reference - tp2_distance
 
         net_rr, ev_r, downside, upside = net_rr_and_ev(
             entry=reference,
@@ -129,7 +132,7 @@ def select_cost_aware_scenario(
                 entry_high=reference + zone_half,
                 stop=stop,
                 take_profit_1=tp1,
-                take_profit_2=tp2,
+                take_profit_2=None,
                 net_rr=net_rr,
                 ev_r=ev_r,
                 downside=downside,
@@ -216,10 +219,15 @@ async def _latest_spec(
 
 
 def _spread_bps(ticker: TickerSnapshot) -> float | None:
-    if not ticker.bid_price or not ticker.ask_price or ticker.bid_price <= 0 or ticker.ask_price <= 0:
+    try:
+        bid, ask = validated_bid_ask(
+            bid_price=ticker.bid_price,
+            ask_price=ticker.ask_price,
+        )
+    except ValueError:
         return None
-    mid = (ticker.bid_price + ticker.ask_price) / Decimal("2")
-    return float((ticker.ask_price - ticker.bid_price) / mid * Decimal("10000"))
+    mid = (bid + ask) / Decimal("2")
+    return float((ask - bid) / mid * Decimal("10000"))
 
 
 async def expire_old_signals(session: AsyncSession) -> int:
@@ -490,7 +498,7 @@ async def publish_hourly_signals(
             stop_loss=stop,
             take_profit_1=tp1,
             take_profit_2=tp2,
-            tp1_weight=Decimal("0.7"),
+            tp1_weight=Decimal("1"),
             p_tp=prediction.p_tp,
             p_sl=prediction.p_sl,
             p_timeout=prediction.p_timeout,

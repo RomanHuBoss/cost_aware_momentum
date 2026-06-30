@@ -11,6 +11,7 @@ from app.db.models import (
     SignalOutcome,
     TickerSnapshot,
 )
+from app.services.execution import executable_entry_price
 
 
 def number(value):
@@ -44,7 +45,14 @@ def entry_state(signal: MarketSignal, ticker: TickerSnapshot | None) -> str:
         return "EXPIRED"
     if ticker is None:
         return "NO_PRICE"
-    price = ticker.last_price
+    try:
+        price = executable_entry_price(
+            direction=signal.direction,
+            bid_price=ticker.bid_price,
+            ask_price=ticker.ask_price,
+        )
+    except ValueError:
+        return "NO_PRICE"
     if signal.entry_low <= price <= signal.entry_high:
         return "IN_ENTRY_ZONE"
     if signal.direction == "LONG":
@@ -118,14 +126,11 @@ def detail_dict(
                     "reference": number(signal.entry_reference),
                 },
                 "stop_loss": number(signal.stop_loss),
+                # The current outcome model, EV/R policy and sizing contract use one
+                # terminal TP barrier. Legacy TP2 columns remain nullable for schema
+                # compatibility but are not presented as an executable partial-exit plan.
                 "take_profits": [
-                    {"price": number(signal.take_profit_1), "weight": number(signal.tp1_weight)},
-                    {
-                        "price": number(signal.take_profit_2),
-                        "weight": number(Decimal("1") - signal.tp1_weight),
-                    }
-                    if signal.take_profit_2 is not None
-                    else None,
+                    {"price": number(signal.take_profit_1), "weight": 1.0},
                 ],
                 "horizon_hours": signal.horizon_hours,
                 "expires_at": signal.expires_at.isoformat(),
@@ -184,7 +189,6 @@ def detail_dict(
             },
         }
     )
-    tile["trading_plan"]["take_profits"] = [x for x in tile["trading_plan"]["take_profits"] if x]
     return tile
 
 

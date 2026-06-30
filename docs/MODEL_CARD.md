@@ -1,5 +1,10 @@
 # Model card — barrier outcome model v1
 
+## Terminal target contract in 1.8.15
+
+The model predicts `TP / SL / TIMEOUT` against one ATR-based TP barrier per direction. Production EV/R, position sizing, labels and counterfactual outcomes use that same TP1. The UI therefore exposes TP1 at 100%. Weighted TP1/TP2 execution remains an unimplemented research feature rather than an implied second model outcome.
+
+
 ## Policy metric contract v5 (1.8.14)
 
 `exit-time-open-gap-propagated-cohort-weighted-v5` adds `policy_cohorts`. Mean realized R and expected EV/R are equal-weight means of hourly decision cohorts, not raw trade means. Profit factor is derived from net portfolio contributions grouped by modeled exit time. The quality gate requires both `policy_trades` and `policy_cohorts` to meet `AUTO_TRAIN_MIN_POLICY_TRADES`; v4 artifacts/metrics must be reevaluated before comparison. This removes cross-sectional pseudo-replication but does not prove profitability or independence across market regimes.

@@ -1,12 +1,12 @@
 # Проверка соответствия спецификации версии 1.3
 
-## 1.8.14 status change
+## 1.8.15 status change
 
-Strengthened quantitative correctness and fail-closed model promotion: favorable funding is not credited without proven settlement exposure; policy evidence is cohort-weighted and requires independent hourly cohorts; immutable plan states cannot spawn parallel recalculations; plan version allocation is transaction-serialized. PostgreSQL-only and advisory-only boundaries are unchanged.
+Strengthened executable-quote and plan-contract integrity: all relevant paths reject missing/non-finite/crossed bid/ask; malformed ticker items are isolated; UI entry-state uses the marketable side; and the published plan no longer advertises an unmodeled TP2 partial exit. PostgreSQL-only and advisory-only boundaries are unchanged.
 
 Дата проверки: 2026-06-30
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.14
+Версия проекта после коррекции: 1.8.15
 
 ## Итог
 
@@ -23,6 +23,8 @@ Strengthened quantitative correctness and fail-closed model promotion: favorable
 Версия 1.8.12 закрывает open-gap integrity gap: barrier labels и counterfactual outcomes используют упорядоченный open раньше unordered high/low, adverse stop gap оценивается по наблюдаемой цене открытия, opening exit time не сдвигается к close, а realized policy/backtest/PlanOutcome уменьшают stop-gap reserve на уже реализованную ценой часть.
 
 Версия 1.8.13 закрыла обнаруженную регрессию propagation: `chronological_split` в 1.8.12 удалял `exit_at_open` перед final holdout, после чего validator молча подставлял `False`. Поле стало обязательным, а contract был повышен до `exit-time-open-gap-propagated-horizon-sleeves-v4`, чтобы затронутые v3-метрики не участвовали в auto-activation comparison.
+
+Версия 1.8.15 закрывает quote/plan-contract gap: crossed и non-finite bid/ask fail-closed блокируются в universe, signal, UI и accept; поврежденный ticker не обрывает batch; TP2 удален из executable guidance до реализации полноценной weighted partial-exit разметки, EV/R и outcome accounting.
 
 Это по-прежнему не превращает проект в доказанную production-стратегию. Полный multi-fold walk-forward, исторический стакан, live drift-control, перенос intrabar semantics в training/backtest и forward evidence остаются отдельными этапами.
 
@@ -85,6 +87,9 @@ Strengthened quantitative correctness and fail-closed model promotion: favorable
 | Portfolio risk | общий риск, single-name/directional ограничения | устойчивые correlation clusters и factor/beta exposure |
 | Надежность модели в UI | вероятности, version/calibration, training profile и причины | calibration bin, OOS analog count, confidence interval, regime statistics, live drift status |
 | Автоматическая эксплуатационная защита | pre-activation ML/policy gate, сохранение incumbent | live realized-performance gate и автоматический rollback после production degradation |
+
+| Единая top-of-book валидация | Исправлено в 1.8.15 | finite positive `bid <= ask` используется в universe, signal policy, UI entry-state и accept/revalidation |
+| Weighted partial-exit economics | Не реализовано; безопасно деактивировано в 1.8.15 | API публикует только TP1 с весом 100%; TP2 нельзя возвращать до согласования labels, probabilities, EV/R, sizing и outcome valuation |
 
 ## Не реализовано
 

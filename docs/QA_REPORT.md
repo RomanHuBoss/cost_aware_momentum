@@ -1,5 +1,29 @@
 # QA report
 
+## Release 1.8.15 — 2026-06-30
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in an isolated virtual environment at `/mnt/data/cam_venv`;
+- project installed with `.[dev]`;
+- no disposable PostgreSQL integration database or application `.env` was configured.
+
+| Check | Baseline 1.8.14 | Post-change 1.8.15 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 282 passed, 4 skipped, 19 warnings | 288 passed, 4 skipped, 19 warnings |
+| focused regressions | 5 failed, then 1 additional failed | 6 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic head | `0006_manual_trade_remaining_risk` | `0006_manual_trade_remaining_risk` |
+| release integrity | PASSED — 152/152 | PASSED — 155/155 |
+
+The focused regressions proved six unchanged defects: crossed quotes were accepted in signal and accept paths; an unmodeled TP2 was published; non-finite raw ticker values crashed universe/ticker processing; and UI entry-state used last price instead of the executable side. All six pass after correction.
+
+The four skipped tests require a separate PostgreSQL database. `python manage.py test --require-integration` and `python manage.py doctor` were NOT RUN because no safe `TEST_DATABASE_URL`, application `.env`, or disposable PostgreSQL instance was available. Migration upgrade/downgrade was not required because schema is unchanged. Technical correctness does not establish strategy profitability.
+
+
 ## Release 1.8.14 — 2026-06-30
 
 Environment used for checks:

@@ -1,5 +1,12 @@
 # Архитектура
 
+## Executable quote and target contract in 1.8.15
+
+Top-of-book data now crosses one semantic boundary: both sides must be finite, positive and satisfy `bid <= ask`. Dynamic-universe filtering, signal publication, API entry-state and accept-time revalidation use that contract. Raw malformed ticker rows are isolated; invalid bid/ask is represented as unavailable and therefore blocks execution fail-closed.
+
+The current model and policy have one terminal TP barrier. New market signals store `take_profit_2 = NULL`, `tp1_weight = 1`, and the API exposes one 100% target. Database columns remain for compatibility, but a weighted TP1/TP2 plan must not be re-enabled until labels, probabilities, EV/R, sizing and outcome valuation model the same path.
+
+
 ## Quant/trading integrity changes in 1.8.14
 
 Pre-trade funding is asymmetric by design: adverse projected settlements are reserved, but favorable settlements are recognized only by realized outcome accounting after the exit time proves the position crossed a funding timestamp. Promotion metrics use equal-weight hourly decision cohorts and a net exit-event equity path; symbol multiplicity cannot inflate independent evidence. Execution-plan version allocation is serialized by a transaction-scoped advisory lock, and terminal/live plan states are immutable to recalculation.

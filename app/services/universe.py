@@ -39,9 +39,10 @@ def _decimal(value: object) -> Decimal | None:
     if value in (None, ""):
         return None
     try:
-        return Decimal(str(value))
+        result = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+    return result if result.is_finite() else None
 
 
 def _spread_bps(ticker: dict) -> Decimal | None:

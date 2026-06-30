@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.14: favorable funding не улучшает pre-trade economics без подтвержденного settlement, promotion metrics взвешиваются по независимым hourly cohorts, а immutable execution plans не дублируются пересчетом.
+> Версия 1.8.15: bid/ask проходит единый finite/non-crossed gate, UI определяет entry-zone по исполнимой стороне стакана, а публикуемый тейк-профит полностью совпадает с TP/SL/TIMEOUT-моделью и расчётами EV/R.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -176,6 +176,14 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
+
+## Обновление с 1.8.14 на 1.8.15
+
+- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
+- Инвертированный, отсутствующий или non-finite bid/ask блокируется одинаково в universe, signal policy, UI entry-state и accept/revalidation.
+- Поврежденный ticker с `NaN`/`Infinity` больше не прерывает весь batch: невалидный primary price пропускается, невалидная top-of-book пара сохраняется как недоступная и fail-closed блокирует публикацию.
+- Публикуемый execution contract теперь содержит один TP с весом 100%, потому что текущие labels, outcome probabilities, EV/R, sizing и counterfactual valuation моделируют только один terminal TP barrier. Nullable TP2-поля сохранены только для совместимости схемы.
+- Перезапустите API и worker. Переобучение модели и пересчет policy metrics не требуются.
 
 ## Обновление с 1.8.13 на 1.8.14
 

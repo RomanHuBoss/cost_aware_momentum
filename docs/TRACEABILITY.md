@@ -1,5 +1,15 @@
 # Трассировка требований спецификации
 
+## 1.8.15 trace additions
+
+| Requirement | Implementation | Verification |
+|---|---|---|
+| Finite non-crossed executable quote | `app/services/execution.py`, `app/services/signals.py`, `app/services/universe.py` | crossed/non-finite quote regressions |
+| Batch isolation for malformed ticker numerics | `app/services/market_data.py` | mixed malformed/valid ticker sync regression |
+| Entry-zone based on executable side | `app/api/serializers.py` | LONG last-inside/ask-outside regression |
+| Published targets match modeled economics | `app/services/signals.py`, `app/api/serializers.py` | single-TP scenario regression; TP1 weight fixed at 100% |
+
+
 ## 1.8.14 trace additions
 
 | Requirement | Implementation | Verification |

@@ -46,6 +46,25 @@ class AcceptanceRiskState:
     capital_snapshot: dict
 
 
+def validated_bid_ask(
+    *,
+    bid_price: Decimal | None,
+    ask_price: Decimal | None,
+) -> tuple[Decimal, Decimal]:
+    """Return a finite, positive, non-crossed top-of-book quote."""
+
+    try:
+        bid = positive_finite_decimal(bid_price, "bid_price") if bid_price is not None else None
+        ask = positive_finite_decimal(ask_price, "ask_price") if ask_price is not None else None
+    except ValueError as exc:
+        raise ValueError(f"Current executable bid/ask quote is invalid: {exc}") from exc
+    if bid is None or ask is None:
+        raise ValueError("Current executable bid/ask quote is missing or invalid")
+    if ask < bid:
+        raise ValueError("Current executable bid/ask quote is crossed")
+    return bid, ask
+
+
 def executable_entry_price(
     *,
     direction: str,
@@ -54,15 +73,12 @@ def executable_entry_price(
 ) -> Decimal:
     """Return the current marketable entry side; never fall back to last price."""
 
+    bid, ask = validated_bid_ask(bid_price=bid_price, ask_price=ask_price)
     if direction == "LONG":
-        price = ask_price
-    elif direction == "SHORT":
-        price = bid_price
-    else:
-        raise ValueError(f"Unsupported direction for executable entry: {direction}")
-    if price is None or not price.is_finite() or price <= 0:
-        raise ValueError("Current executable entry price is missing or invalid")
-    return price
+        return ask
+    if direction == "SHORT":
+        return bid
+    raise ValueError(f"Unsupported direction for executable entry: {direction}")
 
 
 def funding_rate_for_plan(

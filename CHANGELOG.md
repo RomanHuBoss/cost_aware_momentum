@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.8.15 — 2026-06-30
+
+### Fixed
+
+- Rejected missing, non-finite and crossed top-of-book quotes before spread calculation, signal ranking, entry-state presentation and recommendation acceptance.
+- Isolated malformed ticker numerics so one `NaN`/`Infinity` item cannot abort the full ticker synchronization or dynamic-universe pass.
+- Removed the advertised 70/30 TP1/TP2 partial-exit plan because the current labels, EV/R, sizing and outcome valuation model only one terminal TP barrier.
+- Aligned the operator entry-zone indicator with the executable ask for LONG and bid for SHORT instead of last price.
+
+### Compatibility
+
+- No migration and no new environment variable; Alembic head remains `0006_manual_trade_remaining_risk`.
+- Nullable legacy `take_profit_2` and `tp1_weight` columns remain unchanged for database compatibility, but new signals publish TP1 at 100% and the API does not present legacy TP2 as executable guidance.
+- Model artifacts and v5 policy metrics remain compatible; retraining is not required.
+
+### Tests
+
+- Added six red-to-green regressions for crossed quotes, non-finite ticker isolation, single-TP contract and executable-side entry-state semantics.
+
 ## 1.8.14 — 2026-06-30
 
 ### Fixed
