@@ -1,5 +1,9 @@
 # Model card — barrier outcome model v1
 
+## Live exchange-geometry policy in 1.8.16
+
+Model probabilities remain continuous-price TP/SL/TIMEOUT estimates, while live signal publication now maps ATR barriers to the current exchange `tickSize` before policy evaluation. Stops round away from entry and TP toward entry, then net R/R and EV are recomputed. This prevents optimistic live geometry but does not make historical labels tick-spec-aware: historical point-in-time instrument-spec reconstruction remains a research limitation and should be addressed before claiming exact train/live execution parity.
+
 ## Terminal target contract in 1.8.15
 
 The model predicts `TP / SL / TIMEOUT` against one ATR-based TP barrier per direction. Production EV/R, position sizing, labels and counterfactual outcomes use that same TP1. The UI therefore exposes TP1 at 100%. Weighted TP1/TP2 execution remains an unimplemented research feature rather than an implied second model outcome.

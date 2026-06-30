@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.15: bid/ask проходит единый finite/non-crossed gate, UI определяет entry-zone по исполнимой стороне стакана, а публикуемый тейк-профит полностью совпадает с TP/SL/TIMEOUT-моделью и расчётами EV/R.
+> Версия 1.8.16: публикуемые уровни цены консервативно привязаны к актуальному `tickSize`, а принятие плана повторно проверяет свежие капитал, маржу, funding, risk policy и instrument constraints.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -16,7 +16,7 @@
 - Decimal-арифметика для денежных и контрактных расчётов.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
-- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный общий portfolio-risk check. При неблагоприятном изменении цены внутри entry-zone создается новая версия плана с повторным sizing и net-economics.
+- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный общий portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, funding, текущие `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
 
@@ -176,6 +176,14 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
+
+## Обновление с 1.8.15 на 1.8.16
+
+- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
+- Новые signal entry/zone/SL/TP уровни привязываются к актуальному `tickSize`. Округление консервативно: стоп не приближается к входу, а тейк-профит не отдаляется от входа.
+- Перед `ACCEPTED` система заново оценивает фактический notional, stress loss, per-trade risk limit, margin после резерва, funding и net `R/R`/`EV/R` по свежему капиталу и исполнимой цене.
+- Текущие `qtyStep`, `minQty`, `minNotional`, `maxQty`, `maxLeverage` и `tickSize` проверяются повторно. Старый/off-tick план не принимается молча: создается новая версия либо возвращается HTTP 409.
+- Перезапустите API и worker. Переобучение модели, пересчет policy metrics и изменение PostgreSQL-схемы не требуются.
 
 ## Обновление с 1.8.14 на 1.8.15
 

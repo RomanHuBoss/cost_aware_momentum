@@ -1,5 +1,15 @@
 # Трассировка требований спецификации
 
+## 1.8.16 trace additions
+
+| Requirement | Implementation | Verification |
+|---|---|---|
+| Fresh per-trade risk and margin before `ACCEPTED` | `app/services/execution.py`, `app/api/v1/recommendations.py` | capital-drop, insufficient-margin and valid-acceptance regressions |
+| Current exchange constraints at acceptance | `app/services/execution.py`, `app/api/v1/recommendations.py` | changed `qtyStep`/`minQty` regression and off-tick legacy-plan regression |
+| Current adverse funding and policy economics | `app/services/execution.py`, `app/api/v1/recommendations.py` | newly adverse funding regression |
+| Tick-valid signal geometry | `app/services/signals.py` | LONG and SHORT conservative tick-rounding regressions |
+| Auditability of fresh decision inputs | `app/api/v1/recommendations.py` | decision context stores current notional, margin, risk, funding, policy metrics and spec time |
+
 ## 1.8.15 trace additions
 
 | Requirement | Implementation | Verification |

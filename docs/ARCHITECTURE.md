@@ -1,5 +1,11 @@
 # Архитектура
 
+## Fresh acceptance and exchange-price geometry in 1.8.16
+
+Signal publication now consumes the point-in-time instrument `tickSize`. Entry-zone bounds are rounded outward; stops are rounded away from entry and take-profit levels toward entry. EV and net R/R are calculated only after this conservative discrete-price transformation. Invalid or unaligned executable references block publication instead of leaking an unusable manual price.
+
+`ExecutionPlan` remains an immutable calculation snapshot, but acceptance is a separate safety boundary. Immediately before `ACCEPTED`, the API rebuilds the capital-dependent checks from the fresh executable bid/ask, account snapshot, current instrument specification and projected funding. It validates qty/min-order/leverage/tick constraints, per-trade stress loss, margin reserve, net R/R/EV and serialized portfolio risk. A changed input yields HTTP 409 plus a recalculated plan version; no Bybit order is created.
+
 ## Executable quote and target contract in 1.8.15
 
 Top-of-book data now crosses one semantic boundary: both sides must be finite, positive and satisfy `bid <= ask`. Dynamic-universe filtering, signal publication, API entry-state and accept-time revalidation use that contract. Raw malformed ticker rows are isolated; invalid bid/ask is represented as unavailable and therefore blocks execution fail-closed.

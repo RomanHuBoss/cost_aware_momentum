@@ -28,8 +28,11 @@ from app.services.execution import (
     entry_price_is_adverse,
     executable_entry_price,
     execution_plan_entry_reference,
+    funding_rate_for_plan,
+    latest_spec,
     load_acceptance_risk_state,
     ticker_snapshot_is_fresh,
+    validate_execution_plan_for_acceptance,
 )
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 
@@ -391,25 +394,58 @@ async def accept_recommendation(
     current_capital = risk_state.effective_capital
     if conflict_reason is None and profile.mode == "bybit_read_only" and not risk_state.capital_verified:
         conflict_reason = "Account capital snapshot is stale or missing"
+
+    acceptance_validation = None
+    current_spec = None
+    if conflict_reason is None and executable_price is not None and ticker is not None:
+        current_spec = await latest_spec(session, signal.symbol, cutoff=now)
+        if current_spec is None:
+            conflict_reason = "Current instrument constraints are unavailable"
+        else:
+            try:
+                current_funding_rate = funding_rate_for_plan(
+                    start_time=now,
+                    horizon_hours=signal.horizon_hours,
+                    next_settlement=ticker.next_funding_time,
+                    interval_minutes=current_spec.funding_interval_minutes,
+                    current_rate=ticker.funding_rate or 0,
+                )
+                acceptance_validation = validate_execution_plan_for_acceptance(
+                    plan=plan,
+                    signal=signal,
+                    profile=profile,
+                    risk_state=risk_state,
+                    spec=current_spec,
+                    executable_price=executable_price,
+                    current_funding_rate=current_funding_rate,
+                    settings=settings,
+                )
+            except (TypeError, ValueError) as exc:
+                conflict_reason = str(exc)
+
     if (
         conflict_reason is None
-        and current_open_risk + plan.actual_stress_loss > current_capital * profile.max_total_risk_rate
+        and acceptance_validation is not None
+        and current_open_risk + acceptance_validation.current_stress_loss
+        > current_capital * profile.max_total_risk_rate
     ):
         conflict_reason = "Portfolio risk limit changed"
 
-    conflicting_plan = (
-        await session.execute(
-            select(ExecutionPlan.id)
-            .join(MarketSignal, ExecutionPlan.signal_id == MarketSignal.id)
-            .where(
-                MarketSignal.symbol == signal.symbol,
-                ExecutionPlan.id != plan.id,
-                ExecutionPlan.status.in_(["ACCEPTED", "ENTERED", "PARTIAL"]),
+    conflicting_plan = None
+    if conflict_reason is None:
+        conflicting_plan = (
+            await session.execute(
+                select(ExecutionPlan.id)
+                .join(MarketSignal, ExecutionPlan.signal_id == MarketSignal.id)
+                .where(
+                    MarketSignal.symbol == signal.symbol,
+                    ExecutionPlan.id != plan.id,
+                    ExecutionPlan.status.in_(["ACCEPTED", "ENTERED", "PARTIAL"]),
+                )
+                .limit(1)
             )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if conflict_reason is None and conflicting_plan is not None:
+        ).scalar_one_or_none()
+    if conflicting_plan is not None:
         conflict_reason = "Another active plan exists for this symbol"
 
     if conflict_reason and plan.status in IMMUTABLE_PLAN_STATUSES:
@@ -487,6 +523,21 @@ async def accept_recommendation(
             "plan_version": plan.version,
             "current_open_risk": str(current_open_risk),
             "effective_capital": str(current_capital),
+            "current_notional": str(acceptance_validation.current_notional),
+            "current_margin_estimate": str(acceptance_validation.current_margin_estimate),
+            "current_stress_loss": str(acceptance_validation.current_stress_loss),
+            "current_funding_rate": str(acceptance_validation.current_funding_rate),
+            "current_net_rr": str(acceptance_validation.current_net_rr),
+            "current_net_ev_r": str(acceptance_validation.current_net_ev_r),
+            "per_trade_risk_limit": str(acceptance_validation.per_trade_risk_limit),
+            "available_margin_capacity": (
+                str(acceptance_validation.available_margin_capacity)
+                if acceptance_validation.available_margin_capacity is not None
+                else None
+            ),
+            "instrument_spec_valid_from": (
+                current_spec.valid_from.isoformat() if current_spec is not None else None
+            ),
         },
     )
     session.add(decision)

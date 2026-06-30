@@ -110,3 +110,52 @@ def test_signal_geometry_rejects_non_finite_barrier_multiplier() -> None:
             costs=costs,
             stop_atr_multiplier=float("nan"),
         )
+
+
+def test_signal_geometry_is_conservatively_aligned_to_exchange_tick() -> None:
+    predictions = (
+        Prediction("LONG", 0.80, 0.10, 0.10, 1.0, "fixed-v1", "fixed-cal-v1", ()),
+        Prediction("SHORT", 0.10, 0.80, 0.10, -1.0, "fixed-v1", "fixed-cal-v1", ()),
+    )
+    selected = select_cost_aware_scenario(
+        predictions,
+        bid_price=D("100"),
+        ask_price=D("100"),
+        last_price=D("100"),
+        atr_pct=D("0.013"),
+        costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
+        stop_atr_multiplier=1.7,
+        tp_atr_multiplier=2.3,
+        tick_size=D("0.5"),
+    )
+
+    assert selected.entry_low % D("0.5") == 0
+    assert selected.entry_high % D("0.5") == 0
+    assert selected.stop % D("0.5") == 0
+    assert selected.take_profit_1 % D("0.5") == 0
+    assert selected.stop == D("97.5")
+    assert selected.take_profit_1 == D("102.5")
+
+
+def test_short_signal_geometry_uses_conservative_tick_rounding() -> None:
+    predictions = (
+        Prediction("LONG", 0.10, 0.80, 0.10, -1.0, "fixed-v1", "fixed-cal-v1", ()),
+        Prediction("SHORT", 0.80, 0.10, 0.10, 1.0, "fixed-v1", "fixed-cal-v1", ()),
+    )
+    selected = select_cost_aware_scenario(
+        predictions,
+        bid_price=D("100"),
+        ask_price=D("100"),
+        last_price=D("100"),
+        atr_pct=D("0.013"),
+        costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
+        stop_atr_multiplier=1.7,
+        tp_atr_multiplier=2.3,
+        tick_size=D("0.5"),
+    )
+
+    assert selected.prediction.direction == "SHORT"
+    assert selected.stop == D("102.5")
+    assert selected.take_profit_1 == D("97.5")
+    assert selected.stop % D("0.5") == 0
+    assert selected.take_profit_1 % D("0.5") == 0

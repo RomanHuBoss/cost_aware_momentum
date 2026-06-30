@@ -13,6 +13,17 @@ from app.risk.math import assess_liquidation_proximity
 from app.services.execution import effective_capital, executable_entry_price, load_acceptance_risk_state
 
 D = Decimal
+DEFAULT_CURRENT_CAPITAL = D("10000")
+DEFAULT_AVAILABLE_MARGIN = D("5000")
+DEFAULT_ACTUAL_STRESS_LOSS = D("50")
+DEFAULT_MARGIN_ESTIMATE = D("100")
+DEFAULT_QTY = D("1")
+DEFAULT_QTY_STEP = D("0.001")
+DEFAULT_MIN_QTY = D("0.001")
+DEFAULT_MIN_NOTIONAL = D("5")
+DEFAULT_MAX_QTY = D("1000")
+DEFAULT_MAX_LEVERAGE = D("100")
+DEFAULT_FUNDING_RATE = D("0")
 
 
 class _ScalarResult:
@@ -177,6 +188,8 @@ async def _build_plan_for_safety_case(
         p_sl=0.25,
         p_timeout=0.15,
         entry_reference=D("100"),
+        entry_low=D("99"),
+        entry_high=D("101"),
         stop_loss=stop_loss,
         take_profit_1=D("120"),
         direction="LONG",
@@ -201,6 +214,7 @@ async def _build_plan_for_safety_case(
         next_funding_time=None,
     )
     spec = SimpleNamespace(
+        tick_size=D("0.1"),
         qty_step=D("0.001"),
         min_qty=D("0.001"),
         min_notional=D("5"),
@@ -262,3 +276,241 @@ async def test_execution_plan_blocks_unverified_bybit_capital_as_stale_data(
 
     assert plan.status == "BLOCKED_STALE_DATA"
     assert any("Снимок капитала" in warning for warning in plan.warnings)
+
+class _NoRowsResult:
+    def scalar_one_or_none(self) -> object | None:
+        return None
+
+
+async def _run_acceptance_case(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    current_capital: Decimal = DEFAULT_CURRENT_CAPITAL,
+    available_margin: Decimal | None = DEFAULT_AVAILABLE_MARGIN,
+    actual_stress_loss: Decimal = DEFAULT_ACTUAL_STRESS_LOSS,
+    margin_estimate: Decimal = DEFAULT_MARGIN_ESTIMATE,
+    qty: Decimal = DEFAULT_QTY,
+    plan_leverage: int = 3,
+    spec_qty_step: Decimal = DEFAULT_QTY_STEP,
+    spec_min_qty: Decimal = DEFAULT_MIN_QTY,
+    spec_min_notional: Decimal = DEFAULT_MIN_NOTIONAL,
+    spec_max_qty: Decimal | None = DEFAULT_MAX_QTY,
+    spec_max_leverage: Decimal = DEFAULT_MAX_LEVERAGE,
+    current_funding_rate: Decimal = DEFAULT_FUNDING_RATE,
+    next_funding_time: datetime | None = None,
+    stored_funding_rate: Decimal = DEFAULT_FUNDING_RATE,
+):
+    from uuid import uuid4
+
+    import app.api.v1.recommendations as recommendations
+    from app.api.schemas import DecisionRequest
+    from app.services.execution import AcceptanceRiskState
+
+    now = datetime.now(UTC)
+    signal = SimpleNamespace(
+        id=uuid4(),
+        symbol="BTCUSDT",
+        direction="LONG",
+        status="PUBLISHED",
+        expires_at=now + timedelta(hours=2),
+        publish_time=now,
+        horizon_hours=4,
+        entry_reference=D("100"),
+        entry_low=D("99"),
+        entry_high=D("102"),
+        stop_loss=D("98"),
+        take_profit_1=D("104"),
+        fee_rate_round_trip=D("0.0011"),
+        slippage_rate=D("0.0003"),
+        p_tp=0.60,
+        p_sl=0.25,
+        p_timeout=0.15,
+    )
+    plan = SimpleNamespace(
+        id=uuid4(),
+        signal_id=signal.id,
+        profile_id=uuid4(),
+        profile_version=1,
+        version=1,
+        status="ACTIONABLE",
+        actual_stress_loss=actual_stress_loss,
+        margin_estimate=margin_estimate,
+        qty=qty,
+        notional=qty * D("100"),
+        leverage=plan_leverage,
+        sizing_snapshot={
+            "entry_price": "100",
+            "costs": {"funding_rate": str(stored_funding_rate)},
+        },
+        accepted_at=None,
+        superseded_by_id=None,
+    )
+    profile = SimpleNamespace(
+        id=plan.profile_id,
+        mode="bybit_read_only",
+        source_account_id="account-1",
+        version=1,
+        risk_rate=D("0.01"),
+        max_total_risk_rate=D("0.20"),
+        margin_reserve_rate=D("0.25"),
+        max_leverage=5,
+        capital_verified=True,
+    )
+    ticker = SimpleNamespace(
+        source_time=now,
+        last_price=D("100"),
+        bid_price=D("99.9"),
+        ask_price=D("100"),
+        funding_rate=current_funding_rate,
+        next_funding_time=next_funding_time,
+    )
+    spec = SimpleNamespace(
+        valid_from=now - timedelta(hours=1),
+        tick_size=D("0.1"),
+        qty_step=spec_qty_step,
+        min_qty=spec_min_qty,
+        min_notional=spec_min_notional,
+        max_qty=spec_max_qty,
+        max_leverage=spec_max_leverage,
+        funding_interval_minutes=480,
+    )
+    risk_state = AcceptanceRiskState(
+        open_risk_usdt=D("0"),
+        effective_capital=current_capital,
+        available_margin=available_margin,
+        capital_verified=True,
+        capital_snapshot={"source": "bybit"},
+    )
+    replacement_plan = SimpleNamespace(id=uuid4(), status="ACTIONABLE")
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_NoRowsResult()),
+        add=lambda value: None,
+        commit=AsyncMock(),
+    )
+
+    monkeypatch.setattr(recommendations, "_idempotent_response", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        recommendations,
+        "_select_plan_for_action",
+        AsyncMock(return_value=(signal, plan, profile)),
+    )
+    monkeypatch.setattr(recommendations, "latest_ticker", AsyncMock(return_value=ticker))
+    monkeypatch.setattr(
+        recommendations,
+        "latest_spec",
+        AsyncMock(return_value=spec),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        recommendations,
+        "load_acceptance_risk_state",
+        AsyncMock(return_value=risk_state),
+    )
+    monkeypatch.setattr(
+        recommendations,
+        "create_execution_plan",
+        AsyncMock(return_value=replacement_plan),
+    )
+    monkeypatch.setattr(recommendations, "store_cached", AsyncMock())
+    monkeypatch.setattr(recommendations, "append_audit_event", AsyncMock())
+    monkeypatch.setattr(recommendations, "publish_outbox", AsyncMock())
+
+    response = await recommendations.accept_recommendation(
+        signal.id,
+        DecisionRequest(plan_id=plan.id),
+        session,
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+        "test-operator",
+        "acceptance-safety-test",
+    )
+    return response, plan
+
+
+async def test_acceptance_recalculates_when_fresh_capital_breaks_per_trade_risk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        current_capital=D("1000"),
+        actual_stress_loss=D("50"),
+        qty=D("5"),
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"per-trade risk" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
+async def test_acceptance_recalculates_when_fresh_available_margin_is_insufficient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        current_capital=D("10000"),
+        available_margin=D("100"),
+        actual_stress_loss=D("50"),
+        margin_estimate=D("100"),
+        qty=D("3"),
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"available margin" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
+async def test_acceptance_recalculates_when_current_instrument_spec_invalidates_qty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        qty=D("0.01"),
+        spec_qty_step=D("0.1"),
+        spec_min_qty=D("0.1"),
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"instrument constraints" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
+async def test_acceptance_recalculates_when_adverse_funding_cost_increases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        current_funding_rate=D("0.01"),
+        next_funding_time=datetime.now(UTC) + timedelta(minutes=30),
+        stored_funding_rate=D("0"),
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"funding cost" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
+async def test_acceptance_succeeds_only_after_fresh_state_revalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(monkeypatch)
+
+    assert response.status_code == 200
+    assert b'"status": "ACCEPTED"' in response.body
+    assert plan.status == "ACCEPTED"
+
+
+async def test_execution_plan_blocks_signal_prices_outside_current_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98.05"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+    )
+
+    assert plan.status == "BLOCKED_DATA"
+    assert any("шагу цены" in warning for warning in plan.warnings)

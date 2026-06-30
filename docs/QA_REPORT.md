@@ -1,5 +1,30 @@
 # QA report
 
+## Release 1.8.16 — 2026-06-30
+
+Environment used for reproducible checks:
+
+- Python 3.13.5 in an isolated project `.venv`;
+- project installed with `.[dev]`;
+- no disposable PostgreSQL integration database or application `.env` was configured.
+
+| Check | Baseline 1.8.15 | Post-change 1.8.16 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 288 passed, 4 skipped, 19 warnings | 296 passed, 4 skipped, 19 warnings |
+| demonstrated focused regressions | 4 failed, then 1 failed | 5 passed |
+| additional acceptance/tick regressions | not present | 3 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic head | `0006_manual_trade_remaining_risk` | `0006_manual_trade_remaining_risk` |
+| randomized independent math invariants | not run | PASSED — 1,000 LONG/SHORT cases |
+| release integrity | PASSED — 155/155 | PASSED — 157/157 after manifest regeneration |
+
+The red tests proved that unchanged 1.8.15 accepted plans after fresh capital violated the per-trade risk limit, after available margin became insufficient, after current instrument constraints invalidated qty, and after adverse funding increased. A fifth test proved that signal construction did not accept `tick_size` and therefore could publish off-tick levels. All five pass after correction; three additional tests cover the valid acceptance path, legacy off-tick blocking and SHORT rounding.
+
+The four skipped tests require a separate PostgreSQL database. `python manage.py test --require-integration` and `python manage.py doctor` were NOT RUN because no safe `TEST_DATABASE_URL`, application `.env`, or disposable PostgreSQL instance was available. Migration upgrade/downgrade was not required because schema is unchanged. Technical correctness does not establish strategy profitability.
+
 ## Release 1.8.15 — 2026-06-30
 
 Environment used for reproducible checks:
@@ -135,7 +160,7 @@ Environment used for reproducible checks:
 | `python -m pytest -q` | 198 passed, 4 skipped | 252 passed, 4 skipped |
 | `node --check web/js/app.js` | PASSED | PASSED |
 | Alembic heads | `0005_plan_outcome_invalid_input` | `0006_manual_trade_remaining_risk` |
-| `python manage.py release-check` | FAILED: manifest referenced four absent files | PASSED after manifest regeneration |
+| `python manage.py release-check` | FAILED: manifest referenced four absent files | PASSED — 157/157 after manifest regeneration |
 
 Independent regression evidence was collected in two stages on the unmodified implementation: the initial quantitative/econometric audit produced `33 failed`, and the follow-up boundary/risk/artifact audit produced `20 failed, 32 passed`. After correction, the corresponding audit module reports `53 passed`; the complete suite reports `252 passed, 4 skipped`.
 

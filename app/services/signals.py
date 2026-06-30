@@ -4,7 +4,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 import pandas as pd
 from sqlalchemy import desc, select, update
@@ -73,6 +73,7 @@ def select_cost_aware_scenario(
     costs: CostScenario,
     stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
     tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
+    tick_size: Decimal | None = None,
 ) -> SignalScenarioEconomics:
     """Select LONG/SHORT by the exact economics published to the operator.
 
@@ -99,6 +100,20 @@ def select_cost_aware_scenario(
     ):
         raise ValueError("ATR barrier multipliers must be positive and finite")
 
+    price_step = (
+        positive_finite_decimal(tick_size, "tick_size") if tick_size is not None else None
+    )
+
+    def floor_to_tick(value: Decimal) -> Decimal:
+        if price_step is None:
+            return value
+        return (value / price_step).to_integral_value(rounding=ROUND_FLOOR) * price_step
+
+    def ceil_to_tick(value: Decimal) -> Decimal:
+        if price_step is None:
+            return value
+        return (value / price_step).to_integral_value(rounding=ROUND_CEILING) * price_step
+
     candidates: list[SignalScenarioEconomics] = []
     for prediction in prediction_rows:
         reference = ask if prediction.direction == "LONG" else bid
@@ -107,12 +122,19 @@ def select_cost_aware_scenario(
         stop_distance = atr * stop_multiplier
         tp_distance = atr * tp_multiplier
 
+        if price_step is not None and reference % price_step != 0:
+            raise ValueError("Executable bid/ask reference is not aligned to tick_size")
+
+        entry_low = floor_to_tick(reference - zone_half)
+        entry_high = ceil_to_tick(reference + zone_half)
         if prediction.direction == "LONG":
-            stop = reference - stop_distance
-            tp1 = reference + tp_distance
+            # Conservative exchange rounding: widen the stop and pull the target
+            # toward entry, so discrete ticks cannot understate loss or overstate reward.
+            stop = floor_to_tick(reference - stop_distance)
+            tp1 = floor_to_tick(reference + tp_distance)
         else:
-            stop = reference + stop_distance
-            tp1 = reference - tp_distance
+            stop = ceil_to_tick(reference + stop_distance)
+            tp1 = ceil_to_tick(reference - tp_distance)
 
         net_rr, ev_r, downside, upside = net_rr_and_ev(
             entry=reference,
@@ -128,8 +150,8 @@ def select_cost_aware_scenario(
             SignalScenarioEconomics(
                 prediction=prediction,
                 reference=reference,
-                entry_low=reference - zone_half,
-                entry_high=reference + zone_half,
+                entry_low=entry_low,
+                entry_high=entry_high,
                 stop=stop,
                 take_profit_1=tp1,
                 take_profit_2=None,
@@ -432,16 +454,25 @@ async def publish_hourly_signals(
             stop_gap_reserve_rate=decimal(settings.stop_gap_reserve_bps / 10000),
             funding_rate=decimal(funding_scenario),
         )
-        scenario = select_cost_aware_scenario(
-            runtime.predict_scenarios(snapshot.values),
-            bid_price=ticker.bid_price,
-            ask_price=ticker.ask_price,
-            last_price=ticker.last_price,
-            atr_pct=decimal(atr_pct),
-            costs=costs,
-            stop_atr_multiplier=runtime.stop_atr_multiplier,
-            tp_atr_multiplier=runtime.tp_atr_multiplier,
-        )
+        try:
+            scenario = select_cost_aware_scenario(
+                runtime.predict_scenarios(snapshot.values),
+                bid_price=ticker.bid_price,
+                ask_price=ticker.ask_price,
+                last_price=ticker.last_price,
+                atr_pct=decimal(atr_pct),
+                costs=costs,
+                stop_atr_multiplier=runtime.stop_atr_multiplier,
+                tp_atr_multiplier=runtime.tp_atr_multiplier,
+                tick_size=spec.tick_size,
+            )
+        except ValueError as exc:
+            count("invalid_signal_economics")
+            logger.warning(
+                "Skipping symbol with invalid tick-aligned signal economics",
+                extra={"symbol": symbol, "error": str(exc)},
+            )
+            continue
         prediction = scenario.prediction
         direction = prediction.direction
         reference = scenario.reference

@@ -29,6 +29,7 @@ from app.risk.math import (
     nonnegative_finite_decimal,
     positive_finite_decimal,
     positive_integer,
+    pretrade_funding_return_rate,
     projected_funding_rate,
     stress_downside_rate,
 )
@@ -44,6 +45,168 @@ class AcceptanceRiskState:
     available_margin: Decimal | None
     capital_verified: bool
     capital_snapshot: dict
+
+
+@dataclass(frozen=True)
+class AcceptancePlanValidation:
+    current_notional: Decimal
+    current_margin_estimate: Decimal
+    current_stress_loss: Decimal
+    current_funding_rate: Decimal
+    current_net_rr: Decimal
+    current_net_ev_r: Decimal
+    per_trade_risk_limit: Decimal
+    available_margin_capacity: Decimal | None
+
+
+def _is_step_aligned(value: Decimal, step: Decimal) -> bool:
+    return value % step == 0
+
+
+def signal_prices_match_tick(
+    signal: MarketSignal,
+    *,
+    tick_size: Decimal,
+) -> bool:
+    prices = (
+        signal.entry_reference,
+        signal.entry_low,
+        signal.entry_high,
+        signal.stop_loss,
+        signal.take_profit_1,
+    )
+    try:
+        step = positive_finite_decimal(tick_size, "tick_size")
+        return all(
+            _is_step_aligned(positive_finite_decimal(value, "signal price"), step)
+            for value in prices
+        )
+    except (ArithmeticError, ValueError):
+        return False
+
+
+def validate_execution_plan_for_acceptance(
+    *,
+    plan: ExecutionPlan,
+    signal: MarketSignal,
+    profile: CapitalProfile,
+    risk_state: AcceptanceRiskState,
+    spec: InstrumentSpecHistory,
+    executable_price: Decimal,
+    current_funding_rate: Decimal,
+    settings: Settings,
+) -> AcceptancePlanValidation:
+    """Reprice and revalidate every capital-dependent acceptance invariant.
+
+    A plan is an immutable calculation snapshot, but acceptance can occur later
+    under different equity, margin, funding and instrument constraints.  This
+    function deliberately uses the fresh state and fails closed instead of
+    trusting the stale sizing snapshot.
+    """
+
+    entry = positive_finite_decimal(executable_price, "current executable price")
+    qty = positive_finite_decimal(plan.qty, "plan qty")
+    leverage = positive_integer(plan.leverage, "plan leverage")
+    capital = positive_finite_decimal(risk_state.effective_capital, "effective capital")
+    risk_rate = positive_finite_decimal(profile.risk_rate, "profile risk_rate")
+    reserve_rate = nonnegative_finite_decimal(
+        profile.margin_reserve_rate, "margin_reserve_rate"
+    )
+    if reserve_rate >= 1:
+        raise ValueError("Fresh available margin policy is invalid")
+
+    qty_step = positive_finite_decimal(spec.qty_step, "qty_step")
+    min_qty = positive_finite_decimal(spec.min_qty, "min_qty")
+    min_notional = positive_finite_decimal(spec.min_notional, "min_notional")
+    max_leverage = positive_finite_decimal(spec.max_leverage, "max_leverage")
+    max_qty = (
+        positive_finite_decimal(spec.max_qty, "max_qty")
+        if spec.max_qty is not None
+        else None
+    )
+    tick_size = positive_finite_decimal(spec.tick_size, "tick_size")
+    current_notional = qty * entry
+    allowed_leverage = min(max_leverage, Decimal(profile.max_leverage))
+    if (
+        qty < min_qty
+        or not _is_step_aligned(qty, qty_step)
+        or current_notional < min_notional
+        or (max_qty is not None and qty > max_qty)
+        or Decimal(leverage) > allowed_leverage
+        or not _is_step_aligned(entry, tick_size)
+        or not signal_prices_match_tick(signal, tick_size=tick_size)
+    ):
+        raise ValueError("Current instrument constraints invalidate plan sizing")
+
+    funding_rate = finite_decimal(current_funding_rate, "current funding rate")
+    snapshot = plan.sizing_snapshot if isinstance(plan.sizing_snapshot, dict) else {}
+    costs_snapshot = snapshot.get("costs") if isinstance(snapshot.get("costs"), dict) else {}
+    try:
+        stored_funding_rate = finite_decimal(
+            costs_snapshot.get("funding_rate"), "stored funding rate"
+        )
+    except ValueError as exc:
+        raise ValueError("Stored funding cost scenario is invalid") from exc
+    if pretrade_funding_return_rate(signal.direction, funding_rate) < pretrade_funding_return_rate(
+        signal.direction, stored_funding_rate
+    ):
+        raise ValueError("Current adverse funding cost increased")
+
+    costs = CostScenario(
+        fee_rate_round_trip=nonnegative_finite_decimal(
+            signal.fee_rate_round_trip, "fee_rate_round_trip"
+        ),
+        slippage_rate=nonnegative_finite_decimal(signal.slippage_rate, "slippage_rate"),
+        stop_gap_reserve_rate=nonnegative_finite_decimal(
+            Decimal(str(settings.stop_gap_reserve_bps)) / Decimal("10000"),
+            "stop_gap_reserve_rate",
+        ),
+        funding_rate=funding_rate,
+    )
+    downside_rate = stress_downside_rate(entry, signal.stop_loss, signal.direction, costs)
+    current_stress_loss = current_notional * downside_rate
+    per_trade_risk_limit = capital * risk_rate
+    if current_stress_loss > per_trade_risk_limit:
+        raise ValueError("Fresh per-trade risk limit changed")
+
+    current_margin_estimate = current_notional / Decimal(leverage)
+    margin_capacity: Decimal | None = None
+    if risk_state.available_margin is not None:
+        available_margin = nonnegative_finite_decimal(
+            risk_state.available_margin, "available_margin"
+        )
+        margin_capacity = available_margin * (Decimal("1") - reserve_rate)
+        if current_margin_estimate > margin_capacity:
+            raise ValueError("Fresh available margin is insufficient")
+    elif profile.mode == "bybit_read_only":
+        raise ValueError("Fresh available margin is missing")
+
+    current_net_rr, current_net_ev_r, _, _ = net_rr_and_ev(
+        entry=entry,
+        stop=signal.stop_loss,
+        take_profit=signal.take_profit_1,
+        direction=signal.direction,
+        costs=costs,
+        p_tp=signal.p_tp,
+        p_sl=signal.p_sl,
+        p_timeout=signal.p_timeout,
+    )
+    if (
+        current_net_rr < Decimal(str(settings.min_net_rr))
+        or current_net_ev_r < Decimal(str(settings.min_net_ev_r))
+    ):
+        raise ValueError("Current cost-adjusted economics no longer pass policy")
+
+    return AcceptancePlanValidation(
+        current_notional=current_notional,
+        current_margin_estimate=current_margin_estimate,
+        current_stress_loss=current_stress_loss,
+        current_funding_rate=funding_rate,
+        current_net_rr=current_net_rr,
+        current_net_ev_r=current_net_ev_r,
+        per_trade_risk_limit=per_trade_risk_limit,
+        available_margin_capacity=margin_capacity,
+    )
 
 
 def validated_bid_ask(
@@ -432,6 +595,9 @@ async def create_execution_plan(
     if spec is None:
         status_override = "BLOCKED_DATA"
         warnings.append("Спецификация инструмента отсутствует")
+    elif not signal_prices_match_tick(signal, tick_size=spec.tick_size):
+        status_override = "BLOCKED_DATA"
+        warnings.append("Уровни сигнала не соответствуют текущему шагу цены инструмента")
 
     if spec is None:
         constraints = InstrumentConstraints(
@@ -587,6 +753,7 @@ async def create_execution_plan(
             "stress_downside_rate": str(plan_math.stress_downside_rate),
             "capital": capital_snapshot,
             "instrument": {
+                "tick_size": str(spec.tick_size) if spec is not None else None,
                 "qty_step": str(constraints.qty_step),
                 "min_qty": str(constraints.min_qty),
                 "min_notional": str(constraints.min_notional),
