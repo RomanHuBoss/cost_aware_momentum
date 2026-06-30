@@ -52,6 +52,9 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
+        "policy_metric_schema": "exit-time-horizon-sleeves-v2",
+        "policy_horizon_hours": 8,
+        "policy_capital_sleeves": 8,
         "policy_trades": 80,
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
@@ -165,3 +168,20 @@ def test_quality_gate_serializes_missing_candidate_policy_metrics_as_null(
     assert result["absolute"]["policy_realized_mean_r"] is None
     assert result["absolute"]["policy_profit_factor"] is None
     assert result["absolute"]["policy_max_drawdown_r"] is None
+
+
+def test_quality_gate_rejects_legacy_policy_metric_schema(tmp_path: Path) -> None:
+    metrics = _metrics()
+    metrics.pop("policy_metric_schema")
+    metrics.pop("policy_horizon_hours")
+    metrics.pop("policy_capital_sleeves")
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics=metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is False
+    assert "invalid_policy_metric_schema" in result["reasons"]
+    assert "policy_horizon_mismatch" in result["reasons"]
+    assert "policy_capital_sleeves_mismatch" in result["reasons"]

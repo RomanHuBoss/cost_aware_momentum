@@ -23,7 +23,7 @@ from app.services.market_data import CandleWindow
 
 Direction = Literal["LONG", "SHORT"]
 Outcome = Literal["TP", "SL", "TIMEOUT"]
-EVALUATION_VERSION = "primary-barrier-intrabar-v2"
+EVALUATION_VERSION = "primary-barrier-intrabar-v3"
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,7 @@ def evaluate_barrier_outcome(
     take_profit: Decimal,
     window_start: datetime,
     horizon_end: datetime,
+    expected_interval: timedelta = timedelta(hours=1),
 ) -> BarrierEvaluation | None:
     """Resolve the primary TP/SL/TIMEOUT outcome from confirmed hourly bars.
 
@@ -99,6 +100,8 @@ def evaluate_barrier_outcome(
     _require_aware(horizon_end, "horizon_end")
     if horizon_end <= window_start:
         raise ValueError("horizon_end must be later than window_start")
+    if expected_interval <= timedelta(0):
+        raise ValueError("expected_interval must be positive")
     entry = Decimal(entry)
     stop = Decimal(stop)
     take_profit = Decimal(take_profit)
@@ -116,6 +119,8 @@ def evaluate_barrier_outcome(
         _require_aware(item.close_time, "bar.close_time")
         if item.close_time <= item.open_time:
             raise ValueError("Outcome bar close_time must be later than open_time")
+        if item.close_time - item.open_time != expected_interval:
+            raise ValueError("Outcome bar duration does not match expected interval")
         if item.open_time < previous_close:
             raise ValueError("Outcome bars overlap or are out of order")
         if item.open_time != previous_close:
@@ -123,8 +128,14 @@ def evaluate_barrier_outcome(
         previous_close = item.close_time
         if item.close_time > horizon_end:
             break
-        if item.high <= 0 or item.low <= 0 or item.close <= 0 or item.high < item.low:
-            raise ValueError("Outcome bar contains invalid prices")
+        if (
+            item.high <= 0
+            or item.low <= 0
+            or item.close <= 0
+            or item.high < item.low
+            or not item.low <= item.close <= item.high
+        ):
+            raise ValueError("Outcome bar contains invalid OHLC prices")
 
         if direction == "LONG":
             tp_hit = item.high >= take_profit
@@ -243,6 +254,7 @@ def evaluate_barrier_outcome_with_intrabar(
         take_profit=take_profit,
         window_start=source_hour.open_time,
         horizon_end=source_hour.close_time,
+        expected_interval=interval,
     )
     if intrabar is None:
         return None

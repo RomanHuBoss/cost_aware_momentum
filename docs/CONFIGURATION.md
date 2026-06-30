@@ -85,6 +85,7 @@ postgresql+psycopg://cost_momentum:СЛОЖНЫЙ_ПАРОЛЬ@localhost:5432/co
 Начиная с 1.8.10 все количественные параметры проходят finite/range validation до запуска. Fee/slippage/reserve не могут быть отрицательными или NaN/Infinity; risk/margin/cap rates обязаны лежать в допустимых диапазонах; ticker/candle age и signal TTL обязаны быть положительными. Некорректное значение останавливает startup с validation error вместо неявного нулевого/отрицательного cost scenario.
 
 Положительный funding rate трактуется с точки зрения трейдера: LONG платит, SHORT получает; отрицательный rate меняет роли. Консервативный downside использует только adverse funding для соответствующего направления, а EV/outcome сохраняют фактический signed cash-flow. Leverage не изменяет edge на notional.
+С 1.8.11 execution plan повторно вычисляет cumulative funding от собственного `planning_time` по последнему `next_funding_time`, rate и point-in-time instrument interval. Signal-level cumulative scenario хранится только как diagnostic snapshot. Fractional, boolean и неположительное leverage не приводятся к целому: sizing блокируется как `BLOCKED_INVALID_INPUT`.
 
 Риск нельзя свободно менять на плитке. Изменение профиля создает новую версию execution plan и не переписывает исторические расчеты. Для `bybit_read_only` профиль не считается подтвержденным только по факту наличия старой строки: snapshot должен быть timezone-aware, не находиться в будущем и укладываться в `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`.
 

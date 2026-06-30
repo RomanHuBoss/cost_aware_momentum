@@ -380,12 +380,7 @@ def assess_liquidation_proximity(
 
     entry_price = positive_finite_decimal(entry, "entry")
     stop_price = positive_finite_decimal(stop, "stop")
-    try:
-        leverage_value = int(leverage)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("leverage must be a positive integer") from exc
-    if leverage_value < 1:
-        raise ValueError("leverage must be a positive integer")
+    leverage_value = positive_integer(leverage, "leverage")
 
     stop_distance = abs(entry_price - stop_price) / entry_price
     estimated_liquidation_distance = Decimal("0.9") / Decimal(leverage_value)
@@ -459,10 +454,11 @@ def calculate_position_plan(
         max_leverage = positive_finite_decimal(constraints.max_leverage, "max_leverage")
         if max_leverage < 1:
             raise ValueError("max_leverage must be at least 1")
-        requested_leverage = max(1, int(leverage))
-        leverage = (
-            requested_leverage if Decimal(requested_leverage) <= max_leverage else max(1, int(max_leverage))
-        )
+        requested_leverage = positive_integer(leverage, "leverage")
+        max_leverage_integer = int(max_leverage.to_integral_value(rounding=ROUND_DOWN))
+        if max_leverage_integer < 1:
+            raise ValueError("max_leverage must allow at least integer leverage 1")
+        leverage = min(requested_leverage, max_leverage_integer)
         constraints = InstrumentConstraints(
             qty_step=qty_step,
             min_qty=min_qty,

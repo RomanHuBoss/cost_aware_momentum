@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.10: исправлены знаки funding, temporal/econometric validation, фактический open-risk ручных позиций, revalidation исполнимой цены и fail-closed границы model artifact/runtime.
+> Версия 1.8.11: policy-gate нормализован по горизонту, funding пересчитывается на момент создания плана, а temporal/OHLC/manual-fill/leverage границы усилены fail-closed.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -176,6 +176,16 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
+
+## Обновление с 1.8.10 на 1.8.11
+
+- Новая migration и новые `.env` переменные отсутствуют; существующий Alembic head остается `0006_manual_trade_remaining_risk`.
+- Candidate и incumbent необходимо оценивать заново: policy metrics теперь имеют schema `exit-time-horizon-sleeves-v2`, содержат `policy_horizon_hours`/`policy_capital_sleeves`, а drawdown/total R нормализованы по `H` перекрывающимся capital sleeves. Legacy policy metrics не проходят auto-activation gate.
+- Execution plan больше не наследует cumulative funding scenario из времени публикации signal: funding повторно проецируется от `planning_time` по последнему ticker/spec. Ненулевой settlement внутри горизонта при неизвестном interval блокирует plan как `BLOCKED_DATA`.
+- Fractional/boolean/неположительное leverage не округляется молча; sizing блокируется, liquidation-check отклоняет вход.
+- Hourly outcome evaluator принимает только точные одночасовые бары с `low <= close <= high`; intrabar evaluator передает собственный interval. Новые outcomes имеют `evaluation_version=primary-barrier-intrabar-v3`.
+- Entry/close manual fills не могут быть naive или датированы будущим временем. HTTP 422 возвращается до изменения журнала.
+- Переобучите candidate и пересчитайте исследовательские/policy-метрики перед сравнением с результатами 1.8.10.
 
 ## Обновление с 1.8.9 на 1.8.10
 

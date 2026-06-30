@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import desc, func, select
@@ -24,9 +24,12 @@ from app.risk.math import (
     InstrumentConstraints,
     assess_liquidation_proximity,
     calculate_position_plan,
+    finite_decimal,
     net_rr_and_ev,
     nonnegative_finite_decimal,
     positive_finite_decimal,
+    positive_integer,
+    projected_funding_rate,
     stress_downside_rate,
 )
 from app.services.audit import append_audit_event, publish_outbox
@@ -58,6 +61,46 @@ def executable_entry_price(
     if price is None or not price.is_finite() or price <= 0:
         raise ValueError("Current executable entry price is missing or invalid")
     return price
+
+
+def funding_rate_for_plan(
+    *,
+    start_time: datetime,
+    horizon_hours: int,
+    next_settlement: datetime | None,
+    interval_minutes: int | None,
+    current_rate: Decimal,
+) -> Decimal:
+    """Reproject cumulative funding from the actual plan creation time.
+
+    A stored market signal can be recalculated hours later. Reusing its original
+    cumulative funding scenario would count already-passed settlements and omit
+    newly relevant ones. Unknown interval metadata is fail-closed whenever a
+    non-zero settlement is known to fall inside the plan horizon.
+    """
+
+    rate = finite_decimal(current_rate, "current_rate")
+    horizon_value = positive_integer(horizon_hours, "horizon_hours")
+    if start_time.tzinfo is None or start_time.utcoffset() is None:
+        raise ValueError("Funding start_time must be timezone-aware")
+    if next_settlement is None:
+        return Decimal("0")
+    if next_settlement.tzinfo is None or next_settlement.utcoffset() is None:
+        raise ValueError("Funding next_settlement must be timezone-aware")
+    horizon_end = start_time + timedelta(hours=horizon_value)
+    if next_settlement > horizon_end or rate == 0:
+        return Decimal("0")
+    if interval_minutes is None:
+        raise ValueError(
+            "Funding interval is required when a non-zero settlement falls inside the horizon"
+        )
+    return projected_funding_rate(
+        start_time=start_time,
+        horizon_hours=horizon_value,
+        next_settlement=next_settlement,
+        interval_minutes=interval_minutes,
+        current_rate=rate,
+    )
 
 
 def ticker_snapshot_is_fresh(
@@ -384,12 +427,26 @@ async def create_execution_plan(
             max_leverage=min(spec.max_leverage, Decimal(profile.max_leverage)),
         )
 
+    funding_rate = Decimal("0")
+    if ticker is not None:
+        try:
+            funding_rate = funding_rate_for_plan(
+                start_time=now,
+                horizon_hours=getattr(signal, "horizon_hours", settings.default_horizon_hours),
+                next_settlement=ticker.next_funding_time,
+                interval_minutes=spec.funding_interval_minutes if spec is not None else None,
+                current_rate=ticker.funding_rate or Decimal("0"),
+            )
+        except ValueError as exc:
+            status_override = "BLOCKED_DATA"
+            warnings.append(f"Невозможно пересчитать funding для плана: {exc}")
+
     fee_rate = Decimal(str(signal.fee_rate_round_trip))
     costs = CostScenario(
         fee_rate_round_trip=fee_rate,
         slippage_rate=Decimal(str(signal.slippage_rate)),
         stop_gap_reserve_rate=Decimal(str(settings.stop_gap_reserve_bps / 10000)),
-        funding_rate=Decimal(str(signal.funding_rate_scenario)),
+        funding_rate=funding_rate,
     )
 
     turnover = ticker.turnover_24h if ticker and ticker.turnover_24h else Decimal("0")
@@ -524,6 +581,8 @@ async def create_execution_plan(
                 "slippage_rate": str(costs.slippage_rate),
                 "stop_gap_reserve_rate": str(costs.stop_gap_reserve_rate),
                 "funding_rate": str(costs.funding_rate),
+                "signal_funding_rate_scenario": str(signal.funding_rate_scenario),
+                "funding_projection_start": now.isoformat(),
                 "funding_rate_per_settlement": str(ticker.funding_rate or Decimal("0"))
                 if ticker is not None
                 else "0",

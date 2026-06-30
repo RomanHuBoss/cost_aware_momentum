@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.8.11 — 2026-06-29
+
+### Fixed
+
+- Normalized holdout policy total R and drawdown by the configured holding-horizon capital sleeves and bound promotion metrics to an explicit schema/horizon.
+- Rejected TP/TIMEOUT returns and `label_end_time` values inconsistent with the configured barrier horizon before direction ranking.
+- Reprojected cumulative funding from execution-plan creation time instead of reusing the signal-time scenario; missing interval metadata now blocks a known non-zero settlement.
+- Rejected fractional/boolean/non-positive leverage instead of silently truncating it.
+- Required exact bar duration and coherent OHLC (`low <= close <= high`) in outcome evaluation.
+- Rejected naive or future-dated manual entry/close fills before journal mutation.
+
+### Compatibility
+
+- No migration or environment-variable change.
+- Policy metrics use `exit-time-horizon-sleeves-v2`; legacy metric payloads are not eligible for automatic model promotion.
+- New counterfactual evaluations use `primary-barrier-intrabar-v3`.
+
+### Tests
+
+- Added `tests/unit/test_quant_integrity_2026_06_29.py` and a legacy-policy-schema gate regression.
+
 ## 1.8.10 — 2026-06-29
 
 ### Fixed

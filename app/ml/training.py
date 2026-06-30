@@ -146,6 +146,7 @@ class PolicyEvaluationConfig:
     min_net_rr: float
     min_net_ev_r: float
     timeout_return_rate: float = -0.002
+    horizon_hours: int | None = None
 
 
 def make_barrier_dataset(
@@ -405,27 +406,39 @@ def validate_policy_evaluation_metadata(
         tolerance = 1e-10 + 1e-7 * result[
             ["barrier_upside_rate", "barrier_downside_rate"]
         ].max(axis=1)
-        # TP fills must not claim a return above the modeled take-profit barrier.
-        # SL fills may be worse than the barrier because of a real gap, but cannot
-        # claim a favorable or smaller-than-barrier loss under an SL label.
+        # Generated TP labels execute at the exact modeled barrier. SL may be
+        # worse than the barrier because a gap can jump through the stop. TIMEOUT
+        # must remain strictly inside both barriers; otherwise its label is false.
         tp_mismatch = target.eq("TP") & (
-            (result["realized_gross_return"] <= 0)
-            | (
-                result["realized_gross_return"]
-                > result["barrier_upside_rate"] + tolerance
-            )
+            (result["realized_gross_return"] - result["barrier_upside_rate"]).abs()
+            > tolerance
         )
         sl_mismatch = target.eq("SL") & (
             result["realized_gross_return"]
             > -result["barrier_downside_rate"] + tolerance
         )
-        if tp_mismatch.any() or sl_mismatch.any():
+        timeout_mismatch = target.eq("TIMEOUT") & (
+            (result["realized_gross_return"] >= result["barrier_upside_rate"] - tolerance)
+            | (
+                result["realized_gross_return"]
+                <= -result["barrier_downside_rate"] + tolerance
+            )
+        )
+        if tp_mismatch.any() or sl_mismatch.any() or timeout_mismatch.any():
             raise ValueError(f"{context} realized outcome is inconsistent with its barrier")
 
     if "label_end_time" in result.columns:
         label_end = pd.to_datetime(result["label_end_time"], utc=True, errors="coerce")
         if label_end.isna().any() or (result["exit_time"] > label_end).any():
             raise ValueError(f"{context} exit_time exceeds label availability")
+        if horizon_hours is not None:
+            expected_label_end = result["decision_time"] + pd.to_timedelta(
+                horizon_hours, unit="h"
+            )
+            if not label_end.equals(expected_label_end):
+                raise ValueError(
+                    f"{context} label_end_time does not match the configured label horizon"
+                )
         result["label_end_time"] = label_end
     return result
 
@@ -640,8 +653,43 @@ def evaluate_policy_model(
     model: TemporalCalibratedBarrierModel,
     split: DatasetSplit,
     config: PolicyEvaluationConfig,
+    *,
+    horizon_hours: int | None = None,
 ) -> dict[str, object]:
-    """Evaluate the live cost-aware direction policy on exit-time realized events."""
+    """Evaluate the live policy with horizon-separated capital sleeves.
+
+    Hourly decisions with an H-hour holding horizon overlap economically. Each
+    decision cohort therefore receives only 1/H of portfolio capital before its
+    exit-time contribution is aggregated. This matches the backtest capital
+    convention and prevents overlapping positions from being treated as H fully
+    funded independent bets.
+    """
+
+    resolved_horizon = horizon_hours if horizon_hours is not None else config.horizon_hours
+    if resolved_horizon is None:
+        if "label_end_time" not in split.test_meta.columns:
+            raise ValueError("horizon_hours is required when label_end_time is unavailable")
+        decisions = pd.to_datetime(split.test_meta["decision_time"], utc=True, errors="coerce")
+        label_ends = pd.to_datetime(split.test_meta["label_end_time"], utc=True, errors="coerce")
+        horizon_values = (label_ends - decisions).dt.total_seconds() / 3600.0
+        if (
+            decisions.isna().any()
+            or label_ends.isna().any()
+            or horizon_values.empty
+            or not np.isfinite(horizon_values.to_numpy(float)).all()
+            or (horizon_values <= 0).any()
+            or not np.allclose(horizon_values, np.floor(horizon_values))
+            or horizon_values.nunique() != 1
+        ):
+            raise ValueError("Unable to infer one positive integer horizon from holdout metadata")
+        resolved_horizon = int(horizon_values.iloc[0])
+    if (
+        isinstance(resolved_horizon, bool)
+        or not isinstance(resolved_horizon, (int, np.integer))
+        or resolved_horizon <= 0
+    ):
+        raise ValueError("horizon_hours must be a positive integer")
+    resolved_horizon = int(resolved_horizon)
 
     config_values = {
         "fee_rate_round_trip": config.fee_rate_round_trip,
@@ -666,6 +714,8 @@ def evaluate_policy_model(
     meta = validate_policy_evaluation_metadata(
         split.test_meta,
         context="Policy evaluation",
+        horizon_hours=resolved_horizon,
+        require_barrier_return_consistency=True,
     )
     for label in OUTCOME_CLASSES:
         meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
@@ -753,6 +803,9 @@ def evaluate_policy_model(
     trades = selected[selected["actionable"]].copy()
 
     empty_metrics: dict[str, object] = {
+        "policy_metric_schema": "exit-time-horizon-sleeves-v2",
+        "policy_horizon_hours": resolved_horizon,
+        "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
         "policy_trades": 0,
         "policy_trade_rate": 0.0,
@@ -785,7 +838,9 @@ def evaluate_policy_model(
         0.0,
     )
     cohort_size = trades.groupby("decision_time")["realized_r"].transform("size")
-    trades["realized_r_contribution"] = trades["realized_r"] / cohort_size
+    trades["realized_r_contribution"] = (
+        trades["realized_r"] / cohort_size / resolved_horizon
+    )
     gains = float(
         trades.loc[trades["realized_r_contribution"] > 0, "realized_r_contribution"].sum()
     )
@@ -799,6 +854,9 @@ def evaluate_policy_model(
     drawdown = running_peak - cumulative_r
 
     return {
+        "policy_metric_schema": "exit-time-horizon-sleeves-v2",
+        "policy_horizon_hours": resolved_horizon,
+        "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
         "policy_trades": int(len(trades)),
         "policy_trade_rate": float(len(trades) / len(selected)) if len(selected) else 0.0,

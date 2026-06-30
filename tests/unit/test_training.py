@@ -308,7 +308,7 @@ def test_policy_evaluation_selects_one_direction_and_applies_cost_gate() -> None
                     "target": target,
                     "ambiguous": False,
                     "exit_index": 0,
-                    "realized_gross_return": 0.0,
+                    "realized_gross_return": 0.03 if target == "TP" else -0.012,
                     "barrier_upside_rate": 0.03,
                     "barrier_downside_rate": 0.012,
                 }
@@ -325,6 +325,7 @@ def test_policy_evaluation_selects_one_direction_and_applies_cost_gate() -> None
             stop_gap_reserve_rate=0.001,
             min_net_rr=1.2,
             min_net_ev_r=0.05,
+            horizon_hours=1,
         ),
     )
 
@@ -465,4 +466,4 @@ def test_policy_drawdown_includes_loss_from_initial_equity() -> None:
         ),
     )
 
-    assert metrics["policy_max_drawdown_r"] == pytest.approx(1.0)
+    assert metrics["policy_max_drawdown_r"] == pytest.approx(0.125)

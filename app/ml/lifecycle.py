@@ -77,6 +77,7 @@ def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
         stop_gap_reserve_rate=settings.stop_gap_reserve_bps / 10000,
         min_net_rr=settings.min_net_rr,
         min_net_ev_r=settings.min_net_ev_r,
+        horizon_hours=settings.default_horizon_hours,
     )
 
 
@@ -326,7 +327,9 @@ def build_model_candidate(
     )
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
-        metrics.update(evaluate_policy_model(model, split, policy_config))
+        metrics.update(
+            evaluate_policy_model(model, split, policy_config, horizon_hours=horizon)
+        )
 
     incumbent_metrics: dict[str, Any] | None = None
     if incumbent and incumbent.is_artifact_model:
@@ -341,7 +344,12 @@ def build_model_candidate(
                 incumbent_metrics = evaluate_model(runtime.bundle["model"], split)
                 if policy_config is not None:
                     incumbent_metrics.update(
-                        evaluate_policy_model(runtime.bundle["model"], split, policy_config)
+                        evaluate_policy_model(
+                            runtime.bundle["model"],
+                            split,
+                            policy_config,
+                            horizon_hours=horizon,
+                        )
                     )
             else:
                 incumbent_metrics = {
@@ -494,6 +502,23 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         policy_profit_factor if policy_profit_factor is not None else -math.inf
     )
     policy_drawdown_check = policy_drawdown if policy_drawdown is not None else math.inf
+    expected_policy_schema = "exit-time-horizon-sleeves-v2"
+    if metrics.get("policy_metric_schema") != expected_policy_schema:
+        reasons.append("invalid_policy_metric_schema")
+    policy_horizon = finite_or_none(metrics.get("policy_horizon_hours"))
+    policy_sleeves = finite_or_none(metrics.get("policy_capital_sleeves"))
+    if (
+        policy_horizon is None
+        or not policy_horizon.is_integer()
+        or int(policy_horizon) != candidate.horizon
+    ):
+        reasons.append("policy_horizon_mismatch")
+    if (
+        policy_sleeves is None
+        or not policy_sleeves.is_integer()
+        or int(policy_sleeves) != candidate.horizon
+    ):
+        reasons.append("policy_capital_sleeves_mismatch")
 
     if rows < settings.auto_train_min_holdout_rows:
         reasons.append("holdout_rows_below_minimum")
@@ -535,6 +560,9 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         )
         incumbent_policy_mean_r = finite_or_none(incumbent.get("policy_realized_mean_r"))
         incumbent_policy_drawdown = finite_or_none(incumbent.get("policy_max_drawdown_r"))
+        incumbent_policy_schema = incumbent.get("policy_metric_schema")
+        incumbent_policy_horizon = finite_or_none(incumbent.get("policy_horizon_hours"))
+        incumbent_policy_sleeves = finite_or_none(incumbent.get("policy_capital_sleeves"))
         invalid_incumbent_fields = [
             name
             for name, value in (
@@ -544,6 +572,20 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             )
             if value is None
         ]
+        if incumbent_policy_schema != expected_policy_schema:
+            invalid_incumbent_fields.append("policy_metric_schema")
+        if (
+            incumbent_policy_horizon is None
+            or not incumbent_policy_horizon.is_integer()
+            or int(incumbent_policy_horizon) != candidate.horizon
+        ):
+            invalid_incumbent_fields.append("policy_horizon_hours")
+        if (
+            incumbent_policy_sleeves is None
+            or not incumbent_policy_sleeves.is_integer()
+            or int(incumbent_policy_sleeves) != candidate.horizon
+        ):
+            invalid_incumbent_fields.append("policy_capital_sleeves")
         if incumbent_policy_trades is not None and incumbent_policy_trades > 0:
             if incumbent_policy_mean_r is None:
                 invalid_incumbent_fields.append("policy_realized_mean_r")

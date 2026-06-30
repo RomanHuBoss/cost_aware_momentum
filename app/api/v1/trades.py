@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from uuid import UUID
 
@@ -19,13 +19,31 @@ from app.services.idempotency import IdempotencyConflict, get_cached, store_cach
 router = APIRouter(prefix="/api/v1/trades", tags=["manual trades"])
 
 
+def validate_manual_fill_time(
+    fill_time: datetime,
+    *,
+    now: datetime,
+    field_name: str,
+) -> None:
+    """Reject naive or future-dated manual fills before they enter the journal."""
+
+    for name, value in ((field_name, fill_time), ("now", now)):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"{name} must be timezone-aware")
+    if fill_time > now:
+        raise ValueError(f"{field_name} cannot be in the future")
+
+
 def validate_close_fill_time(
     fill_time: datetime,
     *,
     entry_time: datetime,
     latest_fill_time: datetime | None = None,
+    now: datetime | None = None,
 ) -> None:
     """Require manual close fills to preserve the recorded trade chronology."""
+    current_time = now or datetime.now(UTC)
+    validate_manual_fill_time(fill_time, now=current_time, field_name="Close fill time")
     if fill_time < entry_time:
         raise ValueError("Close fill time cannot be earlier than trade entry")
     if latest_fill_time is not None and fill_time < latest_fill_time:
@@ -104,6 +122,14 @@ async def manual_entry(
     ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Manual trade already exists for this plan")
+    try:
+        validate_manual_fill_time(
+            payload.entry_time,
+            now=datetime.now(UTC),
+            field_name="Entry time",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if (
         payload.entry_time < signal.publish_time - timedelta(minutes=1)
         or payload.entry_time > signal.expires_at
