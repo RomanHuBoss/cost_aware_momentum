@@ -1,5 +1,9 @@
 # Руководство оператора
 
+## Execution-plan lifecycle hardening in 1.8.14
+
+A plan in `ACCEPTED`, `ENTERED`, `PARTIAL` or `CLOSED` is immutable to recalculation. The API returns HTTP 409 instead of creating a parallel plan, and bulk profile recalculation skips those states. Complete the current trade/decision lifecycle before requesting a new recommendation. This prevents duplicate reservation and ambiguous plan ownership.
+
 ## 1. Вход и проверка состояния
 
 После входа убедитесь, что верхняя строка показывает `Готово`, PostgreSQL доступен, worker не stale, а последняя синхронизация рынка актуальна. Красная блокировка данных имеет приоритет над направлением сигнала.

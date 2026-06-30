@@ -71,7 +71,7 @@ def test_comma_separated_complex_settings_from_dotenv(tmp_path: Path, monkeypatc
 def test_json_array_complex_settings_are_also_supported(tmp_path: Path, monkeypatch) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text(
-        'SYMBOLS=["BTCUSDT","ETHUSDT"]\nHORIZONS_HOURS=[4,12]\n',
+        'SYMBOLS=["BTCUSDT","ETHUSDT"]\nHORIZONS_HOURS=[4,12]\nDEFAULT_HORIZON_HOURS=4\n',
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)

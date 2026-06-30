@@ -1,5 +1,15 @@
 # Трассировка требований спецификации
 
+## 1.8.14 trace additions
+
+| Requirement | Implementation | Verification |
+|---|---|---|
+| Funding only after crossed settlement | `app/risk/math.py`, `scripts/backtest.py` | `test_favorable_funding_cannot_improve_pretrade_rr_or_ev_without_exit_timing` plus corrected funding regressions |
+| Independent policy evidence | `app/ml/training.py`, `app/ml/lifecycle.py` | cohort-weighting and one-hour pseudo-replication regressions |
+| No parallel live/terminal plan recalculation | `app/services/execution.py`, `app/api/v1/recommendations.py` | immutable bulk-recalculation regression and API fail-closed branch |
+| Atomic plan version allocation | `app/services/execution.py`, `app/db/locks.py` | transaction-lock ordering regression |
+| Valid default model horizon | `app/config.py` | positive/membership configuration regression |
+
 | Требование | Статус | Реализация / замечание |
 |---|---|---|
 | FastAPI/Uvicorn, PostgreSQL only | Да | `app/main.py`, `app/db/*`; SQLite URL отвергается |
@@ -20,7 +30,7 @@
 | Model registry/hash/activation/rollback | Да с 1.3.0 | SHA256 validation, activation CLI, unique active index, audit/outbox |
 | Worker использует active registry model | Да с 1.3.0 | periodic reload и runtime/registry readiness match |
 | Exact artifact contract и inference features | Усилено в 1.8.10 | exact schema/horizon/calibration/classes; every required runtime feature must be present and finite, without silent zero-imputation |
-| Fail-closed class/incumbent promotion metrics | Усилено в 1.8.13 | malformed class/incumbent metrics блокируют comparison; schema `exit-time-open-gap-propagated-horizon-sleeves-v4`, horizon/capital sleeves обязаны совпадать с candidate artifact; affected v3 metrics отвергаются |
+| Fail-closed class/incumbent promotion metrics | Усилено в 1.8.14 | malformed class/incumbent metrics блокируют comparison; schema `exit-time-open-gap-propagated-cohort-weighted-v5`, horizon/capital sleeves обязаны совпадать с candidate artifact; affected v3 metrics отвергаются |
 | Фоновое периодическое переобучение | Да с 1.4.0 | rolling lookback, minimum-new-time gate и guarded auto-activation |
 | Dataset-aware trigger | Да с 1.5.0 | row growth, new-symbol coverage, top-N universe change и legacy profile detection |
 | Training data lineage | Да с 1.5.0 | artifact/registry сохраняют rows, timestamps, full symbol scope, coverage и fingerprints |
@@ -37,7 +47,7 @@
 | Направленная геометрия entry/SL/TP | Да с 1.7.4; liquidation fail-open закрыт в 1.8.7 | LONG: `SL < entry < TP`; SHORT: `TP < entry < SL`; invalid geometry блокируется, а stop за оценочной liquidation boundary всегда получает `BLOCKED_LIQUIDATION` |
 | Числовая граница position sizing | Да с 1.7.5 | non-finite/invalid capital, risk, costs, margin, caps и instrument constraints дают finite zero-sized `BLOCKED_INVALID_INPUT` без исключений |
 | Числовая граница counterfactual plan valuation | Да с 1.7.6 | invalid qty/stress/cost/funding snapshot сохраняется как zero-valued `INVALID_INPUT`; поврежденная plan version не блокирует остальные outcomes |
-| Policy-aware model promotion | Усилено в 1.8.13 | один direction по `EV/R → net RR → LONG`; exit-time R path делит capital на H sleeves, split сохраняет open-time exits и учитывает realized gap loss; promotion отвергает v3/legacy/mismatched metric schema |
+| Policy-aware model promotion | Усилено в 1.8.14 | один direction по `EV/R → net RR → LONG`; exit-time R path делит capital на H sleeves; mean R/EV equal-weight по hourly cohorts; gate требует `policy_trades` и `policy_cohorts`; v4/legacy metrics отвергаются |
 | Профили капитала и sizing | Да; numeric boundary усилена в 1.8.8 | risk budget, qty rounding, margin/liquidity/portfolio/min-order caps; `max_leverage < 1` блокируется; executable ask/bid recheck и global advisory lock защищают общий open risk |
 | Пересчет при adverse executable entry | Да с 1.8.10 | future ticker/spec блокируются; adverse ask/bid создает новую plan version и повторно проверяет qty, stress loss, margin, liquidation, R/R and EV |
 | Компактные плитки и modal actions | Да | `web/*` |

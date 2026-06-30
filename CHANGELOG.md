@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.8.14 — 2026-06-30
+
+### Fixed
+
+- Removed favorable projected funding credits from pre-trade RR/EV, direction selection and static research backtests when the actual exit time and crossed settlement are unknown; adverse funding remains charged conservatively.
+- Rebased policy mean return and expected EV on equal-weight hourly decision cohorts instead of raw symbol count, and calculated promotion profit factor from the net portfolio exit-event path.
+- Added `policy_cohorts` to the v5 policy metric contract and required the same minimum number of independent hourly cohorts as raw trades before auto-activation.
+- Prevented recalculation from creating a second plan over `ACCEPTED`, `ENTERED`, `PARTIAL` or `CLOSED` state, including bulk profile recalculation and accept-conflict recovery.
+- Serialized `(signal_id, profile_id)` plan-version allocation with a PostgreSQL transaction-scoped advisory lock.
+- Rejected non-positive `DEFAULT_HORIZON_HOURS` and defaults absent from `HORIZONS_HOURS`.
+
+### Compatibility
+
+- No migration and no new environment variable; Alembic head remains `0006_manual_trade_remaining_risk`.
+- Candidate/incumbent policy metrics must be recomputed under `exit-time-open-gap-propagated-cohort-weighted-v5`; v4 metrics are intentionally ineligible for automatic comparison.
+- Existing accepted/entered/partial/closed plans remain immutable; operators must complete or reject the relevant lifecycle rather than force a recalculation.
+
+### Tests
+
+- Added six red-to-green regressions covering funding recognition, cohort weighting, independent-evidence gating, immutable-plan recalculation, version allocation locking and horizon configuration.
+
 ## 1.8.13 — 2026-06-30
 
 ### Fixed

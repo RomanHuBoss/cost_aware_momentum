@@ -210,6 +210,10 @@ class Settings(BaseSettings):
             raise ValueError("HORIZONS_HOURS must contain at least one horizon")
         if any(item <= 0 for item in self.horizons_hours):
             raise ValueError("All HORIZONS_HOURS values must be positive")
+        if self.default_horizon_hours <= 0:
+            raise ValueError("DEFAULT_HORIZON_HOURS must be positive")
+        if self.default_horizon_hours not in self.horizons_hours:
+            raise ValueError("DEFAULT_HORIZON_HOURS must be included in HORIZONS_HOURS")
         finite_fields = {
             "DEFAULT_RISK_RATE": self.default_risk_rate,
             "MAX_TOTAL_OPEN_RISK_RATE": self.max_total_open_risk_rate,

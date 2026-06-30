@@ -1,5 +1,11 @@
 # Конфигурация
 
+## 1.8.14 validation changes
+
+- `DEFAULT_HORIZON_HOURS` must be a positive integer included in `HORIZONS_HOURS`.
+- `AUTO_TRAIN_MIN_POLICY_TRADES` remains the compatibility setting name, but the promotion gate now requires this minimum for both raw actionable trades and distinct hourly `policy_cohorts`.
+- No new environment variables were added.
+
 Все параметры задаются через `.env`. PostgreSQL обязателен; при недоступной БД API не становится ready и не переключается на файловое хранилище.
 
 ## Приложение и доступ

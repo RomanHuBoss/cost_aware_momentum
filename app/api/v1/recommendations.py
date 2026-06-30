@@ -23,6 +23,7 @@ from app.db.models import (
 )
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import (
+    IMMUTABLE_PLAN_STATUSES,
     create_execution_plan,
     entry_price_is_adverse,
     executable_entry_price,
@@ -411,6 +412,26 @@ async def accept_recommendation(
     if conflict_reason is None and conflicting_plan is not None:
         conflict_reason = "Another active plan exists for this symbol"
 
+    if conflict_reason and plan.status in IMMUTABLE_PLAN_STATUSES:
+        body_dict = {
+            "ok": False,
+            "code": "PLAN_STATE_IMMUTABLE",
+            "detail": conflict_reason,
+            "plan_id": str(plan.id),
+            "plan_status": plan.status,
+        }
+        body = json.dumps(body_dict, ensure_ascii=False).encode()
+        await store_cached(
+            session,
+            key=idempotency_key,
+            scope=scope,
+            request_payload=request_payload,
+            response_status=409,
+            response_body=body,
+        )
+        await session.commit()
+        return Response(content=body, status_code=409, media_type="application/json")
+
     if conflict_reason:
         new_plan = await create_execution_plan(
             session,
@@ -420,7 +441,7 @@ async def accept_recommendation(
             actor=operator,
             entry_price=executable_price if executable_inside_zone else None,
         )
-        if plan.status not in {"ACCEPTED", "ENTERED", "CLOSED"}:
+        if plan.status not in IMMUTABLE_PLAN_STATUSES:
             plan.status = "SUPERSEDED"
             plan.superseded_by_id = new_plan.id
         body_dict = {
@@ -589,6 +610,11 @@ async def recalculate_plan(
         raise HTTPException(status_code=409, detail="Recommendation is no longer current")
     profile = await resolve_profile(session, profile_id)
     old_plan = await latest_plan(session, signal.id, profile.id)
+    if old_plan and old_plan.status in IMMUTABLE_PLAN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Plan status {old_plan.status} cannot be recalculated",
+        )
     new_plan = await create_execution_plan(
         session,
         signal=signal,
@@ -596,7 +622,7 @@ async def recalculate_plan(
         settings=settings,
         actor=operator,
     )
-    if old_plan and old_plan.status not in {"ACCEPTED", "ENTERED", "CLOSED"}:
+    if old_plan:
         old_plan.status = "SUPERSEDED"
         old_plan.superseded_by_id = new_plan.id
     await session.commit()

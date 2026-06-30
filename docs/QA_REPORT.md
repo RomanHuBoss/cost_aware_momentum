@@ -1,5 +1,28 @@
 # QA report
 
+## Release 1.8.14 — 2026-06-30
+
+Environment used for checks:
+
+- Python 3.13.5;
+- project dependencies available through an isolated package overlay;
+- no isolated PostgreSQL integration database or native project `.venv` was configured.
+
+| Check | Baseline 1.8.13 | Post-change 1.8.14 |
+|---|---:|---:|
+| `python -m pip check` | FAILED — unrelated host `moviepy`/`pillow` conflict | FAILED — same unrelated host conflict |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 276 passed, 4 skipped | 282 passed, 4 skipped |
+| focused regression file | 6 failed | 6 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic heads | `0006_manual_trade_remaining_risk` | `0006_manual_trade_remaining_risk` |
+| release integrity | PASSED — 149/149 | PASSED — 152/152 |
+
+The six focused tests failed on the unmodified 1.8.13 code for the intended reasons: favorable funding increased pre-trade SHORT economics; cohort count/weighting was absent; one hourly cohort could satisfy the trade-count gate; accepted plans were recalculated; plan versions were allocated without a transaction lock; and invalid default horizons were accepted. All six pass after correction.
+
+The four skipped tests require a separate PostgreSQL database. `python manage.py test --require-integration` and `python manage.py doctor` were NOT RUN successfully because the archive had no native project `.venv`, no `TEST_DATABASE_URL`, and no safe disposable PostgreSQL configuration. Migration upgrade/downgrade was not required because schema is unchanged. Technical correctness does not establish strategy profitability.
+
 ## Release 1.8.13 — 2026-06-30
 
 Environment used for reproducible checks:

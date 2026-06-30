@@ -1,5 +1,9 @@
 # Model card — barrier outcome model v1
 
+## Policy metric contract v5 (1.8.14)
+
+`exit-time-open-gap-propagated-cohort-weighted-v5` adds `policy_cohorts`. Mean realized R and expected EV/R are equal-weight means of hourly decision cohorts, not raw trade means. Profit factor is derived from net portfolio contributions grouped by modeled exit time. The quality gate requires both `policy_trades` and `policy_cohorts` to meet `AUTO_TRAIN_MIN_POLICY_TRADES`; v4 artifacts/metrics must be reevaluated before comparison. This removes cross-sectional pseudo-replication but does not prove profitability or independence across market regimes.
+
 ## Назначение
 
 Модель оценивает распределение исходов `TP first`, `SL first`, `TIMEOUT` отдельно для условного LONG и SHORT на фиксированном горизонте. Она не прогнозирует `NO TRADE`: это решение последующего cost/risk policy engine.
@@ -65,7 +69,7 @@ Joblib bundle обязан содержать:
 Начиная с 1.8.10 каждая observation до directional ranking проходит единый metadata contract: заявленное направление совпадает с pair key, target входит в `TP/SL/TIMEOUT`, barrier/return finite, `exit_index` и `label_end_time` валидны, а при наличии path metadata return согласован с barrier outcome. Это не позволяет поврежденной строке скрыться только потому, что другая direction выиграла ranking. Class distribution должна содержать exact finite counts/proportions, а incumbent-relative gate блокируется при non-finite ML/policy metric. Profit factor строится из тех же cohort-weighted realized contributions, что equity/drawdown; concurrency average включает наблюдаемые idle intervals.
 Начиная с 1.8.11 TP return обязан совпадать с take-profit barrier в tolerance, TIMEOUT обязан оставаться строго между TP/SL barriers, а `label_end_time` — точно равняться `decision_time + horizon`. Holdout policy делит realized R contribution на H capital sleeves и публикует schema `exit-time-horizon-sleeves-v2`; candidate/incumbent без совпадающих schema/horizon не допускаются к auto-activation. Это требует перерасчета policy metrics после обновления.
 
-Начиная с 1.8.12 label path использует schema `ohlc-open-first-stop-gap-v1`: полный OHLC валидируется, `open` разрешается раньше unordered `high/low`, adverse SL gap получает наблюдаемую цену открытия, favorable TP gap ограничивается target, а `exit_at_open` сохраняет точный modeled exit time. В 1.8.13 исправлена потеря этого поля в chronological split: metadata без boolean `exit_at_open` отклоняется fail-closed, а promotion metrics публикуют `exit-time-open-gap-propagated-horizon-sleeves-v4`. Realized SL использует фактический return, stop-gap reserve после известного выхода уменьшается на уже встроенный в цену gap; v3 и v4 нельзя смешивать без пересчета.
+Начиная с 1.8.12 label path использует schema `ohlc-open-first-stop-gap-v1`: полный OHLC валидируется, `open` разрешается раньше unordered `high/low`, adverse SL gap получает наблюдаемую цену открытия, favorable TP gap ограничивается target, а `exit_at_open` сохраняет точный modeled exit time. В 1.8.13 исправлена потеря этого поля в chronological split: metadata без boolean `exit_at_open` отклоняется fail-closed, а promotion metrics публиковали `exit-time-open-gap-propagated-horizon-sleeves-v4`. В 1.8.14 текущий contract повышен до `exit-time-open-gap-propagated-cohort-weighted-v5`. Realized SL использует фактический return, stop-gap reserve после известного выхода уменьшается на уже встроенный в цену gap; v3 и v4 нельзя смешивать без пересчета.
 
 
 ## Фоновое переобучение

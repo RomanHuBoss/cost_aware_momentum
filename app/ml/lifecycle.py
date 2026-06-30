@@ -497,6 +497,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     else:
         min_class_fraction = min(distribution_values)
     policy_trades = nonnegative_int_metric("policy_trades")
+    policy_cohorts = nonnegative_int_metric("policy_cohorts")
     policy_mean_r = finite_or_none(metrics.get("policy_realized_mean_r"))
     policy_profit_factor = finite_or_none(metrics.get("policy_profit_factor"))
     policy_drawdown = finite_or_none(metrics.get("policy_max_drawdown_r"))
@@ -535,6 +536,8 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("holdout_class_fraction_below_minimum")
     if policy_trades < settings.auto_train_min_policy_trades:
         reasons.append("policy_trade_count_below_minimum")
+    if policy_cohorts < settings.auto_train_min_policy_trades:
+        reasons.append("policy_cohort_count_below_minimum")
     if policy_mean_r_check < settings.auto_train_min_policy_realized_mean_r:
         reasons.append("policy_realized_mean_r_below_minimum")
     if policy_profit_factor_check < settings.auto_train_min_policy_profit_factor:
@@ -554,11 +557,19 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         incumbent_log_loss = finite_or_none(incumbent.get("log_loss"))
         incumbent_brier = finite_or_none(incumbent.get("multiclass_brier"))
         incumbent_policy_trades_value = finite_or_none(incumbent.get("policy_trades"))
+        incumbent_policy_cohorts_value = finite_or_none(incumbent.get("policy_cohorts"))
         incumbent_policy_trades = (
             int(incumbent_policy_trades_value)
             if incumbent_policy_trades_value is not None
             and incumbent_policy_trades_value >= 0
             and incumbent_policy_trades_value.is_integer()
+            else None
+        )
+        incumbent_policy_cohorts = (
+            int(incumbent_policy_cohorts_value)
+            if incumbent_policy_cohorts_value is not None
+            and incumbent_policy_cohorts_value >= 0
+            and incumbent_policy_cohorts_value.is_integer()
             else None
         )
         incumbent_policy_mean_r = finite_or_none(incumbent.get("policy_realized_mean_r"))
@@ -572,6 +583,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
                 ("log_loss", incumbent_log_loss),
                 ("multiclass_brier", incumbent_brier),
                 ("policy_trades", incumbent_policy_trades),
+                ("policy_cohorts", incumbent_policy_cohorts),
             )
             if value is None
         ]
@@ -670,7 +682,9 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "min_class_fraction": min_class_fraction,
             "min_class_fraction_limit": settings.auto_train_min_class_fraction,
             "policy_trades": policy_trades,
+            "policy_cohorts": policy_cohorts,
             "min_policy_trades": settings.auto_train_min_policy_trades,
+            "min_policy_cohorts": settings.auto_train_min_policy_trades,
             "policy_realized_mean_r": policy_mean_r,
             "min_policy_realized_mean_r": settings.auto_train_min_policy_realized_mean_r,
             "policy_profit_factor": policy_profit_factor,

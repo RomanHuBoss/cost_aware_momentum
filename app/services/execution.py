@@ -34,6 +34,8 @@ from app.risk.math import (
 )
 from app.services.audit import append_audit_event, publish_outbox
 
+IMMUTABLE_PLAN_STATUSES = frozenset({"ACCEPTED", "ENTERED", "PARTIAL", "CLOSED"})
+
 
 @dataclass(frozen=True)
 class AcceptanceRiskState:
@@ -367,6 +369,11 @@ async def create_execution_plan(
     actor: str = "worker",
     entry_price: Decimal | None = None,
 ) -> ExecutionPlan:
+    await acquire_advisory_xact_lock(
+        session,
+        "execution-plan-version",
+        f"{signal.id}:{profile.id}",
+    )
     current_version = (
         await session.execute(
             select(func.coalesce(func.max(ExecutionPlan.version), 0)).where(
@@ -647,10 +654,12 @@ async def recalculate_all_active_signals(
                 .limit(1)
             )
         ).scalar_one_or_none()
+        if old_plan and old_plan.status in IMMUTABLE_PLAN_STATUSES:
+            continue
         new_plan = await create_execution_plan(
             session, signal=signal, profile=profile, settings=settings, actor=actor
         )
-        if old_plan and old_plan.status not in {"ACCEPTED", "ENTERED", "CLOSED"}:
+        if old_plan:
             old_plan.status = "SUPERSEDED"
             old_plan.superseded_by_id = new_plan.id
         plans.append(new_plan)

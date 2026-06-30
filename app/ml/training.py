@@ -27,7 +27,7 @@ DEFAULT_TP_ATR_MULTIPLIER = 2.20
 MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
-POLICY_METRIC_SCHEMA = "exit-time-open-gap-propagated-horizon-sleeves-v4"
+POLICY_METRIC_SCHEMA = "exit-time-open-gap-propagated-cohort-weighted-v5"
 
 
 class TemporalCalibratedBarrierModel:
@@ -853,6 +853,7 @@ def evaluate_policy_model(
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
         "policy_trades": 0,
+        "policy_cohorts": 0,
         "policy_trade_rate": 0.0,
         "policy_mean_expected_ev_r": None,
         "policy_realized_mean_r": None,
@@ -877,14 +878,14 @@ def evaluate_policy_model(
     trades["realized_r_contribution"] = (
         trades["realized_r"] / cohort_size / resolved_horizon
     )
-    gains = float(
-        trades.loc[trades["realized_r_contribution"] > 0, "realized_r_contribution"].sum()
+    cohort_metrics = trades.groupby("decision_time", sort=True).agg(
+        realized_mean_r=("realized_r", "mean"),
+        expected_mean_ev_r=("expected_ev_r", "mean"),
     )
-    losses = float(
-        -trades.loc[trades["realized_r_contribution"] < 0, "realized_r_contribution"].sum()
-    )
-    profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
     exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
+    gains = float(exit_r[exit_r > 0].sum())
+    losses = float(-exit_r[exit_r < 0].sum())
+    profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
     cumulative_r = np.concatenate(([0.0], exit_r.cumsum().to_numpy(float)))
     running_peak = np.maximum.accumulate(cumulative_r)
     drawdown = running_peak - cumulative_r
@@ -895,11 +896,14 @@ def evaluate_policy_model(
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
         "policy_trades": int(len(trades)),
+        "policy_cohorts": int(len(cohort_metrics)),
         "policy_trade_rate": float(len(trades) / len(selected)) if len(selected) else 0.0,
-        "policy_mean_expected_ev_r": float(trades["expected_ev_r"].mean()),
-        "policy_realized_mean_r": float(trades["realized_r"].mean()),
+        "policy_mean_expected_ev_r": float(cohort_metrics["expected_mean_ev_r"].mean()),
+        "policy_realized_mean_r": float(cohort_metrics["realized_mean_r"].mean()),
         "policy_realized_total_r": float(exit_r.sum()),
-        "policy_win_rate": float((trades["realized_r"] > 0).mean()),
+        "policy_win_rate": float((exit_r > 0).mean()),
+        "policy_trade_mean_r": float(trades["realized_r"].mean()),
+        "policy_trade_win_rate": float((trades["realized_r"] > 0).mean()),
         "policy_profit_factor": float(profit_factor),
         "policy_max_drawdown_r": float(drawdown.max()) if len(drawdown) else 0.0,
         "policy_event_periods": int(len(exit_r)),

@@ -249,6 +249,20 @@ def funding_return_rate(direction: Direction, funding_rate: Decimal | float | in
     return -_direction_sign(direction) * finite_decimal(funding_rate, "funding_rate")
 
 
+def pretrade_funding_return_rate(
+    direction: Direction, funding_rate: Decimal | float | int | str
+) -> Decimal:
+    """Conservative funding recognized before an exit time is known.
+
+    An adverse projected settlement is charged to the plan. A favorable projected
+    settlement is not credited because TP/SL may close the position before the
+    funding timestamp. Realized accounting uses :func:`funding_cash_flow` after
+    crossed settlements are known.
+    """
+
+    return min(Decimal("0"), funding_return_rate(direction, funding_rate))
+
+
 def funding_cash_flow(direction: Direction, position_value: Decimal, funding_rate: Decimal) -> Decimal:
     """Cash flow from trader perspective. Positive funding means LONG pays and SHORT receives."""
     return d(position_value) * funding_return_rate(direction, funding_rate)
@@ -300,9 +314,9 @@ def upside_rate(entry: Decimal, take_profit: Decimal, direction: Direction, cost
     entry = d(entry)
     tp = d(take_profit)
     price_move = (tp - entry) / entry if direction == "LONG" else (entry - tp) / entry
-    signed_funding = funding_return_rate(direction, costs.funding_rate)
+    recognized_funding = pretrade_funding_return_rate(direction, costs.funding_rate)
     fee_rate = normalized_round_trip_fee_rate(entry, tp, costs.fee_rate_round_trip)
-    return price_move - fee_rate - costs.slippage_rate + signed_funding
+    return price_move - fee_rate - costs.slippage_rate + recognized_funding
 
 
 
@@ -347,8 +361,7 @@ def net_rr_and_ev(
     downside = stress_downside_rate(entry, stop, direction, costs)
     upside = upside_rate(entry, take_profit, direction, costs)
     rr = Decimal("0") if downside <= 0 else max(Decimal("0"), upside) / downside
-    signed_funding = funding_return_rate(direction, costs.funding_rate)
-    adverse_funding = max(Decimal("0"), -signed_funding)
+    recognized_funding = pretrade_funding_return_rate(direction, costs.funding_rate)
     timeout_gross = finite_decimal(timeout_return_rate, "timeout_return_rate")
     timeout_exit = d(entry) * (
         Decimal("1") + timeout_gross if direction == "LONG" else Decimal("1") - timeout_gross
@@ -356,8 +369,8 @@ def net_rr_and_ev(
     timeout_fee_rate = normalized_round_trip_fee_rate(
         entry, timeout_exit, costs.fee_rate_round_trip
     )
-    timeout_net = timeout_gross - timeout_fee_rate - costs.slippage_rate + signed_funding
-    sl_net = -downside + adverse_funding + signed_funding
+    timeout_net = timeout_gross - timeout_fee_rate - costs.slippage_rate + recognized_funding
+    sl_net = -downside
     p_tp_value, p_sl_value, p_timeout_value = validate_probability_simplex(
         p_tp, p_sl, p_timeout
     )

@@ -125,7 +125,7 @@ def test_settings_reject_quantitatively_unsafe_values(overrides: dict[str, objec
         Settings(database_url="postgresql+psycopg://u:p@localhost/db", **overrides)
 
 
-def test_signed_funding_is_credited_to_short_and_charged_to_long() -> None:
+def test_pretrade_funding_charges_long_but_does_not_credit_short_without_exit_time() -> None:
     costs = risk_math.CostScenario(D("0"), D("0"), D("0"), D("0.01"))
 
     long = risk_math.net_rr_and_ev(
@@ -150,10 +150,10 @@ def test_signed_funding_is_credited_to_short_and_charged_to_long() -> None:
     )
 
     assert long[3] == D("0.03")
-    assert short[3] == D("0.05")
+    assert short[3] == D("0.04")
 
 
-def test_favorable_funding_reduces_realized_sl_loss_but_not_stress_denominator() -> None:
+def test_favorable_funding_does_not_reduce_pretrade_sl_loss_without_exit_time() -> None:
     costs = risk_math.CostScenario(D("0"), D("0"), D("0"), D("0.01"))
     rr, ev_r, downside, upside = risk_math.net_rr_and_ev(
         entry=D("100"),
@@ -167,12 +167,12 @@ def test_favorable_funding_reduces_realized_sl_loss_but_not_stress_denominator()
     )
 
     assert downside == D("0.02")
-    assert ev_r == D("-0.5")
-    assert rr == D("2.5")
-    assert upside == D("0.05")
+    assert ev_r == D("-1")
+    assert rr == D("2")
+    assert upside == D("0.04")
 
 
-def test_backtest_credits_positive_funding_to_short() -> None:
+def test_backtest_does_not_credit_favorable_funding_without_settlement_timestamps() -> None:
     meta = _pair(short_target="TP", short_gross=0.02)
     meta.loc[1, "barrier_upside_rate"] = 0.02
     probabilities = np.asarray([[0.1, 0.8, 0.1], [1.0, 0.0, 0.0]])
@@ -187,7 +187,7 @@ def test_backtest_credits_positive_funding_to_short() -> None:
         minimum_net_ev_r=-100.0,
     )
 
-    assert result["mean_net_return_per_trade"] == pytest.approx(0.03)
+    assert result["mean_net_return_per_trade"] == pytest.approx(0.02)
 
 
 def test_policy_evaluation_rejects_unsupported_target_before_direction_selection() -> None:
@@ -312,6 +312,7 @@ def _passing_metrics() -> dict[str, object]:
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
         "policy_trades": 80,
+        "policy_cohorts": 80,
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
         "policy_max_drawdown_r": 5.0,

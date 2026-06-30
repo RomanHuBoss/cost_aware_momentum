@@ -203,7 +203,8 @@ def policy_backtest(
     is_long = meta["direction"].eq("LONG")
     fee_rate_per_leg = fee_rate_round_trip / 2.0
     funding_return = np.where(is_long, -funding_rate, funding_rate)
-    adverse_funding = np.maximum(-funding_return, 0.0)
+    recognized_funding = np.minimum(funding_return, 0.0)
+    adverse_funding = np.maximum(-recognized_funding, 0.0)
     tp_exit_ratio = np.where(
         is_long,
         1.0 + meta["barrier_upside_rate"],
@@ -237,7 +238,7 @@ def policy_backtest(
     timeout_fee_rate = fee_rate_per_leg * (1.0 + timeout_exit_ratio)
     realized_fee_rate = fee_rate_per_leg * (1.0 + realized_exit_ratio)
     meta["realized_fee_rate"] = realized_fee_rate
-    meta["funding_return_rate"] = funding_return
+    meta["funding_return_rate"] = recognized_funding
     meta["adverse_funding_rate"] = adverse_funding
     target_is_sl = meta["target"].eq("SL")
     meta["embedded_stop_gap_rate"] = np.where(
@@ -254,7 +255,7 @@ def policy_backtest(
         0.0,
     )
     meta["net_upside_rate"] = (
-        meta["barrier_upside_rate"] - tp_fee_rate - slippage_rate + funding_return
+        meta["barrier_upside_rate"] - tp_fee_rate - slippage_rate + recognized_funding
     )
     meta["stress_downside_rate"] = (
         meta["barrier_downside_rate"]
@@ -264,11 +265,11 @@ def policy_backtest(
         + adverse_funding
     )
     meta["timeout_net_rate"] = (
-        timeout_return_rate - timeout_fee_rate - slippage_rate + funding_return
+        timeout_return_rate - timeout_fee_rate - slippage_rate + recognized_funding
     )
     meta["sl_net_rate"] = -(
         meta["barrier_downside_rate"] + sl_fee_rate + slippage_rate + gap_rate
-    ) + funding_return
+    ) + recognized_funding
     meta["net_rr"] = np.where(
         meta["stress_downside_rate"] > 0,
         np.maximum(meta["net_upside_rate"], 0.0) / meta["stress_downside_rate"],
