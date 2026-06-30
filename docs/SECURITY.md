@@ -1,5 +1,9 @@
 # Security boundary
 
+## Read-only exchange-state integrity in 1.8.19
+
+Private Bybit access remains GET-only. Position pagination is exhaustive and loop-protected; malformed wallet or open-position values abort the transaction before snapshots or `capital_verified` are written. Missing exchange constraints and funding fields are not replaced with local constants. These controls reduce false portfolio/risk state but do not replace independent reconciliation or forward monitoring.
+
 ## Cross-profile isolation in 1.8.18
 
 Risk acceptance, active-symbol conflict, position reconciliation and portfolio display no longer use global unscoped account state. Manual/paper profiles are isolated by profile identity; read-only profiles share state only when their explicit `source_account_id` matches. Missing account identity remains fail-closed. No trading or withdrawal API capability was introduced.

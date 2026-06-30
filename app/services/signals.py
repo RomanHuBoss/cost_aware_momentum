@@ -422,10 +422,15 @@ async def publish_hourly_signals(
                 extra={"symbol": symbol, "spread_bps": spread_bps},
             )
             continue
+        if ticker.funding_rate is None or ticker.next_funding_time is None:
+            count("missing_funding_snapshot")
+            logger.warning(
+                "Skipping symbol because the funding snapshot is incomplete",
+                extra={"symbol": symbol},
+            )
+            continue
         if (
-            ticker.funding_rate
-            and ticker.next_funding_time
-            and ticker.next_funding_time <= now + timedelta(hours=settings.default_horizon_hours)
+            ticker.next_funding_time <= now + timedelta(hours=settings.default_horizon_hours)
             and spec.funding_interval_minutes is None
         ):
             count("unknown_funding_interval")
@@ -445,7 +450,7 @@ async def publish_hourly_signals(
                 horizon_hours=settings.default_horizon_hours,
                 next_settlement=ticker.next_funding_time,
                 interval_minutes=spec.funding_interval_minutes,
-                current_rate=ticker.funding_rate or Decimal("0"),
+                current_rate=ticker.funding_rate,
             )
         )
         costs = CostScenario(

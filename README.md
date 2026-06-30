@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.18: portfolio risk, manual journal, read-only positions и reconciliation изолированы по профилю или биржевому аккаунту; снимки позиций теперь имеют обязательный `account_id`.
+> Версия 1.8.19: внешнее состояние Bybit и promotion-метрики обрабатываются fail-closed — позиции пагинируются полностью, биржевые ограничения не подменяются defaults, неполные funding/account/candle snapshots блокируются, а profit factor без убытков остается неопределенным.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -20,6 +20,10 @@
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, funding, текущие `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
+
+## Обновление с 1.8.18 до 1.8.19
+
+Миграций и новых `.env` переменных нет. Перезапустите worker, API и trainer после обновления. До успешной полной синхронизации instrument/account/funding data рекомендации остаются заблокированными. При read-only аккаунте ключ должен позволять только приватные GET-запросы; торговые и withdrawal-права не нужны.
 
 ## Обновление с 1.8.17 до 1.8.18
 
@@ -181,115 +185,6 @@ python manage.py test --require-integration
 
 Не направляйте integration tests в production-базу. Задайте `TEST_DATABASE_URL` либо временно `POSTGRES_ADMIN_URL`, чтобы test runner создал отдельную базу.
 
-
-## Обновление с 1.8.15 на 1.8.16
-
-- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
-- Новые signal entry/zone/SL/TP уровни привязываются к актуальному `tickSize`. Округление консервативно: стоп не приближается к входу, а тейк-профит не отдаляется от входа.
-- Перед `ACCEPTED` система заново оценивает фактический notional, stress loss, per-trade risk limit, margin после резерва, funding и net `R/R`/`EV/R` по свежему капиталу и исполнимой цене.
-- Текущие `qtyStep`, `minQty`, `minNotional`, `maxQty`, `maxLeverage` и `tickSize` проверяются повторно. Старый/off-tick план не принимается молча: создается новая версия либо возвращается HTTP 409.
-- Перезапустите API и worker. Переобучение модели, пересчет policy metrics и изменение PostgreSQL-схемы не требуются.
-
-## Обновление с 1.8.14 на 1.8.15
-
-- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
-- Инвертированный, отсутствующий или non-finite bid/ask блокируется одинаково в universe, signal policy, UI entry-state и accept/revalidation.
-- Поврежденный ticker с `NaN`/`Infinity` больше не прерывает весь batch: невалидный primary price пропускается, невалидная top-of-book пара сохраняется как недоступная и fail-closed блокирует публикацию.
-- Публикуемый execution contract теперь содержит один TP с весом 100%, потому что текущие labels, outcome probabilities, EV/R, sizing и counterfactual valuation моделируют только один terminal TP barrier. Nullable TP2-поля сохранены только для совместимости схемы.
-- Перезапустите API и worker. Переобучение модели и пересчет policy metrics не требуются.
-
-## Обновление с 1.8.13 на 1.8.14
-
-- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
-- Pre-trade RR/EV и research backtest больше не кредитуют выгодный projected funding без известного фактического exit/settlement; неблагоприятный funding по-прежнему входит в downside.
-- Policy metrics используют `exit-time-open-gap-propagated-cohort-weighted-v5`, содержат `policy_cohorts`, а mean R/EV не зависят от числа symbols в одном timestamp. Candidate/incumbent v4 необходимо пересчитать.
-- `AUTO_TRAIN_MIN_POLICY_TRADES` теперь применяется одновременно к raw trades и независимым hourly cohorts; это усиливает fail-closed gate без новой переменной.
-- Планы в `ACCEPTED`, `ENTERED`, `PARTIAL` и `CLOSED` нельзя пересчитать поверх существующей version; allocation новых versions сериализован PostgreSQL advisory lock.
-- `DEFAULT_HORIZON_HOURS` должен быть положительным и входить в `HORIZONS_HOURS`.
-- Перезапустите API, worker и trainer; переобучите candidate и пересчитайте holdout/backtest metrics.
-
-## Обновление с 1.8.12 на 1.8.13
-
-- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
-- `chronological_split` теперь требует boolean `exit_at_open` и передает его в final-holdout metadata. Opening-gap exit больше не теряется между label dataset и policy/backtest evaluation.
-- `validate_policy_evaluation_metadata` больше не подставляет `False` при отсутствии поля: неполный или legacy metadata contract блокируется до расчета метрик.
-- Policy metrics имеют schema `exit-time-open-gap-propagated-horizon-sleeves-v4`. Метрики v3 из 1.8.12 потенциально содержат сдвиг opening exits к закрытию часа и не допускаются к auto-activation comparison.
-- Переобучите candidate и пересчитайте holdout/backtest metrics. Перезапустите trainer; API/worker behavior и PostgreSQL schema не изменились.
-
-## Обновление с 1.8.11 на 1.8.12
-
-- Новая migration и новые `.env` переменные отсутствуют; Alembic head остается `0006_manual_trade_remaining_risk`.
-- Label/outcome path теперь валидирует полный OHLC и разрешает `open` раньше unordered `high/low`: favorable TP gap ограничивается target, adverse SL gap оценивается по open.
-- Opening-gap exit получает точное `open_time`, а dataset сохраняет `exit_at_open`; это исключает искусственный сдвиг realized P&L и funding к закрытию свечи.
-- Holdout policy, research backtest и PlanOutcome используют realized SL return; stop-gap reserve уменьшается на gap, уже содержащийся в фактической modeled exit price.
-- Policy metrics имеют schema `exit-time-realized-gap-horizon-sleeves-v3`, новые counterfactual outcomes — `primary-barrier-intrabar-open-gap-v4`.
-- Новые model artifacts сохраняют `label_path_schema_version=ohlc-open-first-stop-gap-v1`; существующие artifacts остаются runtime-совместимыми по features/classes, однако candidate/incumbent и исторические backtest/policy metrics необходимо пересчитать перед сравнением.
-- Перезапустите API, worker и trainer; переобучите candidate и пересчитайте research/holdout metrics.
-
-## Обновление с 1.8.10 на 1.8.11
-
-- Новая migration и новые `.env` переменные отсутствуют; существующий Alembic head остается `0006_manual_trade_remaining_risk`.
-- Candidate и incumbent необходимо оценивать заново: policy metrics теперь имеют schema `exit-time-horizon-sleeves-v2`, содержат `policy_horizon_hours`/`policy_capital_sleeves`, а drawdown/total R нормализованы по `H` перекрывающимся capital sleeves. Legacy policy metrics не проходят auto-activation gate.
-- Execution plan больше не наследует cumulative funding scenario из времени публикации signal: funding повторно проецируется от `planning_time` по последнему ticker/spec. Ненулевой settlement внутри горизонта при неизвестном interval блокирует plan как `BLOCKED_DATA`.
-- Fractional/boolean/неположительное leverage не округляется молча; sizing блокируется, liquidation-check отклоняет вход.
-- Hourly outcome evaluator принимает только точные одночасовые бары с `low <= close <= high`; intrabar evaluator передает собственный interval. Новые outcomes имеют `evaluation_version=primary-barrier-intrabar-v3`.
-- Entry/close manual fills не могут быть naive или датированы будущим временем. HTTP 422 возвращается до изменения журнала.
-- Переобучите candidate и пересчитайте исследовательские/policy-метрики перед сравнением с результатами 1.8.10.
-
-## Обновление с 1.8.9 на 1.8.10
-
-- Обязательна migration `0006_manual_trade_remaining_risk`; выполните `python manage.py migrate` до запуска API/worker.
-- Новые `.env` переменные не добавлены, но количественные параметры теперь fail-closed отклоняют `NaN`, бесконечность, отрицательные комиссии/slippage/gap reserve, нулевые TTL/age limits и противоречивые risk caps.
-- Положительный funding теперь корректно списывается с LONG и начисляется SHORT в live risk math, holdout policy и research backtest. Старые backtest/policy metrics с funding нельзя сравнивать напрямую без перерасчета.
-- Active artifact должен содержать точный `feature_schema_version=hourly-barrier-contiguous-v3`, положительный целый `horizon_hours`, непустой `calibration_version`, точный class order и полный finite feature vector. Несовместимый artifact блокируется; переобучите/перерегистрируйте старый artifact вместо обхода проверки.
-- При неблагоприятном executable entry внутри разрешенной зоны система создает новую versioned execution plan и пересчитывает qty, risk, RR/EV и liquidation buffer.
-- Manual trade хранит `initial_stress_loss` и `remaining_stress_loss`; portfolio open risk использует фактический риск входа и освобождает его пропорционально закрытому количеству.
-- Counterfactual PlanOutcome использует entry и planning time immutable plan snapshot, а не исходную цену/время signal.
-- Перезапустите API, worker и trainer после migration.
-
-## Обновление с 1.8.8 на 1.8.9
-
-- DB migration и новые `.env` переменные не требуются.
-- Перезапустите API, worker и trainer после замены файлов.
-- Переобучение рекомендуется: dataset теперь исключает весь symbol/timestamp cohort, если невозможно корректно построить хотя бы один из LONG/SHORT сценариев.
-- Temporal split, holdout policy и research backtest теперь fail-closed отклоняют входные данные без точной пары `LONG + SHORT`; ранее односторонние cohorts могли смещать policy metrics и candidate/incumbent comparison.
-- Исторические research/holdout metrics, рассчитанные на неполных directional cohorts, не следует объединять с результатами 1.8.9 без повторного расчета.
-
-## Обновление с 1.8.7 на 1.8.8
-
-- DB migration и новые `.env` переменные не требуются.
-- Перезапустите API, worker и trainer после замены файлов.
-- Переобучение рекомендуется: исправлена реализация уже заявленной strict-hourly feature schema, и строки после восстановленного разрыва больше не наследуют EMA/rolling state из старого сегмента.
-- Невалидная OHLCV-свеча в обязательном feature/label window теперь блокирует inference или исключается из dataset вместо clip/timeout fallback.
-- Active artifact с probabilities вне TP/SL/TIMEOUT simplex теперь отвергается fail-closed; нормальные calibrated artifacts совместимы.
-- Holdout policy metrics `policy_realized_total_r` и `policy_max_drawdown_r` теперь формируются по modeled exit time и equal-weight decision cohorts; старые и новые значения нельзя напрямую объединять.
-- Биржевой `max_leverage < 1` считается невалидным instrument constraint и дает `BLOCKED_INVALID_INPUT`, а не молча заменяется на 1x.
-
-## Обновление с 1.8.6 на 1.8.7
-
-- DB migration не требуется.
-- Добавлена необязательная переменная `MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS`; безопасный default — `180`. Для явной конфигурации перенесите ее из `.env.example` в локальный `.env`.
-- Перезапустите API и worker после замены файлов.
-- При `Принять` entry-zone проверяется по текущему ask для LONG и bid для SHORT. `last_price` сохраняется только как диагностика и больше не считается ценой немедленного входа.
-- Read-only capital profile блокируется, если snapshot equity/available margin отсутствует, старше лимита либо имеет некорректное время.
-- Конкурентные accept-запросы сериализуются глобальным transaction-scoped PostgreSQL advisory lock до чтения open risk и капитала.
-- Stop-loss за консервативно оцененной областью ликвидации получает `BLOCKED_LIQUIDATION` при любом плече, включая 1–3x.
-
-## Обновление с 1.8.5 на 1.8.6
-
-- DB migration и новые `.env` переменные не требуются.
-- Перезапустите API и worker после замены файлов; trainer можно перезапустить одновременно.
-- Неполный `hourly_inference` повторяется до пяти раз с интервалом не меньше `MARKET_POLL_SECONDS`. Уже опубликованные natural keys не дублируются.
-- `/api/v1/status` содержит `recommendation_summary`, последний `hourly_inference`, причины отсева и распределение статусов планов активного профиля.
-- Раздел «Готовы к входу сейчас» показывает только исполнимые планы, цена которых уже находится в зоне входа; остальные явно распределяются по «Наблюдение», «Без сделки» и «Заблокированные».
-
-## Обновление с 1.8.4 на 1.8.5
-
-- DB migration и новые `.env` переменные не требуются.
-- Перезапустите API, worker и trainer после замены файлов.
-- Переобучение artifact не требуется: существующие artifacts без barrier multipliers используют совместимые дефолты `1.15 / 2.20`; новые значения из bundle теперь применяются и в live geometry.
-- Backtest report меняет экономический смысл `net_return`: вместо почасового компаундинга перекрывающихся полногоризонтных returns используется `H` неперекрывающихся capital sleeves. Старые и новые backtest-метрики нельзя напрямую склеивать в один временной ряд.
-- CLI `--minimum-predicted-edge` сохранён как deprecated alias для `--minimum-net-ev-r`; новые запуски должны использовать явное имя EV/R.
 
 ## Ограничения
 

@@ -188,7 +188,7 @@ async def test_sync_candle_windows_uses_exact_read_only_kline_window(monkeypatch
             calls.append({"symbol": symbol, **kwargs})
             return [
                 [
-                    str(int(BASE.timestamp() * 1000)),
+                    str(int((BASE + timedelta(minutes=5 * index)).timestamp() * 1000)),
                     "100",
                     "101",
                     "99",
@@ -196,6 +196,7 @@ async def test_sync_candle_windows_uses_exact_read_only_kline_window(monkeypatch
                     "10",
                     "1000",
                 ]
+                for index in range(12)
             ]
 
     async def fake_upsert(session, values_list):
@@ -220,7 +221,7 @@ async def test_sync_candle_windows_uses_exact_read_only_kline_window(monkeypatch
             "price_type": "last",
         }
     ]
-    assert result == {"windows_requested": 1, "windows_succeeded": 1, "rows_received": 1, "errors": []}
+    assert result == {"windows_requested": 1, "windows_succeeded": 1, "rows_received": 12, "errors": []}
     assert inserted[0][0]["interval"] == "5"
     assert inserted[0][0]["confirmed"] is True
 

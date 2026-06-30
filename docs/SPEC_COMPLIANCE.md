@@ -1,5 +1,9 @@
 # Проверка соответствия спецификации версии 1.3
 
+## Статус версии 1.8.19 — external-state/econometric fail-closed
+
+Закрыты подтвержденные defects внешнего состояния и promotion-метрик: полная пагинация read-only positions, строгая instrument/account/funding validation, атомарный отказ до записи некорректного account snapshot, проверка полноты bounded intrabar window и неопределенный profit factor при нулевом знаменателе. Общий статус спецификации остается частичным: multi-fold walk-forward, PBO/DSR, исторический point-in-time orderbook/spec reconstruction, fill simulator, live drift control и forward profitability evidence не реализованы.
+
 ## Статус версии 1.8.18 — account/profile scope integrity
 
 Закрыт подтвержденный portfolio/reconciliation gap: capital profile теперь является явной границей для manual/paper риска, а `source_account_id` — границей для read-only аккаунта. Portfolio API, acceptance risk, active-symbol conflict и reconciliation используют одну семантику scope. Position snapshots сохраняют account identity через migration `0007_position_account_scope`.
@@ -22,7 +26,7 @@ Strengthened executable-quote and plan-contract integrity: all relevant paths re
 
 Дата проверки: 2026-06-30
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.16
+Версия проекта после коррекции: 1.8.19
 
 ## Итог
 

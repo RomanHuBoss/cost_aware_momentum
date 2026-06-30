@@ -885,7 +885,7 @@ def evaluate_policy_model(
     exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
     gains = float(exit_r[exit_r > 0].sum())
     losses = float(-exit_r[exit_r < 0].sum())
-    profit_factor = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
+    profit_factor = gains / losses if losses > 0 else None
     cumulative_r = np.concatenate(([0.0], exit_r.cumsum().to_numpy(float)))
     running_peak = np.maximum.accumulate(cumulative_r)
     drawdown = running_peak - cumulative_r
@@ -904,7 +904,7 @@ def evaluate_policy_model(
         "policy_win_rate": float((exit_r > 0).mean()),
         "policy_trade_mean_r": float(trades["realized_r"].mean()),
         "policy_trade_win_rate": float((trades["realized_r"] > 0).mean()),
-        "policy_profit_factor": float(profit_factor),
+        "policy_profit_factor": float(profit_factor) if profit_factor is not None else None,
         "policy_max_drawdown_r": float(drawdown.max()) if len(drawdown) else 0.0,
         "policy_event_periods": int(len(exit_r)),
     }

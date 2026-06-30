@@ -1,5 +1,17 @@
 # Трассировка требований спецификации
 
+## 1.8.19 trace additions
+
+| Requirement / invariant | Implementation | Verification |
+|---|---|---|
+| Complete read-only position state | cursor pagination and repeated-cursor guard in `app/bybit/client.py` | pagination regressions in `test_external_state_econometric_integrity_2026_06_30.py` |
+| No fabricated exchange constraints | strict spec parser in `app/services/market_data.py` | missing-field red regression plus complete-spec acceptance test |
+| Atomic valid account snapshot | pre-validation of wallet and open positions before ORM writes | missing-equity and malformed-position regressions |
+| Missing funding cannot become zero cost | signal, plan and accept-time guards | funding-plan red/green regression and full suite |
+| Exact bounded intrabar data | expected timestamp-set validation before upsert | partial-window regression and complete-window test |
+| Honest no-loss promotion metric | `policy_profit_factor=None` when denominator is zero | no-loss holdout regression; lifecycle null-metric gate tests |
+| Release reproducibility | `CHANGELOG.md`, `PATCH_1.8.19.md`, iteration report and regenerated `SHA256SUMS` | `python manage.py release-check` |
+
 ## 1.8.18 trace additions
 
 | Requirement / invariant | Implementation | Verification |

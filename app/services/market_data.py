@@ -38,6 +38,17 @@ class CandleWindow:
     end_time: datetime
 
 
+@dataclass(frozen=True)
+class InstrumentSpecValues:
+    tick_size: Decimal
+    qty_step: Decimal
+    min_qty: Decimal
+    max_qty: Decimal
+    min_notional: Decimal
+    max_leverage: Decimal
+    funding_interval_minutes: int | None
+
+
 def _dt_ms(value: str | int | None) -> datetime | None:
     if value in (None, "", "0", 0):
         return None
@@ -70,6 +81,93 @@ def _nonnegative_decimal_or_none(value: object) -> Decimal | None:
     return result if result is not None and result >= 0 else None
 
 
+def _required_finite_decimal(value: object, field: str) -> Decimal:
+    result = _finite_decimal_or_none(value)
+    if result is None:
+        raise ValueError(f"Bybit field {field} must be a finite decimal")
+    return result
+
+
+def _required_positive_decimal(value: object, field: str) -> Decimal:
+    result = _required_finite_decimal(value, field)
+    if result <= 0:
+        raise ValueError(f"Bybit field {field} must be positive")
+    return result
+
+
+def _required_nonnegative_decimal(value: object, field: str) -> Decimal:
+    result = _required_finite_decimal(value, field)
+    if result < 0:
+        raise ValueError(f"Bybit field {field} must be non-negative")
+    return result
+
+
+def _instrument_spec_values(item: dict) -> InstrumentSpecValues:
+    price_filter = item.get("priceFilter") or {}
+    lot_filter = item.get("lotSizeFilter") or {}
+    leverage_filter = item.get("leverageFilter") or {}
+    tick_size = _required_positive_decimal(price_filter.get("tickSize"), "priceFilter.tickSize")
+    qty_step = _required_positive_decimal(lot_filter.get("qtyStep"), "lotSizeFilter.qtyStep")
+    min_qty = _required_positive_decimal(
+        lot_filter.get("minOrderQty"), "lotSizeFilter.minOrderQty"
+    )
+    max_qty = _required_positive_decimal(
+        lot_filter.get("maxOrderQty"), "lotSizeFilter.maxOrderQty"
+    )
+    if max_qty < min_qty:
+        raise ValueError("Bybit field lotSizeFilter.maxOrderQty must not be below minOrderQty")
+    min_notional = _required_positive_decimal(
+        lot_filter.get("minNotionalValue"), "lotSizeFilter.minNotionalValue"
+    )
+    max_leverage = _required_positive_decimal(
+        leverage_filter.get("maxLeverage"), "leverageFilter.maxLeverage"
+    )
+
+    funding_interval: int | None = None
+    raw_funding_interval = item.get("fundingInterval")
+    if raw_funding_interval not in (None, ""):
+        try:
+            funding_interval = int(raw_funding_interval)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Bybit field fundingInterval must be a positive integer") from exc
+        if funding_interval <= 0:
+            raise ValueError("Bybit field fundingInterval must be a positive integer")
+    elif item.get("contractType") == "LinearPerpetual":
+        raise ValueError("Bybit field fundingInterval is required for LinearPerpetual")
+
+    return InstrumentSpecValues(
+        tick_size=tick_size,
+        qty_step=qty_step,
+        min_qty=min_qty,
+        max_qty=max_qty,
+        min_notional=min_notional,
+        max_leverage=max_leverage,
+        funding_interval_minutes=funding_interval,
+    )
+
+
+def _normalized_open_position(item: dict) -> dict[str, object] | None:
+    size = _required_nonnegative_decimal(item.get("size"), "position.size")
+    if size == 0:
+        return None
+    symbol = str(item.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise ValueError("Bybit field position.symbol is required for an open position")
+    side = str(item.get("side") or "").strip().upper()
+    if side not in {"BUY", "SELL"}:
+        raise ValueError("Bybit field position.side must be Buy or Sell for an open position")
+    return {
+        "symbol": symbol,
+        "side": side,
+        "qty": size,
+        "avg_price": _required_positive_decimal(item.get("avgPrice"), "position.avgPrice"),
+        "mark_price": _required_positive_decimal(item.get("markPrice"), "position.markPrice"),
+        "unrealized_pnl": _required_finite_decimal(
+            item.get("unrealisedPnl"), "position.unrealisedPnl"
+        ),
+    }
+
+
 async def sync_instruments(session: AsyncSession, client: BybitClient) -> int:
     now = datetime.now(UTC)
     items = await client.get_instruments("linear")
@@ -77,17 +175,24 @@ async def sync_instruments(session: AsyncSession, client: BybitClient) -> int:
     for item in items:
         if item.get("settleCoin") != "USDT":
             continue
-        symbol = item["symbol"]
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if not symbol:
+            raise ValueError("Bybit field symbol is required for a USDT instrument")
+        status = item.get("status") or "Unknown"
+        is_pre_listing = bool(item.get("isPreListing", False))
+        spec_values = None
+        if status == "Trading" and not is_pre_listing:
+            spec_values = _instrument_spec_values(item)
         instrument_values = {
             "symbol": symbol,
             "category": "linear",
             "base_coin": item.get("baseCoin") or symbol.removesuffix("USDT"),
             "quote_coin": item.get("quoteCoin") or "USDT",
             "settle_coin": item.get("settleCoin") or "USDT",
-            "status": item.get("status") or "Unknown",
+            "status": status,
             "launch_time": _dt_ms(item.get("launchTime")),
             "delivery_time": _dt_ms(item.get("deliveryTime")),
-            "is_pre_listing": bool(item.get("isPreListing", False)),
+            "is_pre_listing": is_pre_listing,
             "raw": item,
             "updated_at": now,
         }
@@ -98,10 +203,9 @@ async def sync_instruments(session: AsyncSession, client: BybitClient) -> int:
         )
         await session.execute(stmt)
 
-        price_filter = item.get("priceFilter") or {}
-        lot_filter = item.get("lotSizeFilter") or {}
-        leverage_filter = item.get("leverageFilter") or {}
-        funding_interval = item.get("fundingInterval")
+        if spec_values is None:
+            count += 1
+            continue
         latest_spec = (
             await session.execute(
                 select(InstrumentSpecHistory)
@@ -111,13 +215,13 @@ async def sync_instruments(session: AsyncSession, client: BybitClient) -> int:
             )
         ).scalar_one_or_none()
         fingerprint = (
-            _decimal(price_filter.get("tickSize"), "0.00000001"),
-            _decimal(lot_filter.get("qtyStep"), "0.00000001"),
-            _decimal(lot_filter.get("minOrderQty"), "0"),
-            _decimal(lot_filter.get("maxOrderQty"), "0") or None,
-            _decimal(lot_filter.get("minNotionalValue"), "5"),
-            _decimal(leverage_filter.get("maxLeverage"), "1"),
-            int(funding_interval) if funding_interval not in (None, "") else None,
+            spec_values.tick_size,
+            spec_values.qty_step,
+            spec_values.min_qty,
+            spec_values.max_qty,
+            spec_values.min_notional,
+            spec_values.max_leverage,
+            spec_values.funding_interval_minutes,
         )
         previous = None
         if latest_spec:
@@ -281,6 +385,14 @@ async def sync_candle_windows(
                 for item in values
                 if item["open_time"] >= start_time and item["close_time"] <= end_time
             ]
+            expected_open_times = [
+                start_time + interval_delta * index for index in range(limit)
+            ]
+            actual_open_times = sorted(item["open_time"] for item in values)
+            if actual_open_times != expected_open_times:
+                raise ValueError(
+                    f"partial_window: expected {limit} candles, received {len(values)}"
+                )
             await _upsert_candle_values(session, values)
             rows_received += len(values)
             succeeded += 1
@@ -642,8 +754,16 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
     if not account_list:
         raise RuntimeError("Bybit wallet response contained no account")
     account = account_list[0]
-    equity = _decimal(account.get("totalEquity"))
-    available = _decimal(account.get("totalAvailableBalance"))
+    equity = _required_positive_decimal(account.get("totalEquity"), "totalEquity")
+    available = _required_nonnegative_decimal(
+        account.get("totalAvailableBalance"), "totalAvailableBalance"
+    )
+    raw_positions = await client.get_positions("USDT")
+    positions = [
+        normalized
+        for item in raw_positions
+        if (normalized := _normalized_open_position(item)) is not None
+    ]
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     first_today = (
         await session.execute(
@@ -668,20 +788,16 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
             quality_flags=[],
         )
     )
-    positions = await client.get_positions("USDT")
     for item in positions:
-        size = _decimal(item.get("size"))
-        if size <= 0:
-            continue
         session.add(
             PositionSnapshot(
                 account_id=BYBIT_READ_ONLY_ACCOUNT_ID,
-                symbol=item.get("symbol"),
-                side=(item.get("side") or "").upper(),
-                qty=size,
-                avg_price=_decimal(item.get("avgPrice")),
-                mark_price=_decimal(item.get("markPrice")),
-                unrealized_pnl=_decimal(item.get("unrealisedPnl")),
+                symbol=str(item["symbol"]),
+                side=str(item["side"]),
+                qty=item["qty"],
+                avg_price=item["avg_price"],
+                mark_price=item["mark_price"],
+                unrealized_pnl=item["unrealized_pnl"],
                 source_time=now,
                 source="bybit-read-only",
             )

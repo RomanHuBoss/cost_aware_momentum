@@ -1,5 +1,9 @@
 # Model card — barrier outcome model v1
 
+## Undefined no-loss profit factor in 1.8.19
+
+Profit factor is a ratio of positive to absolute negative exit-event contributions. If final holdout has no negative event, the denominator is unobserved and the metric is stored as `null`, not as `999` or infinity. The lifecycle quality gate already treats a missing/non-finite profit factor as failing the absolute threshold. This conservative rule prevents a small or one-sided holdout from masquerading as strong economic evidence; it does not prove that a candidate with a finite ratio is profitable.
+
 ## Three-outcome decision threshold in 1.8.17
 
 The UI break-even value is a policy diagnostic, not a new model probability and not a training metric. For fixed `P(TIMEOUT)=q`, net TP outcome `U`, positive SL downside `D` and net TIMEOUT outcome `T`, the displayed threshold is `(D(1-q)-qT)/(U+D)`, with `P(SL)=1-q-P(TP)`. The value is marked infeasible when it lies outside `[0, 1-q]`.

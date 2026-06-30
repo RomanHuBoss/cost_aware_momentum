@@ -1,5 +1,15 @@
 # Архитектура
 
+## External-state and econometric integrity in 1.8.19
+
+- Read-only position ingestion follows every Bybit cursor page and rejects repeated cursors.
+- Active USDT instrument specifications are parsed from mandatory finite positive exchange fields; no synthetic tick, quantity, notional, leverage or funding defaults are stored.
+- Wallet equity, available margin and every non-zero open position are validated before any account snapshot is added to the transaction.
+- Missing funding rate or next-settlement timestamp blocks signal publication, plan creation and plan acceptance instead of being treated as zero cost.
+- Bounded intrabar windows are persisted only when every expected timestamp is present.
+- Holdout profit factor is `null` when no loss event exists; the existing quality gate therefore fails closed rather than interpreting an arbitrary large constant as evidence.
+- Advisory-only, PostgreSQL-only and process boundaries are unchanged.
+
 ## Account/profile scope integrity in 1.8.18
 
 - `manual` and `paper` profiles use independent risk scopes keyed by `profile_id`.

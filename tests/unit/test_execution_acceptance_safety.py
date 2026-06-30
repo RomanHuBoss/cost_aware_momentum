@@ -174,6 +174,7 @@ async def _build_plan_for_safety_case(
     profile_mode: str,
     stop_loss: Decimal,
     capital_result: tuple[Decimal, Decimal | None, bool, dict],
+    funding_snapshot_complete: bool = True,
 ):
     from uuid import uuid4
 
@@ -212,11 +213,14 @@ async def _build_plan_for_safety_case(
         margin_reserve_rate=D("0.25"),
         version=1,
     )
+    ticker_time = datetime.now(UTC)
     ticker = SimpleNamespace(
-        source_time=datetime.now(UTC),
+        source_time=ticker_time,
         turnover_24h=D("100000000"),
-        funding_rate=D("0"),
-        next_funding_time=None,
+        funding_rate=D("0") if funding_snapshot_complete else None,
+        next_funding_time=(
+            ticker_time + timedelta(hours=8) if funding_snapshot_complete else None
+        ),
     )
     spec = SimpleNamespace(
         tick_size=D("0.1"),
@@ -539,3 +543,17 @@ async def test_execution_plan_blocks_signal_prices_outside_current_tick(
 
     assert plan.status == "BLOCKED_DATA"
     assert any("шагу цены" in warning for warning in plan.warnings)
+
+async def test_execution_plan_blocks_missing_funding_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        funding_snapshot_complete=False,
+    )
+
+    assert plan.status == "BLOCKED_DATA"
+    assert any("funding" in warning.lower() for warning in plan.warnings)

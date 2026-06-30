@@ -1,5 +1,9 @@
 # Конфигурация
 
+## 1.8.19 external-state validation
+
+Новых переменных окружения и migration нет. После обновления worker должен заново получить полный каталог инструментов, funding/ticker snapshot и read-only account snapshot. Неполный ответ теперь завершает соответствующий job ошибкой или блокирует рекомендацию; не ослабляйте это поведение подстановкой локальных defaults.
+
 ## 1.8.18 account-scope migration
 
 Новых переменных окружения нет. Для `bybit_read_only` профиля `source_account_id` остается обязательным и должен совпадать с identity, используемой account sync (`bybit-unified` в текущем single-account connector). Перед запуском версии 1.8.18 примените migration `0007_position_account_scope`.

@@ -165,12 +165,30 @@ class BybitClient:
         ).result
 
     async def get_positions(self, settle_coin: str = "USDT") -> list[dict]:
-        result = (
-            await self._get(
-                "/v5/position/list", {"category": "linear", "settleCoin": settle_coin}, private=True
-            )
-        ).result
-        return result.get("list") or []
+        positions: list[dict] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while True:
+            params: dict[str, Any] = {
+                "category": "linear",
+                "settleCoin": settle_coin,
+                "limit": 200,
+            }
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = (await self._get("/v5/position/list", params, private=True)).result
+            page = result.get("list") or []
+            if not isinstance(page, list):
+                raise RuntimeError("Bybit positions response list is invalid")
+            positions.extend(page)
+
+            next_cursor = str(result.get("nextPageCursor") or "").strip()
+            if not next_cursor:
+                return positions
+            if next_cursor in seen_cursors:
+                raise RuntimeError("Bybit positions pagination repeated a cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
 
     async def get_fee_rate(self, symbol: str | None = None) -> list[dict]:
         result = (

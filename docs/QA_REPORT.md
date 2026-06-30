@@ -1,5 +1,24 @@
 # QA report
 
+## Release 1.8.19 — 2026-06-30
+
+Environment: Python 3.13.5 in the provided sandbox interpreter; no project-local `.venv`, application `.env` or disposable PostgreSQL integration database.
+
+| Check | Baseline 1.8.18 | Post-change 1.8.19 |
+|---|---:|---:|
+| `python -m pip check` | FAILED — unrelated global `moviepy`/`pillow` conflict | FAILED — same unrelated global conflict |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 314 passed, 4 skipped | 323 passed, 4 skipped |
+| explicit unchanged-code regressions | 6 failed, then 1 failed | 7 passed |
+| additional acceptance tests | not present | 2 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic head | `0007_position_account_scope` | `0007_position_account_scope` |
+| `python manage.py doctor` | NOT RUN — project `.venv`/`.env` unavailable | NOT RUN — same |
+| `python manage.py test --require-integration` | NOT RUN — no safe PostgreSQL test database | NOT RUN — same |
+
+The red runs independently demonstrated incomplete position pagination, cursor-loop exposure, fabricated instrument constraints, malformed wallet acceptance, partial candle-window success, the `999` profit-factor sentinel and zero-cost fallback for missing funding. PostgreSQL integration, real Bybit smoke and forward economic performance remain unverified. Technical correctness is not evidence of profitability.
+
 ## Release 1.8.18 — 2026-06-30
 
 Environment used for reproducible checks:

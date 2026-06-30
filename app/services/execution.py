@@ -725,17 +725,27 @@ async def create_execution_plan(
 
     funding_rate = Decimal("0")
     if ticker is not None:
-        try:
-            funding_rate = funding_rate_for_plan(
-                start_time=now,
-                horizon_hours=getattr(signal, "horizon_hours", settings.default_horizon_hours),
-                next_settlement=ticker.next_funding_time,
-                interval_minutes=spec.funding_interval_minutes if spec is not None else None,
-                current_rate=ticker.funding_rate or Decimal("0"),
-            )
-        except ValueError as exc:
-            status_override = "BLOCKED_DATA"
-            warnings.append(f"Невозможно пересчитать funding для плана: {exc}")
+        if ticker.funding_rate is None or ticker.next_funding_time is None:
+            if status_override is None:
+                status_override = "BLOCKED_DATA"
+            warnings.append("Снимок funding отсутствует или неполон")
+        else:
+            try:
+                funding_rate = funding_rate_for_plan(
+                    start_time=now,
+                    horizon_hours=getattr(
+                        signal, "horizon_hours", settings.default_horizon_hours
+                    ),
+                    next_settlement=ticker.next_funding_time,
+                    interval_minutes=(
+                        spec.funding_interval_minutes if spec is not None else None
+                    ),
+                    current_rate=ticker.funding_rate,
+                )
+            except ValueError as exc:
+                if status_override is None:
+                    status_override = "BLOCKED_DATA"
+                warnings.append(f"Невозможно пересчитать funding для плана: {exc}")
 
     fee_rate = Decimal(str(signal.fee_rate_round_trip))
     costs = CostScenario(
@@ -911,9 +921,11 @@ async def create_execution_plan(
                 "funding_rate": str(costs.funding_rate),
                 "signal_funding_rate_scenario": str(signal.funding_rate_scenario),
                 "funding_projection_start": now.isoformat(),
-                "funding_rate_per_settlement": str(ticker.funding_rate or Decimal("0"))
-                if ticker is not None
-                else "0",
+                "funding_rate_per_settlement": (
+                    str(ticker.funding_rate)
+                    if ticker is not None and ticker.funding_rate is not None
+                    else None
+                ),
                 "funding_next_settlement": ticker.next_funding_time.isoformat()
                 if ticker is not None and ticker.next_funding_time is not None
                 else None,
