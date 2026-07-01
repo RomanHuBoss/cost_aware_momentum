@@ -97,15 +97,24 @@ class BybitClient:
     async def get_instruments(self, category: str = "linear") -> list[dict]:
         items: list[dict] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
-            response = await self._get(
-                "/v5/market/instruments-info",
-                {"category": category, "limit": 1000, "cursor": cursor},
-            )
-            items.extend(response.result.get("list") or [])
-            cursor = response.result.get("nextPageCursor") or None
-            if not cursor:
+            params: dict[str, Any] = {"category": category, "limit": 1000}
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = (await self._get("/v5/market/instruments-info", params)).result
+            page = result.get("list") or []
+            if not isinstance(page, list):
+                raise RuntimeError("Bybit instruments response list is invalid")
+            items.extend(page)
+
+            next_cursor = str(result.get("nextPageCursor") or "").strip()
+            if not next_cursor:
                 return items
+            if next_cursor in seen_cursors:
+                raise RuntimeError("Bybit instruments pagination repeated a cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
 
     async def get_tickers(self, category: str = "linear", symbol: str | None = None) -> list[dict]:
         response = await self._get("/v5/market/tickers", {"category": category, "symbol": symbol})

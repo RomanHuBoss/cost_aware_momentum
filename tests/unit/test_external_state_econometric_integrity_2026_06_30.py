@@ -85,6 +85,63 @@ def _single_profitable_pair() -> tuple[DatasetSplit, _ProbabilityModel]:
 
 
 @pytest.mark.asyncio
+async def test_get_instruments_follows_all_bybit_cursor_pages() -> None:
+    client = object.__new__(BybitClient)
+    client._get = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            BybitResponse(
+                result={"list": [{"symbol": "BTCUSDT"}], "nextPageCursor": "page-2"},
+                server_time_ms=None,
+                raw={},
+            ),
+            BybitResponse(
+                result={"list": [{"symbol": "ETHUSDT"}], "nextPageCursor": ""},
+                server_time_ms=None,
+                raw={},
+            ),
+        ]
+    )
+
+    instruments = await client.get_instruments("linear")
+
+    assert [item["symbol"] for item in instruments] == ["BTCUSDT", "ETHUSDT"]
+    assert client._get.await_args_list[0].args == (  # type: ignore[attr-defined]
+        "/v5/market/instruments-info",
+        {"category": "linear", "limit": 1000},
+    )
+    assert client._get.await_args_list[1].args[1]["cursor"] == "page-2"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_get_instruments_rejects_repeated_cursor_instead_of_looping() -> None:
+    client = object.__new__(BybitClient)
+    response = BybitResponse(
+        result={"list": [{"symbol": "BTCUSDT"}], "nextPageCursor": "same"},
+        server_time_ms=None,
+        raw={},
+    )
+    client._get = AsyncMock(side_effect=[response, response])  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="instruments pagination repeated a cursor"):
+        await client.get_instruments("linear")
+
+
+@pytest.mark.asyncio
+async def test_get_instruments_rejects_non_list_page() -> None:
+    client = object.__new__(BybitClient)
+    client._get = AsyncMock(  # type: ignore[method-assign]
+        return_value=BybitResponse(
+            result={"list": {"symbol": "BTCUSDT"}, "nextPageCursor": ""},
+            server_time_ms=None,
+            raw={},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="instruments response list is invalid"):
+        await client.get_instruments("linear")
+
+
+@pytest.mark.asyncio
 async def test_get_positions_follows_all_bybit_cursor_pages() -> None:
     client = object.__new__(BybitClient)
     client._get = AsyncMock(  # type: ignore[method-assign]
