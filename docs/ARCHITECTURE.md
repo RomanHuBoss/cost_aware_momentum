@@ -1,11 +1,17 @@
 # Архитектура
 
+## Acceptance external-state integrity in 1.8.20
+
+`ACCEPTED` remains a separate transactional safety boundary. After the account-scoped advisory lock is acquired, the API reloads capital/open risk and repeats read-only account reconciliation against the same PostgreSQL transaction. It also requires a complete current funding snapshot and derives the current liquidity-notional cap from positive finite 24-hour turnover. Missing data or a plan notional above the fresh cap produces HTTP 409 and a recalculated plan; no order API is invoked.
+
+Plan construction and acceptance now share one `liquidity_notional_cap()` policy function. Missing, zero, negative or non-finite turnover blocks plan construction rather than silently removing the liquidity cap.
+
 ## External-state and econometric integrity in 1.8.19
 
 - Read-only position ingestion follows every Bybit cursor page and rejects repeated cursors.
 - Active USDT instrument specifications are parsed from mandatory finite positive exchange fields; no synthetic tick, quantity, notional, leverage or funding defaults are stored.
 - Wallet equity, available margin and every non-zero open position are validated before any account snapshot is added to the transaction.
-- Missing funding rate or next-settlement timestamp blocks signal publication, plan creation and plan acceptance instead of being treated as zero cost.
+- Missing funding rate or next-settlement timestamp blocks signal publication and plan creation; the remaining accept-time fallback was closed in 1.8.20.
 - Bounded intrabar windows are persisted only when every expected timestamp is present.
 - Holdout profit factor is `null` when no loss event exists; the existing quality gate therefore fails closed rather than interpreting an arbitrary large constant as evidence.
 - Advisory-only, PostgreSQL-only and process boundaries are unchanged.

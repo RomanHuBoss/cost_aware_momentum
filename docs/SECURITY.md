@@ -1,5 +1,9 @@
 # Security boundary
 
+## Acceptance-time external-state gate in 1.8.20
+
+A previously calculated plan cannot be accepted solely because its stored snapshot was valid. For read-only profiles, acceptance repeats account reconciliation after the account-scoped risk lock, requires complete funding metadata and rechecks current turnover-derived liquidity. Any missing or conflicting state fails closed with plan supersession/recalculation. This reduces the chance that an unknown exchange position, omitted funding settlement or collapsed liquidity is hidden by an older actionable plan. The application remains advisory-only and does not gain order, amend, cancel or withdrawal capability.
+
 ## Read-only exchange-state integrity in 1.8.19
 
 Private Bybit access remains GET-only. Position pagination is exhaustive and loop-protected; malformed wallet or open-position values abort the transaction before snapshots or `capital_verified` are written. Missing exchange constraints and funding fields are not replaced with local constants. These controls reduce false portfolio/risk state but do not replace independent reconciliation or forward monitoring.
@@ -28,7 +32,7 @@ Execution-plan economics is treated as integrity-sensitive operator data. The AP
 - отдельный CSRF cookie/header для mutating requests;
 - optional operator API token;
 - idempotency key для accept/reject/manual fills;
-- accept выполняет fail-closed server-side revalidation исполнимого bid/ask, возраста account snapshot и portfolio risk под transaction-scoped PostgreSQL advisory lock;
+- accept выполняет fail-closed server-side revalidation исполнимого bid/ask, возраста account snapshot, account reconciliation, funding completeness, turnover-based liquidity и portfolio risk под transaction-scoped PostgreSQL advisory lock;
 - Pydantic validation и server-side plan checks;
 - trainer-control mutations требуют signed operator session/API token и CSRF; API записывает только команду в PostgreSQL и не выполняет fitting в request process;
 - bind на localhost по умолчанию.

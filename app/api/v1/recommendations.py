@@ -31,7 +31,9 @@ from app.services.execution import (
     execution_plan_scope_clause,
     funding_rate_for_plan,
     latest_spec,
+    liquidity_notional_cap,
     load_acceptance_risk_state,
+    reconciliation_issues,
     ticker_snapshot_is_fresh,
     validate_execution_plan_for_acceptance,
 )
@@ -395,6 +397,12 @@ async def accept_recommendation(
     current_capital = risk_state.effective_capital
     if conflict_reason is None and profile.mode == "bybit_read_only" and not risk_state.capital_verified:
         conflict_reason = "Account capital snapshot is stale or missing"
+    if conflict_reason is None and profile.mode == "bybit_read_only":
+        reconciliation_failures = await reconciliation_issues(session, profile=profile)
+        if reconciliation_failures:
+            conflict_reason = "Account reconciliation failed: " + "; ".join(
+                reconciliation_failures
+            )
 
     acceptance_validation = None
     current_spec = None
@@ -404,12 +412,15 @@ async def accept_recommendation(
             conflict_reason = "Current instrument constraints are unavailable"
         else:
             try:
+                if ticker.funding_rate is None or ticker.next_funding_time is None:
+                    raise ValueError("Current funding snapshot is incomplete")
+                current_liquidity_cap = liquidity_notional_cap(ticker.turnover_24h)
                 current_funding_rate = funding_rate_for_plan(
                     start_time=now,
                     horizon_hours=signal.horizon_hours,
                     next_settlement=ticker.next_funding_time,
                     interval_minutes=current_spec.funding_interval_minutes,
-                    current_rate=ticker.funding_rate or 0,
+                    current_rate=ticker.funding_rate,
                 )
                 acceptance_validation = validate_execution_plan_for_acceptance(
                     plan=plan,
@@ -419,6 +430,7 @@ async def accept_recommendation(
                     spec=current_spec,
                     executable_price=executable_price,
                     current_funding_rate=current_funding_rate,
+                    current_liquidity_notional_cap=current_liquidity_cap,
                     settings=settings,
                 )
             except (TypeError, ValueError) as exc:
@@ -537,6 +549,9 @@ async def accept_recommendation(
                 str(acceptance_validation.available_margin_capacity)
                 if acceptance_validation.available_margin_capacity is not None
                 else None
+            ),
+            "current_liquidity_notional_cap": str(
+                acceptance_validation.current_liquidity_notional_cap
             ),
             "instrument_spec_valid_from": (
                 current_spec.valid_from.isoformat() if current_spec is not None else None

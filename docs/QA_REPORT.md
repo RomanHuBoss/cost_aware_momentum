@@ -1,5 +1,24 @@
 # QA report
 
+## Release 1.8.20 — 2026-06-30
+
+Environment: Python 3.13.5 in isolated virtual environment `/mnt/data/cam_audit_venv`; project installed with `.[dev]`; no application `.env` or disposable PostgreSQL integration database.
+
+| Check | Baseline 1.8.19 | Post-change 1.8.20 |
+|---|---:|---:|
+| `python -m pip check` | PASSED | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | PASSED | PASSED |
+| `python -m pytest -q` | 323 passed, 4 skipped | 333 passed, 4 skipped |
+| focused unchanged-code regressions | 4 failed | 4 passed |
+| added Decimal/boundary tests | not present | 6 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic head | `0007_position_account_scope` | `0007_position_account_scope` |
+| `python manage.py doctor` | NOT RUN — project `.venv`/`.env` unavailable | NOT RUN — same |
+| `python manage.py test --require-integration` | NOT RUN — no safe PostgreSQL test database | NOT RUN — same |
+
+The red run proved four related fail-open behaviors: incomplete current funding was accepted as zero cost, read-only reconciliation was not repeated, deteriorated current liquidity did not invalidate acceptance, and missing turnover silently disabled the plan-construction liquidity cap. Post-change acceptance is fail-closed and the exact turnover policy plus `None/0/negative/NaN/Infinity` boundaries are covered. No migration or environment change is required. PostgreSQL integration, real Bybit smoke and forward economic performance remain unverified; technical correctness is not evidence of profitability.
+
 ## Release 1.8.19 — 2026-06-30
 
 Environment: Python 3.13.5 in the provided sandbox interpreter; no project-local `.venv`, application `.env` or disposable PostgreSQL integration database.

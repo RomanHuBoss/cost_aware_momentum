@@ -1,5 +1,11 @@
 # Проверка соответствия спецификации версии 1.3
 
+## Статус версии 1.8.20 — acceptance external-state integrity
+
+Закрыт подтвержденный fail-open разрыв между построением и принятием execution plan. Перед `ACCEPTED` read-only профиль повторно проходит account reconciliation; funding snapshot должен содержать ставку и следующий settlement; текущий positive finite turnover заново ограничивает notional. Отсутствующий turnover при построении плана больше не отключает liquidity cap. Advisory-only, PostgreSQL-only и разделение market signal / execution plan сохранены.
+
+Общий статус спецификации остается частичным: multi-fold walk-forward, PBO/DSR, исторический point-in-time orderbook/spec reconstruction, fill simulator, live drift control и forward profitability evidence не реализованы.
+
 ## Статус версии 1.8.19 — external-state/econometric fail-closed
 
 Закрыты подтвержденные defects внешнего состояния и promotion-метрик: полная пагинация read-only positions, строгая instrument/account/funding validation, атомарный отказ до записи некорректного account snapshot, проверка полноты bounded intrabar window и неопределенный profit factor при нулевом знаменателе. Общий статус спецификации остается частичным: multi-fold walk-forward, PBO/DSR, исторический point-in-time orderbook/spec reconstruction, fill simulator, live drift control и forward profitability evidence не реализованы.
@@ -26,7 +32,7 @@ Strengthened executable-quote and plan-contract integrity: all relevant paths re
 
 Дата проверки: 2026-06-30
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.19
+Версия проекта после коррекции: 1.8.20
 
 ## Итог
 
@@ -65,7 +71,7 @@ Strengthened executable-quote and plan-contract integrity: all relevant paths re
 | Adverse executable-entry revalidation | Исправлено в 1.8.10 | future ticker/spec отвергаются; ухудшившийся ask/bid создает новую plan version с повторным sizing, net R/R, EV и liquidation checks |
 | Probability simplex boundary | Исправлено в 1.8.8 | runtime artifact, Decimal EV/R, holdout policy и research backtest требуют finite TP/SL/TIMEOUT probabilities в `[0,1]` с суммой 1 |
 | Directional cohort integrity research/live | Исправлено в 1.8.9 | dataset атомарно формирует `LONG + SHORT`; split, holdout и backtest отвергают missing/duplicate/unknown direction до policy metrics |
-| Acceptance execution/risk revalidation | Исправлено в 1.8.7 | ask для LONG/bid для SHORT, fresh account snapshot, global PostgreSQL advisory lock до open-risk check, stop beyond liquidation fail-closed |
+| Acceptance execution/risk revalidation | Усилено в 1.8.20 | ask для LONG/bid для SHORT, fresh account snapshot, account reconciliation под account-scoped lock, complete funding, current turnover liquidity cap, current spec/risk/margin/economics; изменившиеся входы fail-closed создают новую plan version |
 | Directional geometry fail-closed | Исправлено в 1.7.4 | единый validator LONG/SHORT для risk, sizing и outcome; invalid plan получает `BLOCKED_INVALID_INPUT` и нулевой размер |
 | Numeric sizing inputs fail-closed | Исправлено в 1.7.5 | finite/positive capital, risk and instrument constraints; finite non-negative costs/margin/caps; invalid values дают zero-sized `BLOCKED_INVALID_INPUT` |
 | Counterfactual plan inputs fail-closed | Исправлено в 1.7.6 | finite qty/prices/stress loss/costs/funding; malformed plan snapshot дает terminal zero-valued `INVALID_INPUT`, audit diagnostic и per-plan isolation |

@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.19: внешнее состояние Bybit и promotion-метрики обрабатываются fail-closed — позиции пагинируются полностью, биржевые ограничения не подменяются defaults, неполные funding/account/candle snapshots блокируются, а profit factor без убытков остается неопределенным.
+> Версия 1.8.20: переход в `ACCEPTED` повторно подтверждает полноту funding, account reconciliation и актуальный turnover-based liquidity cap; отсутствующий или ухудшившийся внешний снимок создает новую пересчитанную либо заблокированную версию плана вместо принятия устаревшего размера.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -17,9 +17,13 @@
 - Market-signal economics остается независимой от капитала; account-dependent execution-plan economics пересчитывается отдельно и проверяется по immutable snapshot перед показом.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
-- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, funding, текущие `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
+- Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, полная funding timeline, account reconciliation, текущий turnover-based liquidity cap, `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
+
+## Обновление с 1.8.19 до 1.8.20
+
+Миграций и новых `.env` переменных нет. Перезапустите API, worker и trainer. До `ACCEPTED` read-only профиль теперь обязан пройти повторную сверку биржевых позиций с журналом; ticker обязан содержать положительный finite `turnover_24h`, `funding_rate` и `next_funding_time`. При неполном или ухудшившемся снимке API возвращает HTTP 409, старый план становится `SUPERSEDED`, а новая версия либо получает безопасно уменьшенный размер, либо остается заблокированной до восстановления данных.
 
 ## Обновление с 1.8.18 до 1.8.19
 

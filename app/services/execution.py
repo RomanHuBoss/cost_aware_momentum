@@ -38,6 +38,7 @@ from app.risk.math import (
 from app.services.audit import append_audit_event, publish_outbox
 
 IMMUTABLE_PLAN_STATUSES = frozenset({"ACCEPTED", "ENTERED", "PARTIAL", "CLOSED"})
+LIQUIDITY_TURNOVER_FRACTION = Decimal("0.0001")
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class AcceptancePlanValidation:
     current_net_ev_r: Decimal
     per_trade_risk_limit: Decimal
     available_margin_capacity: Decimal | None
+    current_liquidity_notional_cap: Decimal
 
 
 def _is_step_aligned(value: Decimal, step: Decimal) -> bool:
@@ -87,6 +89,16 @@ def signal_prices_match_tick(
         return False
 
 
+def liquidity_notional_cap(turnover_24h: Decimal | None) -> Decimal:
+    """Return the policy cap derived from a complete positive 24h turnover snapshot."""
+
+    turnover = positive_finite_decimal(turnover_24h, "turnover_24h")
+    return positive_finite_decimal(
+        turnover * LIQUIDITY_TURNOVER_FRACTION,
+        "liquidity_notional_cap",
+    )
+
+
 def validate_execution_plan_for_acceptance(
     *,
     plan: ExecutionPlan,
@@ -96,6 +108,7 @@ def validate_execution_plan_for_acceptance(
     spec: InstrumentSpecHistory,
     executable_price: Decimal,
     current_funding_rate: Decimal,
+    current_liquidity_notional_cap: Decimal,
     settings: Settings,
 ) -> AcceptancePlanValidation:
     """Reprice and revalidate every capital-dependent acceptance invariant.
@@ -139,6 +152,13 @@ def validate_execution_plan_for_acceptance(
         or not signal_prices_match_tick(signal, tick_size=tick_size)
     ):
         raise ValueError("Current instrument constraints invalidate plan sizing")
+
+    liquidity_cap = positive_finite_decimal(
+        current_liquidity_notional_cap,
+        "current liquidity cap",
+    )
+    if current_notional > liquidity_cap:
+        raise ValueError("Current liquidity cap invalidates plan sizing")
 
     funding_rate = finite_decimal(current_funding_rate, "current funding rate")
     snapshot = plan.sizing_snapshot if isinstance(plan.sizing_snapshot, dict) else {}
@@ -208,6 +228,7 @@ def validate_execution_plan_for_acceptance(
         current_net_ev_r=current_net_ev_r,
         per_trade_risk_limit=per_trade_risk_limit,
         available_margin_capacity=margin_capacity,
+        current_liquidity_notional_cap=liquidity_cap,
     )
 
 
@@ -755,8 +776,14 @@ async def create_execution_plan(
         funding_rate=funding_rate,
     )
 
-    turnover = ticker.turnover_24h if ticker and ticker.turnover_24h else Decimal("0")
-    liquidity_cap = max(Decimal("0"), turnover * Decimal("0.0001")) if turnover else None
+    liquidity_cap = Decimal("0")
+    if ticker is not None:
+        try:
+            liquidity_cap = liquidity_notional_cap(ticker.turnover_24h)
+        except ValueError as exc:
+            if status_override is None:
+                status_override = "BLOCKED_DATA"
+            warnings.append(f"Снимок ликвидности отсутствует или некорректен: {exc}")
     open_risk = await open_risk_usdt(session, profile=profile)
     max_total_risk = c_eff * profile.max_total_risk_rate
     remaining_portfolio_risk = max(Decimal("0"), max_total_risk - open_risk)

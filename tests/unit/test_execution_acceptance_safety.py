@@ -10,7 +10,12 @@ import pytest
 import app.services.execution as execution
 from app.config import Settings
 from app.risk.math import assess_liquidation_proximity
-from app.services.execution import effective_capital, executable_entry_price, load_acceptance_risk_state
+from app.services.execution import (
+    effective_capital,
+    executable_entry_price,
+    liquidity_notional_cap,
+    load_acceptance_risk_state,
+)
 
 D = Decimal
 DEFAULT_CURRENT_CAPITAL = D("10000")
@@ -24,6 +29,7 @@ DEFAULT_MIN_NOTIONAL = D("5")
 DEFAULT_MAX_QTY = D("1000")
 DEFAULT_MAX_LEVERAGE = D("100")
 DEFAULT_FUNDING_RATE = D("0")
+DEFAULT_TURNOVER_24H = D("100000000")
 
 
 class _ScalarResult:
@@ -160,6 +166,18 @@ def test_account_snapshot_age_policy_rejects_unsafe_threshold() -> None:
         )
 
 
+def test_liquidity_notional_cap_uses_exact_policy_fraction() -> None:
+    assert liquidity_notional_cap(D("1000000")) == D("100")
+
+
+@pytest.mark.parametrize("turnover", [None, D("0"), D("-1"), D("NaN"), D("Infinity")])
+def test_liquidity_notional_cap_rejects_incomplete_or_invalid_turnover(
+    turnover: Decimal | None,
+) -> None:
+    with pytest.raises(ValueError, match="turnover_24h"):
+        liquidity_notional_cap(turnover)
+
+
 class _ScalarOneResult:
     def __init__(self, value: object) -> None:
         self._value = value
@@ -175,6 +193,7 @@ async def _build_plan_for_safety_case(
     stop_loss: Decimal,
     capital_result: tuple[Decimal, Decimal | None, bool, dict],
     funding_snapshot_complete: bool = True,
+    turnover_24h: Decimal | None = DEFAULT_TURNOVER_24H,
 ):
     from uuid import uuid4
 
@@ -216,7 +235,7 @@ async def _build_plan_for_safety_case(
     ticker_time = datetime.now(UTC)
     ticker = SimpleNamespace(
         source_time=ticker_time,
-        turnover_24h=D("100000000"),
+        turnover_24h=turnover_24h,
         funding_rate=D("0") if funding_snapshot_complete else None,
         next_funding_time=(
             ticker_time + timedelta(hours=8) if funding_snapshot_complete else None
@@ -325,9 +344,12 @@ async def _run_acceptance_case(
     spec_min_notional: Decimal = DEFAULT_MIN_NOTIONAL,
     spec_max_qty: Decimal | None = DEFAULT_MAX_QTY,
     spec_max_leverage: Decimal = DEFAULT_MAX_LEVERAGE,
-    current_funding_rate: Decimal = DEFAULT_FUNDING_RATE,
+    current_funding_rate: Decimal | None = DEFAULT_FUNDING_RATE,
     next_funding_time: datetime | None = None,
     stored_funding_rate: Decimal = DEFAULT_FUNDING_RATE,
+    funding_snapshot_complete: bool = True,
+    turnover_24h: Decimal | None = DEFAULT_TURNOVER_24H,
+    reconciliation_failures: list[str] | None = None,
 ):
     from uuid import uuid4
 
@@ -390,8 +412,13 @@ async def _run_acceptance_case(
         last_price=D("100"),
         bid_price=D("99.9"),
         ask_price=D("100"),
-        funding_rate=current_funding_rate,
-        next_funding_time=next_funding_time,
+        turnover_24h=turnover_24h,
+        funding_rate=current_funding_rate if funding_snapshot_complete else None,
+        next_funding_time=(
+            next_funding_time or now + timedelta(hours=8)
+            if funding_snapshot_complete
+            else None
+        ),
     )
     spec = SimpleNamespace(
         valid_from=now - timedelta(hours=1),
@@ -434,6 +461,12 @@ async def _run_acceptance_case(
         recommendations,
         "load_acceptance_risk_state",
         AsyncMock(return_value=risk_state),
+    )
+    monkeypatch.setattr(
+        recommendations,
+        "reconciliation_issues",
+        AsyncMock(return_value=reconciliation_failures or []),
+        raising=False,
     )
     monkeypatch.setattr(
         recommendations,
@@ -521,6 +554,49 @@ async def test_acceptance_recalculates_when_adverse_funding_cost_increases(
     assert plan.status == "SUPERSEDED"
 
 
+async def test_acceptance_recalculates_when_current_funding_snapshot_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        funding_snapshot_complete=False,
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"funding snapshot" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
+async def test_acceptance_recalculates_when_account_reconciliation_is_not_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        reconciliation_failures=["Unknown exchange position BTCUSDT"],
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"Account reconciliation failed" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
+async def test_acceptance_recalculates_when_current_liquidity_cap_is_too_low(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        qty=D("3"),
+        turnover_24h=D("1000000"),
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"liquidity cap" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
 async def test_acceptance_succeeds_only_after_fresh_state_revalidation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -557,3 +633,18 @@ async def test_execution_plan_blocks_missing_funding_snapshot(
 
     assert plan.status == "BLOCKED_DATA"
     assert any("funding" in warning.lower() for warning in plan.warnings)
+
+
+async def test_execution_plan_blocks_missing_liquidity_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        turnover_24h=None,
+    )
+
+    assert plan.status == "BLOCKED_DATA"
+    assert any("ликвидност" in warning.lower() for warning in plan.warnings)

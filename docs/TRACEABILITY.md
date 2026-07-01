@@ -1,5 +1,14 @@
 # Трассировка требований спецификации
 
+## 1.8.20 trace additions
+
+| Requirement / defect | Implementation | Evidence |
+|---|---|---|
+| Missing acceptance funding metadata cannot become zero cost | explicit `None` guard in `app/api/v1/recommendations.py` | `test_acceptance_recalculates_when_current_funding_snapshot_is_incomplete` |
+| Read-only account reconciliation is repeated before `ACCEPTED` | account-scoped reconciliation after acceptance risk lock | `test_acceptance_recalculates_when_account_reconciliation_is_not_clean` |
+| Current liquidity constrains both plan creation and acceptance | shared `liquidity_notional_cap()` plus fresh notional check | exact fraction/boundary tests, low-liquidity acceptance regression, missing-turnover plan regression |
+| Fresh decision inputs remain auditable | acceptance context stores current liquidity cap with risk/funding/spec metrics | full unit suite and serializer path review |
+
 ## 1.8.19 trace additions
 
 | Requirement / invariant | Implementation | Verification |
@@ -7,10 +16,10 @@
 | Complete read-only position state | cursor pagination and repeated-cursor guard in `app/bybit/client.py` | pagination regressions in `test_external_state_econometric_integrity_2026_06_30.py` |
 | No fabricated exchange constraints | strict spec parser in `app/services/market_data.py` | missing-field red regression plus complete-spec acceptance test |
 | Atomic valid account snapshot | pre-validation of wallet and open positions before ORM writes | missing-equity and malformed-position regressions |
-| Missing funding cannot become zero cost | signal, plan and accept-time guards | funding-plan red/green regression and full suite |
+| Missing funding cannot become zero cost | signal/plan guards in 1.8.19; accept-time guard completed in 1.8.20 | funding-plan and incomplete-current-snapshot regressions |
 | Exact bounded intrabar data | expected timestamp-set validation before upsert | partial-window regression and complete-window test |
 | Honest no-loss promotion metric | `policy_profit_factor=None` when denominator is zero | no-loss holdout regression; lifecycle null-metric gate tests |
-| Release reproducibility | `CHANGELOG.md`, `PATCH_1.8.19.md`, iteration report and regenerated `SHA256SUMS` | `python manage.py release-check` |
+| Release reproducibility | prior 1.8.19 report claimed changelog/patch/manifest, but those files were absent from the supplied archive; 1.8.20 restores the boundary | input-tree audit plus 1.8.20 release check |
 
 ## 1.8.18 trace additions
 
@@ -39,9 +48,9 @@
 |---|---|---|
 | Fresh per-trade risk and margin before `ACCEPTED` | `app/services/execution.py`, `app/api/v1/recommendations.py` | capital-drop, insufficient-margin and valid-acceptance regressions |
 | Current exchange constraints at acceptance | `app/services/execution.py`, `app/api/v1/recommendations.py` | changed `qtyStep`/`minQty` regression and off-tick legacy-plan regression |
-| Current adverse funding and policy economics | `app/services/execution.py`, `app/api/v1/recommendations.py` | newly adverse funding regression |
+| Current adverse funding and policy economics | `app/services/execution.py`, `app/api/v1/recommendations.py` | adverse funding plus incomplete funding-snapshot regressions |
 | Tick-valid signal geometry | `app/services/signals.py` | LONG and SHORT conservative tick-rounding regressions |
-| Auditability of fresh decision inputs | `app/api/v1/recommendations.py` | decision context stores current notional, margin, risk, funding, policy metrics and spec time |
+| Auditability of fresh decision inputs | `app/api/v1/recommendations.py` | decision context stores current notional, margin, risk, funding, liquidity cap, policy metrics and spec time |
 
 ## 1.8.15 trace additions
 
