@@ -169,8 +169,8 @@ def _normalized_open_position(item: dict) -> dict[str, object] | None:
 
 
 async def sync_instruments(session: AsyncSession, client: BybitClient) -> int:
-    now = datetime.now(UTC)
     items = await client.get_instruments("linear")
+    now = datetime.now(UTC)
     count = 0
     for item in items:
         if item.get("settleCoin") != "USDT":
@@ -279,7 +279,6 @@ async def sync_candles(
     price_types: tuple[str, ...] = ("last", "mark", "index"),
     request_batch_size: int = 40,
 ) -> int:
-    now = datetime.now(UTC)
     count = 0
     interval_minutes = int(interval)
     requests = [(symbol, price_type) for symbol in symbols for price_type in price_types]
@@ -313,7 +312,7 @@ async def sync_candles(
                 interval=interval,
                 price_type=price_type,
                 rows=rows,
-                now=now,
+                now=datetime.now(UTC),
                 interval_minutes=interval_minutes,
             )
             await _upsert_candle_values(session, values_list)
@@ -379,12 +378,13 @@ async def sync_candle_windows(
                 end_ms=int(end_time.timestamp() * 1000) - 1,
                 price_type="last",
             )
+            received_at = current_time if now is not None else datetime.now(UTC)
             values = _candle_values(
                 symbol=symbol,
                 interval=interval,
                 price_type="last",
                 rows=rows,
-                now=current_time,
+                now=received_at,
                 interval_minutes=interval_minutes,
             )
             values = [
@@ -485,6 +485,10 @@ async def _upsert_candle_values(session: AsyncSession, values_list: list[dict]) 
             "turnover": stmt.excluded.turnover,
             "confirmed": stmt.excluded.confirmed,
         },
+        # A confirmed candle is an immutable market fact until an explicit,
+        # auditable revision policy exists. Only the still-open candle may be
+        # refreshed and then transitioned to its first confirmed snapshot.
+        where=Candle.confirmed.is_(False),
     )
     await session.execute(stmt)
 
@@ -613,7 +617,7 @@ async def sync_candle_history(
                     interval=interval,
                     price_type="last",
                     rows=rows,
-                    now=now,
+                    now=datetime.now(UTC),
                     interval_minutes=interval_minutes,
                 )
                 values = [item for item in values if item["open_time"] >= target_start]
@@ -663,8 +667,8 @@ async def sync_tickers(
     *,
     items: list[dict] | None = None,
 ) -> int:
-    now = datetime.now(UTC)
     items = items if items is not None else await client.get_tickers("linear")
+    now = datetime.now(UTC)
     values_list: list[dict] = []
     for item in items:
         symbol = item.get("symbol")
@@ -704,12 +708,12 @@ async def sync_tickers(
 async def sync_funding_and_oi(
     session: AsyncSession, client: BybitClient, symbols: Iterable[str]
 ) -> tuple[int, int]:
-    now = datetime.now(UTC)
     funding_count = 0
     oi_count = 0
     for symbol in symbols:
         try:
             funding_items = await client.get_funding_history(symbol, limit=10)
+            funding_received_at = datetime.now(UTC)
             for item in funding_items:
                 funding_time = _dt_ms(item.get("fundingRateTimestamp"))
                 if funding_time is None:
@@ -719,7 +723,7 @@ async def sync_funding_and_oi(
                     .values(
                         symbol=symbol,
                         funding_time=funding_time,
-                        available_at=now,
+                        available_at=funding_received_at,
                         rate=_decimal(item.get("fundingRate")),
                     )
                     .on_conflict_do_nothing(constraint="uq_funding_symbol_time")
@@ -730,6 +734,7 @@ async def sync_funding_and_oi(
             logger.exception("Funding fetch failed", extra={"symbol": symbol})
         try:
             oi_items = await client.get_open_interest(symbol, "1h", limit=20)
+            oi_received_at = datetime.now(UTC)
             for item in oi_items:
                 event_time = _dt_ms(item.get("timestamp"))
                 if event_time is None:
@@ -740,7 +745,7 @@ async def sync_funding_and_oi(
                         symbol=symbol,
                         interval="1h",
                         event_time=event_time,
-                        available_at=now,
+                        available_at=oi_received_at,
                         value=_decimal(item.get("openInterest")),
                     )
                     .on_conflict_do_nothing(constraint="uq_oi_natural")
@@ -755,7 +760,6 @@ async def sync_funding_and_oi(
 async def sync_read_only_account(session: AsyncSession, client: BybitClient, settings: Settings) -> dict:
     if not settings.bybit_read_only_account:
         return {"enabled": False}
-    now = datetime.now(UTC)
     wallet = await client.get_wallet_balance("UNIFIED")
     account_list = wallet.get("list") or []
     if not account_list:
@@ -771,6 +775,7 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
         for item in raw_positions
         if (normalized := _normalized_open_position(item)) is not None
     ]
+    now = datetime.now(UTC)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     first_today = (
         await session.execute(

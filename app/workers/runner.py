@@ -472,12 +472,12 @@ class Worker:
                 self.client,
                 windows,
                 interval=settings.outcome_intrabar_interval,
-                now=available_cutoff,
             )
+            resolution_cutoff = datetime.now(UTC)
             result = await resolve_counterfactual_outcomes(
                 session,
                 market_cutoff=event_time,
-                available_cutoff=available_cutoff,
+                available_cutoff=resolution_cutoff,
                 intrabar_interval=settings.outcome_intrabar_interval,
                 actor="worker",
             )

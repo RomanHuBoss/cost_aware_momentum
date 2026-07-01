@@ -175,7 +175,12 @@ def select_cost_aware_scenario(
 
 
 async def _candles_frame(
-    session: AsyncSession, symbol: str, *, cutoff: datetime, limit: int = 300
+    session: AsyncSession,
+    symbol: str,
+    *,
+    market_cutoff: datetime,
+    available_cutoff: datetime,
+    limit: int = 300,
 ) -> pd.DataFrame:
     rows = (
         (
@@ -186,8 +191,8 @@ async def _candles_frame(
                     Candle.interval == "60",
                     Candle.price_type == "last",
                     Candle.confirmed.is_(True),
-                    Candle.close_time <= cutoff,
-                    Candle.available_at <= cutoff,
+                    Candle.close_time <= market_cutoff,
+                    Candle.available_at <= available_cutoff,
                 )
                 .order_by(desc(Candle.open_time))
                 .limit(limit)
@@ -225,14 +230,18 @@ async def _latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot |
 
 
 async def _latest_spec(
-    session: AsyncSession, symbol: str, *, cutoff: datetime
+    session: AsyncSession,
+    symbol: str,
+    *,
+    available_cutoff: datetime,
 ) -> InstrumentSpecHistory | None:
     return (
         await session.execute(
             select(InstrumentSpecHistory)
             .where(
                 InstrumentSpecHistory.symbol == symbol,
-                InstrumentSpecHistory.valid_from <= cutoff,
+                InstrumentSpecHistory.valid_from <= available_cutoff,
+                InstrumentSpecHistory.received_at <= available_cutoff,
             )
             .order_by(desc(InstrumentSpecHistory.valid_from))
             .limit(1)
@@ -346,6 +355,7 @@ async def publish_hourly_signals(
         diagnostics.update(
             {
                 "event_time": event_time.isoformat(),
+                "availability_cutoff": now.isoformat(),
                 "symbols_total": len(selected_symbols),
                 "profiles_total": len(profiles),
                 "skip_counts": {},
@@ -369,7 +379,7 @@ async def publish_hourly_signals(
                 extra={"symbol": symbol, "ticker_age_seconds": ticker_age},
             )
             continue
-        spec = await _latest_spec(session, symbol, cutoff=event_time)
+        spec = await _latest_spec(session, symbol, available_cutoff=now)
         if spec is None:
             count("missing_instrument_spec")
             logger.warning("Skipping symbol without point-in-time instrument spec", extra={"symbol": symbol})
@@ -377,7 +387,8 @@ async def publish_hourly_signals(
         frame = await _candles_frame(
             session,
             symbol,
-            cutoff=event_time,
+            market_cutoff=event_time,
+            available_cutoff=now,
             limit=max(100, settings.initial_backfill_bars),
         )
         if len(frame) < settings.universe_min_history_bars:
