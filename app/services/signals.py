@@ -125,8 +125,13 @@ def select_cost_aware_scenario(
         if price_step is not None and reference % price_step != 0:
             raise ValueError("Executable bid/ask reference is not aligned to tick_size")
 
-        entry_low = floor_to_tick(reference - zone_half)
-        entry_high = ceil_to_tick(reference + zone_half)
+        # The entry band is an admissible interval, not a risk barrier.  Keep only
+        # executable ticks inside the continuous policy band; outward rounding would
+        # silently approve fills that the model/policy never evaluated.
+        entry_low = ceil_to_tick(reference - zone_half)
+        entry_high = floor_to_tick(reference + zone_half)
+        if entry_low > entry_high:
+            raise ValueError("No executable tick lies inside the entry policy band")
         if prediction.direction == "LONG":
             # Conservative exchange rounding: widen the stop and pull the target
             # toward entry, so discrete ticks cannot understate loss or overstate reward.

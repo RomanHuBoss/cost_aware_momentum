@@ -7,11 +7,14 @@
 | Advisory-only, без order mutations | IMPLEMENTED / STATICALLY CHECKED | README, Bybit client и API audit; create/amend/cancel flow не обнаружен |
 | PostgreSQL-only | IMPLEMENTED / UNIT CHECKED | `app.config.Settings`, migrations; integration DB в этой итерации не запускалась |
 | API / worker / trainer separation | IMPLEMENTED | process entry points и README |
-| LONG/SHORT directional geometry | IMPLEMENTED / UNIT CHECKED | risk/labels/outcomes tests |
+| LONG/SHORT directional geometry | IMPLEMENTED / UNIT CHECKED | risk/labels/outcomes tests и independent randomized P&L audit |
 | TP/SL/TIMEOUT, NO TRADE в policy | IMPLEMENTED | runtime/training/research audit |
 | Point-in-time event/availability separation | IMPLEMENTED / UNIT CHECKED | market-data and signal tests |
 | Fill/plan entry uses executable ask/bid | IMPLEMENTED / UNIT CHECKED in 1.8.26 | `create_execution_plan`; current quote, missing quote and zone regression tests |
-| Entry outside zone requires new calculation / no entry | IMPLEMENTED / UNIT CHECKED in 1.8.26 | plan returns `NO_TRADE`; acceptance remains fail-closed |
+| Entry-zone содержит только исполнимые тики внутри policy band | IMPLEMENTED / UNIT CHECKED in 1.8.28 | inward tick rounding; coarse-tick regression test |
+| Entry outside zone requires new calculation / no entry | IMPLEMENTED / UNIT CHECKED | plan returns `NO_TRADE`; acceptance remains fail-closed |
+| Exact read-only Bybit private GET signing | IMPLEMENTED / UNIT CHECKED in 1.8.28 | HMAC verified against exact query received by `httpx.MockTransport` |
+| Dynamic crypto universe excludes known TradFi product families | IMPLEMENTED / UNIT CHECKED in 1.8.28 | exact normalized `stock/forex/commodity/xstocks/xstock` filter; explicit opt-in tested |
 | Positive economic floor for automatic promotion | IMPLEMENTED / UNIT CHECKED in 1.8.26 | non-negative realized mean R and PF >= 1 when auto-activation is enabled |
 | Account/profile-scoped margin capacity | IMPLEMENTED / UNIT CHECKED in 1.8.27 | allocated-capital basis, accepted-plan/open-trade reservations, sizing and acceptance regressions |
 | Actual manual fill preserves accepted risk/margin reservations | IMPLEMENTED / UNIT CHECKED in 1.8.27 | actual entry fee substitution; stress-loss and margin rejection tests |

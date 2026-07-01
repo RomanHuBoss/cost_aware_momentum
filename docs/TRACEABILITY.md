@@ -21,3 +21,6 @@
 | Manual fill cannot consume unreserved risk or margin | `app/api/v1/trades.py::manual_entry` | stress-loss reservation and accepted-margin regression tests |
 | Manual fee UI declares cash unit | `web/index.html` | `test_manual_entry_fee_label_declares_cash_unit` |
 | Existing accepted/open margin reduces new capacity | `app/services/execution.py::reserved_margin_usdt`, `app/risk/math.py::calculate_position_plan`, acceptance validation | reservation aggregation, sizing-cap and acceptance rejection tests |
+| Entry ticks cannot expand continuous policy band | `app/services/signals.py::select_cost_aware_scenario` | `test_entry_zone_rounding_never_expands_beyond_continuous_policy_band` |
+| Private GET signature covers exact transmitted query | `app/bybit/client.py::BybitClient._get` | `test_private_get_signature_matches_exact_transmitted_query` |
+| Known TradFi symbol types excluded from crypto domain | `app/services/universe.py::select_dynamic_universe` | default-exclusion and explicit-opt-in tests in `test_execution_exchange_integrity_2026_07_01.py` |

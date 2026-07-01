@@ -7,7 +7,6 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
 
@@ -61,22 +60,27 @@ class BybitClient:
         async with self._semaphore:
             for attempt in range(4):
                 try:
-                    headers: dict[str, str] = {}
+                    request_params: dict[str, Any] | list[tuple[str, str]] = params
+                    if private:
+                        request_params = sorted((str(k), str(v)) for k, v in params.items())
+                    request = self.client.build_request("GET", path, params=request_params)
                     if private:
                         timestamp = str(int(time.time() * 1000))
-                        query = urlencode(sorted((str(k), str(v)) for k, v in params.items()))
+                        query = request.url.query.decode("ascii")
                         plain = f"{timestamp}{self.api_key}{self.recv_window}{query}"
                         signature = hmac.new(
                             self.api_secret.encode(), plain.encode(), hashlib.sha256
                         ).hexdigest()
-                        headers = {
-                            "X-BAPI-API-KEY": self.api_key,
-                            "X-BAPI-SIGN": signature,
-                            "X-BAPI-SIGN-TYPE": "2",
-                            "X-BAPI-TIMESTAMP": timestamp,
-                            "X-BAPI-RECV-WINDOW": str(self.recv_window),
-                        }
-                    response = await self.client.get(path, params=params, headers=headers)
+                        request.headers.update(
+                            {
+                                "X-BAPI-API-KEY": self.api_key,
+                                "X-BAPI-SIGN": signature,
+                                "X-BAPI-SIGN-TYPE": "2",
+                                "X-BAPI-TIMESTAMP": timestamp,
+                                "X-BAPI-RECV-WINDOW": str(self.recv_window),
+                            }
+                        )
+                    response = await self.client.send(request)
                     response.raise_for_status()
                     payload = response.json()
                     if payload.get("retCode") != 0:
