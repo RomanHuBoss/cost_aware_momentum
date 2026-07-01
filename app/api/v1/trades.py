@@ -11,10 +11,11 @@ from sqlalchemy import select
 from app.api.deps import MutatingOperatorDep, SessionDep
 from app.api.schemas import ManualEntryRequest, TradeCloseRequest
 from app.db.models import ExecutionPlan, Fill, ManualTrade, MarketSignal
-from app.risk.math import CostScenario, gross_pnl, stress_downside_rate
+from app.risk.math import gross_pnl, stress_downside_rate
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import remaining_trade_risk
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
+from app.services.plan_snapshots import plan_cost_scenario, plan_instrument_constraints
 
 router = APIRouter(prefix="/api/v1/trades", tags=["manual trades"])
 
@@ -142,26 +143,29 @@ async def manual_entry(
     if payload.leverage > plan.leverage:
         raise HTTPException(status_code=422, detail="Entered leverage exceeds the accepted plan")
 
-    instrument = (plan.sizing_snapshot or {}).get("instrument") or {}
-    qty_step = Decimal(str(instrument.get("qty_step", "0")))
-    min_qty = Decimal(str(instrument.get("min_qty", "0")))
-    min_notional = Decimal(str(instrument.get("min_notional", "0")))
-    if qty_step > 0:
-        step_units = (payload.qty / qty_step).to_integral_value(rounding=ROUND_DOWN)
-        if step_units * qty_step != payload.qty:
-            raise HTTPException(
-                status_code=422, detail="Entered quantity does not match the instrument qty step"
-            )
-    if payload.qty < min_qty or payload.qty * payload.entry_price < min_notional:
-        raise HTTPException(status_code=422, detail="Actual fill is below the instrument minimum order")
+    try:
+        constraints = plan_instrument_constraints(plan.sizing_snapshot)
+        actual_costs = plan_cost_scenario(plan.sizing_snapshot)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Accepted plan snapshot is incomplete or invalid: {exc}",
+        ) from exc
 
-    cost_data = (plan.sizing_snapshot or {}).get("costs") or {}
-    actual_costs = CostScenario(
-        fee_rate_round_trip=Decimal(str(cost_data.get("fee_rate_round_trip", "0"))),
-        slippage_rate=Decimal(str(cost_data.get("slippage_rate", "0"))),
-        stop_gap_reserve_rate=Decimal(str(cost_data.get("stop_gap_reserve_rate", "0"))),
-        funding_rate=Decimal(str(cost_data.get("funding_rate", "0"))),
-    )
+    step_units = (payload.qty / constraints.qty_step).to_integral_value(rounding=ROUND_DOWN)
+    if step_units * constraints.qty_step != payload.qty:
+        raise HTTPException(
+            status_code=422, detail="Entered quantity does not match the instrument qty step"
+        )
+    if (
+        payload.qty < constraints.min_qty
+        or payload.qty * payload.entry_price < constraints.min_notional
+    ):
+        raise HTTPException(status_code=422, detail="Actual fill is below the instrument minimum order")
+    if constraints.max_qty is not None and payload.qty > constraints.max_qty:
+        raise HTTPException(status_code=422, detail="Actual fill exceeds the instrument maximum quantity")
+    if Decimal(payload.leverage) > constraints.max_leverage:
+        raise HTTPException(status_code=422, detail="Actual leverage exceeds the instrument maximum")
     try:
         actual_downside = stress_downside_rate(
             payload.entry_price, signal.stop_loss, signal.direction, actual_costs

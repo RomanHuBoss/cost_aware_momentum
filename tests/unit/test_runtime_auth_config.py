@@ -36,7 +36,9 @@ def test_session_signature_round_trip() -> None:
 def test_baseline_prediction_is_normalized() -> None:
     runtime = ModelRuntime(None, allow_baseline=True)
     runtime.load()
-    prediction = runtime.predict({"ret_6h": 0.02, "atr_pct_14": 0.01})
+    features = {name: 0.0 for name in FEATURE_NAMES}
+    features.update({"ret_6h": 0.02, "atr_pct_14": 0.01})
+    prediction = runtime.predict(features)
     assert prediction.direction == "LONG"
     assert prediction.p_tp + prediction.p_sl + prediction.p_timeout == pytest.approx(1.0)
 

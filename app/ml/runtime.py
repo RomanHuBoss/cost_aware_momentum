@@ -158,10 +158,35 @@ class ModelRuntime:
 
     @staticmethod
     def _artifact_multiplier(bundle: dict[str, Any], key: str, default: float) -> float:
-        value = float(bundle.get(key, default))
+        raw_value = bundle.get(key, default)
+        if isinstance(raw_value, bool):
+            raise ValueError(f"Model artifact {key} must be positive and finite")
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"Model artifact {key} must be positive and finite") from exc
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"Model artifact {key} must be positive and finite")
         return value
+
+    @staticmethod
+    def _validated_features(features: dict[str, float]) -> dict[str, float]:
+        missing = [name for name in FEATURE_NAMES if name not in features]
+        if missing:
+            raise ValueError(f"missing model features: {', '.join(missing)}")
+        validated: dict[str, float] = {}
+        for name in FEATURE_NAMES:
+            raw_value = features[name]
+            if isinstance(raw_value, bool):
+                raise ValueError(f"model feature {name} must be finite")
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"model feature {name} must be finite") from exc
+            if not math.isfinite(value):
+                raise ValueError(f"model feature {name} must be finite")
+            validated[name] = value
+        return validated
 
     def _scenario_utility(self, p_tp: float, p_sl: float, p_timeout: float) -> float:
         # Compatibility score only. Exact direction selection is performed later by
@@ -172,26 +197,11 @@ class ModelRuntime:
             - p_timeout * 0.20
         )
 
-    def _predict_artifact(self, features: dict[str, float]) -> Prediction:
-        scenarios = self._predict_artifact_scenarios(features)
-        return max(scenarios, key=lambda item: item.score)
-
     def _predict_artifact_scenarios(self, features: dict[str, float]) -> tuple[Prediction, Prediction]:
         if self.bundle is None:
             raise RuntimeError("No artifact loaded")
         model = self.bundle["model"]
-        missing = [name for name in FEATURE_NAMES if name not in features]
-        if missing:
-            raise ValueError(f"missing model features: {', '.join(missing)}")
-        vector_values_base: list[float] = []
-        for name in FEATURE_NAMES:
-            try:
-                value = float(features[name])
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"model feature {name} must be finite") from exc
-            if not math.isfinite(value):
-                raise ValueError(f"model feature {name} must be finite")
-            vector_values_base.append(value)
+        vector_values_base = [features[name] for name in FEATURE_NAMES]
         scenarios: list[tuple[Direction, float, dict[str, float]]] = []
         for direction, code in (("LONG", 1.0), ("SHORT", -1.0)):
             vector_values = vector_values_base + [code]
@@ -250,10 +260,15 @@ class ModelRuntime:
             p_sl = max(0.01, 0.52 - 0.22 * alignment)
             p_timeout = max(0.06, 1.0 - p_tp - p_sl)
             total = p_tp + p_sl + p_timeout
+            normalized_probabilities = validate_probability_simplex(
+                p_tp / total,
+                p_sl / total,
+                p_timeout / total,
+            )
             outcome = {
-                "p_tp": p_tp / total,
-                "p_sl": p_sl / total,
-                "p_timeout": p_timeout / total,
+                "p_tp": float(normalized_probabilities[0]),
+                "p_sl": float(normalized_probabilities[1]),
+                "p_timeout": float(normalized_probabilities[2]),
             }
             rows.append((direction, self._scenario_utility(**outcome), outcome))
 
@@ -280,42 +295,15 @@ class ModelRuntime:
         fees, funding and barrier geometry are unavailable to the model runtime.
         """
 
+        validated = self._validated_features(features)
         if self.bundle is not None:
-            return self._predict_artifact_scenarios(features)
-        return self._predict_baseline_scenarios(features)
+            return self._predict_artifact_scenarios(validated)
+        return self._predict_baseline_scenarios(validated)
 
     def predict(self, features: dict[str, float]) -> Prediction:
-        if self.bundle is not None:
-            return self._predict_artifact(features)
+        """Compatibility wrapper returning the best of the two runtime scenarios."""
 
-        score = (
-            1.25 * features.get("ret_3h", 0.0)
-            + 1.10 * features.get("ret_6h", 0.0)
-            + 0.70 * features.get("ret_12h", 0.0)
-            + 0.55 * features.get("ema_distance_12", 0.0)
-            + 0.35 * features.get("ema_slope_12", 0.0)
-            + 0.25 * features.get("breakout_24", 0.0)
-            + 0.03 * max(-3.0, min(3.0, features.get("volume_z_24", 0.0)))
-        )
-        vol = max(0.002, min(0.10, abs(features.get("atr_pct_14", 0.02))))
-        normalized = math.tanh(score / max(0.004, vol * 0.8))
-        direction: Direction = "LONG" if normalized >= 0 else "SHORT"
-        strength = abs(normalized)
-        # These values are deterministic scaffolding, not calibrated ML output.
-        p_tp = 0.34 + 0.30 * strength
-        p_sl = 0.52 - 0.22 * strength
-        p_timeout = max(0.06, 1.0 - p_tp - p_sl)
-        total = p_tp + p_sl + p_timeout
-        return Prediction(
-            direction,
-            p_tp / total,
-            p_sl / total,
-            p_timeout / total,
-            normalized,
-            self.version,
-            self.calibration_version,
-            self._reasons(features, direction),
-        )
+        return max(self.predict_scenarios(features), key=lambda item: item.score)
 
     @staticmethod
     def _reasons(features: dict[str, float], direction: Direction) -> tuple[str, ...]:

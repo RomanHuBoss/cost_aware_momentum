@@ -20,6 +20,11 @@ from app.risk.math import (
 )
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.market_data import CandleWindow
+from app.services.plan_snapshots import (
+    plan_entry_price,
+    plan_planning_time,
+    plan_trading_costs,
+)
 
 Direction = Literal["LONG", "SHORT"]
 Outcome = Literal["TP", "SL", "TIMEOUT"]
@@ -433,11 +438,6 @@ def estimate_plan_outcome(
     )
 
 
-def _cost_value(plan: ExecutionPlan, key: str) -> Decimal:
-    costs = (plan.sizing_snapshot or {}).get("costs") or {}
-    return Decimal(str(costs.get(key, "0")))
-
-
 def _funding_rate_for_holding_period(
     plan: ExecutionPlan, *, start_time: datetime, exit_time: datetime
 ) -> tuple[Decimal, bool, dict[str, object]]:
@@ -463,14 +463,27 @@ def _funding_rate_for_holding_period(
     if not required.issubset(costs):
         return Decimal("0"), False, {"source": "legacy_plan_snapshot", "settlements": 0}
 
+    raw_rate = costs.get("funding_rate_per_settlement")
     raw_next = costs.get("funding_next_settlement")
     raw_interval = costs.get("funding_interval_minutes")
+    if raw_rate is None or raw_next is None or raw_interval is None:
+        return Decimal("0"), False, {
+            "source": "plan_snapshot_incomplete",
+            "settlements": 0,
+            "missing": [
+                name
+                for name, value in (
+                    ("funding_rate_per_settlement", raw_rate),
+                    ("funding_next_settlement", raw_next),
+                    ("funding_interval_minutes", raw_interval),
+                )
+                if value is None
+            ],
+        }
     per_settlement = finite_decimal(
-        costs.get("funding_rate_per_settlement") or "0",
+        raw_rate,
         "funding_rate_per_settlement",
     )
-    if raw_next is None or raw_interval is None:
-        return Decimal("0"), True, {"source": "plan_snapshot", "settlements": 0}
 
     try:
         next_settlement = datetime.fromisoformat(str(raw_next).replace("Z", "+00:00"))
@@ -514,21 +527,11 @@ def _funding_rate_for_holding_period(
 def _plan_valuation_inputs(
     plan: ExecutionPlan, signal: MarketSignal
 ) -> tuple[Decimal, datetime, str]:
-    snapshot = plan.sizing_snapshot or {}
-    raw_entry = snapshot.get("entry_price", signal.entry_reference)
-    entry_price = positive_finite_decimal(raw_entry, "plan.entry_price")
-    raw_time = snapshot.get("planning_time")
-    if raw_time is None:
-        valuation_start = signal.event_time
-        source = "legacy_signal_event_time"
-    else:
-        try:
-            valuation_start = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("plan.planning_time must be a valid ISO timestamp") from exc
-        source = "execution_plan.sizing_snapshot"
-    _require_aware(valuation_start, "plan.planning_time")
-    return entry_price, valuation_start, source
+    del signal
+    snapshot = plan.sizing_snapshot
+    entry_price = plan_entry_price(snapshot)
+    valuation_start = plan_planning_time(snapshot)
+    return entry_price, valuation_start, "execution_plan.sizing_snapshot"
 
 
 async def _record_plan_outcome(
@@ -545,20 +548,25 @@ async def _record_plan_outcome(
     exit_price = positive_finite_decimal(signal_outcome.exit_price, "signal_outcome.exit_price")
 
     try:
+        validated_qty = nonnegative_finite_decimal(plan.qty, "qty")
+        validated_stress_loss = nonnegative_finite_decimal(
+            plan.actual_stress_loss, "actual_stress_loss"
+        )
         entry_price, valuation_start, valuation_source = _plan_valuation_inputs(plan, signal)
-        fee_rate_round_trip = _cost_value(plan, "fee_rate_round_trip")
-        slippage_rate = _cost_value(plan, "slippage_rate")
-        stop_gap_reserve_rate = _cost_value(plan, "stop_gap_reserve_rate")
+        snapshot_costs = plan_trading_costs(plan.sizing_snapshot)
+        fee_rate_round_trip = snapshot_costs.fee_rate_round_trip
+        slippage_rate = snapshot_costs.slippage_rate
+        stop_gap_reserve_rate = snapshot_costs.stop_gap_reserve_rate
         funding_rate, funding_complete, funding_details = _funding_rate_for_holding_period(
             plan, start_time=valuation_start, exit_time=signal_outcome.exit_time
         )
         estimate = estimate_plan_outcome(
             direction=signal.direction,
             outcome=signal_outcome.outcome,
-            qty=plan.qty,
+            qty=validated_qty,
             entry_price=entry_price,
             exit_price=exit_price,
-            actual_stress_loss=plan.actual_stress_loss,
+            actual_stress_loss=validated_stress_loss,
             fee_rate_round_trip=fee_rate_round_trip,
             slippage_rate=slippage_rate,
             stop_gap_reserve_rate=stop_gap_reserve_rate,

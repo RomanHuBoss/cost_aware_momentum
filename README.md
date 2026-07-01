@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.21: синхронизация инструментов из категории Bybit `linear` сначала отделяет `LinearPerpetual` от поставочных `LinearFutures`; допустимый для futures `fundingInterval=0` больше не останавливает worker и не загрязняет perpetual-каталог.
+> Версия 1.8.23: все runtime-пути требуют полный finite feature vector; совместимый `predict()` использует тот же двухсценарный результат, что и production policy, а булевы ATR-множители artifact отклоняются. В 1.8.22 также устранены zero/default fallback в immutable execution-plan snapshots.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -20,22 +20,6 @@
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, полная funding timeline, account reconciliation, текущий turnover-based liquidity cap, `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
-
-## Обновление с 1.8.20 до 1.8.21
-
-Миграций и новых `.env` переменных нет. Перезапустите worker. Категория Bybit `linear` содержит perpetual и поставочные futures; проект сохраняет только `LinearPerpetual`. Контракты `LinearFutures`, включая записи с `fundingInterval=0`, теперь пропускаются до строгой проверки perpetual-спецификации. Если нулевой/отсутствующий funding interval придет для `LinearPerpetual`, синхронизация по-прежнему завершится ошибкой fail-closed.
-
-## Обновление с 1.8.19 до 1.8.20
-
-Миграций и новых `.env` переменных нет. Перезапустите API, worker и trainer. До `ACCEPTED` read-only профиль теперь обязан пройти повторную сверку биржевых позиций с журналом; ticker обязан содержать положительный finite `turnover_24h`, `funding_rate` и `next_funding_time`. При неполном или ухудшившемся снимке API возвращает HTTP 409, старый план становится `SUPERSEDED`, а новая версия либо получает безопасно уменьшенный размер, либо остается заблокированной до восстановления данных.
-
-## Обновление с 1.8.18 до 1.8.19
-
-Миграций и новых `.env` переменных нет. Перезапустите worker, API и trainer после обновления. До успешной полной синхронизации instrument/account/funding data рекомендации остаются заблокированными. При read-only аккаунте ключ должен позволять только приватные GET-запросы; торговые и withdrawal-права не нужны.
-
-## Обновление с 1.8.17 до 1.8.18
-
-До запуска API/worker выполните `python manage.py migrate`. Миграция `0007_position_account_scope` добавляет обязательный `account_id` к read-only position snapshots и индекс `(account_id, source_time)`. Исторические записи источника `bybit-read-only` связываются с поддерживаемым аккаунтом `bybit-unified`; записи иных legacy-источников получают `legacy-unknown` и не участвуют в reconciliation конкретного аккаунта. Новых `.env` переменных нет.
 
 ## Требования
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
@@ -11,7 +10,12 @@ from sqlalchemy import select
 from app.asyncio_compat import run_with_compatible_event_loop
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import AuditEvent, ExecutionPlan, MarketSignal
-from app.risk.math import CostScenario, InstrumentConstraints, calculate_position_plan
+from app.risk.math import calculate_position_plan
+from app.services.plan_snapshots import (
+    plan_cost_scenario,
+    plan_entry_price,
+    plan_instrument_constraints,
+)
 
 
 async def replay(signal_id: UUID) -> dict:
@@ -44,45 +48,61 @@ async def replay(signal_id: UUID) -> dict:
 
         replayed = []
         for plan in plans:
-            snapshot = plan.sizing_snapshot or {}
-            instrument = snapshot.get("instrument") or {}
-            costs_data = snapshot.get("costs") or {}
-            constraints = InstrumentConstraints(
-                qty_step=Decimal(str(instrument.get("qty_step", "1"))),
-                min_qty=Decimal(str(instrument.get("min_qty", "1"))),
-                min_notional=Decimal(str(instrument.get("min_notional", "0"))),
-                max_qty=(
-                    Decimal(str(instrument["max_qty"])) if instrument.get("max_qty") is not None else None
-                ),
-                max_leverage=Decimal(str(instrument.get("max_leverage", plan.leverage))),
-            )
-            costs = CostScenario(
-                fee_rate_round_trip=Decimal(str(costs_data.get("fee_rate_round_trip", "0"))),
-                slippage_rate=Decimal(str(costs_data.get("slippage_rate", "0"))),
-                stop_gap_reserve_rate=Decimal(str(costs_data.get("stop_gap_reserve_rate", "0"))),
-                funding_rate=Decimal(str(costs_data.get("funding_rate", "0"))),
-            )
-            recomputed = calculate_position_plan(
-                effective_capital=plan.effective_capital,
-                risk_rate=plan.risk_rate,
-                entry=signal.entry_reference,
-                stop=signal.stop_loss,
-                direction=signal.direction,
-                costs=costs,
-                constraints=constraints,
-                leverage=plan.leverage,
-                capital_verified=plan.capital_verified,
-            )
+            try:
+                entry_price = plan_entry_price(plan.sizing_snapshot)
+                constraints = plan_instrument_constraints(plan.sizing_snapshot)
+                costs = plan_cost_scenario(plan.sizing_snapshot)
+                recomputed = calculate_position_plan(
+                    effective_capital=plan.effective_capital,
+                    risk_rate=plan.risk_rate,
+                    entry=entry_price,
+                    stop=signal.stop_loss,
+                    take_profit=signal.take_profit_1,
+                    direction=signal.direction,
+                    costs=costs,
+                    constraints=constraints,
+                    leverage=plan.leverage,
+                    capital_verified=plan.capital_verified,
+                )
+            except ValueError as exc:
+                replayed.append(
+                    {
+                        "plan_id": str(plan.id),
+                        "version": plan.version,
+                        "stored_status": plan.status,
+                        "stored_qty": str(plan.qty),
+                        "replay_status": "INVALID_SNAPSHOT",
+                        "replay_entry_price": None,
+                        "recomputed_qty_without_dynamic_caps": None,
+                        "stored_actual_stress_loss": str(plan.actual_stress_loss),
+                        "recomputed_actual_stress_loss_without_dynamic_caps": None,
+                        "validation_error": str(exc),
+                        "note": (
+                            "Replay was blocked because the immutable plan snapshot is incomplete "
+                            "or invalid; no zero-cost or signal-entry fallback was applied."
+                        ),
+                    }
+                )
+                continue
+
             replayed.append(
                 {
                     "plan_id": str(plan.id),
                     "version": plan.version,
                     "stored_status": plan.status,
                     "stored_qty": str(plan.qty),
+                    "replay_status": "RECOMPUTED",
+                    "replay_entry_price": str(entry_price),
                     "recomputed_qty_without_dynamic_caps": str(recomputed.qty),
                     "stored_actual_stress_loss": str(plan.actual_stress_loss),
-                    "recomputed_actual_stress_loss_without_dynamic_caps": str(recomputed.actual_stress_loss),
-                    "note": "Dynamic margin/liquidity/portfolio caps are preserved in the snapshot but not reapplied by this compact replay.",
+                    "recomputed_actual_stress_loss_without_dynamic_caps": str(
+                        recomputed.actual_stress_loss
+                    ),
+                    "validation_error": None,
+                    "note": (
+                        "Dynamic margin/liquidity/portfolio caps are preserved in the snapshot "
+                        "but not reapplied by this compact replay."
+                    ),
                 }
             )
 
