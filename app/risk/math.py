@@ -315,6 +315,44 @@ def stress_downside_rate(entry: Decimal, stop: Decimal, direction: Direction, co
     )
 
 
+def actual_fill_stress_loss(
+    *,
+    qty: Decimal,
+    entry: Decimal,
+    stop: Decimal,
+    direction: Direction,
+    costs: CostScenario,
+    actual_entry_fee: Decimal,
+) -> Decimal:
+    """Return stop-scenario cash loss using the actual paid entry fee.
+
+    Planning economics model equal entry/exit fee rates. Once an entry fill is
+    known, the modeled entry leg is no longer an estimate and must be replaced
+    by the recorded cash fee while the future exit leg remains modeled at the
+    stop notional.
+    """
+
+    quantity = positive_finite_decimal(qty, "qty")
+    entry_price = positive_finite_decimal(entry, "entry")
+    actual_fee = nonnegative_finite_decimal(actual_entry_fee, "actual_entry_fee")
+    validated_costs = validate_cost_scenario(costs)
+    modeled_loss = (
+        quantity
+        * entry_price
+        * stress_downside_rate(entry_price, stop, direction, validated_costs)
+    )
+    modeled_entry_fee = (
+        quantity
+        * entry_price
+        * validated_costs.fee_rate_round_trip
+        / Decimal("2")
+    )
+    return nonnegative_finite_decimal(
+        modeled_loss - modeled_entry_fee + actual_fee,
+        "actual_fill_stress_loss",
+    )
+
+
 def upside_rate(entry: Decimal, take_profit: Decimal, direction: Direction, costs: CostScenario) -> Decimal:
     costs = validate_cost_scenario(costs)
     validate_directional_geometry(entry=entry, take_profit=take_profit, direction=direction)
@@ -511,6 +549,7 @@ def calculate_position_plan(
     leverage: int,
     available_margin: Decimal | None = None,
     margin_reserve_rate: Decimal = Decimal("0.25"),
+    reserved_margin: Decimal = Decimal("0"),
     liquidity_notional_cap: Decimal | None = None,
     portfolio_notional_cap: Decimal | None = None,
     exchange_notional_cap: Decimal | None = None,
@@ -567,8 +606,11 @@ def calculate_position_plan(
         if reserve_rate < 0 or reserve_rate >= 1:
             raise ValueError("margin_reserve_rate must be finite and in [0, 1)")
         margin_reserve_rate = reserve_rate
+        reserved_margin = nonnegative_finite_decimal(reserved_margin, "reserved_margin")
         if available_margin is not None:
             available_margin = nonnegative_finite_decimal(available_margin, "available_margin")
+        elif reserved_margin > 0:
+            raise ValueError("reserved_margin requires available_margin")
         if liquidity_notional_cap is not None:
             liquidity_notional_cap = nonnegative_finite_decimal(
                 liquidity_notional_cap, "liquidity_notional_cap"
@@ -630,7 +672,10 @@ def calculate_position_plan(
         caps: list[tuple[str, Decimal]] = [("RISK", risk_notional)]
 
         if available_margin is not None:
-            free_after_reserve = available_margin * (Decimal("1") - margin_reserve_rate)
+            free_after_reserve = max(
+                Decimal("0"),
+                available_margin * (Decimal("1") - margin_reserve_rate) - reserved_margin,
+            )
             caps.append(
                 (
                     "MARGIN",
@@ -696,7 +741,10 @@ def calculate_position_plan(
             tuple(warnings + [blocked_message]),
         )
 
-    if available_margin is not None and margin > available_margin * (Decimal("1") - margin_reserve_rate):
+    if available_margin is not None and margin > max(
+        Decimal("0"),
+        available_margin * (Decimal("1") - margin_reserve_rate) - reserved_margin,
+    ):
         return PositionPlan(
             "BLOCKED_MARGIN",
             effective_capital,

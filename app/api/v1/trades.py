@@ -11,7 +11,12 @@ from sqlalchemy import select
 from app.api.deps import MutatingOperatorDep, SessionDep
 from app.api.schemas import ManualEntryRequest, TradeCloseRequest
 from app.db.models import ExecutionPlan, Fill, ManualTrade, MarketSignal
-from app.risk.math import gross_pnl, stress_downside_rate
+from app.risk.math import (
+    actual_fill_stress_loss,
+    gross_pnl,
+    nonnegative_finite_decimal,
+    positive_finite_decimal,
+)
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import remaining_trade_risk
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
@@ -146,6 +151,15 @@ async def manual_entry(
     try:
         constraints = plan_instrument_constraints(plan.sizing_snapshot)
         actual_costs = plan_cost_scenario(plan.sizing_snapshot)
+        accepted_risk_budget = positive_finite_decimal(
+            plan.risk_budget, "accepted plan risk_budget"
+        )
+        accepted_stress_reservation = nonnegative_finite_decimal(
+            plan.actual_stress_loss, "accepted plan actual_stress_loss"
+        )
+        accepted_margin_reservation = nonnegative_finite_decimal(
+            plan.margin_estimate, "accepted plan margin_estimate"
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=409,
@@ -167,14 +181,33 @@ async def manual_entry(
     if Decimal(payload.leverage) > constraints.max_leverage:
         raise HTTPException(status_code=422, detail="Actual leverage exceeds the instrument maximum")
     try:
-        actual_downside = stress_downside_rate(
-            payload.entry_price, signal.stop_loss, signal.direction, actual_costs
+        actual_stress_loss = actual_fill_stress_loss(
+            qty=payload.qty,
+            entry=payload.entry_price,
+            stop=signal.stop_loss,
+            direction=signal.direction,
+            costs=actual_costs,
+            actual_entry_fee=payload.fee,
+        )
+        actual_margin = positive_finite_decimal(
+            payload.qty * payload.entry_price / Decimal(payload.leverage),
+            "actual fill margin",
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    actual_stress_loss = payload.qty * payload.entry_price * actual_downside
-    if actual_stress_loss > plan.risk_budget + Decimal("0.00000001"):
+    tolerance = Decimal("0.00000001")
+    if actual_stress_loss > accepted_risk_budget + tolerance:
         raise HTTPException(status_code=422, detail="Actual fill would exceed the accepted risk budget")
+    if actual_stress_loss > accepted_stress_reservation + tolerance:
+        raise HTTPException(
+            status_code=422,
+            detail="Actual fill would exceed the accepted stress-loss reservation",
+        )
+    if actual_margin > accepted_margin_reservation + tolerance:
+        raise HTTPException(
+            status_code=422,
+            detail="Actual fill would exceed the accepted margin reservation",
+        )
 
     trade = ManualTrade(
         plan_id=plan.id,
@@ -221,7 +254,9 @@ async def manual_entry(
             "qty": str(trade.qty),
             "leverage": trade.leverage,
             "deviation_from_plan_qty": str(trade.qty - plan.qty),
+            "actual_entry_fee": str(payload.fee),
             "actual_stress_loss": str(actual_stress_loss),
+            "actual_margin": str(actual_margin),
         },
     )
     await publish_outbox(

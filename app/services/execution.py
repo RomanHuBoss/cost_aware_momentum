@@ -44,6 +44,7 @@ LIQUIDITY_TURNOVER_FRACTION = Decimal("0.0001")
 @dataclass(frozen=True)
 class AcceptanceRiskState:
     open_risk_usdt: Decimal
+    reserved_margin_usdt: Decimal
     effective_capital: Decimal
     available_margin: Decimal | None
     capital_verified: bool
@@ -180,11 +181,17 @@ def validate_execution_plan_for_acceptance(
 
     current_margin_estimate = current_notional / Decimal(leverage)
     margin_capacity: Decimal | None = None
+    reserved_margin = nonnegative_finite_decimal(
+        risk_state.reserved_margin_usdt, "reserved_margin_usdt"
+    )
     if risk_state.available_margin is not None:
         available_margin = nonnegative_finite_decimal(risk_state.available_margin, "available_margin")
-        margin_capacity = available_margin * (Decimal("1") - reserve_rate)
+        margin_capacity = max(
+            Decimal("0"),
+            available_margin * (Decimal("1") - reserve_rate) - reserved_margin,
+        )
         if current_margin_estimate > margin_capacity:
-            raise ValueError("Fresh available margin is insufficient")
+            raise ValueError("Fresh available margin after reserved margin is insufficient")
     elif profile.mode == "bybit_read_only":
         raise ValueError("Fresh available margin is missing")
 
@@ -364,13 +371,29 @@ async def effective_capital(
     max_snapshot_age_seconds: int = 180,
 ) -> tuple[Decimal, Decimal | None, bool, dict]:
     if profile.mode in {"manual", "paper"}:
+        try:
+            allocated_capital = positive_finite_decimal(
+                profile.allocated_capital, "allocated_capital"
+            )
+        except ValueError as exc:
+            return (
+                Decimal("0"),
+                Decimal("0"),
+                False,
+                {
+                    "source": profile.mode,
+                    "invalid_allocated_capital": True,
+                    "validation_error": str(exc),
+                },
+            )
         return (
-            profile.allocated_capital,
-            None,
+            allocated_capital,
+            allocated_capital,
             profile.capital_verified,
             {
                 "source": profile.mode,
-                "allocated": str(profile.allocated_capital),
+                "allocated": str(allocated_capital),
+                "available_margin_basis": "allocated_capital",
                 "verified": profile.capital_verified,
             },
         )
@@ -521,6 +544,52 @@ async def open_risk_usdt(
     return accepted_risk + trade_risk
 
 
+async def reserved_margin_usdt(
+    session: AsyncSession,
+    *,
+    profile: CapitalProfile,
+) -> Decimal:
+    """Return margin already reserved inside the account/profile scope.
+
+    Exchange available margin already reflects entered positions for read-only
+    accounts, so only not-yet-entered ACCEPTED plans are added there. Manual and
+    paper profiles use allocated capital as a theoretical balance and therefore
+    also reserve the remaining margin of their open journal trades.
+    """
+
+    scope_clause = execution_plan_scope_clause(profile)
+    accepted_result = await session.execute(
+        select(func.coalesce(func.sum(ExecutionPlan.margin_estimate), 0))
+        .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
+        .where(ExecutionPlan.status == "ACCEPTED", scope_clause)
+    )
+    accepted_margin = nonnegative_finite_decimal(
+        accepted_result.scalar_one(), "accepted_plan_margin"
+    )
+    if profile.mode == "bybit_read_only":
+        return accepted_margin
+
+    trade_result = await session.execute(
+        select(
+            func.coalesce(
+                func.sum(
+                    ManualTrade.remaining_qty
+                    * ManualTrade.entry_price
+                    / ManualTrade.leverage
+                ),
+                0,
+            )
+        )
+        .join(ExecutionPlan, ManualTrade.plan_id == ExecutionPlan.id)
+        .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
+        .where(ManualTrade.status.in_(["OPEN", "PARTIAL"]), scope_clause)
+    )
+    trade_margin = nonnegative_finite_decimal(
+        trade_result.scalar_one(), "open_trade_margin"
+    )
+    return accepted_margin + trade_margin
+
+
 async def load_acceptance_risk_state(
     session: AsyncSession,
     *,
@@ -536,6 +605,7 @@ async def load_acceptance_risk_state(
         risk_scope_key(profile),
     )
     current_open_risk = await open_risk_usdt(session, profile=profile)
+    current_reserved_margin = await reserved_margin_usdt(session, profile=profile)
     capital, available_margin, verified, snapshot = await effective_capital(
         session,
         profile,
@@ -544,6 +614,7 @@ async def load_acceptance_risk_state(
     )
     return AcceptanceRiskState(
         open_risk_usdt=current_open_risk,
+        reserved_margin_usdt=current_reserved_margin,
         effective_capital=capital,
         available_margin=available_margin,
         capital_verified=verified,
@@ -773,6 +844,7 @@ async def create_execution_plan(
                 status_override = "BLOCKED_DATA"
             warnings.append(f"Снимок ликвидности отсутствует или некорректен: {exc}")
     open_risk = await open_risk_usdt(session, profile=profile)
+    reserved_margin = await reserved_margin_usdt(session, profile=profile)
     max_total_risk = c_eff * profile.max_total_risk_rate
     remaining_portfolio_risk = max(Decimal("0"), max_total_risk - open_risk)
     try:
@@ -800,6 +872,7 @@ async def create_execution_plan(
         leverage=profile.default_leverage,
         available_margin=available_margin,
         margin_reserve_rate=profile.margin_reserve_rate,
+        reserved_margin=reserved_margin,
         liquidity_notional_cap=liquidity_cap,
         portfolio_notional_cap=portfolio_notional_cap,
         capital_verified=verified,
@@ -925,6 +998,7 @@ async def create_execution_plan(
                 "liquidity_notional": str(liquidity_cap) if liquidity_cap is not None else None,
                 "portfolio_notional": str(portfolio_notional_cap),
                 "available_margin": str(available_margin) if available_margin is not None else None,
+                "reserved_margin_usdt": str(reserved_margin),
                 "open_risk_usdt": str(open_risk),
             },
             "costs": {

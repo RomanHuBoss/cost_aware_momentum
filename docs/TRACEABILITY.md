@@ -16,3 +16,8 @@
 | Post-fetch counterfactual cutoff | `app/workers/runner.py::counterfactual_outcome_job` | static flow review; PostgreSQL integration not run |
 | Directional Decimal economics | risk/cost/execution services | full unit suite; independent formulas covered by risk tests |
 | Barrier label parity | labels/outcomes/research paths | unit parity tests |
+| Manual/paper allocated capital is margin capacity | `app/services/execution.py::effective_capital` | `test_manual_profile_allocated_capital_is_theoretical_margin_capacity`, `test_manual_profile_margin_capacity_limits_position_sizing` |
+| Actual entry fee replaces modeled entry fee | `app/risk/math.py::actual_fill_stress_loss`, `app/api/v1/trades.py::manual_entry` | `test_actual_fill_stress_loss_replaces_only_the_modeled_entry_fee`, fee-overrun endpoint test |
+| Manual fill cannot consume unreserved risk or margin | `app/api/v1/trades.py::manual_entry` | stress-loss reservation and accepted-margin regression tests |
+| Manual fee UI declares cash unit | `web/index.html` | `test_manual_entry_fee_label_declares_cash_unit` |
+| Existing accepted/open margin reduces new capacity | `app/services/execution.py::reserved_margin_usdt`, `app/risk/math.py::calculate_position_plan`, acceptance validation | reservation aggregation, sizing-cap and acceptance rejection tests |

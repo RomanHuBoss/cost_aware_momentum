@@ -537,6 +537,7 @@ async def accept_recommendation(
             "profile_version": profile.version,
             "plan_version": plan.version,
             "current_open_risk": str(current_open_risk),
+            "reserved_margin_usdt": str(risk_state.reserved_margin_usdt),
             "effective_capital": str(current_capital),
             "current_notional": str(acceptance_validation.current_notional),
             "current_margin_estimate": str(acceptance_validation.current_margin_estimate),

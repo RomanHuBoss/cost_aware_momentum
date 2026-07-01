@@ -13,6 +13,8 @@
 | Fill/plan entry uses executable ask/bid | IMPLEMENTED / UNIT CHECKED in 1.8.26 | `create_execution_plan`; current quote, missing quote and zone regression tests |
 | Entry outside zone requires new calculation / no entry | IMPLEMENTED / UNIT CHECKED in 1.8.26 | plan returns `NO_TRADE`; acceptance remains fail-closed |
 | Positive economic floor for automatic promotion | IMPLEMENTED / UNIT CHECKED in 1.8.26 | non-negative realized mean R and PF >= 1 when auto-activation is enabled |
+| Account/profile-scoped margin capacity | IMPLEMENTED / UNIT CHECKED in 1.8.27 | allocated-capital basis, accepted-plan/open-trade reservations, sizing and acceptance regressions |
+| Actual manual fill preserves accepted risk/margin reservations | IMPLEMENTED / UNIT CHECKED in 1.8.27 | actual entry fee substitution; stress-loss and margin rejection tests |
 | Purged temporal validation | IMPLEMENTED / UNIT CHECKED | split uses decision time and label end time |
 | Immutable guarded model lifecycle | IMPLEMENTED / UNIT CHECKED | artifact/runtime/trainer tests; live promotion evidence not checked |
 | Actual historical order book/fills/funding timeline in research | PARTIAL | documented research limitation |

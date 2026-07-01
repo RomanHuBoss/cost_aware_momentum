@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.26: execution plans теперь пересчитываются по текущей исполнимой стороне стакана, fail-closed блокируют отсутствующий bid/ask и выход цены из entry-zone, а экономические пороги не допускают отрицательный EV или автоматическую активацию заведомо убыточной policy.
+> Версия 1.8.27: account/profile-scoped margin reservations учитываются при sizing и acceptance, manual/paper-профили ограничены выделенным капиталом как теоретической маржой, а ручной вход использует фактическую entry-комиссию и не может превысить reservations принятого плана.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -18,7 +18,8 @@
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, полная funding timeline, account reconciliation, текущий turnover-based liquidity cap, `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
-- После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
+- Для manual/paper-профилей выделенный капитал одновременно задаёт теоретическую доступную маржу; margin reserve применяется до расчёта размера позиции. Уже принятые планы и открытые manual/paper-сделки уменьшают доступную маржинальную ёмкость; для read-only аккаунта открытые позиции повторно не вычитаются из биржевого available margin.
+- При ручном входе фактическая комиссия в USDT заменяет модельную entry-комиссию. Запись блокируется, если фактический stress loss или margin requirement превышает reservation принятого плана. После входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
 
 ## Требования
@@ -124,10 +125,10 @@ SQLite и файлового fallback нет. Изменения схемы пр
 
 - LONG приносит положительный gross P&L при `exit > entry`; SHORT — при `exit < entry`.
 - `fee_rate_round_trip` означает сумму двух одинаковых ставок комиссии: entry-leg и exit-leg.
-- Entry fee считается от entry notional, exit fee — от фактического exit notional.
+- Entry fee считается от entry notional, exit fee — от фактического exit notional. После фактического входа модельная entry fee заменяется введённой оператором денежной комиссией в USDT; future exit fee остаётся оценкой по stop notional.
 - Положительный funding: LONG платит, SHORT получает; отрицательный funding меняет знак. В stress downside входит только неблагоприятный funding; благоприятный cash flow учитывается в outcome/EV, но не уменьшает консервативный риск-знаменатель.
 - Stop-gap reserve относится к downside.
-- Leverage меняет margin requirement, но не экономический edge на notional.
+- Leverage меняет margin requirement, но не экономический edge на notional. Снижение плеча не считается автоматически безопасным: если оно увеличивает фактическую маржу выше reservation принятого плана, ручной вход блокируется.
 - Quantity округляется вниз по `qtyStep`; после округления повторно проверяются risk, margin, `minQty` и `minNotional`.
 - Безопасный размер ниже биржевого минимума блокируется и не округляется вверх.
 

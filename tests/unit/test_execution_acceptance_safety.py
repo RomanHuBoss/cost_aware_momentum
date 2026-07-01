@@ -120,6 +120,11 @@ async def test_acceptance_risk_state_acquires_account_lock_before_reading_risk(
         events.append("open-risk")
         return D("12.5")
 
+    async def fake_reserved_margin(session: object, *, profile: object) -> Decimal:
+        del session, profile
+        events.append("reserved-margin")
+        return D("25")
+
     async def fake_effective_capital(*args: object, **kwargs: object) -> tuple:
         del args, kwargs
         events.append("capital")
@@ -127,6 +132,7 @@ async def test_acceptance_risk_state_acquires_account_lock_before_reading_risk(
 
     monkeypatch.setattr(execution, "acquire_advisory_xact_lock", fake_lock)
     monkeypatch.setattr(execution, "open_risk_usdt", fake_open_risk)
+    monkeypatch.setattr(execution, "reserved_margin_usdt", fake_reserved_margin)
     monkeypatch.setattr(execution, "effective_capital", fake_effective_capital)
 
     profile = SimpleNamespace(
@@ -141,8 +147,14 @@ async def test_acceptance_risk_state_acquires_account_lock_before_reading_risk(
         max_snapshot_age_seconds=180,
     )
 
-    assert events == ["lock:execution_risk_accept:account:account-1", "open-risk", "capital"]
+    assert events == [
+        "lock:execution_risk_accept:account:account-1",
+        "open-risk",
+        "reserved-margin",
+        "capital",
+    ]
     assert state.open_risk_usdt == D("12.5")
+    assert state.reserved_margin_usdt == D("25")
     assert state.effective_capital == D("1000")
     assert state.capital_verified is True
 
@@ -495,6 +507,7 @@ async def _run_acceptance_case(
     )
     risk_state = AcceptanceRiskState(
         open_risk_usdt=D("0"),
+        reserved_margin_usdt=D("0"),
         effective_capital=current_capital,
         available_margin=available_margin,
         capital_verified=True,
