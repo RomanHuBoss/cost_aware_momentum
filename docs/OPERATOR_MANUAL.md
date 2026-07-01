@@ -7,10 +7,12 @@
 ## Интерпретация
 
 - Market signal не зависит от капитала профиля.
-- Execution plan зависит от капитала, account snapshot, маржи, ликвидности и exchange constraints.
+- Execution plan зависит от капитала, account snapshot, текущего ask/bid, маржи, ликвидности и exchange constraints.
 - `BLOCKED`/`NO TRADE` нельзя трактовать как LONG или SHORT.
-- Перед ACCEPTED система повторно валидирует freshness, risk, margin, funding, instrument specs и plan version.
+- `NO_TRADE` с предупреждением о цене вне зоны означает, что рыночный сигнал существует, но вход по текущей исполнимой цене запрещен.
+- `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
+- Перед ACCEPTED система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
-## После обновления на 1.8.25
+## После обновления на 1.8.26
 
-Migration и новые env-переменные не нужны. Перезапустите worker/API/trainer штатной командой. При следующем ingestion confirmed candle rows больше не будут молча перезаписываться; это не требует backfill или ручной правки БД.
+Migration и новые env-переменные не нужны. Перезапустите API/worker/trainer штатной командой. Проверьте `.env`: `MIN_NET_EV_R` должен быть неотрицательным; при включенной auto-activation minimum realized mean R должен быть неотрицательным, а minimum profit factor — не ниже 1. Небезопасная конфигурация теперь не запускается.

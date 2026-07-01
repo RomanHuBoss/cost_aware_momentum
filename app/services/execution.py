@@ -81,10 +81,7 @@ def signal_prices_match_tick(
     )
     try:
         step = positive_finite_decimal(tick_size, "tick_size")
-        return all(
-            _is_step_aligned(positive_finite_decimal(value, "signal price"), step)
-            for value in prices
-        )
+        return all(_is_step_aligned(positive_finite_decimal(value, "signal price"), step) for value in prices)
     except (ArithmeticError, ValueError):
         return False
 
@@ -124,9 +121,7 @@ def validate_execution_plan_for_acceptance(
     leverage = positive_integer(plan.leverage, "plan leverage")
     capital = positive_finite_decimal(risk_state.effective_capital, "effective capital")
     risk_rate = positive_finite_decimal(profile.risk_rate, "profile risk_rate")
-    reserve_rate = nonnegative_finite_decimal(
-        profile.margin_reserve_rate, "margin_reserve_rate"
-    )
+    reserve_rate = nonnegative_finite_decimal(profile.margin_reserve_rate, "margin_reserve_rate")
     if reserve_rate >= 1:
         raise ValueError("Fresh available margin policy is invalid")
 
@@ -134,11 +129,7 @@ def validate_execution_plan_for_acceptance(
     min_qty = positive_finite_decimal(spec.min_qty, "min_qty")
     min_notional = positive_finite_decimal(spec.min_notional, "min_notional")
     max_leverage = positive_finite_decimal(spec.max_leverage, "max_leverage")
-    max_qty = (
-        positive_finite_decimal(spec.max_qty, "max_qty")
-        if spec.max_qty is not None
-        else None
-    )
+    max_qty = positive_finite_decimal(spec.max_qty, "max_qty") if spec.max_qty is not None else None
     tick_size = positive_finite_decimal(spec.tick_size, "tick_size")
     current_notional = qty * entry
     allowed_leverage = min(max_leverage, Decimal(profile.max_leverage))
@@ -164,9 +155,7 @@ def validate_execution_plan_for_acceptance(
     snapshot = plan.sizing_snapshot if isinstance(plan.sizing_snapshot, dict) else {}
     costs_snapshot = snapshot.get("costs") if isinstance(snapshot.get("costs"), dict) else {}
     try:
-        stored_funding_rate = finite_decimal(
-            costs_snapshot.get("funding_rate"), "stored funding rate"
-        )
+        stored_funding_rate = finite_decimal(costs_snapshot.get("funding_rate"), "stored funding rate")
     except ValueError as exc:
         raise ValueError("Stored funding cost scenario is invalid") from exc
     if pretrade_funding_return_rate(signal.direction, funding_rate) < pretrade_funding_return_rate(
@@ -175,9 +164,7 @@ def validate_execution_plan_for_acceptance(
         raise ValueError("Current adverse funding cost increased")
 
     costs = CostScenario(
-        fee_rate_round_trip=nonnegative_finite_decimal(
-            signal.fee_rate_round_trip, "fee_rate_round_trip"
-        ),
+        fee_rate_round_trip=nonnegative_finite_decimal(signal.fee_rate_round_trip, "fee_rate_round_trip"),
         slippage_rate=nonnegative_finite_decimal(signal.slippage_rate, "slippage_rate"),
         stop_gap_reserve_rate=nonnegative_finite_decimal(
             Decimal(str(settings.stop_gap_reserve_bps)) / Decimal("10000"),
@@ -194,9 +181,7 @@ def validate_execution_plan_for_acceptance(
     current_margin_estimate = current_notional / Decimal(leverage)
     margin_capacity: Decimal | None = None
     if risk_state.available_margin is not None:
-        available_margin = nonnegative_finite_decimal(
-            risk_state.available_margin, "available_margin"
-        )
+        available_margin = nonnegative_finite_decimal(risk_state.available_margin, "available_margin")
         margin_capacity = available_margin * (Decimal("1") - reserve_rate)
         if current_margin_estimate > margin_capacity:
             raise ValueError("Fresh available margin is insufficient")
@@ -213,9 +198,8 @@ def validate_execution_plan_for_acceptance(
         p_sl=signal.p_sl,
         p_timeout=signal.p_timeout,
     )
-    if (
-        current_net_rr < Decimal(str(settings.min_net_rr))
-        or current_net_ev_r < Decimal(str(settings.min_net_ev_r))
+    if current_net_rr < Decimal(str(settings.min_net_rr)) or current_net_ev_r < Decimal(
+        str(settings.min_net_ev_r)
     ):
         raise ValueError("Current cost-adjusted economics no longer pass policy")
 
@@ -295,9 +279,7 @@ def funding_rate_for_plan(
     if next_settlement > horizon_end or rate == 0:
         return Decimal("0")
     if interval_minutes is None:
-        raise ValueError(
-            "Funding interval is required when a non-zero settlement falls inside the horizon"
-        )
+        raise ValueError("Funding interval is required when a non-zero settlement falls inside the horizon")
     return projected_funding_rate(
         start_time=start_time,
         horizon_hours=horizon_value,
@@ -429,11 +411,7 @@ async def effective_capital(
         age_seconds: float | None = None
     else:
         age_seconds = (current_time - source_time).total_seconds()
-    if (
-        age_seconds is None
-        or age_seconds < 0
-        or age_seconds > max_snapshot_age_seconds
-    ):
+    if age_seconds is None or age_seconds < 0 or age_seconds > max_snapshot_age_seconds:
         return (
             Decimal("0"),
             Decimal("0"),
@@ -461,8 +439,6 @@ async def effective_capital(
             "max_snapshot_age_seconds": max_snapshot_age_seconds,
         },
     )
-
-
 
 
 def remaining_trade_risk(
@@ -540,9 +516,7 @@ async def open_risk_usdt(
         .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
         .where(ManualTrade.status.in_(["OPEN", "PARTIAL"]), scope_clause)
     )
-    accepted_risk = nonnegative_finite_decimal(
-        accepted_result.scalar_one(), "accepted_plan_risk"
-    )
+    accepted_risk = nonnegative_finite_decimal(accepted_result.scalar_one(), "accepted_plan_risk")
     trade_risk = nonnegative_finite_decimal(trade_result.scalar_one(), "open_trade_risk")
     return accepted_risk + trade_risk
 
@@ -692,10 +666,30 @@ async def create_execution_plan(
     now = datetime.now(UTC)
     ticker = await latest_ticker(session, signal.symbol)
     spec = await latest_spec(session, signal.symbol, cutoff=now)
-    planning_entry = positive_finite_decimal(
-        entry_price if entry_price is not None else signal.entry_reference,
-        "planning entry",
-    )
+    warnings: list[str] = list(signal.warnings or [])
+    status_override: str | None = None
+    entry_outside_zone = False
+    entry_source = "explicit" if entry_price is not None else "current_executable_quote"
+    if entry_price is not None:
+        planning_entry = positive_finite_decimal(entry_price, "planning entry")
+    else:
+        try:
+            planning_entry = executable_entry_price(
+                direction=signal.direction,
+                bid_price=ticker.bid_price if ticker is not None else None,
+                ask_price=ticker.ask_price if ticker is not None else None,
+            )
+        except ValueError as exc:
+            # Persist a blocked diagnostic snapshot without pretending that the
+            # historical signal reference is still executable.
+            planning_entry = positive_finite_decimal(signal.entry_reference, "signal entry reference")
+            entry_source = "signal_reference_for_blocked_diagnostics"
+            status_override = "BLOCKED_DATA"
+            warnings.append(f"Текущая исполнимая bid/ask-котировка недоступна: {exc}")
+
+    if not signal.entry_low <= planning_entry <= signal.entry_high:
+        entry_outside_zone = True
+        warnings.append("Текущая исполнимая цена вне зоны входа рекомендации")
 
     c_eff, available_margin, verified, capital_snapshot = await effective_capital(
         session,
@@ -703,8 +697,6 @@ async def create_execution_plan(
         now=now,
         max_snapshot_age_seconds=settings.max_account_snapshot_age_seconds,
     )
-    warnings: list[str] = list(signal.warnings or [])
-    status_override: str | None = None
     if profile.mode == "bybit_read_only" and not verified:
         status_override = "BLOCKED_STALE_DATA"
         warnings.append("Снимок капитала отсутствует, устарел или имеет некорректное время")
@@ -754,13 +746,9 @@ async def create_execution_plan(
             try:
                 funding_rate = funding_rate_for_plan(
                     start_time=now,
-                    horizon_hours=getattr(
-                        signal, "horizon_hours", settings.default_horizon_hours
-                    ),
+                    horizon_hours=getattr(signal, "horizon_hours", settings.default_horizon_hours),
                     next_settlement=ticker.next_funding_time,
-                    interval_minutes=(
-                        spec.funding_interval_minutes if spec is not None else None
-                    ),
+                    interval_minutes=(spec.funding_interval_minutes if spec is not None else None),
                     current_rate=ticker.funding_rate,
                 )
             except ValueError as exc:
@@ -797,9 +785,7 @@ async def create_execution_plan(
     except ValueError:
         planning_downside_rate = Decimal("0")
     portfolio_notional_cap = (
-        remaining_portfolio_risk / planning_downside_rate
-        if planning_downside_rate > 0
-        else Decimal("0")
+        remaining_portfolio_risk / planning_downside_rate if planning_downside_rate > 0 else Decimal("0")
     )
 
     plan_math = calculate_position_plan(
@@ -863,14 +849,18 @@ async def create_execution_plan(
         status = status_override
     elif plan_math.status.startswith("BLOCKED_"):
         status = plan_math.status
-    elif plan_net_rr < Decimal(str(settings.min_net_rr)) or plan_net_ev_r < Decimal(str(settings.min_net_ev_r)):
+    elif entry_outside_zone:
+        status = "NO_TRADE"
+    elif plan_net_rr < Decimal(str(settings.min_net_rr)) or plan_net_ev_r < Decimal(
+        str(settings.min_net_ev_r)
+    ):
         status = "NO_TRADE"
         warnings.append("Недостаточное преимущество после издержек и risk policy")
     else:
         status = plan_math.status
 
     liquidation_buffer = Decimal("0")
-    if plan_math.status != "BLOCKED_INVALID_INPUT":
+    if status in {"ACTIONABLE", "LIMITED", "NO_TRADE"}:
         liquidation = assess_liquidation_proximity(
             entry=planning_entry,
             stop=signal.stop_loss,
@@ -909,23 +899,19 @@ async def create_execution_plan(
         warnings=combined_warnings,
         sizing_snapshot={
             "entry_price": str(planning_entry),
+            "entry_price_source": entry_source,
+            "entry_inside_signal_zone": not entry_outside_zone,
             "planning_time": now.isoformat(),
             "economics_schema_version": "tp-sl-timeout-v1",
             "net_rr": str(plan_net_rr),
             "net_ev_r": str(plan_net_ev_r),
             "stress_downside_rate": str(plan_math.stress_downside_rate),
             "upside_rate": str(plan_upside_rate) if plan_upside_rate is not None else None,
-            "timeout_net_rate": (
-                str(plan_timeout_net_rate) if plan_timeout_net_rate is not None else None
-            ),
+            "timeout_net_rate": (str(plan_timeout_net_rate) if plan_timeout_net_rate is not None else None),
             "break_even_tp_probability": (
-                str(plan_break_even_tp_probability)
-                if plan_break_even_tp_probability is not None
-                else None
+                str(plan_break_even_tp_probability) if plan_break_even_tp_probability is not None else None
             ),
-            "break_even_probability_semantics": (
-                "P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed"
-            ),
+            "break_even_probability_semantics": ("P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed"),
             "capital": capital_snapshot,
             "instrument": {
                 "tick_size": str(spec.tick_size) if spec is not None else None,

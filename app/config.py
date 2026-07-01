@@ -203,7 +203,6 @@ class Settings(BaseSettings):
             raise ValueError("PostgreSQL URLs must use a PostgreSQL scheme")
         return value
 
-
     @model_validator(mode="after")
     def validate_cross_field_policy(self) -> Settings:
         if not self.horizons_hours:
@@ -256,6 +255,8 @@ class Settings(BaseSettings):
             raise ValueError("MARGIN_RESERVE_RATE must be in [0, 1)")
         if self.min_net_rr < 0:
             raise ValueError("MIN_NET_RR cannot be negative")
+        if self.min_net_ev_r < 0:
+            raise ValueError("MIN_NET_EV_R cannot be negative")
         if self.max_spread_bps < 0:
             raise ValueError("MAX_SPREAD_BPS cannot be negative")
         if not 0 <= self.fee_rate_taker < 1:
@@ -344,6 +345,15 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_MAX_POLICY_DRAWDOWN_REGRESSION_R cannot be negative")
         if self.auto_train_min_policy_improvement_r < 0:
             raise ValueError("AUTO_TRAIN_MIN_POLICY_IMPROVEMENT_R cannot be negative")
+        if self.auto_train_enabled and self.auto_train_auto_activate:
+            if self.auto_train_min_policy_realized_mean_r < 0:
+                raise ValueError(
+                    "AUTO_TRAIN_MIN_POLICY_REALIZED_MEAN_R cannot be negative when auto-activation is enabled"
+                )
+            if self.auto_train_min_policy_profit_factor < 1:
+                raise ValueError(
+                    "AUTO_TRAIN_MIN_POLICY_PROFIT_FACTOR must be at least 1 when auto-activation is enabled"
+                )
         if self.app_mode == "production":
             errors: list[str] = []
             if self.allow_demo_seed:

@@ -30,6 +30,8 @@ DEFAULT_MAX_QTY = D("1000")
 DEFAULT_MAX_LEVERAGE = D("100")
 DEFAULT_FUNDING_RATE = D("0")
 DEFAULT_TURNOVER_24H = D("100000000")
+DEFAULT_BID_PRICE = D("99.9")
+DEFAULT_ASK_PRICE = D("100.1")
 
 
 class _ScalarResult:
@@ -194,6 +196,9 @@ async def _build_plan_for_safety_case(
     capital_result: tuple[Decimal, Decimal | None, bool, dict],
     funding_snapshot_complete: bool = True,
     turnover_24h: Decimal | None = DEFAULT_TURNOVER_24H,
+    bid_price: Decimal | None = DEFAULT_BID_PRICE,
+    ask_price: Decimal | None = DEFAULT_ASK_PRICE,
+    signal_status: str = "PUBLISHED",
 ):
     from uuid import uuid4
 
@@ -205,7 +210,7 @@ async def _build_plan_for_safety_case(
         slippage_rate=D("0.0003"),
         funding_rate_scenario=D("0"),
         stress_downside_rate=D("0.36"),
-        status="PUBLISHED",
+        status=signal_status,
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         net_rr=D("1.5"),
         net_ev_r=D("0.1"),
@@ -235,11 +240,11 @@ async def _build_plan_for_safety_case(
     ticker_time = datetime.now(UTC)
     ticker = SimpleNamespace(
         source_time=ticker_time,
+        bid_price=bid_price,
+        ask_price=ask_price,
         turnover_24h=turnover_24h,
         funding_rate=D("0") if funding_snapshot_complete else None,
-        next_funding_time=(
-            ticker_time + timedelta(hours=8) if funding_snapshot_complete else None
-        ),
+        next_funding_time=(ticker_time + timedelta(hours=8) if funding_snapshot_complete else None),
     )
     spec = SimpleNamespace(
         tick_size=D("0.1"),
@@ -271,6 +276,67 @@ async def _build_plan_for_safety_case(
         profile=profile,
         settings=settings,
     )
+
+
+async def test_execution_plan_reprices_from_current_executable_quote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        bid_price=D("99.8"),
+        ask_price=D("100.4"),
+    )
+
+    assert D(plan.sizing_snapshot["entry_price"]) == D("100.4")
+
+
+async def test_execution_plan_fails_closed_when_executable_quote_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        ask_price=None,
+    )
+
+    assert plan.status == "BLOCKED_DATA"
+    assert any("bid/ask" in warning for warning in plan.warnings)
+
+
+async def test_execution_plan_marks_quote_outside_entry_zone_as_no_trade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        bid_price=D("101.9"),
+        ask_price=D("102"),
+    )
+
+    assert plan.status == "NO_TRADE"
+    assert any("вне зоны входа" in warning for warning in plan.warnings)
+
+
+async def test_terminal_signal_status_is_not_overwritten_by_liquidation_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("65"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        signal_status="EXPIRED",
+    )
+
+    assert plan.status == "EXPIRED"
+    assert "Стоп находится за оценочной областью ликвидации" not in plan.warnings
 
 
 async def test_execution_plan_blocks_stop_beyond_liquidation_at_leverage_three(
@@ -321,9 +387,8 @@ async def test_execution_plan_snapshot_persists_three_outcome_economics(
     assert D(snapshot["upside_rate"]).is_finite()
     assert D(snapshot["timeout_net_rate"]).is_finite()
     assert D(snapshot["break_even_tp_probability"]).is_finite()
-    assert snapshot["break_even_probability_semantics"] == (
-        "P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed"
-    )
+    assert snapshot["break_even_probability_semantics"] == ("P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed")
+
 
 class _NoRowsResult:
     def scalar_one_or_none(self) -> object | None:
@@ -415,9 +480,7 @@ async def _run_acceptance_case(
         turnover_24h=turnover_24h,
         funding_rate=current_funding_rate if funding_snapshot_complete else None,
         next_funding_time=(
-            next_funding_time or now + timedelta(hours=8)
-            if funding_snapshot_complete
-            else None
+            next_funding_time or now + timedelta(hours=8) if funding_snapshot_complete else None
         ),
     )
     spec = SimpleNamespace(
@@ -619,6 +682,7 @@ async def test_execution_plan_blocks_signal_prices_outside_current_tick(
 
     assert plan.status == "BLOCKED_DATA"
     assert any("шагу цены" in warning for warning in plan.warnings)
+
 
 async def test_execution_plan_blocks_missing_funding_snapshot(
     monkeypatch: pytest.MonkeyPatch,

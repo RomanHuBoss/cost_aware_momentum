@@ -6,11 +6,11 @@ Direction-conditional оценка исходов `TP / SL / TIMEOUT` для LON
 
 ## Данные и время
 
-Features строятся только по confirmed hourly candles. Decision-time и label-end semantics разделены; temporal split purged по фактическому label horizon. Inference версии 1.8.25 разделяет market cutoff и availability cutoff.
+Features строятся только по confirmed hourly candles. Decision-time и label-end semantics разделены; temporal split purged по фактическому label horizon. Inference разделяет market cutoff и availability cutoff. Версия 1.8.26 дополнительно запрещает auto-activation при отрицательном минимальном realized mean R или profit factor ниже 1.
 
 ## Activation
 
-Candidate artifact immutable, снабжается hash/metadata и сравнивается с incumbent на совместимом final holdout. Auto-activation допускается только после absolute и relative ML/policy gates. Ошибка candidate не деактивирует incumbent.
+Candidate artifact immutable, снабжается hash/metadata и сравнивается с incumbent на совместимом final holdout. Auto-activation допускается только после absolute и relative ML/policy gates. При включенной auto-activation абсолютный порог realized mean R не может быть отрицательным, а минимальный profit factor не может быть ниже 1. Ошибка candidate не деактивирует incumbent.
 
 ## Не доказано
 
