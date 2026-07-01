@@ -175,6 +175,13 @@ async def sync_instruments(session: AsyncSession, client: BybitClient) -> int:
     for item in items:
         if item.get("settleCoin") != "USDT":
             continue
+        # Bybit's ``linear`` category contains both perpetuals and dated futures.
+        # This application is deliberately scoped to USDT perpetuals; dated
+        # futures can legitimately report fundingInterval=0 because they settle
+        # by delivery instead of periodic funding. Exclude them before strict
+        # perpetual specification validation.
+        if item.get("contractType") != "LinearPerpetual":
+            continue
         symbol = str(item.get("symbol") or "").strip().upper()
         if not symbol:
             raise ValueError("Bybit field symbol is required for a USDT instrument")

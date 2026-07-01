@@ -1,5 +1,27 @@
 # QA report
 
+## Release 1.8.21 — 2026-07-01
+
+Environment: Python 3.13.5 in the supplied sandbox interpreter; no project-local `.venv`, application `.env` or disposable PostgreSQL integration database. The operator supplied a real mainnet worker traceback from Windows showing repeated `instrument_sync` failure after a successful Bybit HTTP 200 response.
+
+| Check | Baseline 1.8.20 | Post-change 1.8.21 |
+|---|---:|---:|
+| `python -m pip check` | FAILED — unrelated global `moviepy`/`Pillow` conflict | FAILED — same environment conflict |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | PASSED |
+| `python -m ruff check .` | UNAVAILABLE — Ruff not installed | UNAVAILABLE — same |
+| `python -m pytest -q` | NOT RUN to completion — 19 collection errors because `psycopg` is absent | NOT RUN to completion — same environment limitation |
+| focused regression | 1 failed with the operator's `fundingInterval` `ValueError` | 1 passed |
+| related market-data/universe suite | not run before patch | 12 passed |
+| `node --check web/js/app.js` | PASSED | PASSED |
+| Alembic head | `0007_position_account_scope` | `0007_position_account_scope` |
+| release integrity | prior manifest valid for 1.8.20 | PASSED — 163/163 |
+| `python manage.py doctor` | NOT RUN — project `.venv`/`.env` unavailable | NOT RUN — same |
+| PostgreSQL integration | NOT RUN — no safe test database | NOT RUN — same |
+
+The red fixture contains a delivery-settled `LinearFutures` contract with `fundingInterval=0` followed by a valid `LinearPerpetual`. Version 1.8.20 aborted before reaching the perpetual. Version 1.8.21 filters the out-of-scope future before strict spec validation and persists only the perpetual. Strict validation remains unchanged for in-scope perpetual rows.
+
+A live Bybit smoke could not be repeated from the sandbox because outbound network/DNS access is unavailable. The user's successful mainnet HTTP response and traceback are the external reproduction evidence; official Bybit documentation confirms that `category=linear` contains USDT/USDC perpetuals and futures and defines `LinearFutures` separately from `LinearPerpetual`. Technical correctness is not evidence of profitability.
+
 ## Release 1.8.20 — 2026-06-30
 
 Environment: Python 3.13.5 in isolated virtual environment `/mnt/data/cam_audit_venv`; project installed with `.[dev]`; no application `.env` or disposable PostgreSQL integration database.

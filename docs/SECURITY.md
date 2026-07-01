@@ -1,5 +1,9 @@
 # Security boundary
 
+## Product-type isolation in 1.8.21
+
+The public Bybit `linear` endpoint can mix perpetual and dated futures. The worker now enforces `contractType == LinearPerpetual` before specification validation and storage, preventing an out-of-scope delivery contract from disabling the perpetual advisory pipeline. In-scope perpetuals retain strict positive funding-interval validation; no fail-open funding default was introduced.
+
 ## Acceptance-time external-state gate in 1.8.20
 
 A previously calculated plan cannot be accepted solely because its stored snapshot was valid. For read-only profiles, acceptance repeats account reconciliation after the account-scoped risk lock, requires complete funding metadata and rechecks current turnover-derived liquidity. Any missing or conflicting state fails closed with plan supersession/recalculation. This reduces the chance that an unknown exchange position, omitted funding settlement or collapsed liquidity is hidden by an older actionable plan. The application remains advisory-only and does not gain order, amend, cancel or withdrawal capability.

@@ -1,5 +1,12 @@
 # Трассировка требований спецификации
 
+## 1.8.21 trace additions
+
+| Requirement / defect | Implementation | Evidence |
+|---|---|---|
+| Bybit `linear` transport category must not widen the product universe | filter `contractType == LinearPerpetual` in `sync_instruments()` before symbol/spec parsing | `test_instrument_sync_ignores_linear_futures_before_funding_validation` |
+| Delivery futures funding semantics must not disable perpetual sync | out-of-scope `LinearFutures` with `fundingInterval=0` is skipped; perpetual validation remains strict | red failure on 1.8.20, green focused market-data/universe suite |
+
 ## 1.8.20 trace additions
 
 | Requirement / defect | Implementation | Evidence |

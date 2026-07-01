@@ -1,5 +1,11 @@
 # Архитектура
 
+## Linear contract boundary in 1.8.21
+
+Bybit's `linear` category is a transport category, not a perpetual-only universe: it may contain `LinearPerpetual` and delivery-settled `LinearFutures`. The market-data worker now applies the product boundary before strict specification parsing and persistence. Only USDT-settled `LinearPerpetual` rows enter the instrument/spec history used by the dynamic universe.
+
+A malformed in-scope perpetual still aborts synchronization fail-closed; the change does not replace missing perpetual funding metadata with zero or a local default.
+
 ## Acceptance external-state integrity in 1.8.20
 
 `ACCEPTED` remains a separate transactional safety boundary. After the account-scoped advisory lock is acquired, the API reloads capital/open risk and repeats read-only account reconciliation against the same PostgreSQL transaction. It also requires a complete current funding snapshot and derives the current liquidity-notional cap from positive finite 24-hour turnover. Missing data or a plan notional above the fresh cap produces HTTP 409 and a recalculated plan; no order API is invoked.

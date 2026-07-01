@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.20: переход в `ACCEPTED` повторно подтверждает полноту funding, account reconciliation и актуальный turnover-based liquidity cap; отсутствующий или ухудшившийся внешний снимок создает новую пересчитанную либо заблокированную версию плана вместо принятия устаревшего размера.
+> Версия 1.8.21: синхронизация инструментов из категории Bybit `linear` сначала отделяет `LinearPerpetual` от поставочных `LinearFutures`; допустимый для futures `fundingInterval=0` больше не останавливает worker и не загрязняет perpetual-каталог.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -20,6 +20,10 @@
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, полная funding timeline, account reconciliation, текущий turnover-based liquidity cap, `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - После ручного входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.
 - Нативный запуск без Docker, Redis и Celery.
+
+## Обновление с 1.8.20 до 1.8.21
+
+Миграций и новых `.env` переменных нет. Перезапустите worker. Категория Bybit `linear` содержит perpetual и поставочные futures; проект сохраняет только `LinearPerpetual`. Контракты `LinearFutures`, включая записи с `fundingInterval=0`, теперь пропускаются до строгой проверки perpetual-спецификации. Если нулевой/отсутствующий funding interval придет для `LinearPerpetual`, синхронизация по-прежнему завершится ошибкой fail-closed.
 
 ## Обновление с 1.8.19 до 1.8.20
 

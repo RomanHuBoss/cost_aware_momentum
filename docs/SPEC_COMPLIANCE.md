@@ -1,5 +1,11 @@
 # Проверка соответствия спецификации версии 1.3
 
+## Статус версии 1.8.21 — linear perpetual product boundary
+
+Закрыт подтвержденный integration defect: Bybit `category=linear` включает `LinearFutures`, но проект предназначен для USDT perpetuals. Фильтр `contractType == LinearPerpetual` теперь применяется до funding/spec validation и persistence. Поставочный контракт с `fundingInterval=0` не останавливает весь worker; невалидный perpetual по-прежнему блокирует синхронизацию fail-closed.
+
+Общий статус спецификации остается частичным; изменение не добавляет исторический orderbook, walk-forward, PBO/DSR, drift control или forward profitability evidence.
+
 ## Статус версии 1.8.20 — acceptance external-state integrity
 
 Закрыт подтвержденный fail-open разрыв между построением и принятием execution plan. Перед `ACCEPTED` read-only профиль повторно проходит account reconciliation; funding snapshot должен содержать ставку и следующий settlement; текущий positive finite turnover заново ограничивает notional. Отсутствующий turnover при построении плана больше не отключает liquidity cap. Advisory-only, PostgreSQL-only и разделение market signal / execution plan сохранены.
@@ -30,9 +36,9 @@
 
 Strengthened executable-quote and plan-contract integrity: all relevant paths reject missing/non-finite/crossed bid/ask; malformed ticker items are isolated; UI entry-state uses the marketable side; and the published plan no longer advertises an unmodeled TP2 partial exit. PostgreSQL-only and advisory-only boundaries are unchanged.
 
-Дата проверки: 2026-06-30
+Дата проверки: 2026-07-01
 Проверенный источник: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`
-Версия проекта после коррекции: 1.8.20
+Версия проекта после коррекции: 1.8.21
 
 ## Итог
 
