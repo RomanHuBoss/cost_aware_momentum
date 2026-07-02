@@ -28,7 +28,7 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "exit-time-open-gap-propagated-cohort-weighted-v5"
+POLICY_METRIC_SCHEMA = "exit-time-open-gap-propagated-cohort-weighted-v6"
 
 
 class TemporalCalibratedBarrierModel:
@@ -887,8 +887,9 @@ def evaluate_policy_model(
         expected_mean_ev_r=("expected_ev_r", "mean"),
     )
     exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
-    gains = float(exit_r[exit_r > 0].sum())
-    losses = float(-exit_r[exit_r < 0].sum())
+    trade_contributions = trades["realized_r_contribution"]
+    gains = float(trade_contributions[trade_contributions > 0].sum())
+    losses = float(-trade_contributions[trade_contributions < 0].sum())
     profit_factor = gains / losses if losses > 0 else None
     profit_factor_unbounded = losses == 0.0 and gains > 0.0
     cumulative_r = np.concatenate(([0.0], exit_r.cumsum().to_numpy(float)))

@@ -356,8 +356,12 @@ async def latest_spec(
             .where(
                 InstrumentSpecHistory.symbol == symbol,
                 InstrumentSpecHistory.valid_from <= cutoff,
+                InstrumentSpecHistory.received_at <= cutoff,
             )
-            .order_by(desc(InstrumentSpecHistory.valid_from))
+            .order_by(
+                desc(InstrumentSpecHistory.valid_from),
+                desc(InstrumentSpecHistory.received_at),
+            )
             .limit(1)
         )
     ).scalar_one_or_none()

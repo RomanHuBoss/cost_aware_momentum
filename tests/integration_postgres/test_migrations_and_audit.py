@@ -160,6 +160,7 @@ async def test_seeded_reference_data(database_url: str) -> None:
             )
         ).scalar_one()
         assert "INVALID_INPUT" in valuation_constraint
+        assert "PATH_UNAVAILABLE" in valuation_constraint
     await engine.dispose()
 
 

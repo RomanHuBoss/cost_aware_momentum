@@ -10,4 +10,4 @@
 - Release tree проверяется fail-closed скриптом `scripts/release_integrity.py` и manifest `SHA256SUMS`.
 - Логи и отчёты не должны содержать API secret, operator password, session secret или полные authentication headers.
 
-Patch 1.8.29 не меняет authentication, cookie, CSRF, network binding или advisory-only semantics. Он ужесточает только fail-closed validation model/research artifacts и восстанавливает release manifest.
+Patch 1.8.30 не меняет authentication, cookie, CSRF, network binding, Bybit permissions или advisory-only semantics. Он добавляет fail-closed temporal accounting для plan outcomes, point-in-time instrument-spec receipt cutoff и корректную policy-econometrics schema.

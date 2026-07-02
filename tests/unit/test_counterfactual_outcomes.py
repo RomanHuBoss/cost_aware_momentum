@@ -407,7 +407,7 @@ async def test_invalid_plan_snapshot_is_persisted_as_zero_valued_outcome(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_plan_outcome_uses_plan_entry_and_planning_time(monkeypatch) -> None:
+async def test_plan_outcome_uses_plan_entry_when_anchor_matches_signal(monkeypatch) -> None:
     recorded = SimpleNamespace(row=None)
 
     class FakeSession:
@@ -441,7 +441,7 @@ async def test_plan_outcome_uses_plan_entry_and_planning_time(monkeypatch) -> No
         actual_stress_loss=Decimal("3"),
         sizing_snapshot={
             "entry_price": "101",
-            "planning_time": (BASE + timedelta(hours=2)).isoformat(),
+            "planning_time": BASE.isoformat(),
             "costs": {
                 "fee_rate_round_trip": "0",
                 "slippage_rate": "0",
@@ -463,8 +463,6 @@ async def test_plan_outcome_uses_plan_entry_and_planning_time(monkeypatch) -> No
 
     assert row.entry_price == Decimal("101")
     assert row.gross_pnl == Decimal("3")
-    assert row.estimated_funding_cash_flow == Decimal("-2.02")
-    assert row.cost_assumptions["funding"]["settlements"] == 2
-    assert row.cost_assumptions["valuation_start_time"] == (
-        BASE + timedelta(hours=2)
-    ).isoformat()
+    assert row.estimated_funding_cash_flow == Decimal("-4.04")
+    assert row.cost_assumptions["funding"]["settlements"] == 4
+    assert row.cost_assumptions["valuation_start_time"] == BASE.isoformat()

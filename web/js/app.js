@@ -603,12 +603,15 @@ function renderDetail() {
       ['Timeout net outcome', `${fmt(planEconomics.timeout_net_rate * 100, 3)}%`],
     ])}<p class="section-note">Эти значения пересчитаны из immutable snapshot выбранной версии плана и проверены против сохраненных Net R/R, EV и downside.</p></section>`
       : `<section class="detail-card"><h3>Execution plan · сохраненный расчет</h3><p>Экономика плана не показана: snapshot отсутствует, поврежден или не проходит проверку целостности.</p></section>`;
-    const valuationLabels = { VALUED: 'Рассчитано', NOT_SIZED: 'Без безопасного размера', FUNDING_UNAVAILABLE: 'Funding timeline недоступен', INVALID_INPUT: 'Некорректный snapshot плана' };
+    const valuationLabels = { VALUED: 'Рассчитано', NOT_SIZED: 'Без безопасного размера', FUNDING_UNAVAILABLE: 'Funding timeline недоступен', PATH_UNAVAILABLE: 'Нет ценового пути от времени плана', INVALID_INPUT: 'Некорректный snapshot плана' };
+    const planOutcomePnl = planOutcome?.valuation_status === 'VALUED'
+      ? `${fmt(planOutcome.estimated_net_pnl, 4)} USDT`
+      : '—';
     const outcomeCard = outcome ? `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3>${dataList([
       ['Исход первичного барьера', escapeHtml(outcome.outcome)], ['Цена выхода', fmtPrice(outcome.exit_price)],
       ['Время исхода', new Date(outcome.exit_time).toLocaleString('ru-RU')], ['Неоднозначный часовой бар', outcome.ambiguous ? 'Да, консервативно SL' : 'Нет'],
       ['Оценка плана', planOutcome ? escapeHtml(valuationLabels[planOutcome.valuation_status] || planOutcome.valuation_status) : 'Ожидает расчета'],
-      ['Оценочный net P&L', planOutcome ? `${fmt(planOutcome.estimated_net_pnl, 4)} USDT` : '—'],
+      ['Оценочный net P&L', planOutcomePnl],
       ['Контрфактический результат', planOutcome?.counterfactual_r === null || planOutcome?.counterfactual_r === undefined ? '—' : `${fmt(planOutcome.counterfactual_r, 4)}R`],
     ])}<p class="section-note">Это автоматическая оценка TP1/SL/TIMEOUT по подтвержденным часовым свечам и сохраненным предположениям плана, а не фактический P&L ручного исполнения.</p></section>` : `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3><p>Еще не определен: горизонт не завершен, барьер не достигнут либо не хватает подтвержденной свечи.</p></section>`;
     html = `<div class="detail-grid"><section class="detail-card"><h3>Market signal · reference</h3>${dataList([

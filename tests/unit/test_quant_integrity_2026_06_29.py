@@ -67,7 +67,7 @@ def test_policy_evaluation_scales_overlapping_hourly_decisions_by_horizon_sleeve
         ),
         horizon_hours=2,
     )
-    assert metrics["policy_metric_schema"] == "exit-time-open-gap-propagated-cohort-weighted-v5"
+    assert metrics["policy_metric_schema"] == "exit-time-open-gap-propagated-cohort-weighted-v6"
     assert metrics["policy_capital_sleeves"] == 2
     assert metrics["policy_realized_total_r"] == pytest.approx(1.0)
 

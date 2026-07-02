@@ -21,3 +21,12 @@
 ## Model incident
 
 Оставить incumbent active, заблокировать candidate activation, проверить hash/task/classes/horizon/calibration, `feature_schema_version`, `label_path_schema_version`, `temporal_split_schema` и ATR barrier multipliers. Не сравнивать candidate с incumbent при различной barrier geometry; переобучить совместимый artifact или выполнить documented rollback.
+
+
+## PATH_UNAVAILABLE или подозрительный plan outcome
+
+1. Не трактовать нулевые financial fields как безубыточную сделку: проверить `valuation_status`.
+2. Сравнить `plan.sizing_snapshot.planning_time` с `signal.event_time`.
+3. Не переиспользовать signal-level TP/SL path для более позднего entry.
+4. Для восстановления денежной оценки требуется доказуемый entry-aligned intrabar path; без него оставить запись fail-closed.
+5. После migration 0008 проверить число переведённых historical rows и сохранить результат в операционном журнале.

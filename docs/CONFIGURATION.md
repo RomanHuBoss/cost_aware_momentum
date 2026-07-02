@@ -11,6 +11,14 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.30
+
+Новых или переименованных переменных нет.
+
+- Требуется Alembic migration `0008_plan_outcome_path_unavailable`.
+- Policy metric schema повышена до `exit-time-open-gap-propagated-cohort-weighted-v6`; новые candidate/incumbent evidence должны быть пересчитаны текущим trainer.
+- Пороговые значения риска, fee/slippage/funding и auto-activation не менялись.
+
 ## Изменения 1.8.29
 
 Новых или переименованных переменных нет.

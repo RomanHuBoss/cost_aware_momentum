@@ -57,7 +57,13 @@ class BarrierEvaluation:
 
 @dataclass(frozen=True)
 class PlanOutcomeEstimate:
-    valuation_status: Literal["VALUED", "NOT_SIZED", "FUNDING_UNAVAILABLE", "INVALID_INPUT"]
+    valuation_status: Literal[
+        "VALUED",
+        "NOT_SIZED",
+        "FUNDING_UNAVAILABLE",
+        "PATH_UNAVAILABLE",
+        "INVALID_INPUT",
+    ]
     gross_pnl: Decimal
     estimated_trading_costs: Decimal
     estimated_funding_cash_flow: Decimal
@@ -69,6 +75,18 @@ class PlanOutcomeEstimate:
 def _invalid_plan_estimate(reason: str) -> PlanOutcomeEstimate:
     return PlanOutcomeEstimate(
         valuation_status="INVALID_INPUT",
+        gross_pnl=Decimal("0"),
+        estimated_trading_costs=Decimal("0"),
+        estimated_funding_cash_flow=Decimal("0"),
+        estimated_net_pnl=Decimal("0"),
+        counterfactual_r=None,
+        validation_error=reason,
+    )
+
+
+def _path_unavailable_plan_estimate(reason: str) -> PlanOutcomeEstimate:
+    return PlanOutcomeEstimate(
+        valuation_status="PATH_UNAVAILABLE",
         gross_pnl=Decimal("0"),
         estimated_trading_costs=Decimal("0"),
         estimated_funding_cash_flow=Decimal("0"),
@@ -542,12 +560,15 @@ async def _record_plan_outcome(
     plan: ExecutionPlan,
     actor: str,
 ) -> PlanOutcome:
-    # Exit belongs to the resolved market outcome. Entry and valuation start belong
-    # to the immutable execution-plan snapshot because a recalculated plan can use
-    # a later executable price than the original market signal.
+    # The resolved price path begins at the signal event. A plan can be monetarily
+    # valued only when its immutable planning anchor is identical to that event.
+    # Reusing earlier price action for a later plan would introduce look-ahead and
+    # can attribute a barrier hit that happened before the plan existed.
     exit_price = positive_finite_decimal(signal_outcome.exit_price, "signal_outcome.exit_price")
 
     try:
+        _require_aware(signal.event_time, "signal.event_time")
+        _require_aware(signal_outcome.exit_time, "signal_outcome.exit_time")
         validated_qty = nonnegative_finite_decimal(plan.qty, "qty")
         validated_stress_loss = nonnegative_finite_decimal(
             plan.actual_stress_loss, "actual_stress_loss"
@@ -557,23 +578,38 @@ async def _record_plan_outcome(
         fee_rate_round_trip = snapshot_costs.fee_rate_round_trip
         slippage_rate = snapshot_costs.slippage_rate
         stop_gap_reserve_rate = snapshot_costs.stop_gap_reserve_rate
-        funding_rate, funding_complete, funding_details = _funding_rate_for_holding_period(
-            plan, start_time=valuation_start, exit_time=signal_outcome.exit_time
-        )
-        estimate = estimate_plan_outcome(
-            direction=signal.direction,
-            outcome=signal_outcome.outcome,
-            qty=validated_qty,
-            entry_price=entry_price,
-            exit_price=exit_price,
-            actual_stress_loss=validated_stress_loss,
-            fee_rate_round_trip=fee_rate_round_trip,
-            slippage_rate=slippage_rate,
-            stop_gap_reserve_rate=stop_gap_reserve_rate,
-            funding_rate=funding_rate,
-            funding_complete=funding_complete,
-            stop_price=signal.stop_loss,
-        )
+        if valuation_start < signal.event_time:
+            raise ValueError("plan.planning_time must not precede signal.event_time")
+        if valuation_start > signal.event_time:
+            reason = (
+                "price path is unavailable from plan.planning_time; "
+                "the stored signal outcome starts at signal.event_time"
+            )
+            funding_rate = Decimal("0")
+            funding_details = {
+                "source": "path_unavailable",
+                "settlements": 0,
+                "validation_error": reason,
+            }
+            estimate = _path_unavailable_plan_estimate(reason)
+        else:
+            funding_rate, funding_complete, funding_details = _funding_rate_for_holding_period(
+                plan, start_time=valuation_start, exit_time=signal_outcome.exit_time
+            )
+            estimate = estimate_plan_outcome(
+                direction=signal.direction,
+                outcome=signal_outcome.outcome,
+                qty=validated_qty,
+                entry_price=entry_price,
+                exit_price=exit_price,
+                actual_stress_loss=validated_stress_loss,
+                fee_rate_round_trip=fee_rate_round_trip,
+                slippage_rate=slippage_rate,
+                stop_gap_reserve_rate=stop_gap_reserve_rate,
+                funding_rate=funding_rate,
+                funding_complete=funding_complete,
+                stop_price=signal.stop_loss,
+            )
     except (DecimalException, TypeError, ValueError, OverflowError) as exc:
         entry_price = positive_finite_decimal(signal.entry_reference, "signal.entry_reference")
         valuation_start = signal.event_time
@@ -599,7 +635,7 @@ async def _record_plan_outcome(
             "valuation_source": valuation_source,
         }
     else:
-        stored_qty = plan.qty
+        stored_qty = validated_qty
         cost_assumptions = {
             "fee_rate_round_trip": str(fee_rate_round_trip),
             "slippage_rate": str(slippage_rate),
@@ -613,7 +649,14 @@ async def _record_plan_outcome(
             "actual_execution_pnl": False,
             "valuation_start_time": valuation_start.isoformat(),
             "valuation_source": valuation_source,
+            "price_path_source": (
+                "unavailable_after_signal_anchor"
+                if estimate.valuation_status == "PATH_UNAVAILABLE"
+                else "signal_outcome_from_signal_event_time"
+            ),
         }
+        if estimate.validation_error is not None:
+            cost_assumptions["validation_error"] = estimate.validation_error
 
     row = PlanOutcome(
         signal_outcome_id=signal_outcome.id,
@@ -956,8 +999,9 @@ async def resolve_counterfactual_outcomes(
         resolved_count += 1
 
     # A plan can be created after the signal outcome (for example after a profile
-    # recalculation while the recommendation is still current).  Backfill missing
-    # plan versions on every run instead of assuming all plans existed at first hit.
+    # recalculation while the recommendation is still current). Backfill every plan
+    # version, but later planning anchors remain PATH_UNAVAILABLE until an exact
+    # entry-aligned price path is persisted; never reuse pre-plan signal movement.
     missing_plan_rows = (
         await session.execute(
             select(ExecutionPlan, MarketSignal, SignalOutcome)

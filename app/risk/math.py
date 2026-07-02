@@ -232,8 +232,10 @@ def projected_funding_rate(
     interval = timedelta(minutes=interval_value)
     # A settlement exactly at the planning start is already in the past for a
     # position opened after the signal decision. Count only future settlements.
-    while next_settlement <= start_time:
-        next_settlement += interval
+    if next_settlement <= start_time:
+        elapsed = start_time - next_settlement
+        steps = int(elapsed // interval) + 1
+        next_settlement += interval * steps
     end_time = start_time + timedelta(hours=horizon_value)
     if next_settlement > end_time:
         return Decimal("0")

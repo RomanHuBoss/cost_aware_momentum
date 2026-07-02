@@ -30,3 +30,8 @@
 | No-loss profit-factor semantics | `app/ml/training.py::evaluate_policy_model`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded` |
 | Backtest artifact validation and hash | `scripts/backtest.py::load_validated_artifact` | `test_backtest_loader_enforces_runtime_artifact_contract` |
 | Release provenance manifest | `scripts/release_integrity.py`, `SHA256SUMS` | release check on repacked tree |
+| Plan outcome cannot reuse pre-plan price path | `app/services/outcomes.py::_record_plan_outcome`, migration `0008_plan_outcome_path_unavailable` | `test_late_execution_plan_does_not_reuse_pre_entry_signal_path`, schema test; PostgreSQL backfill not run |
+| UI does not present unavailable-path zero as P&L | `web/js/app.js` | `test_frontend_marks_unavailable_path_without_numeric_pnl`, `node --check` |
+| Profit factor gross legs do not net by exit timestamp | `app/ml/training.py::evaluate_policy_model` | `test_profit_factor_does_not_net_simultaneous_winner_and_loser` |
+| Bounded funding-anchor advancement | `app/risk/math.py::projected_funding_rate` | `test_funding_projection_advances_stale_anchor_arithmetically` |
+| Execution spec availability cutoff | `app/services/execution.py::latest_spec` | `test_execution_spec_query_respects_receipt_cutoff` |

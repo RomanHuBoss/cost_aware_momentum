@@ -23,6 +23,10 @@
 | Candidate/incumbent comparison uses one barrier task | IMPLEMENTED / UNIT CHECKED in 1.8.29 | horizon and ATR multipliers must match; otherwise comparison is skipped and activation blocks |
 | No-loss profit factor is distinct from missing/no-trade data | IMPLEMENTED / UNIT CHECKED in 1.8.29 | explicit gross gain/loss and validated unbounded flag |
 | Backtest uses production artifact contract | IMPLEMENTED / UNIT CHECKED in 1.8.29 | shared `ModelRuntime`, optional expected SHA-256, no silent multiplier fallback |
+| Late execution-plan counterfactual path integrity | IMPLEMENTED / UNIT CHECKED in 1.8.30; MIGRATION NOT DB-TESTED | later `planning_time` cannot reuse movement before plan creation; status `PATH_UNAVAILABLE`; migration 0008 backfills existing rows |
+| Profit factor preserves simultaneous gross gains/losses | IMPLEMENTED / UNIT CHECKED in 1.8.30 | gross gain/loss use individual weighted trade contributions; exit-time netting remains only for equity/drawdown |
+| Execution instrument specs respect receipt cutoff | IMPLEMENTED / UNIT CHECKED in 1.8.30 | `valid_from` and `received_at` are both bounded by cutoff |
+| Funding timeline advancement is bounded | IMPLEMENTED / UNIT CHECKED in 1.8.30 | stale anchor advances arithmetically rather than settlement-by-settlement |
 | Purged temporal validation | IMPLEMENTED / UNIT CHECKED | split uses decision time and label end time |
 | Immutable guarded model lifecycle | IMPLEMENTED / UNIT CHECKED | artifact/runtime/trainer tests; live promotion evidence not checked |
 | Actual historical order book/fills/funding timeline in research | PARTIAL | documented research limitation |
