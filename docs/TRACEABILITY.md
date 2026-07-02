@@ -16,6 +16,8 @@
 | Explicit TIMEOUT assumption parity | `app/config.py`, `app/services/signals.py`, `app/services/execution.py`, `app/api/serializers.py`, `app/ml/lifecycle.py`, `scripts/backtest.py` | timeout economics and serializer tests in `test_model_policy_safety_2026_07_02.py` |
 | Horizon-independent policy cohort threshold | `app/ml/training.py::_count_horizon_separated_cohorts`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_hourly_overlapping_policy_cohorts_are_not_counted_as_independent`, `test_quality_gate_uses_independent_cohort_threshold` |
 | Minimum holdout calendar span | `app/ml/training.py::_holdout_time_bounds`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_rejects_large_cross_section_from_short_holdout` |
+| Bootstrap history is sufficient for configured split/gates | `app/ml/training.py::minimum_hourly_history_timestamps_for_quality_gate`, `app/workers/trainer.py::BackgroundTrainer.due_reason` | `test_bootstrap_waits_until_configured_holdout_span_is_mathematically_possible` |
+| Positive information skill vs class prior | `app/ml/training.py::evaluate_model`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_rejects_model_without_skill_over_class_prior` |
 | Quality-gate rejection does not retrain unchanged data | `app/workers/trainer.py::BackgroundTrainer.due_reason` | unchanged-data suppression and new-timestamp resume tests in `test_trainer_recovery_scheduling.py` |
 | Economically non-losing auto-activation floors | `app/config.py::Settings.validate_cross_field_policy` | `test_auto_activation_rejects_economically_losing_absolute_gate` |
 | Post-fetch counterfactual cutoff | `app/workers/runner.py::counterfactual_outcome_job` | static flow review; PostgreSQL integration not run |

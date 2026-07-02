@@ -11,13 +11,13 @@ from app.ml.data_profile import profile_from_symbol_rows
 from app.workers import trainer as trainer_module
 
 
-def training_profile(now: datetime):
+def training_profile(now: datetime, *, unique_timestamps: int = 1500):
     return profile_from_symbol_rows(
         [
-            ("BTCUSDT", 900, now - timedelta(days=40), now),
-            ("ETHUSDT", 900, now - timedelta(days=40), now),
+            ("BTCUSDT", unique_timestamps, now - timedelta(hours=unique_timestamps), now),
+            ("ETHUSDT", unique_timestamps, now - timedelta(hours=unique_timestamps), now),
         ],
-        unique_timestamps=900,
+        unique_timestamps=unique_timestamps,
         minimum_rows_for_coverage=300,
     )
 
@@ -398,3 +398,24 @@ async def test_operator_recovery_does_not_bypass_minimum_history(
 
     assert due is False
     assert reason["reason"] == "not_enough_history_for_bootstrap"
+
+@pytest.mark.asyncio
+async def test_bootstrap_waits_until_configured_holdout_span_is_mathematically_possible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    insufficient_profile = training_profile(now, unique_timestamps=900)
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=None,
+        latest=None,
+        profile=insufficient_profile,
+    )
+
+    due, reason = await trainer.due_reason()
+
+    assert due is False
+    assert reason["reason"] == "not_enough_history_for_bootstrap"
+    assert reason["timestamps"] == 900
+    assert reason["required_timestamps"] == 1206
+    assert reason["required_holdout_span_hours"] == 168

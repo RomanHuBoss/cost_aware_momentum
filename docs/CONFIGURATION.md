@@ -11,6 +11,14 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.35
+
+Новых `.env`-переменных нет. Trainer вычисляет минимальную теоретически достаточную часовую историю из текущих `DEFAULT_HORIZON_HOURS`, `AUTO_TRAIN_MIN_HOLDOUT_ROWS` и `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS`. При defaults (`8`, `180`, `168`) требуется минимум **1206** уникальных hourly timestamps до запуска candidate.
+
+Причина `not_enough_history_for_bootstrap` означает, что configured final holdout ещё математически невозможен. Уменьшать holdout gates ради запуска не следует; дождитесь progressive history backfill или увеличьте доступную историю. Это только preflight: gaps/invalid candles, class collapse и policy gates проверяются позже fail-closed.
+
+Promotion дополнительно требует `log_loss_skill_vs_prior > 0`. Отдельной настройки порога нет: прогноз хуже либо равный class-prior baseline не является допустимым основанием для auto-activation.
+
 ## Изменения 1.8.34
 
 - `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS=168` — минимальная разница между первой и последней decision-time точкой final holdout. Rows по множеству символов не компенсируют слишком короткий календарный период. Минимально допустимое значение — 24 часа и не меньше `DEFAULT_HORIZON_HOURS`.

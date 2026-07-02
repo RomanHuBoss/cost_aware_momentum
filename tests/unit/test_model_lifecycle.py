@@ -48,6 +48,8 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "rows": 300,
         "holdout_span_hours": 336.0,
         "log_loss": log_loss,
+        "class_prior_log_loss": 1.05,
+        "log_loss_skill_vs_prior": 1.05 - log_loss,
         "multiclass_brier": brier,
         "ece_tp": 0.05,
         "ece_sl": 0.06,

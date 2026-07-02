@@ -152,6 +152,57 @@ class PolicyEvaluationConfig:
     horizon_hours: int | None = None
 
 
+def minimum_hourly_history_timestamps_for_quality_gate(
+    *,
+    horizon_hours: int,
+    minimum_holdout_rows: int,
+    minimum_holdout_span_hours: int,
+) -> int:
+    """Return the theoretical minimum raw hourly timestamps for the split/gate.
+
+    The calculation mirrors :func:`chronological_split` for one continuously
+    sampled symbol. Each decision timestamp emits the required LONG/SHORT pair,
+    the final 15% window starts after the horizon-sized embargo, and feature/label
+    construction consumes the 24-hour feature warm-up plus the future horizon.
+
+    This is a necessary precondition, not a promise that gapped or invalid market
+    data will produce a valid candidate. Those cases remain fail-closed later.
+    """
+
+    values = {
+        "horizon_hours": horizon_hours,
+        "minimum_holdout_rows": minimum_holdout_rows,
+        "minimum_holdout_span_hours": minimum_holdout_span_hours,
+    }
+    for name, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+            raise TypeError(f"{name} must be an integer")
+        if int(value) <= 0:
+            raise ValueError(f"{name} must be positive")
+
+    horizon = int(horizon_hours)
+    required_test_timestamps = max(
+        int(np.ceil(int(minimum_holdout_rows) / 2)),
+        int(minimum_holdout_span_hours) + 1,
+        45,  # chronological_split requires at least 90 LONG/SHORT test rows
+    )
+
+    labeled_timestamps = 300
+    while True:
+        train_index = int(labeled_timestamps * 0.70)
+        calibration_index = int(labeled_timestamps * 0.85)
+        train_timestamps = train_index - horizon
+        calibration_timestamps = calibration_index - train_index - 2 * horizon
+        test_timestamps = labeled_timestamps - calibration_index - horizon
+        if (
+            train_timestamps >= 45
+            and calibration_timestamps >= 45
+            and test_timestamps >= required_test_timestamps
+        ):
+            return labeled_timestamps + FEATURE_LOOKBACK_HOURS + horizon
+        labeled_timestamps += 1
+
+
 def make_barrier_dataset(
     candles: pd.DataFrame,
     horizon: int = 8,

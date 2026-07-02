@@ -47,6 +47,8 @@ def _passing_metrics() -> dict[str, object]:
         "rows": 300,
         "holdout_span_hours": 336.0,
         "log_loss": 0.9,
+        "class_prior_log_loss": 1.05,
+        "log_loss_skill_vs_prior": 0.15,
         "multiclass_brier": 0.55,
         "ece_tp": 0.05,
         "ece_sl": 0.05,
@@ -152,3 +154,17 @@ def test_quality_gate_rejects_large_cross_section_from_short_holdout(tmp_path: P
 
     assert result["passed"] is False
     assert "holdout_span_below_minimum" in result["reasons"]
+
+
+def test_quality_gate_rejects_model_without_skill_over_class_prior(tmp_path: Path) -> None:
+    metrics = _passing_metrics()
+    metrics["class_prior_log_loss"] = 1.05
+    metrics["log_loss_skill_vs_prior"] = -0.02
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is False
+    assert "log_loss_skill_vs_prior_not_positive" in result["reasons"]

@@ -309,6 +309,8 @@ def _passing_metrics() -> dict[str, object]:
         "rows": 300,
         "holdout_span_hours": 336.0,
         "log_loss": 0.9,
+        "class_prior_log_loss": 1.05,
+        "log_loss_skill_vs_prior": 0.15,
         "multiclass_brier": 0.55,
         "ece_tp": 0.05,
         "ece_sl": 0.05,

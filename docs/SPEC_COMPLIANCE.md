@@ -14,6 +14,8 @@
 | TIMEOUT economics uses one explicit persisted assumption | IMPLEMENTED / UNIT CHECKED in 1.8.33 | `TIMEOUT_GROSS_RETURN_RATE` shared by live/promotion/serialization and stored in snapshots; default remains an assumption requiring OOS calibration |
 | Raw trade and horizon-independent cohort promotion minima are separate | IMPLEMENTED / UNIT CHECKED in 1.8.34 | `policy_cohorts` remains descriptive; gate uses `policy_independent_cohorts` separated by full label horizon |
 | Final holdout has minimum calendar coverage | IMPLEMENTED / UNIT CHECKED in 1.8.34 | `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS=168`; cross-sectional row count cannot replace temporal span |
+| Trainer does not fit before configured holdout is feasible | IMPLEMENTED / UNIT CHECKED in 1.8.35 | preflight mirrors feature warm-up, 70/15/15 split, horizon embargo and holdout gates; defaults require 1206 hourly timestamps |
+| Candidate must beat class-prior log-loss baseline | IMPLEMENTED / UNIT CHECKED in 1.8.35 | `log_loss_skill_vs_prior > 0`; missing/non-finite/inconsistent evidence fails closed |
 | Rejected deterministic bootstrap waits for new evidence | IMPLEMENTED / UNIT CHECKED in 1.8.34 | same-profile quality-gate rejection returns `quality_gate_failed_waiting_for_new_data`; retry resumes after new timestamps/material change |
 | Point-in-time event/availability separation | IMPLEMENTED / UNIT CHECKED | market-data and signal tests |
 | Fill/plan entry uses executable ask/bid | IMPLEMENTED / UNIT CHECKED in 1.8.26 | `create_execution_plan`; current quote, missing quote and zone regression tests |

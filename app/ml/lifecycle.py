@@ -489,6 +489,10 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     rows = nonnegative_int_metric("rows")
     holdout_span_value, holdout_span_check = required_metric("holdout_span_hours")
     log_loss_value, log_loss_check = required_metric("log_loss")
+    class_prior_log_loss_value, _ = required_metric("class_prior_log_loss")
+    log_loss_skill_value, log_loss_skill_check = required_metric(
+        "log_loss_skill_vs_prior"
+    )
     brier_value, brier_check = required_metric("multiclass_brier")
     ece_pairs = [
         required_metric("ece_tp"),
@@ -570,6 +574,20 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("holdout_span_below_minimum")
     if log_loss_check > settings.auto_train_max_log_loss:
         reasons.append("log_loss_above_limit")
+    if log_loss_skill_check <= 0.0:
+        reasons.append("log_loss_skill_vs_prior_not_positive")
+    if (
+        log_loss_value is not None
+        and class_prior_log_loss_value is not None
+        and log_loss_skill_value is not None
+        and not math.isclose(
+            class_prior_log_loss_value - log_loss_value,
+            log_loss_skill_value,
+            rel_tol=1e-7,
+            abs_tol=1e-9,
+        )
+    ):
+        reasons.append("inconsistent_log_loss_skill_vs_prior")
     if brier_check > settings.auto_train_max_multiclass_brier:
         reasons.append("multiclass_brier_above_limit")
     if max_ece_check > settings.auto_train_max_ece:
@@ -730,6 +748,9 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "min_holdout_span_hours": settings.auto_train_min_holdout_span_hours,
             "log_loss": log_loss_value,
             "max_log_loss": settings.auto_train_max_log_loss,
+            "class_prior_log_loss": class_prior_log_loss_value,
+            "log_loss_skill_vs_prior": log_loss_skill_value,
+            "required_log_loss_skill_vs_prior": "> 0",
             "multiclass_brier": brier_value,
             "max_multiclass_brier": settings.auto_train_max_multiclass_brier,
             "max_ece": max_ece,

@@ -18,3 +18,5 @@ Patch 1.8.32 не добавляет order mutations, новые права API,
 
 Patch 1.8.33 сохраняет advisory-only и read-only границы. Он добавляет второй fail-closed барьер: некалиброванный baseline не может быть actionable по умолчанию и не может пройти acceptance из legacy-плана; production запрещает override `ALLOW_BASELINE_ACTIONABLE=true`.
 Patch 1.8.34 не меняет authentication, network binding, Bybit permissions или advisory-only semantics. Он усиливает fail-closed model promotion: перекрывающиеся label windows не считаются независимым evidence, слишком короткий holdout блокируется, а отклонённый deterministic candidate не переобучается на неизменившихся данных.
+
+Patch 1.8.35 сохраняет advisory-only/read-only границы и не меняет authentication, cookies, network binding или secrets. Он предотвращает auto-activation кандидата без положительного skill относительно class-prior и блокирует заведомо непроходимый bootstrap до fit.

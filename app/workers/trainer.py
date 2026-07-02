@@ -29,6 +29,7 @@ from app.ml.lifecycle import (
     register_model_candidate,
 )
 from app.ml.runtime_selection import recoverable_registry_artifact_notice
+from app.ml.training import minimum_hourly_history_timestamps_for_quality_gate
 from app.services.audit import publish_outbox
 from app.services.trainer_control import (
     TRAINER_CONTROL_ACTIONS,
@@ -197,12 +198,21 @@ class BackgroundTrainer:
         active = await self.active_model()
         latest = await self.latest_attempt()
         profile = await self.current_training_profile()
-        minimum_bootstrap = 300 + settings.default_horizon_hours + 72
+        minimum_bootstrap = minimum_hourly_history_timestamps_for_quality_gate(
+            horizon_hours=settings.default_horizon_hours,
+            minimum_holdout_rows=settings.auto_train_min_holdout_rows,
+            minimum_holdout_span_hours=settings.auto_train_min_holdout_span_hours,
+        )
         if profile.unique_timestamps < minimum_bootstrap:
             return False, {
                 "reason": "not_enough_history_for_bootstrap",
                 "timestamps": profile.unique_timestamps,
                 "required_timestamps": minimum_bootstrap,
+                "required_holdout_rows": settings.auto_train_min_holdout_rows,
+                "required_holdout_span_hours": (
+                    settings.auto_train_min_holdout_span_hours
+                ),
+                "horizon_hours": settings.default_horizon_hours,
                 "training_data_profile": profile.to_dict(),
             }
         if profile.coverage_ratio < settings.auto_train_min_symbol_coverage_ratio:

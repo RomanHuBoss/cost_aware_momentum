@@ -13,6 +13,17 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.8.35
+
+Migration и новые `.env`-переменные не требуются. Замените файлы, проверьте release manifest и перезапустите API, worker и trainer.
+
+- `not_enough_history_for_bootstrap` — trainer ещё не запускает candidate, потому что configured temporal holdout математически не помещается в доступную hourly history. При defaults требуется 1206 timestamps. Проверьте `history_backfill` в `/api/v1/status`; не уменьшайте gate только ради появления модели.
+- `log_loss_skill_vs_prior_not_positive` — candidate на final holdout не лучше class-prior baseline. Такой artifact сохраняется как отклонённый candidate, но не активируется.
+- `inconsistent_log_loss_skill_vs_prior` — stored metric не совпадает с `class_prior_log_loss - log_loss`; candidate блокируется как повреждённое evidence.
+- Если модель после достаточного backfill всё равно не проходит, нужны реальные candidate metrics и журнал fills. Суточная длительность обучения не является критерием качества.
+
+Исправление предотвращает бессмысленный ранний fit и небезопасную activation, но не обязано увеличивать частоту сигналов. Редкие `NO_TRADE` могут быть корректным результатом fee/slippage/risk/EV gates.
+
 ## После обновления на 1.8.34
 
 Migration не требуется. Добавьте в `.env` явно либо примите default `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS=168`, затем перезапустите API, worker и trainer.
