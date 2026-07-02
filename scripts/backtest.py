@@ -18,6 +18,7 @@ from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     chronological_split,
     evaluate_model,
+    filter_single_active_trade_per_symbol,
     make_barrier_dataset,
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
@@ -324,7 +325,11 @@ def policy_backtest(
     chosen["net_return_without_stop_reserve"] = (
         chosen["net_return"] + chosen["realized_stop_gap_reserve_rate"]
     )
-    traded = chosen[chosen["traded"]].copy()
+    actionable_trades = chosen[chosen["traded"]].copy()
+    traded, overlap_blocked_trades = filter_single_active_trade_per_symbol(
+        actionable_trades,
+        context="Backtest",
+    )
 
     net_return, max_drawdown, portfolio_periods = _simulate_capital_sleeves(
         traded,
@@ -368,8 +373,10 @@ def policy_backtest(
 
     return {
         "candidate_rows": int(len(chosen)),
-        "trades": int(chosen["traded"].sum()),
-        "no_trade_rate": float(1.0 - chosen["traded"].mean()) if len(chosen) else 1.0,
+        "actionable_candidates": int(len(actionable_trades)),
+        "overlap_blocked_trades": int(overlap_blocked_trades),
+        "trades": int(len(traded)),
+        "no_trade_rate": float(1.0 - len(traded) / len(chosen)) if len(chosen) else 1.0,
         "net_return": net_return,
         "net_return_without_stop_gap_reserve": reserve_free_return,
         "mean_net_return_per_trade": float(traded["net_return"].mean()) if len(traded) else 0.0,
@@ -396,7 +403,8 @@ def policy_backtest(
         "stress_net_return_cost_x2": stressed(2.0),
         "warning": (
             "Barrier-policy research backtest with conservative hourly ambiguity and "
-            "non-overlapping horizon capital sleeves. Equity is realized at modeled candle "
+            "non-overlapping horizon capital sleeves and the live one-active-plan-per-symbol "
+            "constraint. Equity is realized at modeled candle "
             "exit times; intrahorizon mark-to-market, historical orderbook impact, partial "
             "fills and operator latency are not modeled. This is not evidence of profitability."
         ),
@@ -497,7 +505,7 @@ async def run(args) -> None:
                     "minimum_net_ev_r": minimum_net_ev_r,
                     "purge_hours": horizon,
                     "policy_source": "cost_aware_ev_r_v1",
-                    "portfolio_accounting": "non_overlapping_horizon_sleeves_v1",
+                    "portfolio_accounting": "horizon_sleeves_single_active_symbol_v2",
                     "settings_mode": settings.app_mode,
                 },
                 started_at=started,

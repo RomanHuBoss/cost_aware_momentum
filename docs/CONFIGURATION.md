@@ -11,6 +11,15 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.32
+
+Новых или переименованных переменных нет.
+
+- Alembic graph снова имеет единственный head `0008_outcome_path_unavailable`; ошибочно включённая дублирующая migration удалена.
+- Policy metric schema повышена до `exit-time-open-gap-single-symbol-cohort-v7`. Candidate и incumbent пересчитываются текущим trainer на одном holdout; старые v6 evidence не подходят для promotion.
+- Backtest теперь возвращает `actionable_candidates` и `overlap_blocked_trades`; promotion metrics — `policy_actionable_candidates` и `policy_overlap_blocked_trades`.
+- Пороговые значения риска, fee/slippage/funding и auto-activation не менялись.
+
 ## Изменения 1.8.31
 
 Новых или переименованных переменных нет.

@@ -29,6 +29,7 @@
 | Comparable candidate/incumbent barrier geometry | `app/ml/lifecycle.py::build_model_candidate` | `test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_labels` |
 | No-loss profit-factor semantics | `app/ml/training.py::evaluate_policy_model`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded` |
 | Backtest artifact validation and hash | `scripts/backtest.py::load_validated_artifact` | `test_backtest_loader_enforces_runtime_artifact_contract` |
+| One active research/promotion trade per symbol | `app/ml/training.py::filter_single_active_trade_per_symbol`, `evaluate_policy_model`; `scripts/backtest.py::policy_backtest` | overlap-blocking and exit-boundary tests in `test_backtest_econometrics.py` and `test_quant_integrity_2026_06_29.py` |
 | Release provenance manifest | `scripts/release_integrity.py`, `SHA256SUMS` | release check on repacked tree |
 | Alembic revision fits version table contract | `migrations/versions/0008_outcome_path_unavailable.py` | `tests/unit/test_migration_revision_contract.py`; offline SQL generation |
 | Plan outcome cannot reuse pre-plan price path | `app/services/outcomes.py::_record_plan_outcome`, migration `0008_outcome_path_unavailable` | `test_late_execution_plan_does_not_reuse_pre_entry_signal_path`, schema test; PostgreSQL backfill not run |

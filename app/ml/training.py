@@ -28,7 +28,7 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "exit-time-open-gap-propagated-cohort-weighted-v6"
+POLICY_METRIC_SCHEMA = "exit-time-open-gap-single-symbol-cohort-v7"
 
 
 class TemporalCalibratedBarrierModel:
@@ -466,6 +466,62 @@ def validate_policy_evaluation_metadata(
     return result
 
 
+def filter_single_active_trade_per_symbol(
+    trades: pd.DataFrame,
+    *,
+    context: str,
+) -> tuple[pd.DataFrame, int]:
+    """Apply the live one-active-plan-per-symbol constraint to research trades.
+
+    A modeled exit at a timestamp releases the symbol before a new decision at
+    that same timestamp. Candidates that arrive strictly before the prior
+    modeled exit are excluded without extending the active interval.
+    """
+
+    required_columns = {"decision_time", "exit_time", "symbol"}
+    missing_columns = sorted(required_columns - set(trades.columns))
+    if missing_columns:
+        raise ValueError(f"{context} is missing overlap columns: {missing_columns}")
+    if trades.empty:
+        return trades.copy().reset_index(drop=True), 0
+
+    ordered = trades.copy()
+    ordered["decision_time"] = pd.to_datetime(
+        ordered["decision_time"], utc=True, errors="coerce"
+    )
+    ordered["exit_time"] = pd.to_datetime(
+        ordered["exit_time"], utc=True, errors="coerce"
+    )
+    if ordered[["decision_time", "exit_time"]].isna().any().any():
+        raise ValueError(f"{context} contains invalid overlap timestamps")
+    if (ordered["exit_time"] < ordered["decision_time"]).any():
+        raise ValueError(f"{context} contains an exit before its decision")
+    if ordered["symbol"].isna().any() or ordered["symbol"].astype(str).str.strip().eq("").any():
+        raise ValueError(f"{context} contains an invalid symbol")
+
+    ordered = ordered.sort_values(
+        ["decision_time", "symbol", "exit_time"], kind="mergesort"
+    )
+    active_until: dict[str, pd.Timestamp] = {}
+    accepted_indexes: list[object] = []
+    blocked = 0
+    for index, row in ordered.iterrows():
+        symbol = str(row["symbol"])
+        decision_time = pd.Timestamp(row["decision_time"])
+        exit_time = pd.Timestamp(row["exit_time"])
+        prior_exit = active_until.get(symbol)
+        if prior_exit is not None and decision_time < prior_exit:
+            blocked += 1
+            continue
+        accepted_indexes.append(index)
+        active_until[symbol] = exit_time
+
+    accepted = ordered.loc[accepted_indexes].sort_values(
+        ["decision_time", "symbol"], kind="mergesort"
+    )
+    return accepted.reset_index(drop=True), blocked
+
+
 def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSplit:
     """Split whole timestamps while purging samples by their actual label end time.
 
@@ -846,13 +902,19 @@ def evaluate_policy_model(
     selected["actionable"] = (selected["net_rr"] >= config.min_net_rr) & (
         selected["expected_ev_r"] >= config.min_net_ev_r
     )
-    trades = selected[selected["actionable"]].copy()
+    actionable_trades = selected[selected["actionable"]].copy()
+    trades, overlap_blocked_trades = filter_single_active_trade_per_symbol(
+        actionable_trades,
+        context="Policy evaluation",
+    )
 
     empty_metrics: dict[str, object] = {
         "policy_metric_schema": POLICY_METRIC_SCHEMA,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
+        "policy_actionable_candidates": int(len(actionable_trades)),
+        "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": 0,
         "policy_cohorts": 0,
         "policy_trade_rate": 0.0,
@@ -901,6 +963,8 @@ def evaluate_policy_model(
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
+        "policy_actionable_candidates": int(len(actionable_trades)),
+        "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": int(len(trades)),
         "policy_cohorts": int(len(cohort_metrics)),
         "policy_trade_rate": float(len(trades) / len(selected)) if len(selected) else 0.0,

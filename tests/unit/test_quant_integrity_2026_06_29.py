@@ -40,7 +40,7 @@ def _policy_split() -> DatasetSplit:
                     "symbol": "BTCUSDT",
                     "direction": direction,
                     "target": "TP",
-                    "exit_index": 0,
+                    "exit_index": 1,
                     "exit_at_open": False,
                     "realized_gross_return": 0.01,
                     "barrier_upside_rate": 0.01,
@@ -53,7 +53,7 @@ def _policy_split() -> DatasetSplit:
     return DatasetSplit(x, y, x, y, x, y, meta)
 
 
-def test_policy_evaluation_scales_overlapping_hourly_decisions_by_horizon_sleeves() -> None:
+def test_policy_evaluation_blocks_same_symbol_overlap_like_live_acceptance() -> None:
     metrics = evaluate_policy_model(
         _FixedModel(),
         _policy_split(),
@@ -67,9 +67,11 @@ def test_policy_evaluation_scales_overlapping_hourly_decisions_by_horizon_sleeve
         ),
         horizon_hours=2,
     )
-    assert metrics["policy_metric_schema"] == "exit-time-open-gap-propagated-cohort-weighted-v6"
+    assert metrics["policy_metric_schema"] == "exit-time-open-gap-single-symbol-cohort-v7"
     assert metrics["policy_capital_sleeves"] == 2
-    assert metrics["policy_realized_total_r"] == pytest.approx(1.0)
+    assert metrics["policy_trades"] == 1
+    assert metrics["policy_overlap_blocked_trades"] == 1
+    assert metrics["policy_realized_total_r"] == pytest.approx(0.5)
 
 
 def test_policy_metadata_rejects_tp_below_the_declared_barrier() -> None:

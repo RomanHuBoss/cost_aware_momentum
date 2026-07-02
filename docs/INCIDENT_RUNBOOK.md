@@ -18,6 +18,14 @@
 
 Не запускать штатные процессы до совпадения Alembic head. Использовать backup/restore procedure и отдельную тестовую БД для проверки migration.
 
+Если `python -m alembic heads` показывает одновременно `0008_outcome_path_unavailable` и `0008_plan_outcome_path_unavailable`:
+
+1. не выполнять `upgrade heads`, `stamp` или ручной DDL; обе ветви содержат одинаковое изменение схемы и не должны применяться последовательно;
+2. остановить API/worker/trainer и сохранить backup;
+3. установить release 1.8.32, где остаётся только `0008_outcome_path_unavailable`;
+4. проверить единственный head командой `python -m alembic heads`;
+5. выполнить `python manage.py migrate` только после проверки текущей revision.
+
 При падении release 1.8.30 с `StringDataRightTruncation` на записи `0008_plan_outcome_path_unavailable`:
 
 1. не расширять `alembic_version.version_num` вручную и не выполнять `alembic stamp`;

@@ -119,7 +119,7 @@ def test_backtest_drawdown_includes_first_period_loss() -> None:
     assert metrics["max_drawdown"] == pytest.approx(-0.10)
 
 
-def test_overlapping_horizon_returns_use_separate_capital_sleeves() -> None:
+def test_backtest_blocks_overlapping_positions_for_the_same_symbol() -> None:
     start = datetime(2025, 1, 1, tzinfo=UTC)
     meta = pd.DataFrame(
         [
@@ -150,11 +150,13 @@ def test_overlapping_horizon_returns_use_separate_capital_sleeves() -> None:
 
     metrics = _run(FixedEdgeModel(), meta, horizon_hours=2)
 
-    # Each overlapping two-hour cohort receives one half of capital. Treating the
-    # full returns as sequential hourly reinvestment would incorrectly produce 21%.
-    assert metrics["net_return"] == pytest.approx(0.10)
+    # Production acceptance permits only one active plan per symbol/account scope.
+    # The second hourly BTC candidate must therefore be blocked until the first exits.
+    assert metrics["trades"] == 1
+    assert metrics["overlap_blocked_trades"] == 1
+    assert metrics["net_return"] == pytest.approx(0.05)
     assert metrics["capital_sleeves"] == 2
-    assert metrics["max_concurrent_trades"] == 2
+    assert metrics["max_concurrent_trades"] == 1
 
 
 def test_direction_is_selected_by_ev_r_not_raw_expected_rate() -> None:
@@ -217,3 +219,39 @@ def test_exit_fee_is_charged_on_actual_exit_notional() -> None:
     # 1% round trip means two 0.5% legs: 0.5% * (entry 1.0 + exit 1.1) = 1.05%.
     assert metrics["mean_net_return_per_trade"] == pytest.approx(0.0895)
     assert metrics["net_return"] == pytest.approx(0.0895)
+
+
+def test_backtest_allows_same_symbol_reentry_at_modeled_exit_boundary() -> None:
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    meta = pd.DataFrame(
+        [
+            {
+                "decision_time": start,
+                "open_time": start,
+                "symbol": "BTCUSDT",
+                "direction": "LONG",
+                "target": "TP",
+                "exit_index": 0,
+                "realized_gross_return": 0.10,
+                "barrier_upside_rate": 0.10,
+                "barrier_downside_rate": 0.05,
+            },
+            {
+                "decision_time": start + timedelta(hours=1),
+                "open_time": start + timedelta(hours=1),
+                "symbol": "BTCUSDT",
+                "direction": "LONG",
+                "target": "TP",
+                "exit_index": 0,
+                "realized_gross_return": 0.10,
+                "barrier_upside_rate": 0.10,
+                "barrier_downside_rate": 0.05,
+            },
+        ]
+    )
+
+    metrics = _run(FixedEdgeModel(), meta, horizon_hours=2)
+
+    assert metrics["trades"] == 2
+    assert metrics["overlap_blocked_trades"] == 0
+    assert metrics["max_concurrent_trades"] == 1

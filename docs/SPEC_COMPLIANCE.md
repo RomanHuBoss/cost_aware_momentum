@@ -6,7 +6,7 @@
 |---|---|---|
 | Advisory-only, без order mutations | IMPLEMENTED / STATICALLY CHECKED | README, Bybit client и API audit; create/amend/cancel flow не обнаружен |
 | PostgreSQL-only | IMPLEMENTED / UNIT CHECKED | `app.config.Settings`, migrations; integration DB в этой итерации не запускалась |
-| Alembic revision IDs fit standard version table | IMPLEMENTED / UNIT CHECKED in 1.8.31 | all revision IDs are limited to 32 characters; head `0008_outcome_path_unavailable`; PostgreSQL upgrade not executed in this environment |
+| Alembic revision IDs fit standard version table and graph has one head | IMPLEMENTED / UNIT + OFFLINE SQL CHECKED in 1.8.32 | duplicate 0008 branch removed; all revision IDs are limited to 32 characters; single head `0008_outcome_path_unavailable`; real PostgreSQL upgrade not executed in this environment |
 | API / worker / trainer separation | IMPLEMENTED | process entry points и README |
 | LONG/SHORT directional geometry | IMPLEMENTED / UNIT CHECKED | risk/labels/outcomes tests и independent randomized P&L audit |
 | TP/SL/TIMEOUT, NO TRADE в policy | IMPLEMENTED | runtime/training/research audit |
@@ -24,6 +24,7 @@
 | Candidate/incumbent comparison uses one barrier task | IMPLEMENTED / UNIT CHECKED in 1.8.29 | horizon and ATR multipliers must match; otherwise comparison is skipped and activation blocks |
 | No-loss profit factor is distinct from missing/no-trade data | IMPLEMENTED / UNIT CHECKED in 1.8.29 | explicit gross gain/loss and validated unbounded flag |
 | Backtest uses production artifact contract | IMPLEMENTED / UNIT CHECKED in 1.8.29 | shared `ModelRuntime`, optional expected SHA-256, no silent multiplier fallback |
+| Research/promotion policy matches live one-active-symbol constraint | IMPLEMENTED / UNIT CHECKED in 1.8.32 | overlapping candidate for the same symbol is blocked until modeled exit; boundary re-entry and metric counters tested; policy schema v7 |
 | Late execution-plan counterfactual path integrity | IMPLEMENTED / UNIT CHECKED in 1.8.30; MIGRATION NOT DB-TESTED | later `planning_time` cannot reuse movement before plan creation; status `PATH_UNAVAILABLE`; migration 0008 backfills existing rows |
 | Profit factor preserves simultaneous gross gains/losses | IMPLEMENTED / UNIT CHECKED in 1.8.30 | gross gain/loss use individual weighted trade contributions; exit-time netting remains only for equity/drawdown |
 | Execution instrument specs respect receipt cutoff | IMPLEMENTED / UNIT CHECKED in 1.8.30 | `valid_from` and `received_at` are both bounded by cutoff |

@@ -52,7 +52,7 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "exit-time-open-gap-propagated-cohort-weighted-v6",
+        "policy_metric_schema": "exit-time-open-gap-single-symbol-cohort-v7",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,
@@ -74,7 +74,7 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
 
 def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
     metrics = _metrics()
-    metrics["policy_metric_schema"] = "exit-time-open-gap-propagated-cohort-weighted-v6"
+    metrics["policy_metric_schema"] = "exit-time-open-gap-single-symbol-cohort-v7"
 
     result = evaluate_quality_gate(
         _candidate(tmp_path, metrics=metrics),

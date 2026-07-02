@@ -13,6 +13,14 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.8.32
+
+1. Сделайте штатный backup PostgreSQL.
+2. Замените файлы проекта и выполните `python -m alembic heads`; должен отображаться только `0008_outcome_path_unavailable`.
+3. Выполните `python manage.py migrate`, затем `python manage.py doctor`. Новых `.env`-переменных нет.
+4. Перезапустите trainer: policy evidence схемы v6 и ниже не используется для promotion; candidate и incumbent будут переоценены с запретом перекрывающихся активных позиций одного символа. Active incumbent из-за ошибки candidate не деактивируется.
+5. В research report поле `overlap_blocked_trades` показывает кандидатов, исключённых для соответствия live acceptance. Это не ошибка данных и не следует обходить.
+
 ## После обновления на 1.8.31
 
 1. Сделайте штатный backup PostgreSQL.
