@@ -11,7 +11,12 @@ import pytest
 from app.ml.features import FEATURE_NAMES, build_feature_frame, latest_feature_snapshot
 from app.ml.labels import triple_barrier_outcome
 from app.ml.runtime import ModelRuntime
-from app.ml.training import MODEL_FEATURE_NAMES, MODEL_FEATURE_SCHEMA_VERSION
+from app.ml.training import (
+    LABEL_PATH_SCHEMA_VERSION,
+    MODEL_FEATURE_NAMES,
+    MODEL_FEATURE_SCHEMA_VERSION,
+    TEMPORAL_SPLIT_SCHEMA_VERSION,
+)
 from app.risk.math import (
     CostScenario,
     break_even_tp_probability,
@@ -70,6 +75,8 @@ def test_artifact_rejects_boolean_barrier_multiplier(tmp_path: Path) -> None:
             "calibration_version": "cal-v1",
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+            "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+            "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": True,
             "tp_atr_multiplier": 2.4,

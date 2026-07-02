@@ -24,3 +24,9 @@
 | Entry ticks cannot expand continuous policy band | `app/services/signals.py::select_cost_aware_scenario` | `test_entry_zone_rounding_never_expands_beyond_continuous_policy_band` |
 | Private GET signature covers exact transmitted query | `app/bybit/client.py::BybitClient._get` | `test_private_get_signature_matches_exact_transmitted_query` |
 | Known TradFi symbol types excluded from crypto domain | `app/services/universe.py::select_dynamic_universe` | default-exclusion and explicit-opt-in tests in `test_execution_exchange_integrity_2026_07_01.py` |
+| Training/inference ATR barrier parity | `app/services/signals.py::publish_hourly_signals`, `app/ml/training.py::make_barrier_dataset` | `test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping` |
+| Artifact semantic schemas | `app/ml/runtime.py::ModelRuntime.load` | four cases in `test_runtime_rejects_artifacts_with_incompatible_training_semantics` |
+| Comparable candidate/incumbent barrier geometry | `app/ml/lifecycle.py::build_model_candidate` | `test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_labels` |
+| No-loss profit-factor semantics | `app/ml/training.py::evaluate_policy_model`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded` |
+| Backtest artifact validation and hash | `scripts/backtest.py::load_validated_artifact` | `test_backtest_loader_enforces_runtime_artifact_contract` |
+| Release provenance manifest | `scripts/release_integrity.py`, `SHA256SUMS` | release check on repacked tree |

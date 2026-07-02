@@ -6,13 +6,13 @@ Direction-conditional оценка исходов `TP / SL / TIMEOUT` для LON
 
 ## Данные и время
 
-Features строятся только по confirmed hourly candles. Decision-time и label-end semantics разделены; temporal split purged по фактическому label horizon. Inference разделяет market cutoff и availability cutoff.
+Features строятся только по confirmed hourly candles. Decision-time и label-end semantics разделены; temporal split purged по фактическому label horizon. Inference разделяет market cutoff и availability cutoff. Вероятности относятся к точным ATR-барьерам обучающей задачи: runtime использует фактический `atr_pct_14` без скрытого clipping.
 
 По умолчанию crypto model domain исключает известные Bybit TradFi `symbolType`: `stock`, `forex`, `commodity`, `xstocks` и `xstock`. Их явное включение конфигурацией не доказывает совместимость текущих features, labels, cost assumptions или risk policy и требует отдельной model validation.
 
 ## Activation
 
-Candidate artifact immutable, снабжается hash/metadata и сравнивается с incumbent на совместимом final holdout. Auto-activation допускается только после absolute и relative ML/policy gates. При включенной auto-activation абсолютный порог realized mean R не может быть отрицательным, а минимальный profit factor не может быть ниже 1. Ошибка candidate не деактивирует incumbent.
+Candidate artifact immutable, снабжается hash/metadata и сравнивается с incumbent только на совместимом final holdout с одинаковыми horizon, feature schema, label-path schema, temporal-split schema и ATR barrier geometry. Auto-activation допускается только после absolute и relative ML/policy gates. При включенной auto-activation абсолютный порог realized mean R не может быть отрицательным, а минимальный profit factor не может быть ниже 1. Profit factor без отрицательных exit-periods считается неограниченным только при явно положительном gross gain и нулевом gross loss; missing/no-trade данные не получают такой трактовки. Ошибка candidate не деактивирует incumbent.
 
 ## Ограничения
 

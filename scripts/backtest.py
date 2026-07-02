@@ -6,7 +6,6 @@ import math
 from datetime import UTC, datetime
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
 from sqlalchemy import select
@@ -15,6 +14,7 @@ from app.asyncio_compat import run_with_compatible_event_loop
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import BacktestRun, Candle
+from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     chronological_split,
     evaluate_model,
@@ -24,6 +24,20 @@ from app.ml.training import (
 )
 
 HOUR_NS = 3_600_000_000_000
+
+
+def load_validated_artifact(
+    model_path: str | Path,
+    *,
+    expected_sha256: str | None = None,
+) -> ModelRuntime:
+    """Load a backtest model through the same fail-closed contract as production."""
+
+    runtime = ModelRuntime(Path(model_path).expanduser().resolve(), allow_baseline=False)
+    runtime.load(expected_sha256=expected_sha256, source="backtest")
+    if runtime.bundle is None or runtime.horizon_hours is None:
+        raise RuntimeError("Backtest requires a validated model artifact")
+    return runtime
 
 
 async def load_frame() -> pd.DataFrame:
@@ -393,10 +407,14 @@ async def run(args) -> None:
     started = datetime.now(UTC)
     settings = get_settings()
     frame = await load_frame()
-    bundle = joblib.load(args.model)
-    if not isinstance(bundle, dict) or bundle.get("task") != "barrier_outcome_v1":
-        raise ValueError("Model must be a version 1.3.0 barrier_outcome_v1 artifact")
-    artifact_horizon = int(bundle["horizon_hours"])
+    runtime = load_validated_artifact(
+        args.model,
+        expected_sha256=getattr(args, "model_sha256", None),
+    )
+    assert runtime.bundle is not None
+    assert runtime.horizon_hours is not None
+    bundle = runtime.bundle
+    artifact_horizon = runtime.horizon_hours
     if args.horizon is not None and args.horizon != artifact_horizon:
         raise ValueError(
             f"Requested horizon {args.horizon} does not match artifact horizon {artifact_horizon}"
@@ -405,8 +423,8 @@ async def run(args) -> None:
     dataset = make_barrier_dataset(
         frame,
         horizon=horizon,
-        stop_atr_multiplier=float(bundle.get("stop_atr_multiplier", 1.15)),
-        tp_atr_multiplier=float(bundle.get("tp_atr_multiplier", 2.20)),
+        stop_atr_multiplier=runtime.stop_atr_multiplier,
+        tp_atr_multiplier=runtime.tp_atr_multiplier,
     )
     split = chronological_split(dataset, purge_rows=horizon)
     round_trip_cost_bps = (
@@ -453,6 +471,7 @@ async def run(args) -> None:
         "prediction": prediction_metrics,
         "policy": trade_metrics,
         "hourly_continuity": dataset.attrs.get("hourly_continuity") or {},
+        "artifact": runtime.metadata(),
     }
     output = Path(args.output or f"reports/backtest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -463,7 +482,11 @@ async def run(args) -> None:
                 name=f"barrier-policy-{bundle.get('model_type', 'model')}-h{horizon}",
                 configuration={
                     "model": args.model,
-                    "model_version": bundle.get("version"),
+                    "model_version": runtime.version,
+                    "model_sha256": runtime.sha256,
+                    "feature_schema_version": bundle.get("feature_schema_version"),
+                    "label_path_schema_version": bundle.get("label_path_schema_version"),
+                    "temporal_split_schema": bundle.get("temporal_split_schema"),
                     "horizon": horizon,
                     "round_trip_cost_bps": round_trip_cost_bps,
                     "slippage_bps": slippage_bps,
@@ -492,6 +515,10 @@ async def run(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--model-sha256",
+        help="Optional expected SHA-256 for fail-closed artifact verification",
+    )
     parser.add_argument("--horizon", type=int)
     parser.add_argument("--round-trip-cost-bps", type=float)
     parser.add_argument("--slippage-bps", type=float)

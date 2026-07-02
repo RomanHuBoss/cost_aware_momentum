@@ -20,4 +20,4 @@
 
 ## Model incident
 
-Оставить incumbent active, заблокировать candidate activation, проверить hash/task/schema/classes/horizon metadata и выполнить documented rollback.
+Оставить incumbent active, заблокировать candidate activation, проверить hash/task/classes/horizon/calibration, `feature_schema_version`, `label_path_schema_version`, `temporal_split_schema` и ATR barrier multipliers. Не сравнивать candidate с incumbent при различной barrier geometry; переобучить совместимый artifact или выполнить documented rollback.

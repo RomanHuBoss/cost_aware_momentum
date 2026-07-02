@@ -19,9 +19,11 @@ from app.ml.labels import triple_barrier_outcome
 from app.ml.lifecycle import ModelCandidate, evaluate_quality_gate
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
+    LABEL_PATH_SCHEMA_VERSION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
+    TEMPORAL_SPLIT_SCHEMA_VERSION,
     DatasetSplit,
     PolicyEvaluationConfig,
     evaluate_policy_model,
@@ -546,6 +548,8 @@ def _artifact_bundle(**overrides: object) -> dict[str, object]:
         "calibration_version": "cal-v1",
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+        "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+        "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "horizon_hours": 8,
         "stop_atr_multiplier": 1.5,
         "tp_atr_multiplier": 2.2,

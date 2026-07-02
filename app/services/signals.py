@@ -456,7 +456,18 @@ async def publish_hourly_signals(
             )
             continue
 
-        atr_pct = max(0.004, min(0.08, snapshot.values.get("atr_pct_14", 0.02)))
+        try:
+            atr_pct = positive_finite_decimal(
+                snapshot.values.get("atr_pct_14"),
+                "atr_pct_14",
+            )
+        except ValueError as exc:
+            count("invalid_model_atr")
+            logger.warning(
+                "Skipping symbol with invalid model ATR feature",
+                extra={"symbol": symbol, "error": str(exc)},
+            )
+            continue
         # Entry reference already uses executable ask/bid; residual slippage must not add the spread again.
         slippage_bps = settings.base_slippage_bps
         fee_round_trip = settings.fee_rate_taker * 2
@@ -481,7 +492,7 @@ async def publish_hourly_signals(
                 bid_price=ticker.bid_price,
                 ask_price=ticker.ask_price,
                 last_price=ticker.last_price,
-                atr_pct=decimal(atr_pct),
+                atr_pct=atr_pct,
                 costs=costs,
                 stop_atr_multiplier=runtime.stop_atr_multiplier,
                 tp_atr_multiplier=runtime.tp_atr_multiplier,

@@ -18,6 +18,11 @@
 | Positive economic floor for automatic promotion | IMPLEMENTED / UNIT CHECKED in 1.8.26 | non-negative realized mean R and PF >= 1 when auto-activation is enabled |
 | Account/profile-scoped margin capacity | IMPLEMENTED / UNIT CHECKED in 1.8.27 | allocated-capital basis, accepted-plan/open-trade reservations, sizing and acceptance regressions |
 | Actual manual fill preserves accepted risk/margin reservations | IMPLEMENTED / UNIT CHECKED in 1.8.27 | actual entry fee substitution; stress-loss and margin rejection tests |
+| Exact ATR barrier parity between labels and inference | IMPLEMENTED / UNIT CHECKED in 1.8.29 | `atr_pct_14` is validated and used without hidden clipping |
+| Artifact label/temporal semantics fail-closed | IMPLEMENTED / UNIT CHECKED in 1.8.29 | runtime requires exact feature, label-path and temporal-split schemas |
+| Candidate/incumbent comparison uses one barrier task | IMPLEMENTED / UNIT CHECKED in 1.8.29 | horizon and ATR multipliers must match; otherwise comparison is skipped and activation blocks |
+| No-loss profit factor is distinct from missing/no-trade data | IMPLEMENTED / UNIT CHECKED in 1.8.29 | explicit gross gain/loss and validated unbounded flag |
+| Backtest uses production artifact contract | IMPLEMENTED / UNIT CHECKED in 1.8.29 | shared `ModelRuntime`, optional expected SHA-256, no silent multiplier fallback |
 | Purged temporal validation | IMPLEMENTED / UNIT CHECKED | split uses decision time and label end time |
 | Immutable guarded model lifecycle | IMPLEMENTED / UNIT CHECKED | artifact/runtime/trainer tests; live promotion evidence not checked |
 | Actual historical order book/fills/funding timeline in research | PARTIAL | documented research limitation |

@@ -11,9 +11,11 @@ from app.config import Settings
 from app.ml.artifact_recovery import load_recovery_candidate
 from app.ml.lifecycle import evaluate_quality_gate
 from app.ml.training import (
+    LABEL_PATH_SCHEMA_VERSION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
+    TEMPORAL_SPLIT_SCHEMA_VERSION,
 )
 
 
@@ -49,6 +51,8 @@ def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8)
             "calibration_version": f"sigmoid-ovr-{resolved_version}",
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+            "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+            "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "horizon_hours": horizon,
             "metrics": _passing_metrics(),
             "training_start": now.isoformat(),

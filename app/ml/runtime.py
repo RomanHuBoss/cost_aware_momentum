@@ -13,9 +13,11 @@ from app.ml.features import FEATURE_NAMES
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
+    LABEL_PATH_SCHEMA_VERSION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
+    TEMPORAL_SPLIT_SCHEMA_VERSION,
 )
 from app.risk.math import validate_probability_simplex
 
@@ -64,6 +66,15 @@ class ModelRuntime:
             "source": self.source,
             "stop_atr_multiplier": self.stop_atr_multiplier,
             "tp_atr_multiplier": self.tp_atr_multiplier,
+            "feature_schema_version": (
+                self.bundle.get("feature_schema_version") if self.bundle is not None else None
+            ),
+            "label_path_schema_version": (
+                self.bundle.get("label_path_schema_version") if self.bundle is not None else None
+            ),
+            "temporal_split_schema": (
+                self.bundle.get("temporal_split_schema") if self.bundle is not None else None
+            ),
         }
 
     def load(
@@ -110,6 +121,20 @@ class ModelRuntime:
                 raise ValueError(
                     "Model feature schema version mismatch: "
                     f"expected {MODEL_FEATURE_SCHEMA_VERSION}, got {feature_schema_version or 'missing'}"
+                )
+            label_path_schema_version = str(bundle.get("label_path_schema_version") or "")
+            if label_path_schema_version != LABEL_PATH_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model label path schema mismatch: "
+                    f"expected {LABEL_PATH_SCHEMA_VERSION}, "
+                    f"got {label_path_schema_version or 'missing'}"
+                )
+            temporal_split_schema = str(bundle.get("temporal_split_schema") or "")
+            if temporal_split_schema != TEMPORAL_SPLIT_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model temporal split schema mismatch: "
+                    f"expected {TEMPORAL_SPLIT_SCHEMA_VERSION}, "
+                    f"got {temporal_split_schema or 'missing'}"
                 )
             model = bundle["model"]
             classes = [str(item) for item in getattr(model, "classes_", [])]

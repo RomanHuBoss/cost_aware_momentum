@@ -23,3 +23,10 @@
 - `available_cutoff`: какие данные были доступны к моменту вычисления.
 
 Открытая свеча обновляется до первого confirmed snapshot. Confirmed snapshot не изменяется обычным upsert.
+
+
+## Model artifact and promotion contract
+
+`confirmed candles → contiguous features → direction-specific ATR labels → purged train/calibration/final holdout → immutable candidate artifact → runtime schema/hash validation → same-task incumbent comparison → guarded activation`.
+
+Artifact validation is shared by production inference and research backtest. Candidate/incumbent comparison is allowed only when horizon, label/temporal semantics and ATR barrier multipliers match; otherwise promotion remains fail-closed and the incumbent stays active.

@@ -13,6 +13,15 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.8.29
+
+Migration и новые env-переменные не нужны. Перезапустите API, worker и trainer штатной командой.
+
+- Legacy model artifact без `label_path_schema_version` или `temporal_split_schema` теперь блокируется. Не отключайте проверку: переобучите модель текущим trainer и активируйте новый immutable artifact.
+- Signal geometry использует точный ATR модели. При очень малом/большом ATR сигнал может стать неисполняемым из-за `tickSize` или невалидной геометрии; это fail-closed поведение.
+- Backtest рекомендуется запускать с `--model-sha256 <hash>`, когда hash известен из registry/release evidence.
+- `incumbent_barrier_geometry_mismatch` означает, что относительная auto-activation оценка запрещена: модели решают разные barrier-задачи.
+
 ## После обновления на 1.8.28
 
 Migration и новые env-переменные не нужны. Перезапустите API/worker/trainer штатной командой.

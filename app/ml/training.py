@@ -27,6 +27,7 @@ DEFAULT_TP_ATR_MULTIPLIER = 2.20
 MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
+TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
 POLICY_METRIC_SCHEMA = "exit-time-open-gap-propagated-cohort-weighted-v5"
 
 
@@ -860,6 +861,9 @@ def evaluate_policy_model(
         "policy_realized_total_r": 0.0,
         "policy_win_rate": None,
         "policy_profit_factor": None,
+        "policy_profit_factor_unbounded": False,
+        "policy_gross_gain_r": 0.0,
+        "policy_gross_loss_r": 0.0,
         "policy_max_drawdown_r": 0.0,
         "policy_event_periods": 0,
     }
@@ -886,6 +890,7 @@ def evaluate_policy_model(
     gains = float(exit_r[exit_r > 0].sum())
     losses = float(-exit_r[exit_r < 0].sum())
     profit_factor = gains / losses if losses > 0 else None
+    profit_factor_unbounded = losses == 0.0 and gains > 0.0
     cumulative_r = np.concatenate(([0.0], exit_r.cumsum().to_numpy(float)))
     running_peak = np.maximum.accumulate(cumulative_r)
     drawdown = running_peak - cumulative_r
@@ -905,6 +910,9 @@ def evaluate_policy_model(
         "policy_trade_mean_r": float(trades["realized_r"].mean()),
         "policy_trade_win_rate": float((trades["realized_r"] > 0).mean()),
         "policy_profit_factor": float(profit_factor) if profit_factor is not None else None,
+        "policy_profit_factor_unbounded": profit_factor_unbounded,
+        "policy_gross_gain_r": gains,
+        "policy_gross_loss_r": losses,
         "policy_max_drawdown_r": float(drawdown.max()) if len(drawdown) else 0.0,
         "policy_event_periods": int(len(exit_r)),
     }

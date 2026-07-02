@@ -30,6 +30,7 @@ from app.ml.training import (
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     POLICY_METRIC_SCHEMA,
+    TEMPORAL_SPLIT_SCHEMA_VERSION,
     PolicyEvaluationConfig,
     TemporalCalibratedBarrierModel,
     chronological_split,
@@ -322,8 +323,9 @@ def build_model_candidate(
     )
     metrics = evaluate_model(model, split)
     label_data_end = _as_datetime(dataset.label_end_time.max())
-    metrics["temporal_split_schema"] = "decision-and-label-end-purged-v3"
+    metrics["temporal_split_schema"] = TEMPORAL_SPLIT_SCHEMA_VERSION
     metrics["feature_schema_version"] = MODEL_FEATURE_SCHEMA_VERSION
+    metrics["label_path_schema_version"] = LABEL_PATH_SCHEMA_VERSION
     metrics["hourly_continuity"] = json_compatible(
         dataset.attrs.get("hourly_continuity") or {}
     )
@@ -342,7 +344,33 @@ def build_model_candidate(
                 expected_version=incumbent.version,
                 source="training_benchmark",
             )
-            if runtime.horizon_hours == horizon and runtime.bundle is not None:
+            if runtime.horizon_hours != horizon or runtime.bundle is None:
+                incumbent_metrics = {
+                    "comparison_skipped": "incumbent_horizon_mismatch",
+                    "incumbent_horizon_hours": runtime.horizon_hours,
+                }
+            elif not (
+                math.isclose(
+                    runtime.stop_atr_multiplier,
+                    DEFAULT_STOP_ATR_MULTIPLIER,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                and math.isclose(
+                    runtime.tp_atr_multiplier,
+                    DEFAULT_TP_ATR_MULTIPLIER,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            ):
+                incumbent_metrics = {
+                    "comparison_skipped": "incumbent_barrier_geometry_mismatch",
+                    "candidate_stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
+                    "candidate_tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,
+                    "incumbent_stop_atr_multiplier": runtime.stop_atr_multiplier,
+                    "incumbent_tp_atr_multiplier": runtime.tp_atr_multiplier,
+                }
+            else:
                 incumbent_metrics = evaluate_model(runtime.bundle["model"], split)
                 if policy_config is not None:
                     incumbent_metrics.update(
@@ -353,11 +381,6 @@ def build_model_candidate(
                             horizon_hours=horizon,
                         )
                     )
-            else:
-                incumbent_metrics = {
-                    "comparison_skipped": "incumbent_horizon_mismatch",
-                    "incumbent_horizon_hours": runtime.horizon_hours,
-                }
         except Exception as exc:
             incumbent_metrics = {
                 "comparison_skipped": "incumbent_load_or_evaluation_failed",
@@ -390,7 +413,7 @@ def build_model_candidate(
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
-        "temporal_split_schema": "decision-and-label-end-purged-v3",
+        "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "label_data_end": label_data_end.isoformat(),
         "horizon_hours": horizon,
         "stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
@@ -500,10 +523,24 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     policy_cohorts = nonnegative_int_metric("policy_cohorts")
     policy_mean_r = finite_or_none(metrics.get("policy_realized_mean_r"))
     policy_profit_factor = finite_or_none(metrics.get("policy_profit_factor"))
+    policy_profit_factor_unbounded = metrics.get("policy_profit_factor_unbounded") is True
+    policy_gross_gain_r = finite_or_none(metrics.get("policy_gross_gain_r"))
+    policy_gross_loss_r = finite_or_none(metrics.get("policy_gross_loss_r"))
+    valid_unbounded_profit_factor = (
+        policy_profit_factor is None
+        and policy_profit_factor_unbounded
+        and policy_gross_gain_r is not None
+        and policy_gross_gain_r > 0.0
+        and policy_gross_loss_r == 0.0
+    )
     policy_drawdown = finite_or_none(metrics.get("policy_max_drawdown_r"))
     policy_mean_r_check = policy_mean_r if policy_mean_r is not None else -math.inf
     policy_profit_factor_check = (
-        policy_profit_factor if policy_profit_factor is not None else -math.inf
+        policy_profit_factor
+        if policy_profit_factor is not None
+        else math.inf
+        if valid_unbounded_profit_factor
+        else -math.inf
     )
     policy_drawdown_check = policy_drawdown if policy_drawdown is not None else math.inf
     expected_policy_schema = POLICY_METRIC_SCHEMA
@@ -688,6 +725,9 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "policy_realized_mean_r": policy_mean_r,
             "min_policy_realized_mean_r": settings.auto_train_min_policy_realized_mean_r,
             "policy_profit_factor": policy_profit_factor,
+            "policy_profit_factor_unbounded": valid_unbounded_profit_factor,
+            "policy_gross_gain_r": policy_gross_gain_r,
+            "policy_gross_loss_r": policy_gross_loss_r,
             "min_policy_profit_factor": settings.auto_train_min_policy_profit_factor,
             "policy_max_drawdown_r": policy_drawdown,
             "max_policy_drawdown_r": settings.auto_train_max_policy_drawdown_r,

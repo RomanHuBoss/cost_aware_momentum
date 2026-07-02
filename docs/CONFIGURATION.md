@@ -11,6 +11,14 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.29
+
+Новых или переименованных переменных нет.
+
+- `scripts/backtest.py` принимает optional `--model-sha256` для fail-closed проверки ожидаемого artifact hash.
+- Активные/исследовательские artifacts обязаны содержать совместимые `feature_schema_version`, `label_path_schema_version` и `temporal_split_schema`. Legacy artifact необходимо переобучить, а не обходить проверку.
+- Пороговые значения риска, fee/slippage/funding и auto-activation не менялись.
+
 ## Изменения 1.8.28
 
 Новых переменных нет.
