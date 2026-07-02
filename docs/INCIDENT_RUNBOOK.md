@@ -18,6 +18,13 @@
 
 Не запускать штатные процессы до совпадения Alembic head. Использовать backup/restore procedure и отдельную тестовую БД для проверки migration.
 
+При падении release 1.8.30 с `StringDataRightTruncation` на записи `0008_plan_outcome_path_unavailable`:
+
+1. не расширять `alembic_version.version_num` вручную и не выполнять `alembic stamp`;
+2. проверить `python -m alembic current` — после PostgreSQL transactional rollback ожидается `0007_position_account_scope`;
+3. установить 1.8.31 и повторить `python manage.py migrate`;
+4. подтвердить head `0008_outcome_path_unavailable` и только затем запускать процессы.
+
 ## Model incident
 
 Оставить incumbent active, заблокировать candidate activation, проверить hash/task/classes/horizon/calibration, `feature_schema_version`, `label_path_schema_version`, `temporal_split_schema` и ATR barrier multipliers. Не сравнивать candidate с incumbent при различной barrier geometry; переобучить совместимый artifact или выполнить documented rollback.

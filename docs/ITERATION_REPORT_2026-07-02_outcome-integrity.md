@@ -1,5 +1,8 @@
 # Iteration report — outcome integrity — 2026-07-02
 
+> **Erratum:** release 1.8.30 был отозван после реального PostgreSQL upgrade: revision ID `0008_plan_outcome_path_unavailable` имел 34 символа и не помещался в стандартный `VARCHAR(32)`. Исправление выпущено в 1.8.31 с head `0008_outcome_path_unavailable`.
+
+
 ## 1. Входной архив и baseline identity
 
 - Input: `cost_aware_momentum-main.zip`
@@ -95,7 +98,7 @@ Production:
 
 Migration:
 
-- `migrations/versions/0008_plan_outcome_path_unavailable.py` — constraint, historical backfill, fail-closed downgrade.
+- `migrations/versions/0008_outcome_path_unavailable.py` — constraint, historical backfill, fail-closed downgrade.
 
 Tests:
 
@@ -122,7 +125,7 @@ Docs/release:
 
 ## 8. Migration/API/config compatibility
 
-- New head: `0008_plan_outcome_path_unavailable`.
+- New head: `0008_outcome_path_unavailable`.
 - Upgrade adds status then backfills late plans to zero financial values plus diagnostics.
 - Downgrade refuses to continue while such rows exist; silent restoration of false P&L запрещена.
 - API shape unchanged; enum-like string adds `PATH_UNAVAILABLE`.
@@ -137,7 +140,7 @@ Docs/release:
 - pytest: 407 passed, 4 skipped, 19 warnings;
 - dedicated module: 6 passed;
 - node syntax: passed;
-- Alembic: one head `0008_plan_outcome_path_unavailable`;
+- Alembic: one head `0008_outcome_path_unavailable`;
 - static advisory-only/PostgreSQL boundary scan: passed.
 
 Release tree check: PASSED — 156 files checked, 156 manifest entries. Test/build environments are excluded.

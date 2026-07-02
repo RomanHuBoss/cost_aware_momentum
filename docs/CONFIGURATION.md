@@ -11,11 +11,19 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.31
+
+Новых или переименованных переменных нет.
+
+- Архив 1.8.30 не следует развёртывать: его Alembic revision ID имел 34 символа и не помещался в стандартный `alembic_version.version_num VARCHAR(32)`.
+- Исправленный head: `0008_outcome_path_unavailable` (29 символов).
+- Не расширяйте `alembic_version.version_num` вручную. После неудачной попытки 1.8.30 PostgreSQL штатно откатывает транзакцию; замените код на 1.8.31 и повторите `python manage.py migrate`.
+
 ## Изменения 1.8.30
 
 Новых или переименованных переменных нет.
 
-- Требуется Alembic migration `0008_plan_outcome_path_unavailable`.
+- Требуется Alembic migration `0008_outcome_path_unavailable`.
 - Policy metric schema повышена до `exit-time-open-gap-propagated-cohort-weighted-v6`; новые candidate/incumbent evidence должны быть пересчитаны текущим trainer.
 - Пороговые значения риска, fee/slippage/funding и auto-activation не менялись.
 

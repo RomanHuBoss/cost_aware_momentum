@@ -13,11 +13,13 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
-## После обновления на 1.8.30
+## После обновления на 1.8.31
 
 1. Сделайте штатный backup PostgreSQL.
-2. Выполните `python manage.py migrate` и убедитесь, что Alembic head — `0008_plan_outcome_path_unavailable`.
-3. Перезапустите API, worker и trainer. Новых `.env`-переменных нет.
+2. Если migration 1.8.30 уже падала с `StringDataRightTruncation`, не изменяйте таблицу `alembic_version` вручную. Выполните `python -m alembic current`; ожидаемое состояние после транзакционного rollback — `0007_position_account_scope`.
+3. Замените файлы проекта на release 1.8.31.
+4. Выполните `python manage.py migrate` и убедитесь, что Alembic head — `0008_outcome_path_unavailable`.
+5. Перезапустите API, worker и trainer. Новых `.env`-переменных нет.
 
 - `PATH_UNAVAILABLE` означает, что market outcome известен, но план создан позже signal anchor и точный путь от его entry time не сохранён. Нулевые P&L-поля в БД являются техническими placeholders; UI не показывает их как рассчитанный результат. Не заменяйте статус вручную на `VALUED`.
 - Migration обнуляет ранее ошибочно оценённые late-plan P&L/R и сохраняет диагностику в `cost_assumptions`.

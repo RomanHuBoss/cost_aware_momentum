@@ -11,3 +11,5 @@
 - Логи и отчёты не должны содержать API secret, operator password, session secret или полные authentication headers.
 
 Patch 1.8.30 не меняет authentication, cookie, CSRF, network binding, Bybit permissions или advisory-only semantics. Он добавляет fail-closed temporal accounting для plan outcomes, point-in-time instrument-spec receipt cutoff и корректную policy-econometrics schema.
+
+Patch 1.8.31 не меняет права доступа, сетевые настройки, торговые возможности или секреты. Он устраняет только несовместимость идентификатора Alembic revision со стандартной 32-символьной колонкой version table и добавляет fail-fast regression contract.

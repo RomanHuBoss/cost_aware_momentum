@@ -6,6 +6,7 @@
 |---|---|---|
 | Advisory-only, без order mutations | IMPLEMENTED / STATICALLY CHECKED | README, Bybit client и API audit; create/amend/cancel flow не обнаружен |
 | PostgreSQL-only | IMPLEMENTED / UNIT CHECKED | `app.config.Settings`, migrations; integration DB в этой итерации не запускалась |
+| Alembic revision IDs fit standard version table | IMPLEMENTED / UNIT CHECKED in 1.8.31 | all revision IDs are limited to 32 characters; head `0008_outcome_path_unavailable`; PostgreSQL upgrade not executed in this environment |
 | API / worker / trainer separation | IMPLEMENTED | process entry points и README |
 | LONG/SHORT directional geometry | IMPLEMENTED / UNIT CHECKED | risk/labels/outcomes tests и independent randomized P&L audit |
 | TP/SL/TIMEOUT, NO TRADE в policy | IMPLEMENTED | runtime/training/research audit |
