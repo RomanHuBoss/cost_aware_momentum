@@ -80,6 +80,7 @@ def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
         stop_gap_reserve_rate=settings.stop_gap_reserve_bps / 10000,
         min_net_rr=settings.min_net_rr,
         min_net_ev_r=settings.min_net_ev_r,
+        timeout_return_rate=settings.timeout_gross_return_rate,
         horizon_hours=settings.default_horizon_hours,
     )
 
@@ -573,7 +574,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("holdout_class_fraction_below_minimum")
     if policy_trades < settings.auto_train_min_policy_trades:
         reasons.append("policy_trade_count_below_minimum")
-    if policy_cohorts < settings.auto_train_min_policy_trades:
+    if policy_cohorts < settings.auto_train_min_policy_cohorts:
         reasons.append("policy_cohort_count_below_minimum")
     if policy_mean_r_check < settings.auto_train_min_policy_realized_mean_r:
         reasons.append("policy_realized_mean_r_below_minimum")
@@ -721,7 +722,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "policy_trades": policy_trades,
             "policy_cohorts": policy_cohorts,
             "min_policy_trades": settings.auto_train_min_policy_trades,
-            "min_policy_cohorts": settings.auto_train_min_policy_trades,
+            "min_policy_cohorts": settings.auto_train_min_policy_cohorts,
             "policy_realized_mean_r": policy_mean_r,
             "min_policy_realized_mean_r": settings.auto_train_min_policy_realized_mean_r,
             "policy_profit_factor": policy_profit_factor,

@@ -13,6 +13,14 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.8.33
+
+1. Migration отсутствует; выполните обычный backup, замените файлы и перезапустите API, worker и trainer.
+2. Добавьте в `.env` явные значения `ALLOW_BASELINE_ACTIONABLE=false`, `TIMEOUT_GROSS_RETURN_RATE=-0.002`, `AUTO_TRAIN_MIN_POLICY_COHORTS=20` либо примите совместимые defaults.
+3. Если active artifact отсутствует или candidate не проходит gate, baseline-сигналы могут оставаться видимыми, но execution plan должен иметь `NO_TRADE` с предупреждением о diagnostic-only baseline. Не обходите блокировку.
+4. В `/api/v1/status` сверяйте `minimum_policy_trades`, `minimum_policy_cohorts`, фактические candidate gate reasons и active model provenance. Суточное обучение само по себе не является основанием снижать запреты.
+5. `TIMEOUT_GROSS_RETURN_RATE` нельзя подбирать по тем же данным, на которых оценивается candidate. Для изменения требуется отдельная OOS/forward-калибровка и повторный backtest/promotion evidence.
+
 ## После обновления на 1.8.32
 
 1. Сделайте штатный backup PostgreSQL.

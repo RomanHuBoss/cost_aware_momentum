@@ -10,6 +10,9 @@
 | API / worker / trainer separation | IMPLEMENTED | process entry points и README |
 | LONG/SHORT directional geometry | IMPLEMENTED / UNIT CHECKED | risk/labels/outcomes tests и independent randomized P&L audit |
 | TP/SL/TIMEOUT, NO TRADE в policy | IMPLEMENTED | runtime/training/research audit |
+| Некалиброванный baseline не становится исполнимой рекомендацией | IMPLEMENTED / UNIT CHECKED in 1.8.33 | diagnostic market signal allowed; plan forced to `NO_TRADE`; legacy acceptance blocked; production override rejected |
+| TIMEOUT economics uses one explicit persisted assumption | IMPLEMENTED / UNIT CHECKED in 1.8.33 | `TIMEOUT_GROSS_RETURN_RATE` shared by live/promotion/serialization and stored in snapshots; default remains an assumption requiring OOS calibration |
+| Raw trade and independent cohort promotion minima are separate | IMPLEMENTED / UNIT CHECKED in 1.8.33 | `AUTO_TRAIN_MIN_POLICY_TRADES` and `AUTO_TRAIN_MIN_POLICY_COHORTS` |
 | Point-in-time event/availability separation | IMPLEMENTED / UNIT CHECKED | market-data and signal tests |
 | Fill/plan entry uses executable ask/bid | IMPLEMENTED / UNIT CHECKED in 1.8.26 | `create_execution_plan`; current quote, missing quote and zone regression tests |
 | Entry-zone содержит только исполнимые тики внутри policy band | IMPLEMENTED / UNIT CHECKED in 1.8.28 | inward tick rounding; coarse-tick regression test |

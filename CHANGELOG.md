@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.8.33 — 2026-07-02
+
+### Fixed
+
+- Prevented the uncalibrated deterministic baseline from producing or preserving actionable execution plans by default; legacy baseline plans now fail closed at acceptance.
+- Removed the hidden universal TIMEOUT return assumption from live/promotion call sites by introducing one validated `TIMEOUT_GROSS_RETURN_RATE` setting and persisting it with signal/plan economics.
+- Split `AUTO_TRAIN_MIN_POLICY_COHORTS` from raw `AUTO_TRAIN_MIN_POLICY_TRADES`; the previous code unintentionally used the trade threshold for both gates.
+
+### Changed
+
+- Signal snapshots now persist model-runtime provenance and economics assumptions.
+- Status diagnostics expose baseline actionability, TIMEOUT assumption and both policy sample thresholds.
+- Production rejects `ALLOW_BASELINE_ACTIONABLE=true`.
+
+### Verification
+
+- Added regression coverage for baseline plan blocking, legacy acceptance blocking, explicit TIMEOUT economics, serializer parity and independent cohort gating.
+- PostgreSQL integration remains environment-dependent; no schema migration is required.
+
 ## 1.8.32 — 2026-07-02
 
 ### Fixed

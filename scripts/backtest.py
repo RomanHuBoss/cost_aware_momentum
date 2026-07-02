@@ -448,6 +448,11 @@ async def run(args) -> None:
         if args.stop_gap_reserve_bps is not None
         else settings.stop_gap_reserve_bps
     )
+    timeout_return_rate = (
+        args.timeout_return_rate
+        if args.timeout_return_rate is not None
+        else settings.timeout_gross_return_rate
+    )
     minimum_net_rr = args.minimum_net_rr if args.minimum_net_rr is not None else settings.min_net_rr
     if args.minimum_net_ev_r is not None and args.minimum_predicted_edge is not None:
         raise ValueError("Use either --minimum-net-ev-r or --minimum-predicted-edge, not both")
@@ -470,7 +475,7 @@ async def run(args) -> None:
         slippage_bps=slippage_bps,
         stop_gap_reserve_bps=stop_gap_reserve_bps,
         funding_rate=args.funding_rate,
-        timeout_return_rate=args.timeout_return_rate,
+        timeout_return_rate=timeout_return_rate,
         minimum_net_rr=minimum_net_rr,
         minimum_net_ev_r=minimum_net_ev_r,
         horizon_hours=horizon,
@@ -500,7 +505,7 @@ async def run(args) -> None:
                     "slippage_bps": slippage_bps,
                     "stop_gap_reserve_bps": stop_gap_reserve_bps,
                     "funding_rate": args.funding_rate,
-                    "timeout_return_rate": args.timeout_return_rate,
+                    "timeout_return_rate": timeout_return_rate,
                     "minimum_net_rr": minimum_net_rr,
                     "minimum_net_ev_r": minimum_net_ev_r,
                     "purge_hours": horizon,
@@ -532,7 +537,7 @@ def main() -> None:
     parser.add_argument("--slippage-bps", type=float)
     parser.add_argument("--stop-gap-reserve-bps", type=float)
     parser.add_argument("--funding-rate", type=float, default=0.0)
-    parser.add_argument("--timeout-return-rate", type=float, default=-0.002)
+    parser.add_argument("--timeout-return-rate", type=float)
     parser.add_argument("--minimum-net-rr", type=float)
     parser.add_argument("--minimum-net-ev-r", type=float)
     parser.add_argument(

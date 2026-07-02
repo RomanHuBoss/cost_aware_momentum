@@ -59,6 +59,20 @@ def _break_even_payload(
     }
 
 
+
+def _signal_timeout_return_rate(signal: MarketSignal) -> Decimal:
+    snapshot = getattr(signal, "feature_snapshot", None)
+    if isinstance(snapshot, dict):
+        assumptions = snapshot.get("economics_assumptions")
+        if isinstance(assumptions, dict) and assumptions.get(
+            "timeout_gross_return_rate"
+        ) is not None:
+            return finite_decimal(
+                assumptions["timeout_gross_return_rate"],
+                "timeout_gross_return_rate",
+            )
+    return Decimal("-0.002")
+
 def signal_economics_dict(signal: MarketSignal) -> dict:
     """Serialize capital-independent signal economics with three-outcome break-even math."""
 
@@ -81,6 +95,7 @@ def signal_economics_dict(signal: MarketSignal) -> dict:
             take_profit=signal.take_profit_1,
             direction=signal.direction,
             costs=costs,
+            timeout_return_rate=_signal_timeout_return_rate(signal),
         )
         downside = positive_finite_decimal(
             signal.stress_downside_rate, "stress_downside_rate"
@@ -109,6 +124,7 @@ def signal_economics_dict(signal: MarketSignal) -> dict:
         "slippage_rate": signal.slippage_rate,
         "funding_rate_scenario": signal.funding_rate_scenario,
         "stress_downside_rate": signal.stress_downside_rate,
+        "timeout_gross_return_rate": number(_signal_timeout_return_rate(signal)),
         **break_even,
     }
 
@@ -140,6 +156,10 @@ def execution_plan_economics_dict(signal: MarketSignal, plan: ExecutionPlan) -> 
         if not isinstance(cost_values, dict):
             return invalid
         entry = positive_finite_decimal(snapshot.get("entry_price"), "entry_price")
+        timeout_return_rate = finite_decimal(
+            snapshot.get("timeout_gross_return_rate", "-0.002"),
+            "timeout_gross_return_rate",
+        )
         costs = CostScenario(
             fee_rate_round_trip=finite_decimal(
                 cost_values.get("fee_rate_round_trip"), "fee_rate_round_trip"
@@ -159,6 +179,7 @@ def execution_plan_economics_dict(signal: MarketSignal, plan: ExecutionPlan) -> 
             p_tp=signal.p_tp,
             p_sl=signal.p_sl,
             p_timeout=signal.p_timeout,
+            timeout_return_rate=timeout_return_rate,
         )
         outcome_rates = net_outcome_rates(
             entry=entry,
@@ -166,6 +187,7 @@ def execution_plan_economics_dict(signal: MarketSignal, plan: ExecutionPlan) -> 
             take_profit=signal.take_profit_1,
             direction=signal.direction,
             costs=costs,
+            timeout_return_rate=timeout_return_rate,
         )
         stored_values = {
             "net_rr": finite_decimal(snapshot.get("net_rr"), "stored net_rr"),
@@ -199,6 +221,7 @@ def execution_plan_economics_dict(signal: MarketSignal, plan: ExecutionPlan) -> 
         "integrity_status": "VERIFIED",
         "economics_schema_version": snapshot.get("economics_schema_version", "legacy-recomputed"),
         "entry_price": number(entry),
+        "timeout_gross_return_rate": number(timeout_return_rate),
         "net_rr": number(net_rr),
         "net_ev_r": number(net_ev_r),
         "stress_downside_rate": number(downside),

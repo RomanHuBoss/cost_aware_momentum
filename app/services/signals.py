@@ -74,6 +74,7 @@ def select_cost_aware_scenario(
     stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
     tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
     tick_size: Decimal | None = None,
+    timeout_return_rate: Decimal = Decimal("-0.002"),
 ) -> SignalScenarioEconomics:
     """Select LONG/SHORT by the exact economics published to the operator.
 
@@ -150,6 +151,7 @@ def select_cost_aware_scenario(
             p_tp=prediction.p_tp,
             p_sl=prediction.p_sl,
             p_timeout=prediction.p_timeout,
+            timeout_return_rate=timeout_return_rate,
         )
         candidates.append(
             SignalScenarioEconomics(
@@ -497,6 +499,7 @@ async def publish_hourly_signals(
                 stop_atr_multiplier=runtime.stop_atr_multiplier,
                 tp_atr_multiplier=runtime.tp_atr_multiplier,
                 tick_size=spec.tick_size,
+                timeout_return_rate=decimal(getattr(settings, "timeout_gross_return_rate", -0.002)),
             )
         except ValueError as exc:
             count("invalid_signal_economics")
@@ -583,7 +586,15 @@ async def publish_hourly_signals(
             data_cutoff=event_time,
             reasons=list(prediction.reasons),
             warnings=warnings,
-            feature_snapshot={**snapshot.values, "score": prediction.score, "spread_bps": spread_bps},
+            feature_snapshot={
+                **snapshot.values,
+                "score": prediction.score,
+                "spread_bps": spread_bps,
+                "model_runtime": runtime.metadata(),
+                "economics_assumptions": {
+                    "timeout_gross_return_rate": settings.timeout_gross_return_rate
+                },
+            },
         )
         session.add(signal)
         await session.flush()

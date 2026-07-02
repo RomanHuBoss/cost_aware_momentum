@@ -15,3 +15,5 @@ Patch 1.8.30 не меняет authentication, cookie, CSRF, network binding, By
 Patch 1.8.31 не меняет права доступа, сетевые настройки, торговые возможности или секреты. Он устраняет только несовместимость идентификатора Alembic revision со стандартной 32-символьной колонкой version table и добавляет fail-fast regression contract.
 
 Patch 1.8.32 не добавляет order mutations, новые права API, сетевые экспозиции или секреты. Он восстанавливает fail-closed migration graph/release manifest и предотвращает использование в promotion evidence сделок, которые live acceptance заблокировал бы как перекрывающуюся позицию того же символа.
+
+Patch 1.8.33 сохраняет advisory-only и read-only границы. Он добавляет второй fail-closed барьер: некалиброванный baseline не может быть actionable по умолчанию и не может пройти acceptance из legacy-плана; production запрещает override `ALLOW_BASELINE_ACTIONABLE=true`.

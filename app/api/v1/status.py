@@ -457,6 +457,10 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "lookback_days": settings.auto_train_lookback_days,
             "max_symbols": settings.auto_train_max_symbols,
             "require_improvement": settings.auto_train_require_improvement,
+            "minimum_policy_trades": settings.auto_train_min_policy_trades,
+            "minimum_policy_cohorts": settings.auto_train_min_policy_cohorts,
+            "timeout_gross_return_rate": settings.timeout_gross_return_rate,
+            "baseline_actionable": settings.allow_baseline_actionable,
         },
         "history_backfill": {
             "enabled": settings.history_backfill_enabled,

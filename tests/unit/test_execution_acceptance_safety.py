@@ -211,6 +211,7 @@ async def _build_plan_for_safety_case(
     bid_price: Decimal | None = DEFAULT_BID_PRICE,
     ask_price: Decimal | None = DEFAULT_ASK_PRICE,
     signal_status: str = "PUBLISHED",
+    baseline: bool = False,
 ):
     from uuid import uuid4
 
@@ -235,6 +236,13 @@ async def _build_plan_for_safety_case(
         stop_loss=stop_loss,
         take_profit_1=D("120"),
         direction="LONG",
+        model_version="baseline-momentum-v1" if baseline else "model-v1",
+        calibration_version=(
+            "uncalibrated-baseline-v1" if baseline else "calibrated-v1"
+        ),
+        feature_snapshot={
+            "model_runtime": {"baseline": baseline, "source": "test"}
+        },
     )
     profile = SimpleNamespace(
         id=uuid4(),
@@ -288,6 +296,21 @@ async def _build_plan_for_safety_case(
         profile=profile,
         settings=settings,
     )
+
+
+async def test_unvalidated_baseline_plan_is_diagnostic_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        baseline=True,
+    )
+
+    assert plan.status == "NO_TRADE"
+    assert any("baseline" in warning.lower() for warning in plan.warnings)
 
 
 async def test_execution_plan_reprices_from_current_executable_quote(

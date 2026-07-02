@@ -97,6 +97,21 @@ def liquidity_notional_cap(turnover_24h: Decimal | None) -> Decimal:
     )
 
 
+
+def signal_uses_unvalidated_baseline(signal: MarketSignal) -> bool:
+    """Return True when a signal originated from the diagnostic baseline runtime."""
+
+    snapshot = getattr(signal, "feature_snapshot", None)
+    if isinstance(snapshot, dict):
+        runtime = snapshot.get("model_runtime")
+        if isinstance(runtime, dict) and runtime.get("baseline") is True:
+            return True
+    calibration = str(getattr(signal, "calibration_version", "") or "").lower()
+    model_version = str(getattr(signal, "model_version", "") or "").lower()
+    return calibration.startswith("uncalibrated-baseline") or model_version.startswith(
+        "baseline-"
+    )
+
 def validate_execution_plan_for_acceptance(
     *,
     plan: ExecutionPlan,
@@ -116,6 +131,9 @@ def validate_execution_plan_for_acceptance(
     function deliberately uses the fresh state and fails closed instead of
     trusting the stale sizing snapshot.
     """
+
+    if signal_uses_unvalidated_baseline(signal) and not settings.allow_baseline_actionable:
+        raise ValueError("Uncalibrated baseline signals are diagnostic-only")
 
     entry = positive_finite_decimal(executable_price, "current executable price")
     qty = positive_finite_decimal(plan.qty, "plan qty")
@@ -204,6 +222,7 @@ def validate_execution_plan_for_acceptance(
         p_tp=signal.p_tp,
         p_sl=signal.p_sl,
         p_timeout=signal.p_timeout,
+        timeout_return_rate=Decimal(str(settings.timeout_gross_return_rate)),
     )
     if current_net_rr < Decimal(str(settings.min_net_rr)) or current_net_ev_r < Decimal(
         str(settings.min_net_ev_r)
@@ -744,6 +763,13 @@ async def create_execution_plan(
     warnings: list[str] = list(signal.warnings or [])
     status_override: str | None = None
     entry_outside_zone = False
+    baseline_policy_blocked = (
+        signal_uses_unvalidated_baseline(signal) and not settings.allow_baseline_actionable
+    )
+    if baseline_policy_blocked:
+        warnings.append(
+            "Некалиброванный baseline разрешен только для диагностики; исполнение заблокировано"
+        )
     entry_source = "explicit" if entry_price is not None else "current_executable_quote"
     if entry_price is not None:
         planning_entry = positive_finite_decimal(entry_price, "planning entry")
@@ -894,6 +920,7 @@ async def create_execution_plan(
             p_tp=signal.p_tp,
             p_sl=signal.p_sl,
             p_timeout=signal.p_timeout,
+            timeout_return_rate=Decimal(str(settings.timeout_gross_return_rate)),
         )
         plan_outcomes = net_outcome_rates(
             entry=planning_entry,
@@ -901,6 +928,7 @@ async def create_execution_plan(
             take_profit=signal.take_profit_1,
             direction=signal.direction,
             costs=costs,
+            timeout_return_rate=Decimal(str(settings.timeout_gross_return_rate)),
         )
         plan_upside_rate = plan_outcomes.upside_rate
         plan_timeout_net_rate = plan_outcomes.timeout_net_rate
@@ -926,7 +954,7 @@ async def create_execution_plan(
         status = status_override
     elif plan_math.status.startswith("BLOCKED_"):
         status = plan_math.status
-    elif entry_outside_zone:
+    elif baseline_policy_blocked or entry_outside_zone:
         status = "NO_TRADE"
     elif plan_net_rr < Decimal(str(settings.min_net_rr)) or plan_net_ev_r < Decimal(
         str(settings.min_net_ev_r)
@@ -980,6 +1008,7 @@ async def create_execution_plan(
             "entry_inside_signal_zone": not entry_outside_zone,
             "planning_time": now.isoformat(),
             "economics_schema_version": "tp-sl-timeout-v1",
+            "timeout_gross_return_rate": str(settings.timeout_gross_return_rate),
             "net_rr": str(plan_net_rr),
             "net_ev_r": str(plan_net_ev_r),
             "stress_downside_rate": str(plan_math.stress_downside_rate),

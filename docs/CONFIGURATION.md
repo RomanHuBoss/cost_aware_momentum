@@ -11,6 +11,16 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.33
+
+Новые обратно совместимые переменные:
+
+- `ALLOW_BASELINE_ACTIONABLE=false` — deterministic baseline остаётся диагностическим fallback и не может создавать/сохранять исполнимый план. В `production` значение `true` запрещено.
+- `TIMEOUT_GROSS_RETURN_RATE=-0.002` — gross return исхода TIMEOUT до fee/slippage. Значение должно быть конечным и лежать в `(-1, 1)`; менять только после OOS/forward-калибровки.
+- `AUTO_TRAIN_MIN_POLICY_COHORTS=20` — минимальное число независимых decision-time когорт. Оно больше не наследуется от `AUTO_TRAIN_MIN_POLICY_TRADES`.
+
+Изменение `.env` не обязательно: указанные defaults сохраняют совместимость. После обновления рекомендуется явно добавить переменные, чтобы policy assumptions были видны оператору.
+
 ## Изменения 1.8.32
 
 Новых или переименованных переменных нет.

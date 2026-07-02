@@ -99,10 +99,14 @@ class Settings(BaseSettings):
     fee_rate_taker: float = 0.00055
     base_slippage_bps: float = 3.0
     stop_gap_reserve_bps: float = 10.0
+    timeout_gross_return_rate: float = -0.002
 
     model_dir: Path = Path("models")
     active_model_path: Path | None = None
     allow_baseline_model: bool = True
+    # Baseline remains available for diagnostics/bootstrap, but cannot produce
+    # an actionable plan unless explicitly enabled outside production.
+    allow_baseline_actionable: bool = False
     model_refresh_seconds: int = 300
 
     # Background model lifecycle. The trainer creates immutable candidates in a
@@ -134,6 +138,7 @@ class Settings(BaseSettings):
     auto_train_max_brier_regression: float = 0.01
     auto_train_min_metric_improvement: float = 0.002
     auto_train_min_policy_trades: int = 20
+    auto_train_min_policy_cohorts: int = 20
     auto_train_min_policy_realized_mean_r: float = 0.0
     auto_train_min_policy_profit_factor: float = 1.0
     auto_train_max_policy_drawdown_r: float = 30.0
@@ -297,6 +302,11 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_RETRY_HOURS must be at least 1")
         if self.auto_train_recovery_retry_minutes < 1:
             raise ValueError("AUTO_TRAIN_RECOVERY_RETRY_MINUTES must be at least 1")
+        if (
+            not math.isfinite(self.timeout_gross_return_rate)
+            or not -1 < self.timeout_gross_return_rate < 1
+        ):
+            raise ValueError("TIMEOUT_GROSS_RETURN_RATE must be finite and in (-1, 1)")
         if self.auto_train_check_seconds < 30:
             raise ValueError("AUTO_TRAIN_CHECK_SECONDS must be at least 30")
         if self.auto_train_initial_delay_seconds < 0:
@@ -335,6 +345,8 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_MIN_METRIC_IMPROVEMENT cannot be negative")
         if self.auto_train_min_policy_trades < 1:
             raise ValueError("AUTO_TRAIN_MIN_POLICY_TRADES must be positive")
+        if self.auto_train_min_policy_cohorts < 1:
+            raise ValueError("AUTO_TRAIN_MIN_POLICY_COHORTS must be positive")
         if self.auto_train_min_policy_profit_factor < 0:
             raise ValueError("AUTO_TRAIN_MIN_POLICY_PROFIT_FACTOR cannot be negative")
         if self.auto_train_max_policy_drawdown_r <= 0:
@@ -360,6 +372,8 @@ class Settings(BaseSettings):
                 errors.append("ALLOW_DEMO_SEED must be false")
             if self.allow_baseline_model:
                 errors.append("ALLOW_BASELINE_MODEL must be false")
+            if self.allow_baseline_actionable:
+                errors.append("ALLOW_BASELINE_ACTIONABLE must be false")
             if self.secret_key.startswith("replace-with") or len(self.secret_key) < 32:
                 errors.append("SECRET_KEY must be a non-default value of at least 32 characters")
             if self.operator_password == "change-me-now" or len(self.operator_password) < 12:

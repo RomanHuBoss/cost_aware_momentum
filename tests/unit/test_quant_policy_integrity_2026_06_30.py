@@ -172,6 +172,24 @@ def test_policy_metrics_weight_hourly_cohorts_not_raw_symbol_count() -> None:
     assert metrics["policy_realized_mean_r"] == pytest.approx(0.4)
 
 
+def test_quality_gate_uses_independent_cohort_threshold(tmp_path: Path) -> None:
+    metrics = _passing_metrics()
+    metrics["policy_trades"] = 80
+    metrics["policy_cohorts"] = 10
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics),
+        Settings(
+            database_url="postgresql+psycopg://u:p@localhost/db",
+            auto_train_min_policy_trades=50,
+            auto_train_min_policy_cohorts=10,
+        ),
+    )
+
+    assert result["passed"] is True
+    assert result["absolute"]["min_policy_cohorts"] == 10
+
+
 def test_quality_gate_rejects_many_cross_sectional_trades_from_one_hour(tmp_path: Path) -> None:
     metrics = _passing_metrics()
     metrics["policy_trades"] = 100
