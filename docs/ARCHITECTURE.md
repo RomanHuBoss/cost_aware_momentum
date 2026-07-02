@@ -27,7 +27,7 @@
 
 ## Model artifact and promotion contract
 
-`confirmed candles → contiguous features → direction-specific ATR labels → purged train/calibration/final holdout → immutable candidate artifact → runtime schema/hash validation → same-task incumbent comparison → guarded activation`.
+`confirmed candles → contiguous features → first post-decision open entry proxy → direction-specific ATR-percentage labels → purged train/calibration/final holdout → immutable candidate artifact → runtime schema/hash validation → same-task incumbent comparison → guarded activation`. The completed feature-candle close is not an executable research entry; the first bar open at `decision_time` is persisted as `entry_price`, and barrier distances use the same `atr_pct_14 × executable entry` geometry as live signal policy.
 
 Artifact validation is shared by production inference and research backtest. Candidate/incumbent comparison is allowed only when horizon, label/temporal semantics and ATR barrier multipliers match; otherwise promotion remains fail-closed and the incumbent stays active.
 
@@ -38,4 +38,4 @@ Artifact validation is shared by production inference and research backtest. Can
 
 Instrument specs для execution-проверок выбираются одновременно по `valid_from <= cutoff` и `received_at <= cutoff`; при одинаковом `valid_from` выбирается наиболее поздняя доступная к cutoff запись.
 
-Policy equity/drawdown по-прежнему агрегируются по `exit_time`, но gross gain/loss для profit factor вычисляются из отдельных weighted trade contributions до взаимного неттинга. До расчёта research/promotion метрик actionable-кандидаты фильтруются по live-инварианту одного активного плана на symbol/account scope: кандидат с `decision_time < prior_exit_time` исключается, а вход на точной границе выхода разрешён. Схема метрик: `exit-time-open-gap-horizon-independent-cohort-v8`.
+Policy equity/drawdown по-прежнему агрегируются по `exit_time`, но gross gain/loss для profit factor вычисляются из отдельных weighted trade contributions до взаимного неттинга. До расчёта research/promotion метрик actionable-кандидаты фильтруются по live-инварианту одного активного плана на symbol/account scope: кандидат с `decision_time < prior_exit_time` исключается, а вход на точной границе выхода разрешён. Схема метрик: `decision-open-entry-exit-time-cohort-v9`. Evidence v8 and earlier is incompatible because it may include pre-entry gap movement.

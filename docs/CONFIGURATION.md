@@ -11,6 +11,12 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.36
+
+Новых `.env`-переменных и migration нет. Изменена семантика обучающей выборки: entry proxy берётся из `open` первой свечи после `decision_time`, барьеры рассчитываются как `entry_price × atr_pct_14 × multiplier`.
+
+`label_path_schema_version=decision-open-entry-ohlc-path-v2` и `policy_metric_schema=decision-open-entry-exit-time-cohort-v9`. Старые candidate/active artifacts и policy evidence несовместимы с новой задачей и не должны активироваться вручную. После обновления запустите штатный trainer; incumbent останется fail-closed отклонён runtime при несовместимой label schema, пока не будет активирован новый прошедший gate artifact.
+
 ## Изменения 1.8.35
 
 Новых `.env`-переменных нет. Trainer вычисляет минимальную теоретически достаточную часовую историю из текущих `DEFAULT_HORIZON_HOURS`, `AUTO_TRAIN_MIN_HOLDOUT_ROWS` и `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS`. При defaults (`8`, `180`, `168`) требуется минимум **1206** уникальных hourly timestamps до запуска candidate.

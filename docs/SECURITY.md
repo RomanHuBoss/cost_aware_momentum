@@ -20,3 +20,4 @@ Patch 1.8.33 сохраняет advisory-only и read-only границы. Он 
 Patch 1.8.34 не меняет authentication, network binding, Bybit permissions или advisory-only semantics. Он усиливает fail-closed model promotion: перекрывающиеся label windows не считаются независимым evidence, слишком короткий holdout блокируется, а отклонённый deterministic candidate не переобучается на неизменившихся данных.
 
 Patch 1.8.35 сохраняет advisory-only/read-only границы и не меняет authentication, cookies, network binding или secrets. Он предотвращает auto-activation кандидата без положительного skill относительно class-prior и блокирует заведомо непроходимый bootstrap до fit.
+Patch 1.8.36 сохраняет advisory-only/read-only границы, не добавляет API permissions, order mutations, network exposure или secrets. Он блокирует artifacts и promotion evidence со старой entry-time семантикой, чтобы pre-entry price movement не использовалось как основание для рекомендации.

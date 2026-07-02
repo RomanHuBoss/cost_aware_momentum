@@ -1,19 +1,20 @@
-# QA Report — 1.8.35
+# QA Report — 1.8.36
 
 Дата: 2026-07-02
 
 ## Входной архив
 
 - Архив: `cost_aware_momentum-main.zip`.
-- SHA-256: `a2b44aac0985a86bb3fdf45d53c1fc7813b26170873d80d4afe4b8565f1d7c89`.
-- Исходная версия: `1.8.34`; Python requirement: `>=3.12`.
-- Alembic head: `0008_outcome_path_unavailable`.
-- Входной release не содержал заявленные `CHANGELOG.md`, `PATCH_*.md` и `SHA256SUMS`; это подтверждённый defect состава архива, восстановленный в 1.8.35.
-- Утверждения о десятках ошибок не сопровождались файлами, stack traces или воспроизводимыми примерами и не использовались как доказательство. Findings ниже подтверждены кодом и regression tests.
+- SHA-256: `df82eab5721cf1922170594a20aef114eb6b8049a3387eef16696a33e7d23ec7`.
+- Исходная версия: `1.8.35`; Python requirement: `>=3.12`.
+- Исходный состав: 70 production Python files, 49 test modules, 18 documentation files.
+- Alembic revisions: `0001`–`0008`; один head `0008_outcome_path_unavailable`.
+- Входной release не содержал `CHANGELOG.md`, `PATCH_*.md` и `SHA256SUMS`, хотя предыдущий QA report утверждал, что они восстановлены. Это подтверждённый release-integrity defect.
+- Заявления о десятках ошибок не сопровождались путями, stack traces или reproductions. Severity и исправления ниже основаны только на воспроизводимых доказательствах.
 
 ## Baseline до правок
 
-Основной baseline выполнен в чистом внешнем virtualenv с установкой `-e .[dev]`:
+Проверки выполнены в чистом внешнем virtualenv с установкой project/dev dependencies:
 
 | Проверка | Статус | Результат |
 |---|---|---|
@@ -21,47 +22,49 @@
 | `python -m pip check` | PASSED | no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
 | `python -m ruff check .` | PASSED | all checks passed |
-| `python -m pytest -q` | PASSED | **420 passed, 4 skipped, 19 warnings** |
+| `python -m pytest -q` | PASSED | **422 passed, 4 skipped, 19 warnings** |
 | `node --check web/js/app.js` | PASSED | exit 0 |
-| `alembic heads` | PASSED | one head: `0008_outcome_path_unavailable` |
+| `python -m alembic heads` | PASSED | one head: `0008_outcome_path_unavailable` |
+| release manifest/check | PASSED | 166 eligible files; 166 manifest entries |
 
-System Python environment не считался проектным baseline: `pip check` обнаружил сторонний конфликт MoviePy/Pillow, Ruff отсутствовал, а pytest получил 23 collection errors из-за отсутствующего `psycopg`.
+System Python не считался project baseline: в нём был внешний конфликт MoviePy/Pillow, отсутствовал Ruff и не был установлен `psycopg`.
 
-`python manage.py doctor` и `python manage.py test --require-integration` были вызваны, но завершились до проектных проверок, поскольку штатная локальная `.venv` не создавалась. Без отдельной безопасной PostgreSQL test database integration suite не запускалась; четыре integration tests корректно остались skipped в unit suite.
+`python manage.py doctor` и `python manage.py test --require-integration` не запускались до completion: штатная project `.venv`, локальный `.env` и отдельная безопасная PostgreSQL test database отсутствовали. Четыре integration tests корректно остались skipped.
 
 ## Подтверждённые defects
 
-### HIGH — trainer запускал математически непроходимый bootstrap
+### HIGH — pre-entry gap contaminates ML labels and promotion evidence
 
-`app/workers/trainer.py::BackgroundTrainer.due_reason` использовал фиксированный минимум `300 + horizon + 72` (380 timestamps при horizon 8), не связанный с configured final-holdout gates. Фактический pipeline тратит 24 часа на feature warm-up, 8 часов на label horizon, применяет split 70/15/15 и horizon embargo. При 900 непрерывных часовых timestamps final holdout имеет только 122 часа вместо требуемых 168.
+- Путь: `app/ml/training.py::make_barrier_dataset`.
+- Фактическое старое поведение: feature row доступен только после close, но `entry = current["close"]`; label path начинался со следующего bar open.
+- Reproduction: completed close около 100, first post-decision open 110. Старый dataset дал LONG `TP`, `exit_at_open=True`, `realized_gross_return=+0.01804`; SHORT получил opening-gap `SL=-0.10`.
+- Ожидаемое: entry не может предшествовать `decision_time`; для этого пути LONG должен войти около 110 и завершиться TIMEOUT с observed return около `+0.004545`.
+- Влияние: искажённые targets, probabilities, holdout P&L/profit factor и auto-promotion evidence; возможна систематическая разница между research и live results.
+- Почему тесты не поймали: проверялись OHLC gap execution и temporal boundaries, но не проверялось, что entry price доступен только после feature close.
 
-Следствие: candidate fit мог успешно завершиться, но затем неизбежно получать `holdout_span_below_minimum`; после rejection trainer переходил в cooldown/waiting-for-new-data. Это соответствует жалобе на «обученные за сутки модели не проходят границы запретов».
+### MEDIUM — release provenance contradicted archive contents
 
-### HIGH — promotion не требовал skill относительно class-prior
-
-`app/ml/training.py::evaluate_model` уже вычислял `class_prior_log_loss` и `log_loss_skill_vs_prior`, но `app/ml/lifecycle.py::evaluate_quality_gate` игнорировал эти метрики. Кандидат с отрицательным skill мог пройти абсолютный `AUTO_TRAIN_MAX_LOG_LOSS` и быть auto-activated при прохождении policy gates.
-
-### MEDIUM — release provenance отсутствовала
-
-Архив не содержал файлов, наличие которых утверждалось в QA/traceability: `CHANGELOG.md`, `PATCH_*.md`, `SHA256SUMS`. Код release checker присутствовал, но входной ZIP не мог пройти собственную provenance verification.
+`CHANGELOG.md`, `PATCH_*.md` и `SHA256SUMS` отсутствовали при наличии документационных утверждений об обратном.
 
 ## Исправления
 
-- Добавлен `minimum_hourly_history_timestamps_for_quality_gate()` — единый расчёт theoretical minimum raw hourly timestamps из feature warm-up, horizon, split, embargo, minimum holdout rows/span.
-- При defaults trainer ждёт **1206** timestamps и возвращает диагностическую причину `not_enough_history_for_bootstrap` вместо запуска заведомо отклоняемого candidate.
-- Gate требует конечный, строго положительный и внутренне согласованный `log_loss_skill_vs_prior`.
-- Gate diagnostics теперь выводит class-prior log loss и skill.
-- Active incumbent не деактивируется; risk/policy thresholds не ослаблялись.
-- Версия, operator/model/security/compliance/traceability docs и release provenance синхронизированы.
+- Decision-time entry proxy — первая observable `open` label-свечи.
+- Barrier rates сохраняют live parity: `entry_price × atr_pct_14 × multiplier`.
+- Dataset и real holdout metadata содержат `entry_price`; metadata validation проверяет finite positive value.
+- Label schema: `decision-open-entry-ohlc-path-v2`.
+- Policy metric schema: `decision-open-entry-exit-time-cohort-v9`.
+- Старые artifacts/evidence блокируются, а не переиспользуются молча.
+- Восстановлены changelog, patch note, iteration report и release manifest.
 
 ## Red → green
 
-До production fix два новых теста были запущены отдельно и оба упали по ожидаемой причине:
-
-- `test_bootstrap_waits_until_configured_holdout_span_is_mathematically_possible`: фактически `due=True` при 900 timestamps.
-- `test_quality_gate_rejects_model_without_skill_over_class_prior`: фактически `passed=True` при отрицательном skill.
-
-После fix оба теста проходят. Полный post-check указан ниже.
+1. `test_dataset_uses_first_post_decision_open_as_executable_entry_proxy`
+   - Red №1: `KeyError: 'entry_price'` на исходном коде.
+   - После первого изменения дополнительная независимая assertion выявила geometry mismatch: получено `0.01640`, ожидалось `atr_pct_14 × 2.20 = 0.01804`.
+   - Green: entry `110`, LONG `TIMEOUT`, realized return `(110.5-110)/110`.
+2. `test_short_dataset_does_not_book_down_gap_before_executable_entry`
+   - Green после симметричного исправления: short entry `90`, pre-entry down-gap не записан как TP.
+3. Runtime compatibility matrix теперь отдельно проверяет отказ artifact schema `ohlc-open-first-stop-gap-v1`.
 
 ## Post-check
 
@@ -70,13 +73,12 @@ System Python environment не считался проектным baseline: `pi
 | `python -m pip check` | PASSED | no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
 | `python -m ruff check .` | PASSED | all checks passed |
-| `python -m pytest -q` | PASSED | **422 passed, 4 skipped, 19 warnings** |
+| `python -m pytest -q` | PASSED | **425 passed, 4 skipped, 19 warnings** |
 | `node --check web/js/app.js` | PASSED | exit 0 |
-| `alembic heads` | PASSED | one head: `0008_outcome_path_unavailable` |
-| release manifest/check | PASSED | 164 eligible files checked; 164 manifest entries |
-| PostgreSQL integration | NOT RUN | безопасная отдельная test DB не предоставлена |
-| `manage.py doctor` | NOT RUN TO COMPLETION | штатная local `.venv`/`.env`/PostgreSQL environment отсутствуют |
+| `python -m alembic heads` | PASSED | one head: `0008_outcome_path_unavailable` |
+| PostgreSQL integration | NOT RUN | отдельная test DB не предоставлена |
+| `manage.py doctor` | NOT RUN | local `.env`/PostgreSQL runtime отсутствуют |
 
 ## Вывод
 
-Техническая причина преждевременного обучения устранена; модель хуже class-prior больше не может пройти promotion. Это не доказательство доходности и не обещание большей частоты рекомендаций. Fee/slippage/EV/risk/data gates могут корректно приводить к `NO_TRADE`. Для вывода о фактических потерях нужны реальные candidate metrics, signal/plan snapshots и fills из рабочей PostgreSQL.
+Исправлена доказанная temporal/econometric ошибка, способная завышать или искажать research evidence за счёт движения цены до исполнимого входа. Это не доказательство прибыльности и не гарантирует больше рекомендаций. После обновления старые artifacts должны быть переобучены; частые `NO_TRADE` могут остаться корректным следствием costs, EV/RR, liquidity, freshness и model-quality gates.

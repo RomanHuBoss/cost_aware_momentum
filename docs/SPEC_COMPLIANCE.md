@@ -26,12 +26,13 @@
 | Positive economic floor for automatic promotion | IMPLEMENTED / UNIT CHECKED in 1.8.26 | non-negative realized mean R and PF >= 1 when auto-activation is enabled |
 | Account/profile-scoped margin capacity | IMPLEMENTED / UNIT CHECKED in 1.8.27 | allocated-capital basis, accepted-plan/open-trade reservations, sizing and acceptance regressions |
 | Actual manual fill preserves accepted risk/margin reservations | IMPLEMENTED / UNIT CHECKED in 1.8.27 | actual entry fee substitution; stress-loss and margin rejection tests |
-| Exact ATR barrier parity between labels and inference | IMPLEMENTED / UNIT CHECKED in 1.8.29 | `atr_pct_14` is validated and used without hidden clipping |
+| Executable decision-time entry semantics in labels | IMPLEMENTED / UNIT CHECKED in 1.8.36 | label entry is first future bar `open` at `decision_time`; feature-candle close-to-entry gap is excluded from P&L; `entry_price` persisted |
+| Exact ATR barrier parity between labels and inference | IMPLEMENTED / UNIT CHECKED in 1.8.36 | both paths use `entry × atr_pct_14 × multiplier`; no hidden clipping or stale absolute ATR after an opening gap |
 | Artifact label/temporal semantics fail-closed | IMPLEMENTED / UNIT CHECKED in 1.8.29 | runtime requires exact feature, label-path and temporal-split schemas |
 | Candidate/incumbent comparison uses one barrier task | IMPLEMENTED / UNIT CHECKED in 1.8.29 | horizon and ATR multipliers must match; otherwise comparison is skipped and activation blocks |
 | No-loss profit factor is distinct from missing/no-trade data | IMPLEMENTED / UNIT CHECKED in 1.8.29 | explicit gross gain/loss and validated unbounded flag |
 | Backtest uses production artifact contract | IMPLEMENTED / UNIT CHECKED in 1.8.29 | shared `ModelRuntime`, optional expected SHA-256, no silent multiplier fallback |
-| Research/promotion policy matches live one-active-symbol constraint | IMPLEMENTED / UNIT CHECKED in 1.8.32 | overlapping candidate for the same symbol is blocked until modeled exit; boundary re-entry and metric counters tested; policy schema v8 |
+| Research/promotion policy matches live one-active-symbol constraint | IMPLEMENTED / UNIT CHECKED in 1.8.32 | overlapping candidate for the same symbol is blocked until modeled exit; boundary re-entry and metric counters tested; policy schema v9 |
 | Late execution-plan counterfactual path integrity | IMPLEMENTED / UNIT CHECKED in 1.8.30; MIGRATION NOT DB-TESTED | later `planning_time` cannot reuse movement before plan creation; status `PATH_UNAVAILABLE`; migration 0008 backfills existing rows |
 | Profit factor preserves simultaneous gross gains/losses | IMPLEMENTED / UNIT CHECKED in 1.8.30 | gross gain/loss use individual weighted trade contributions; exit-time netting remains only for equity/drawdown |
 | Execution instrument specs respect receipt cutoff | IMPLEMENTED / UNIT CHECKED in 1.8.30 | `valid_from` and `received_at` are both bounded by cutoff |

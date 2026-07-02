@@ -67,7 +67,7 @@ def test_policy_evaluation_blocks_same_symbol_overlap_like_live_acceptance() -> 
         ),
         horizon_hours=2,
     )
-    assert metrics["policy_metric_schema"] == "exit-time-open-gap-horizon-independent-cohort-v8"
+    assert metrics["policy_metric_schema"] == "decision-open-entry-exit-time-cohort-v9"
     assert metrics["policy_capital_sleeves"] == 2
     assert metrics["policy_trades"] == 1
     assert metrics["policy_overlap_blocked_trades"] == 1

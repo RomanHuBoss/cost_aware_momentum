@@ -13,6 +13,14 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.8.36
+
+1. Migration и новые `.env`-переменные не требуются.
+2. Остановите API, worker и trainer, замените release tree, выполните `python manage.py release-check`, затем перезапустите процессы.
+3. Запустите штатное переобучение. Artifact с `label_path_schema_version=ohlc-open-first-stop-gap-v1` теперь несовместим и не должен активироваться вручную.
+4. Policy evidence schema v8 пересчитывается как v9. Причина отклонения старого evidence `invalid_policy_metric_schema` после обновления ожидаема.
+5. Не снижайте EV/RR/quality gates ради появления рекомендаций: исправление удаляет ложный pre-entry P&L и может сделать результаты более консервативными.
+
 ## После обновления на 1.8.35
 
 Migration и новые `.env`-переменные не требуются. Замените файлы, проверьте release manifest и перезапустите API, worker и trainer.

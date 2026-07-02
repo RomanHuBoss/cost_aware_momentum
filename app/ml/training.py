@@ -26,9 +26,9 @@ DEFAULT_STOP_ATR_MULTIPLIER = 1.15
 DEFAULT_TP_ATR_MULTIPLIER = 2.20
 MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
-LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
+LABEL_PATH_SCHEMA_VERSION = "decision-open-entry-ohlc-path-v2"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "exit-time-open-gap-horizon-independent-cohort-v8"
+POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v9"
 
 
 class TemporalCalibratedBarrierModel:
@@ -295,9 +295,22 @@ def make_barrier_dataset(
             values = [current.get(name) for name in FEATURE_NAMES]
             if any(value is None or not np.isfinite(float(value)) for value in values):
                 continue
-            entry = float(current["close"])
-            atr = float(current.get("atr_14", np.nan))
-            if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
+            # A signal can only be acted on after the source candle has closed.
+            # Use the first observable price at decision time as the executable
+            # entry proxy. Centering barriers on the already-finished candle close
+            # would book an overnight/hourly opening gap before a live entry was
+            # possible and would contaminate labels and promotion metrics.
+            entry = float(future.iloc[0]["open"])
+            atr_pct = float(current.get("atr_pct_14", np.nan))
+            atr = entry * atr_pct
+            if (
+                not np.isfinite(entry)
+                or entry <= 0
+                or not np.isfinite(atr_pct)
+                or atr_pct <= 0
+                or not np.isfinite(atr)
+                or atr <= 0
+            ):
                 continue
             label_end_time = future.iloc[-1]["close_time"]
 
@@ -334,6 +347,7 @@ def make_barrier_dataset(
                         "label_end_time": label_end_time,
                         "symbol": symbol,
                         "direction": direction,
+                        "entry_price": float(entry),
                         "target": result.outcome,
                         "ambiguous": bool(result.ambiguous),
                         "exit_index": int(result.exit_index),
@@ -449,6 +463,8 @@ def validate_policy_evaluation_metadata(
         "barrier_upside_rate",
         "barrier_downside_rate",
     ]
+    if "entry_price" in result.columns:
+        numeric_columns.append("entry_price")
     for column in numeric_columns:
         values = pd.to_numeric(result[column], errors="coerce")
         if values.isna().any() or not np.isfinite(values.to_numpy(float)).all():
@@ -456,6 +472,8 @@ def validate_policy_evaluation_metadata(
         result[column] = values.astype(float)
     if (result[["barrier_upside_rate", "barrier_downside_rate"]] <= 0).any().any():
         raise ValueError(f"{context} barrier rates must be positive")
+    if "entry_price" in result.columns and (result["entry_price"] <= 0).any():
+        raise ValueError(f"{context} entry_price must be positive")
 
     is_long = result["direction"].eq("LONG")
     tp_exit_ratio = np.where(
@@ -655,6 +673,8 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         "barrier_upside_rate",
         "barrier_downside_rate",
     ]
+    if "entry_price" in test.columns:
+        meta_columns.insert(5, "entry_price")
     return DatasetSplit(
         train[MODEL_FEATURE_NAMES].to_numpy(float),
         train["target"].to_numpy(),

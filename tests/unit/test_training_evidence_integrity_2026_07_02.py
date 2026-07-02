@@ -54,7 +54,7 @@ def _passing_metrics() -> dict[str, object]:
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "exit-time-open-gap-horizon-independent-cohort-v8",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v9",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,

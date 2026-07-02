@@ -158,6 +158,7 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
     [
         ("label_path_schema_version", None, "label path schema"),
         ("label_path_schema_version", "legacy-close-first-v0", "label path schema"),
+        ("label_path_schema_version", "ohlc-open-first-stop-gap-v1", "label path schema"),
         ("temporal_split_schema", None, "temporal split schema"),
         ("temporal_split_schema", "random-split-v0", "temporal split schema"),
     ],
@@ -218,7 +219,7 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "exit-time-open-gap-horizon-independent-cohort-v8",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v9",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,

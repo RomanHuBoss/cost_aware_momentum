@@ -55,7 +55,7 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "exit-time-open-gap-horizon-independent-cohort-v8",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v9",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,
@@ -78,7 +78,7 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
 
 def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
     metrics = _metrics()
-    metrics["policy_metric_schema"] = "exit-time-open-gap-horizon-independent-cohort-v8"
+    metrics["policy_metric_schema"] = "decision-open-entry-exit-time-cohort-v9"
 
     result = evaluate_quality_gate(
         _candidate(tmp_path, metrics=metrics),
@@ -89,7 +89,7 @@ def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path
     assert "invalid_policy_metric_schema" not in result["reasons"]
 
     legacy_metrics = _metrics()
-    legacy_metrics["policy_metric_schema"] = "exit-time-realized-gap-horizon-sleeves-v3"
+    legacy_metrics["policy_metric_schema"] = "exit-time-open-gap-horizon-independent-cohort-v8"
     legacy_result = evaluate_quality_gate(
         _candidate(tmp_path, metrics=legacy_metrics),
         Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
