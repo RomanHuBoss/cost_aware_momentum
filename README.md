@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.8.33: некалиброванный deterministic baseline переведён в строго диагностический режим; TIMEOUT-доходность стала явной общей policy-настройкой, а promotion gate раздельно контролирует число сделок и независимых временных когорт.
+> Версия 1.8.34: promotion evidence теперь требует недельный временной охват holdout и действительно неперекрывающиеся по горизонту когорты; trainer не переобучает детерминированный кандидат на неизменившихся данных после quality-gate rejection.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -13,6 +13,8 @@
 - Direction-conditional модель исходов `TP / SL / TIMEOUT`; `NO TRADE` остаётся решением policy layer.
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
+- Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов holdout; число символов не заменяет временную глубину.
+- После `quality_gate_failed` bootstrap/recovery повторяется только при достаточном числе новых timestamps или материальном изменении training-data profile; operator recovery остаётся явным override.
 - Decimal-арифметика для денежных и контрактных расчётов.
 - Market-signal economics остается независимой от капитала; account-dependent execution-plan economics пересчитывается отдельно и проверяется по immutable snapshot перед показом.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.

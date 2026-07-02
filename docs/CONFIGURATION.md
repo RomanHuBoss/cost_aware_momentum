@@ -11,6 +11,14 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.8.34
+
+- `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS=168` — минимальная разница между первой и последней decision-time точкой final holdout. Rows по множеству символов не компенсируют слишком короткий календарный период. Минимально допустимое значение — 24 часа и не меньше `DEFAULT_HORIZON_HOURS`.
+- `AUTO_TRAIN_MIN_POLICY_COHORTS=20` теперь означает число greedily выбранных decision-time когорт, разделённых не менее чем на `DEFAULT_HORIZON_HOURS`; raw hourly cohorts сохраняются только как диагностическая метрика `policy_cohorts`.
+- После `quality_gate_failed` bootstrap/recovery не повторяется на том же training-data profile. После cooldown нужен `AUTO_TRAIN_MIN_NEW_TIMESTAMPS` либо material dataset change; техническая ошибка обучения по-прежнему использует короткий recovery backoff.
+
+Новая переменная имеет безопасный default. Migration не требуется. Старые policy metrics schema v7 не совместимы с promotion gate v8 и должны быть пересчитаны штатным trainer.
+
 ## Изменения 1.8.33
 
 Новые обратно совместимые переменные:

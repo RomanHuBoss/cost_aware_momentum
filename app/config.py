@@ -130,6 +130,7 @@ class Settings(BaseSettings):
     auto_train_min_bars_per_symbol: int = 300
     auto_train_min_symbol_coverage_ratio: float = 0.80
     auto_train_min_holdout_rows: int = 180
+    auto_train_min_holdout_span_hours: int = 168
     auto_train_min_class_fraction: float = 0.02
     auto_train_max_log_loss: float = 1.20
     auto_train_max_multiclass_brier: float = 0.75
@@ -333,6 +334,13 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO must be in (0, 1]")
         if self.auto_train_min_holdout_rows < 90:
             raise ValueError("AUTO_TRAIN_MIN_HOLDOUT_ROWS must be at least 90")
+        if self.auto_train_min_holdout_span_hours < 24:
+            raise ValueError("AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS must be at least 24")
+        if self.auto_train_min_holdout_span_hours < self.default_horizon_hours:
+            raise ValueError(
+                "AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS cannot be shorter than "
+                "DEFAULT_HORIZON_HOURS"
+            )
         if not 0 < self.auto_train_min_class_fraction < 1 / 3:
             raise ValueError("AUTO_TRAIN_MIN_CLASS_FRACTION must be between 0 and 1/3")
         if self.auto_train_max_log_loss <= 0 or self.auto_train_max_multiclass_brier <= 0:

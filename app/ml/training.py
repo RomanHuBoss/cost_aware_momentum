@@ -28,7 +28,7 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "ohlc-open-first-stop-gap-v1"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "exit-time-open-gap-single-symbol-cohort-v7"
+POLICY_METRIC_SCHEMA = "exit-time-open-gap-horizon-independent-cohort-v8"
 
 
 class TemporalCalibratedBarrierModel:
@@ -691,6 +691,48 @@ def _class_prior_probabilities(y_train: np.ndarray, classes: np.ndarray, rows: i
     return np.tile(priors, (rows, 1))
 
 
+def _holdout_time_bounds(test_meta: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp, float]:
+    if "decision_time" not in test_meta.columns:
+        raise ValueError("Holdout metadata is missing decision_time")
+    decision_times = pd.to_datetime(test_meta["decision_time"], utc=True, errors="coerce")
+    if decision_times.empty or decision_times.isna().any():
+        raise ValueError("Holdout metadata contains invalid decision_time")
+    start = decision_times.min()
+    end = decision_times.max()
+    span_hours = float((end - start).total_seconds() / 3600.0)
+    if not np.isfinite(span_hours) or span_hours < 0:
+        raise ValueError("Holdout decision-time span must be finite and non-negative")
+    return start, end, span_hours
+
+
+def _count_horizon_separated_cohorts(
+    decision_times: pd.Series,
+    *,
+    horizon_hours: int,
+) -> int:
+    """Count non-overlapping label windows using a deterministic greedy schedule."""
+
+    if isinstance(horizon_hours, bool) or not isinstance(
+        horizon_hours, (int, np.integer)
+    ):
+        raise TypeError("horizon_hours must be an integer")
+    if int(horizon_hours) <= 0:
+        raise ValueError("horizon_hours must be positive")
+    values = pd.to_datetime(decision_times, utc=True, errors="coerce")
+    if values.isna().any():
+        raise ValueError("Policy cohorts contain invalid decision_time")
+    unique_times = sorted(pd.Timestamp(value) for value in values.unique())
+    next_eligible: pd.Timestamp | None = None
+    count = 0
+    separation = pd.to_timedelta(int(horizon_hours), unit="h")
+    for decision_time in unique_times:
+        if next_eligible is not None and decision_time < next_eligible:
+            continue
+        count += 1
+        next_eligible = decision_time + separation
+    return count
+
+
 def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -> dict:
     probabilities = model.predict_proba(split.x_test)
     predicted = model.predict(split.x_test)
@@ -702,10 +744,17 @@ def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -
     class_to_index = {label: index for index, label in enumerate(classes)}
     y_index = np.array([class_to_index[label] for label in y])
     one_hot = np.eye(len(classes))[y_index]
+    holdout_start, holdout_end, holdout_span_hours = _holdout_time_bounds(split.test_meta)
 
     metrics: dict[str, object] = {
         "classification_metric_schema": "ordered-probability-v2",
         "rows": int(len(y)),
+        "holdout_start_time": holdout_start.isoformat(),
+        "holdout_end_time": holdout_end.isoformat(),
+        "holdout_span_hours": holdout_span_hours,
+        "holdout_unique_timestamps": int(
+            pd.to_datetime(split.test_meta["decision_time"], utc=True).nunique()
+        ),
         "accuracy": float(accuracy_score(y, predicted)),
         "log_loss": calibrated_log_loss,
         "class_prior_log_loss": class_prior_log_loss,
@@ -917,6 +966,7 @@ def evaluate_policy_model(
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": 0,
         "policy_cohorts": 0,
+        "policy_independent_cohorts": 0,
         "policy_trade_rate": 0.0,
         "policy_mean_expected_ev_r": None,
         "policy_realized_mean_r": None,
@@ -967,6 +1017,9 @@ def evaluate_policy_model(
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": int(len(trades)),
         "policy_cohorts": int(len(cohort_metrics)),
+        "policy_independent_cohorts": _count_horizon_separated_cohorts(
+            trades["decision_time"], horizon_hours=resolved_horizon
+        ),
         "policy_trade_rate": float(len(trades) / len(selected)) if len(selected) else 0.0,
         "policy_mean_expected_ev_r": float(cohort_metrics["expected_mean_ev_r"].mean()),
         "policy_realized_mean_r": float(cohort_metrics["realized_mean_r"].mean()),

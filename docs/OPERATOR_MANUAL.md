@@ -13,6 +13,17 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.8.34
+
+Migration не требуется. Добавьте в `.env` явно либо примите default `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS=168`, затем перезапустите API, worker и trainer.
+
+- Причина `quality_gate_failed_waiting_for_new_data` означает, что предыдущий детерминированный candidate уже был отклонён и текущий training-data profile не содержит достаточного нового свидетельства. Это штатная защита от бессмысленного ежедневного переобучения; не удаляйте registry/job history и не уменьшайте gate только ради появления сигнала.
+- `holdout_span_below_minimum` означает календарно узкий final holdout, даже если строк много из-за большого числа символов. Дождитесь backfill/новых candles.
+- `policy_independent_cohort_count_below_minimum` означает недостаток неперекрывающихся label windows. При horizon 8h восемь соседних часовых решений дают примерно одну независимую когорту, а не восемь.
+- Policy evidence schema v7 автоматически не переиспользуется; нужен новый candidate, рассчитанный schema v8. Active incumbent не деактивируется из-за отказа candidate.
+
+Эти изменения не создают больше рекомендаций и не доказывают прибыльность. Для диагностики конкретных потерь нужны candidate metrics, signal/plan snapshots и журнал фактических fills.
+
 ## После обновления на 1.8.33
 
 1. Migration отсутствует; выполните обычный backup, замените файлы и перезапустите API, worker и trainer.

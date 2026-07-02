@@ -42,13 +42,15 @@ def attempt(
     trigger_reason: str,
     active_version: str | None,
     activation_skipped: str | None = None,
+    profile=None,
 ) -> SimpleNamespace:
-    details: dict[str, object] = {
-        "trigger": {
-            "reason": trigger_reason,
-            "active_version": active_version,
-        }
+    trigger: dict[str, object] = {
+        "reason": trigger_reason,
+        "active_version": active_version,
     }
+    if profile is not None:
+        trigger["training_data_profile"] = profile.to_dict()
+    details: dict[str, object] = {"trigger": trigger}
     if activation_skipped is not None:
         details["activation_skipped"] = activation_skipped
     return SimpleNamespace(status=status, started_at=started_at, details=details)
@@ -61,6 +63,7 @@ async def configure_trainer(
     latest: SimpleNamespace | None,
     profile,
     active_model_path: Path | None = None,
+    new_timestamps: int = 0,
 ) -> trainer_module.BackgroundTrainer:
     trainer = trainer_module.BackgroundTrainer()
 
@@ -74,7 +77,7 @@ async def configure_trainer(
         return profile
 
     async def count_timestamps(*_args, **_kwargs):
-        return 0
+        return new_timestamps
 
     monkeypatch.setattr(trainer, "active_model", get_active)
     monkeypatch.setattr(trainer, "latest_attempt", get_latest)
@@ -239,6 +242,64 @@ async def test_rejected_recovery_candidate_uses_controlled_success_cooldown(
 
 
 @pytest.mark.asyncio
+async def test_rejected_bootstrap_waits_for_new_training_data_after_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    profile = training_profile(now)
+    latest = attempt(
+        status="SUCCESS",
+        started_at=now - timedelta(hours=7),
+        trigger_reason="bootstrap_training",
+        active_version=None,
+        activation_skipped="quality_gate_failed",
+        profile=profile,
+    )
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=None,
+        latest=latest,
+        profile=profile,
+    )
+
+    due, reason = await trainer.due_reason()
+
+    assert due is False
+    assert reason["reason"] == "quality_gate_failed_waiting_for_new_data"
+    assert reason["new_timestamps"] == 0
+    assert reason["required_new_timestamps"] == trainer_module.settings.auto_train_min_new_timestamps
+
+
+@pytest.mark.asyncio
+async def test_rejected_bootstrap_retries_after_required_new_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    previous_profile = training_profile(now - timedelta(days=8))
+    current_profile = training_profile(now)
+    latest = attempt(
+        status="SUCCESS",
+        started_at=now - timedelta(hours=7),
+        trigger_reason="bootstrap_training",
+        active_version=None,
+        activation_skipped="quality_gate_failed",
+        profile=previous_profile,
+    )
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=None,
+        latest=latest,
+        profile=current_profile,
+        new_timestamps=168,
+    )
+
+    due, reason = await trainer.due_reason()
+
+    assert due is True
+    assert reason["reason"] == "bootstrap_training"
+
+
+@pytest.mark.asyncio
 async def test_no_active_model_retries_failed_bootstrap_after_short_backoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +344,7 @@ async def test_registry_artifact_recovery_is_not_scheduled_when_override_is_conf
 
     assert due is False
     assert reason["reason"] == "not_enough_new_or_changed_training_data"
+
 
 @pytest.mark.asyncio
 async def test_operator_recovery_bypasses_recovery_backoff_without_bypassing_gates(

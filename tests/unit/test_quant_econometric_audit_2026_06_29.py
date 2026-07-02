@@ -307,6 +307,7 @@ def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
 def _passing_metrics() -> dict[str, object]:
     return {
         "rows": 300,
+        "holdout_span_hours": 336.0,
         "log_loss": 0.9,
         "multiclass_brier": 0.55,
         "ece_tp": 0.05,
@@ -315,6 +316,7 @@ def _passing_metrics() -> dict[str, object]:
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
         "policy_trades": 80,
         "policy_cohorts": 80,
+        "policy_independent_cohorts": 80,
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
         "policy_max_drawdown_r": 5.0,

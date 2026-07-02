@@ -12,7 +12,9 @@
 | TP/SL/TIMEOUT, NO TRADE в policy | IMPLEMENTED | runtime/training/research audit |
 | Некалиброванный baseline не становится исполнимой рекомендацией | IMPLEMENTED / UNIT CHECKED in 1.8.33 | diagnostic market signal allowed; plan forced to `NO_TRADE`; legacy acceptance blocked; production override rejected |
 | TIMEOUT economics uses one explicit persisted assumption | IMPLEMENTED / UNIT CHECKED in 1.8.33 | `TIMEOUT_GROSS_RETURN_RATE` shared by live/promotion/serialization and stored in snapshots; default remains an assumption requiring OOS calibration |
-| Raw trade and independent cohort promotion minima are separate | IMPLEMENTED / UNIT CHECKED in 1.8.33 | `AUTO_TRAIN_MIN_POLICY_TRADES` and `AUTO_TRAIN_MIN_POLICY_COHORTS` |
+| Raw trade and horizon-independent cohort promotion minima are separate | IMPLEMENTED / UNIT CHECKED in 1.8.34 | `policy_cohorts` remains descriptive; gate uses `policy_independent_cohorts` separated by full label horizon |
+| Final holdout has minimum calendar coverage | IMPLEMENTED / UNIT CHECKED in 1.8.34 | `AUTO_TRAIN_MIN_HOLDOUT_SPAN_HOURS=168`; cross-sectional row count cannot replace temporal span |
+| Rejected deterministic bootstrap waits for new evidence | IMPLEMENTED / UNIT CHECKED in 1.8.34 | same-profile quality-gate rejection returns `quality_gate_failed_waiting_for_new_data`; retry resumes after new timestamps/material change |
 | Point-in-time event/availability separation | IMPLEMENTED / UNIT CHECKED | market-data and signal tests |
 | Fill/plan entry uses executable ask/bid | IMPLEMENTED / UNIT CHECKED in 1.8.26 | `create_execution_plan`; current quote, missing quote and zone regression tests |
 | Entry-zone содержит только исполнимые тики внутри policy band | IMPLEMENTED / UNIT CHECKED in 1.8.28 | inward tick rounding; coarse-tick regression test |
@@ -27,7 +29,7 @@
 | Candidate/incumbent comparison uses one barrier task | IMPLEMENTED / UNIT CHECKED in 1.8.29 | horizon and ATR multipliers must match; otherwise comparison is skipped and activation blocks |
 | No-loss profit factor is distinct from missing/no-trade data | IMPLEMENTED / UNIT CHECKED in 1.8.29 | explicit gross gain/loss and validated unbounded flag |
 | Backtest uses production artifact contract | IMPLEMENTED / UNIT CHECKED in 1.8.29 | shared `ModelRuntime`, optional expected SHA-256, no silent multiplier fallback |
-| Research/promotion policy matches live one-active-symbol constraint | IMPLEMENTED / UNIT CHECKED in 1.8.32 | overlapping candidate for the same symbol is blocked until modeled exit; boundary re-entry and metric counters tested; policy schema v7 |
+| Research/promotion policy matches live one-active-symbol constraint | IMPLEMENTED / UNIT CHECKED in 1.8.32 | overlapping candidate for the same symbol is blocked until modeled exit; boundary re-entry and metric counters tested; policy schema v8 |
 | Late execution-plan counterfactual path integrity | IMPLEMENTED / UNIT CHECKED in 1.8.30; MIGRATION NOT DB-TESTED | later `planning_time` cannot reuse movement before plan creation; status `PATH_UNAVAILABLE`; migration 0008 backfills existing rows |
 | Profit factor preserves simultaneous gross gains/losses | IMPLEMENTED / UNIT CHECKED in 1.8.30 | gross gain/loss use individual weighted trade contributions; exit-time netting remains only for equity/drawdown |
 | Execution instrument specs respect receipt cutoff | IMPLEMENTED / UNIT CHECKED in 1.8.30 | `valid_from` and `received_at` are both bounded by cutoff |

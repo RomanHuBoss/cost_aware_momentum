@@ -14,7 +14,9 @@
 | Non-negative live minimum EV | `app/config.py::Settings.validate_cross_field_policy` | `test_negative_minimum_net_ev_is_rejected` |
 | Diagnostic baseline cannot become actionable | `app/services/execution.py::signal_uses_unvalidated_baseline`, `create_execution_plan`, `validate_execution_plan_for_acceptance` | `test_unvalidated_baseline_plan_is_diagnostic_only`, `test_legacy_actionable_baseline_plan_cannot_be_accepted`, production config test |
 | Explicit TIMEOUT assumption parity | `app/config.py`, `app/services/signals.py`, `app/services/execution.py`, `app/api/serializers.py`, `app/ml/lifecycle.py`, `scripts/backtest.py` | timeout economics and serializer tests in `test_model_policy_safety_2026_07_02.py` |
-| Independent policy cohort threshold | `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_uses_independent_cohort_threshold` |
+| Horizon-independent policy cohort threshold | `app/ml/training.py::_count_horizon_separated_cohorts`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_hourly_overlapping_policy_cohorts_are_not_counted_as_independent`, `test_quality_gate_uses_independent_cohort_threshold` |
+| Minimum holdout calendar span | `app/ml/training.py::_holdout_time_bounds`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_rejects_large_cross_section_from_short_holdout` |
+| Quality-gate rejection does not retrain unchanged data | `app/workers/trainer.py::BackgroundTrainer.due_reason` | unchanged-data suppression and new-timestamp resume tests in `test_trainer_recovery_scheduling.py` |
 | Economically non-losing auto-activation floors | `app/config.py::Settings.validate_cross_field_policy` | `test_auto_activation_rejects_economically_losing_absolute_gate` |
 | Post-fetch counterfactual cutoff | `app/workers/runner.py::counterfactual_outcome_job` | static flow review; PostgreSQL integration not run |
 | Directional Decimal economics | risk/cost/execution services | full unit suite; independent formulas covered by risk tests |

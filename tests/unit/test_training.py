@@ -50,7 +50,6 @@ def test_calibrated_barrier_model_returns_ordered_outcome_probabilities() -> Non
     assert probabilities[2, 2] == probabilities[2].max()
 
 
-
 def test_evaluate_model_log_loss_respects_declared_probability_order() -> None:
     class FakeModel:
         classes_ = OUTCOME_CLASSES.copy()
@@ -88,7 +87,12 @@ def test_evaluate_model_log_loss_respects_declared_probability_order() -> None:
         y_cal=y,
         x_test=x,
         y_test=y,
-        test_meta=pd.DataFrame({"ambiguous": [False, False, False]}),
+        test_meta=pd.DataFrame(
+            {
+                "ambiguous": [False, False, False],
+                "decision_time": pd.date_range("2026-01-01", periods=3, freq="h", tz="UTC"),
+            }
+        ),
     )
 
     metrics = evaluate_model(FakeModel(), split)
@@ -96,9 +100,7 @@ def test_evaluate_model_log_loss_respects_declared_probability_order() -> None:
     assert metrics["accuracy"] == pytest.approx(1.0)
     assert metrics["log_loss"] == pytest.approx(-np.log(0.90))
     assert metrics["raw_log_loss"] == pytest.approx(-np.log(0.80))
-    assert metrics["calibration_log_loss_improvement"] == pytest.approx(
-        -np.log(0.80) + np.log(0.90)
-    )
+    assert metrics["calibration_log_loss_improvement"] == pytest.approx(-np.log(0.80) + np.log(0.90))
     assert metrics["class_prior_log_loss"] == pytest.approx(np.log(3.0))
     assert metrics["uniform_log_loss"] == pytest.approx(np.log(3.0))
     assert metrics["log_loss_skill_vs_prior"] > 0
@@ -123,7 +125,12 @@ def test_evaluate_model_rejects_invalid_probability_rows() -> None:
         y_cal=y,
         x_test=x,
         y_test=y,
-        test_meta=pd.DataFrame({"ambiguous": [False]}),
+        test_meta=pd.DataFrame(
+            {
+                "ambiguous": [False],
+                "decision_time": pd.to_datetime(["2026-01-01T00:00:00Z"]),
+            }
+        ),
     )
 
     with pytest.raises(ValueError, match="sum to 1"):

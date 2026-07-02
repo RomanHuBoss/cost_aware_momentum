@@ -53,17 +53,19 @@ def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
 def _passing_metrics() -> dict[str, object]:
     return {
         "rows": 300,
+        "holdout_span_hours": 336.0,
         "log_loss": 0.9,
         "multiclass_brier": 0.55,
         "ece_tp": 0.05,
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "exit-time-open-gap-single-symbol-cohort-v7",
+        "policy_metric_schema": "exit-time-open-gap-horizon-independent-cohort-v8",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,
         "policy_cohorts": 80,
+        "policy_independent_cohorts": 80,
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
         "policy_max_drawdown_r": 5.0,
@@ -175,7 +177,8 @@ def test_policy_metrics_weight_hourly_cohorts_not_raw_symbol_count() -> None:
 def test_quality_gate_uses_independent_cohort_threshold(tmp_path: Path) -> None:
     metrics = _passing_metrics()
     metrics["policy_trades"] = 80
-    metrics["policy_cohorts"] = 10
+    metrics["policy_cohorts"] = 80
+    metrics["policy_independent_cohorts"] = 10
 
     result = evaluate_quality_gate(
         _candidate(tmp_path, metrics),
@@ -194,6 +197,7 @@ def test_quality_gate_rejects_many_cross_sectional_trades_from_one_hour(tmp_path
     metrics = _passing_metrics()
     metrics["policy_trades"] = 100
     metrics["policy_cohorts"] = 1
+    metrics["policy_independent_cohorts"] = 1
 
     result = evaluate_quality_gate(
         _candidate(tmp_path, metrics),
@@ -201,7 +205,7 @@ def test_quality_gate_rejects_many_cross_sectional_trades_from_one_hour(tmp_path
     )
 
     assert result["passed"] is False
-    assert "policy_cohort_count_below_minimum" in result["reasons"]
+    assert "policy_independent_cohort_count_below_minimum" in result["reasons"]
     assert "invalid_policy_metric_schema" not in result["reasons"]
 
 
@@ -223,9 +227,7 @@ class _Result:
 async def test_bulk_recalculation_skips_accepted_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     signal = SimpleNamespace(id="signal-1")
     old_plan = SimpleNamespace(status="ACCEPTED", superseded_by_id=None)
-    session = SimpleNamespace(
-        execute=AsyncMock(side_effect=[_Result([signal]), _Result(old_plan)])
-    )
+    session = SimpleNamespace(execute=AsyncMock(side_effect=[_Result([signal]), _Result(old_plan)]))
     create = AsyncMock()
     monkeypatch.setattr(execution, "create_execution_plan", create)
 

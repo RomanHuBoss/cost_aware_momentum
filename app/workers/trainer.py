@@ -360,6 +360,52 @@ class BackgroundTrainer:
                     "cooldown_hours": wait_hours,
                     "next_due_at": (latest.started_at + wait).isoformat(),
                 }
+
+            if (
+                trigger_kind == "bootstrap"
+                and latest.status == "SUCCESS"
+                and isinstance(latest.details, dict)
+                and latest.details.get("activation_skipped") == "quality_gate_failed"
+                and _same_bootstrap_episode(latest, trigger)
+            ):
+                previous_trigger = _job_trigger(latest.details)
+                previous_profile = TrainingDataProfile.from_mapping(
+                    previous_trigger.get("training_data_profile")
+                    if previous_trigger is not None
+                    else None
+                )
+                if previous_profile is not None:
+                    retry_comparison = compare_training_profiles(
+                        profile,
+                        previous_profile,
+                        minimum_new_rows=settings.auto_train_min_new_rows,
+                        minimum_growth_ratio=settings.auto_train_min_dataset_growth_ratio,
+                        minimum_new_symbols=settings.auto_train_min_new_symbols,
+                        minimum_universe_change_ratio=(
+                            settings.auto_train_min_universe_change_ratio
+                        ),
+                    )
+                    retry_new_timestamps = 0
+                    if previous_profile.end_time and label_cutoff:
+                        retry_new_timestamps = await self.timestamp_count(
+                            previous_profile.end_time, label_cutoff
+                        )
+                    if (
+                        not retry_comparison["material_change"]
+                        and retry_new_timestamps < settings.auto_train_min_new_timestamps
+                    ):
+                        return False, {
+                            "reason": "quality_gate_failed_waiting_for_new_data",
+                            "pending_trigger": trigger,
+                            "last_started_at": latest.started_at.isoformat(),
+                            "new_timestamps": retry_new_timestamps,
+                            "required_new_timestamps": (
+                                settings.auto_train_min_new_timestamps
+                            ),
+                            "dataset_change": retry_comparison,
+                            "previous_training_data_profile": previous_profile.to_dict(),
+                            "training_data_profile": profile.to_dict(),
+                        }
         return True, trigger
 
     async def claim_control_request(self) -> JobRun | None:
