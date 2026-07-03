@@ -13,6 +13,15 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.9.1
+
+1. Сделайте backup PostgreSQL и остановите API, worker и trainer.
+2. Замените release tree и выполните `python manage.py release-check`.
+3. Выполните `python manage.py migrate`; ожидаемый head — `0009_candle_receipt_availability`.
+4. Перезапустите процессы и выполните `python manage.py doctor`.
+5. Учтите: migration намеренно делает legacy candle history недоступной для replay до момента migration. Это не потеря OHLCV, а консервативное исправление неизвестного receipt time.
+6. Новых `.env`-переменных и обязательного переобучения нет. Сравнивать research-метрики до и после migration следует только после повторного прогона в одинаковом temporal protocol.
+
 ## После обновления на 1.9.0
 
 1. Migration и новые `.env`-переменные не требуются.

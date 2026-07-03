@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.9.0: TIMEOUT больше не получает одну глобальную доходность −0,2%. Trainer оценивает устойчивую direction-conditional TIMEOUT-доходность в единицах stop-risk только на train window; тот же immutable результат используется в holdout policy, live signal, execution plan и acceptance.
+> Версия 1.9.1: подтверждённые свечи получают `available_at` по фактическому post-response времени приёма, а не задним числом по `close_time`. Migration 0009 консервативно переякоривает legacy candles, чтобы исторический replay не использовал поздний backfill до его реальной доступности.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -23,6 +23,7 @@
 - Некалиброванный baseline может формировать диагностический market signal, но по умолчанию не создаёт исполнимый план и не может быть принят оператором.
 - Для ML artifacts TIMEOUT gross return оценивается отдельно для LONG/SHORT как медиана train-only TIMEOUT returns в единицах stop-risk и масштабируется к текущей barrier geometry. `TIMEOUT_GROSS_RETURN_RATE` остаётся явным fallback только для baseline/legacy diagnostic paths; опубликованный signal сохраняет фактически использованное значение, и plan/acceptance не пересчитывают его из текущего `.env`.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
+- Для свечей `close_time` отражает рыночное закрытие, а `available_at` — фактическое время получения ответа. Поздний backfill не может появиться в point-in-time replay задним числом.
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, полная funding timeline, account reconciliation, текущий turnover-based liquidity cap, `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - Для manual/paper-профилей выделенный капитал одновременно задаёт теоретическую доступную маржу; margin reserve применяется до расчёта размера позиции. Уже принятые планы и открытые manual/paper-сделки уменьшают доступную маржинальную ёмкость; для read-only аккаунта открытые позиции повторно не вычитаются из биржевого available margin.
 - При ручном входе фактическая комиссия в USDT заменяет модельную entry-комиссию. Запись блокируется, если фактический stress loss или margin requirement превышает reservation принятого плана. После входа portfolio risk хранит фактический stress loss сделки и пропорционально освобождает его при partial close.

@@ -31,4 +31,4 @@ def test_alembic_graph_has_one_expected_head() -> None:
     config.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["0008_outcome_path_unavailable"]
+    assert script.get_heads() == ["0009_candle_receipt_availability"]

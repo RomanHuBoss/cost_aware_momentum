@@ -6,7 +6,7 @@ Direction-conditional оценка исходов `TP / SL / TIMEOUT` для LON
 
 ## Данные и время
 
-Features строятся только по confirmed hourly candles. Decision-time и label-end semantics разделены; temporal split purged по фактическому label horizon. Inference разделяет market cutoff и availability cutoff. Label entry proxy равен `open` первой свечи после `decision_time`, а не закрытию уже завершённой feature-свечи. Барьеры масштабируются как `entry_price × atr_pct_14`, поэтому training и live используют одну относительную ATR-геометрию, а движение до исполнимого входа не становится контрфактическим P&L.
+Features строятся только по confirmed hourly candles. Decision-time и label-end semantics разделены; temporal split purged по фактическому label horizon. Inference разделяет market cutoff и availability cutoff; candle `available_at` равен фактическому post-response receipt time, поэтому поздний backfill не доступен историческому replay до момента его получения. Label entry proxy равен `open` первой свечи после `decision_time`, а не закрытию уже завершённой feature-свечи. Барьеры масштабируются как `entry_price × atr_pct_14`, поэтому training и live используют одну относительную ATR-геометрию, а движение до исполнимого входа не становится контрфактическим P&L.
 
 По умолчанию crypto model domain исключает известные Bybit TradFi `symbolType`: `stock`, `forex`, `commodity`, `xstocks` и `xstock`. Их явное включение конфигурацией не доказывает совместимость текущих features, labels, cost assumptions или risk policy и требует отдельной model validation.
 

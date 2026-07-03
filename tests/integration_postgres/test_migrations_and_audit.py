@@ -71,7 +71,7 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert (await session.execute(select(CapitalProfile))).scalars().all()
         assert len((await session.execute(select(UIGlossary))).scalars().all()) >= 10
         revision = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert revision == "0008_outcome_path_unavailable"
+        assert revision == "0009_candle_receipt_availability"
         account_column = (
             await session.execute(
                 text(

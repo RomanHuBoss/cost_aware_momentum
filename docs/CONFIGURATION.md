@@ -11,6 +11,12 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.9.1
+
+Новых `.env`-переменных нет. Требуется migration `0009_candle_receipt_availability`. После остановки процессов и backup выполните `python manage.py migrate`; текущий Alembic head — `0009_candle_receipt_availability`.
+
+Новые свечи сохраняют `available_at` равным фактическому post-response receipt time. Migration консервативно сдвигает существующие confirmed candles к времени migration, поскольку их истинное первое receipt time восстановить невозможно. Downgrade не возвращает старые значения: более поздний timestamp остаётся безопасным и совместимым с предыдущим кодом.
+
 ## Изменения 1.9.0
 
 Новых `.env`-переменных и migration нет. `TIMEOUT_GROSS_RETURN_RATE` теперь является только fallback для deterministic baseline и legacy diagnostic paths. Для нового ML artifact trainer вычисляет отдельно для LONG/SHORT медиану фактических train-window TIMEOUT returns в единицах gross stop-risk. Final holdout при оценке candidate не участвует в fit этой величины.

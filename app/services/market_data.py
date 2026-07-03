@@ -453,7 +453,10 @@ def _candle_values(
                 "interval": interval,
                 "open_time": open_time,
                 "close_time": close_time,
-                "available_at": close_time,
+                # Availability is the post-response receipt time, not the candle
+                # close time. Historical/backfill rows must never appear to have
+                # been known before this process actually received them.
+                "available_at": now,
                 "price_type": price_type,
                 "open": _decimal(row[1]),
                 "high": _decimal(row[2]),

@@ -2,9 +2,9 @@
 
 | Requirement / invariant | Production path | Verification |
 |---|---|---|
-| Post-response receipt timestamps | `app/services/market_data.py::sync_instruments`, `sync_tickers`, `sync_funding_and_oi`, `sync_read_only_account` | `tests/unit/test_point_in_time_candle_integrity_2026_07_01.py` |
-| Candle confirmation flag uses response time | `app/services/market_data.py::sync_candles`, `sync_candle_history`, `sync_candle_windows` | `test_candle_confirmation_uses_api_response_time` checks `confirmed`; its old `available_at==close_time` assertion documents a separate defect rather than receipt-time integrity |
-| Candle `available_at` equals actual receipt time | `app/services/market_data.py::_candle_values` | **CONFIRMED DEFECT / NOT FIXED IN 1.9.0**: current code writes `close_time`; requires migration/reingestion policy and dedicated next work package |
+| Post-response receipt timestamps | `app/services/market_data.py::sync_instruments`, `sync_tickers`, `sync_funding_and_oi`, `sync_read_only_account`, `sync_candles`, `sync_candle_windows` | `tests/unit/test_point_in_time_candle_integrity_2026_07_01.py`, `test_candle_availability_integrity_2026_07_03.py` |
+| Candle confirmation flag uses response time | `app/services/market_data.py::sync_candles`, `sync_candle_history`, `sync_candle_windows` | `test_candle_confirmation_uses_api_response_time` |
+| Candle `available_at` equals actual receipt time | `app/services/market_data.py::_candle_values`, migration `0009_candle_receipt_availability` | `test_late_fetched_confirmed_candle_is_available_only_after_receipt`, `test_legacy_candle_migration_moves_availability_forward_fail_closed`; PostgreSQL upgrade not run |
 | Confirmed candle immutable without revision policy | `app/services/market_data.py::_upsert_candle_values` | `test_confirmed_candle_upsert_is_immutable_without_revision_policy` |
 | Separate market and availability cutoffs | `app/services/signals.py::_candles_frame` | `test_feature_query_separates_market_and_availability_cutoffs` |
 | Instrument spec available at decision time | `app/services/signals.py::_latest_spec`, `publish_hourly_signals` | `test_spec_query_uses_decision_availability_cutoff` |
@@ -40,7 +40,7 @@
 | Backtest artifact validation and hash | `scripts/backtest.py::load_validated_artifact` | `test_backtest_loader_enforces_runtime_artifact_contract` |
 | One active research/promotion trade per symbol | `app/ml/training.py::filter_single_active_trade_per_symbol`, `evaluate_policy_model`; `scripts/backtest.py::policy_backtest` | overlap-blocking and exit-boundary tests in `test_backtest_econometrics.py` and `test_quant_integrity_2026_06_29.py` |
 | Release provenance manifest | `scripts/release_integrity.py`, `SHA256SUMS` | release check on repacked tree |
-| Alembic revision fits version table contract | `migrations/versions/0008_outcome_path_unavailable.py` | `tests/unit/test_migration_revision_contract.py`; offline SQL generation |
+| Alembic revision fits version table contract | migrations `0008_outcome_path_unavailable`, `0009_candle_receipt_availability` | `tests/unit/test_migration_revision_contract.py`; offline SQL generation |
 | Plan outcome cannot reuse pre-plan price path | `app/services/outcomes.py::_record_plan_outcome`, migration `0008_outcome_path_unavailable` | `test_late_execution_plan_does_not_reuse_pre_entry_signal_path`, schema test; PostgreSQL backfill not run |
 | UI does not present unavailable-path zero as P&L | `web/js/app.js` | `test_frontend_marks_unavailable_path_without_numeric_pnl`, `node --check` |
 | Profit factor gross legs do not net by exit timestamp | `app/ml/training.py::evaluate_policy_model` | `test_profit_factor_does_not_net_simultaneous_winner_and_loser` |

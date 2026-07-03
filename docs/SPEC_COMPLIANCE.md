@@ -6,7 +6,7 @@
 |---|---|---|
 | Advisory-only, без order mutations | IMPLEMENTED / STATICALLY CHECKED | README, Bybit client и API audit; create/amend/cancel flow не обнаружен |
 | PostgreSQL-only | IMPLEMENTED / UNIT CHECKED | `app.config.Settings`, migrations; integration DB в этой итерации не запускалась |
-| Alembic revision IDs fit standard version table and graph has one head | IMPLEMENTED / UNIT + OFFLINE SQL CHECKED in 1.8.32 | duplicate 0008 branch removed; all revision IDs are limited to 32 characters; single head `0008_outcome_path_unavailable`; real PostgreSQL upgrade not executed in this environment |
+| Alembic revision IDs fit standard version table and graph has one head | IMPLEMENTED / UNIT + OFFLINE SQL CHECKED in 1.8.32 | duplicate 0008 branch removed; all revision IDs are limited to 32 characters; single head `0009_candle_receipt_availability`; real PostgreSQL upgrade not executed in this environment |
 | API / worker / trainer separation | IMPLEMENTED | process entry points и README |
 | LONG/SHORT directional geometry | IMPLEMENTED / UNIT CHECKED | risk/labels/outcomes tests и independent randomized P&L audit |
 | TP/SL/TIMEOUT, NO TRADE в policy | IMPLEMENTED | runtime/training/research audit |
@@ -17,7 +17,7 @@
 | Trainer does not fit before configured holdout is feasible | IMPLEMENTED / UNIT CHECKED in 1.8.35 | preflight mirrors feature warm-up, 70/15/15 split, horizon embargo and holdout gates; defaults require 1206 hourly timestamps |
 | Candidate must beat class-prior log-loss baseline | IMPLEMENTED / UNIT CHECKED in 1.8.35 | `log_loss_skill_vs_prior > 0`; missing/non-finite/inconsistent evidence fails closed |
 | Rejected deterministic bootstrap waits for new evidence | IMPLEMENTED / UNIT CHECKED in 1.8.34 | same-profile quality-gate rejection returns `quality_gate_failed_waiting_for_new_data`; retry resumes after new timestamps/material change |
-| Point-in-time event/availability separation | PARTIAL / CONFIRMED DEFECT OUTSIDE 1.9.0 SCOPE | ticker/spec/account receipt timestamps are separated, but candle `_candle_values` currently persists `available_at=close_time` instead of response receipt time; this can make late backfill look historically available and requires a data-correction migration |
+| Point-in-time event/availability separation | IMPLEMENTED / UNIT + OFFLINE SQL CHECKED in 1.9.1 | candle `available_at` uses post-response receipt time; migration 0009 moves legacy confirmed rows forward fail-closed; ticker/spec/account receipt timestamps and separate market/availability cutoffs remain enforced; real PostgreSQL migration not run in this environment |
 | Fill/plan entry uses executable ask/bid | IMPLEMENTED / UNIT CHECKED in 1.8.26 | `create_execution_plan`; current quote, missing quote and zone regression tests |
 | Entry-zone содержит только исполнимые тики внутри policy band | IMPLEMENTED / UNIT CHECKED in 1.8.28 | inward tick rounding; coarse-tick regression test |
 | Entry outside zone requires new calculation / no entry | IMPLEMENTED / UNIT CHECKED | plan returns `NO_TRADE`; acceptance remains fail-closed |

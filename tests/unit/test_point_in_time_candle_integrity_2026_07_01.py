@@ -68,7 +68,7 @@ async def test_candle_confirmation_uses_api_response_time(monkeypatch) -> None:
     statement = session.execute.await_args.args[0]
     _, params = _compiled(statement)
     assert params["confirmed_m0"] is True
-    assert params["available_at_m0"] == open_time + timedelta(hours=1)
+    assert params["available_at_m0"] == response_received
 
 
 @pytest.mark.asyncio
