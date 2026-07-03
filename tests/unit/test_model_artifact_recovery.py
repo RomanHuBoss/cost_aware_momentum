@@ -16,7 +16,15 @@ from app.ml.training import (
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
+    TIMEOUT_RETURN_SCHEMA_VERSION,
 )
+
+
+class _RecoveryArtifactModel:
+    classes_ = OUTCOME_CLASSES
+
+    def predict_timeout_return_r(self, values) -> list[float]:
+        return [0.0] * len(values)
 
 
 def _passing_metrics() -> dict[str, object]:
@@ -31,7 +39,7 @@ def _passing_metrics() -> dict[str, object]:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v9",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v10",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,
@@ -49,7 +57,7 @@ def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8)
     joblib.dump(
         {
             "task": "barrier_outcome_v1",
-            "model": SimpleNamespace(classes_=list(OUTCOME_CLASSES)),
+            "model": _RecoveryArtifactModel(),
             "model_type": "logistic",
             "version": resolved_version,
             "calibration_version": f"sigmoid-ovr-{resolved_version}",
@@ -57,6 +65,7 @@ def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8)
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+            "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": horizon,
             "metrics": _passing_metrics(),
             "training_start": now.isoformat(),

@@ -28,7 +28,9 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "decision-open-entry-ohlc-path-v2"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v9"
+POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v10"
+TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
+MIN_TIMEOUT_SAMPLES_PER_DIRECTION = 5
 
 
 class TemporalCalibratedBarrierModel:
@@ -69,6 +71,8 @@ class TemporalCalibratedBarrierModel:
             raise ValueError(f"Unsupported model_type: {model_type}")
         self.model_type = model_type
         self.calibrators: dict[str, LogisticRegression] = {}
+        self.timeout_return_r_by_direction: dict[str, float] = {}
+        self.timeout_return_sample_count_by_direction: dict[str, int] = {}
 
     @staticmethod
     def _logit(probability: np.ndarray) -> np.ndarray:
@@ -86,7 +90,15 @@ class TemporalCalibratedBarrierModel:
         interactions = values[:, :-1] * direction
         return np.column_stack([values, interactions])
 
-    def fit(self, x_train: np.ndarray, y_train: np.ndarray, x_cal: np.ndarray, y_cal: np.ndarray):
+    def fit(
+        self,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        x_cal: np.ndarray,
+        y_cal: np.ndarray,
+        *,
+        timeout_return_r_train: np.ndarray | None = None,
+    ):
         train_classes = set(np.asarray(y_train, dtype=str))
         cal_classes = set(np.asarray(y_cal, dtype=str))
         required = set(self.classes_)
@@ -101,7 +113,68 @@ class TemporalCalibratedBarrierModel:
             calibrator = LogisticRegression(max_iter=1000, random_state=42)
             calibrator.fit(self._logit(raw[:, index]), binary)
             self.calibrators[label] = calibrator
+        if timeout_return_r_train is not None:
+            self._fit_timeout_return_estimator(
+                x_train=x_train,
+                y_train=y_train,
+                timeout_return_r_train=timeout_return_r_train,
+            )
         return self
+
+    def _fit_timeout_return_estimator(
+        self,
+        *,
+        x_train: np.ndarray,
+        y_train: np.ndarray,
+        timeout_return_r_train: np.ndarray,
+    ) -> None:
+        features = np.asarray(x_train, dtype=float)
+        targets = np.asarray(y_train, dtype=str)
+        returns_r = np.asarray(timeout_return_r_train, dtype=float)
+        if features.ndim != 2 or features.shape[1] != len(MODEL_FEATURE_NAMES):
+            raise ValueError("Timeout return estimator received an invalid feature matrix")
+        if returns_r.ndim != 1 or len(returns_r) != len(features):
+            raise ValueError("Timeout return R values must align with training rows")
+        timeout_mask = targets == "TIMEOUT"
+        if not np.isfinite(returns_r[timeout_mask]).all():
+            raise ValueError("Timeout return R values must be finite for TIMEOUT rows")
+
+        upper_bound = DEFAULT_TP_ATR_MULTIPLIER / DEFAULT_STOP_ATR_MULTIPLIER
+        tolerance = 1e-8
+        estimates: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for direction, code in (("LONG", 1.0), ("SHORT", -1.0)):
+            direction_mask = np.isclose(features[:, -1], code, rtol=0.0, atol=1e-12)
+            selected = returns_r[timeout_mask & direction_mask]
+            if len(selected) < MIN_TIMEOUT_SAMPLES_PER_DIRECTION:
+                raise ValueError(
+                    "Training window must contain at least "
+                    f"{MIN_TIMEOUT_SAMPLES_PER_DIRECTION} TIMEOUT rows for {direction}"
+                )
+            if (selected < -1.0 - tolerance).any() or (
+                selected > upper_bound + tolerance
+            ).any():
+                raise ValueError(
+                    "TIMEOUT return R lies outside the configured barrier support"
+                )
+            estimates[direction] = float(np.median(selected))
+            counts[direction] = int(len(selected))
+        self.timeout_return_r_by_direction = estimates
+        self.timeout_return_sample_count_by_direction = counts
+
+    def predict_timeout_return_r(self, x: np.ndarray) -> np.ndarray:
+        estimates = getattr(self, "timeout_return_r_by_direction", {})
+        if set(estimates) != {"LONG", "SHORT"}:
+            raise RuntimeError("Model has no validated conditional TIMEOUT return estimator")
+        values = np.asarray(x, dtype=float)
+        if values.ndim != 2 or values.shape[1] != len(MODEL_FEATURE_NAMES):
+            raise ValueError("Expected model features ending with scenario_direction")
+        direction = values[:, -1]
+        is_long = np.isclose(direction, 1.0, rtol=0.0, atol=1e-12)
+        is_short = np.isclose(direction, -1.0, rtol=0.0, atol=1e-12)
+        if not np.all(is_long | is_short):
+            raise ValueError("scenario_direction must be exactly +1 or -1")
+        return np.where(is_long, estimates["LONG"], estimates["SHORT"]).astype(float)
 
     def _base_probabilities(self, x: np.ndarray) -> np.ndarray:
         probabilities = self.base.predict_proba(self._with_direction_interactions(x))
@@ -139,6 +212,8 @@ class DatasetSplit:
     x_test: np.ndarray
     y_test: np.ndarray
     test_meta: pd.DataFrame
+    train_meta: pd.DataFrame | None = None
+    cal_meta: pd.DataFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +225,28 @@ class PolicyEvaluationConfig:
     min_net_ev_r: float
     timeout_return_rate: float = -0.002
     horizon_hours: int | None = None
+
+
+def timeout_return_r_targets(meta: pd.DataFrame) -> np.ndarray:
+    """Return direction-signed TIMEOUT gross returns in stop-risk units.
+
+    Non-TIMEOUT rows receive zero because the estimator filters them by target.
+    The denominator is the contemporaneous gross stop distance, so the learned
+    expectation scales to the current ATR barrier geometry at inference time.
+    """
+
+    required = {"target", "realized_gross_return", "barrier_downside_rate"}
+    missing = sorted(required - set(meta.columns))
+    if missing:
+        raise ValueError(f"TIMEOUT return targets are missing columns: {missing}")
+    realized = pd.to_numeric(meta["realized_gross_return"], errors="coerce").to_numpy(float)
+    downside = pd.to_numeric(meta["barrier_downside_rate"], errors="coerce").to_numpy(float)
+    if not np.isfinite(realized).all() or not np.isfinite(downside).all() or (downside <= 0).any():
+        raise ValueError("TIMEOUT return targets require finite returns and positive barriers")
+    result = np.zeros(len(meta), dtype=float)
+    timeout_mask = meta["target"].astype(str).eq("TIMEOUT").to_numpy()
+    result[timeout_mask] = realized[timeout_mask] / downside[timeout_mask]
+    return result
 
 
 def minimum_hourly_history_timestamps_for_quality_gate(
@@ -683,6 +780,8 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         test[MODEL_FEATURE_NAMES].to_numpy(float),
         test["target"].to_numpy(),
         test[meta_columns].reset_index(drop=True),
+        train[meta_columns].reset_index(drop=True),
+        cal[meta_columns].reset_index(drop=True),
     )
 
 
@@ -835,6 +934,18 @@ def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -
         "ambiguous_rate": float(split.test_meta["ambiguous"].mean()),
         "class_distribution": {label: float((y == label).mean()) for label in classes},
     }
+    timeout_estimates = getattr(model, "timeout_return_r_by_direction", {})
+    timeout_counts = getattr(model, "timeout_return_sample_count_by_direction", {})
+    if set(timeout_estimates) == {"LONG", "SHORT"}:
+        metrics["timeout_return_schema_version"] = TIMEOUT_RETURN_SCHEMA_VERSION
+        metrics["timeout_return_r_by_direction"] = {
+            direction: float(timeout_estimates[direction])
+            for direction in ("LONG", "SHORT")
+        }
+        metrics["timeout_return_samples_by_direction"] = {
+            direction: int(timeout_counts.get(direction, 0))
+            for direction in ("LONG", "SHORT")
+        }
 
     base_probability_loader = getattr(model, "_base_probabilities", None)
     if callable(base_probability_loader):
@@ -926,6 +1037,32 @@ def evaluate_policy_model(
     for label in OUTCOME_CLASSES:
         meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
 
+    timeout_predictor = getattr(model, "predict_timeout_return_r", None)
+    if callable(timeout_predictor):
+        timeout_return_r = np.asarray(timeout_predictor(split.x_test), dtype=float)
+        if timeout_return_r.ndim != 1 or len(timeout_return_r) != len(meta):
+            raise ValueError("Conditional TIMEOUT return estimates must align with holdout rows")
+        if not np.isfinite(timeout_return_r).all():
+            raise ValueError("Conditional TIMEOUT return estimates must be finite")
+        support_upper = meta["barrier_upside_rate"] / meta["barrier_downside_rate"]
+        bounded_timeout_return_r = np.minimum(
+            np.maximum(timeout_return_r, -1.0),
+            support_upper.to_numpy(float),
+        )
+        meta["timeout_return_r"] = bounded_timeout_return_r
+        meta["timeout_gross_return_rate"] = (
+            bounded_timeout_return_r * meta["barrier_downside_rate"]
+        )
+        timeout_return_source = TIMEOUT_RETURN_SCHEMA_VERSION
+    else:
+        meta["timeout_return_r"] = np.where(
+            meta["barrier_downside_rate"] > 0,
+            config.timeout_return_rate / meta["barrier_downside_rate"],
+            0.0,
+        )
+        meta["timeout_gross_return_rate"] = config.timeout_return_rate
+        timeout_return_source = "fixed-config-fallback"
+
     fee_rate_per_leg = config.fee_rate_round_trip / 2.0
     is_long = meta["direction"].eq("LONG")
     tp_exit_ratio = np.where(
@@ -940,8 +1077,8 @@ def evaluate_policy_model(
     )
     timeout_exit_ratio = np.where(
         is_long,
-        1.0 + config.timeout_return_rate,
-        1.0 - config.timeout_return_rate,
+        1.0 + meta["timeout_gross_return_rate"],
+        1.0 - meta["timeout_gross_return_rate"],
     )
     realized_exit_ratio = np.where(
         is_long,
@@ -968,7 +1105,7 @@ def evaluate_policy_model(
         + config.stop_gap_reserve_rate
     )
     meta["timeout_net_rate"] = (
-        config.timeout_return_rate - timeout_fee_rate - config.slippage_rate
+        meta["timeout_gross_return_rate"] - timeout_fee_rate - config.slippage_rate
     )
     meta["realized_fee_rate"] = fee_rate_per_leg * (1.0 + realized_exit_ratio)
     target = meta["target"].astype(str)
@@ -1030,6 +1167,7 @@ def evaluate_policy_model(
 
     empty_metrics: dict[str, object] = {
         "policy_metric_schema": POLICY_METRIC_SCHEMA,
+        "policy_timeout_return_schema": timeout_return_source,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
@@ -1081,6 +1219,7 @@ def evaluate_policy_model(
 
     return {
         "policy_metric_schema": POLICY_METRIC_SCHEMA,
+        "policy_timeout_return_schema": timeout_return_source,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),

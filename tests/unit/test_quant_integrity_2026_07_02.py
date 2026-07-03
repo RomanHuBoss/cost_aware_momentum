@@ -22,6 +22,7 @@ from app.ml.training import (
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
+    TIMEOUT_RETURN_SCHEMA_VERSION,
 )
 
 
@@ -133,6 +134,9 @@ async def test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping(
 class _ArtifactModel:
     classes_ = OUTCOME_CLASSES
 
+    def predict_timeout_return_r(self, values) -> list[float]:
+        return [0.0] * len(values)
+
 
 def _artifact_bundle(**updates: object) -> dict[str, object]:
     bundle: dict[str, object] = {
@@ -145,6 +149,7 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+        "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "horizon_hours": 8,
         "stop_atr_multiplier": 1.15,
         "tp_atr_multiplier": 2.20,
@@ -219,7 +224,7 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v9",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v10",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_trades": 80,
@@ -261,7 +266,7 @@ class _TrainableArtifactModel(_ArtifactModel):
     def __init__(self, _model_type: str = "logistic") -> None:
         pass
 
-    def fit(self, *_args: object) -> _TrainableArtifactModel:
+    def fit(self, *_args: object, **_kwargs: object) -> _TrainableArtifactModel:
         return self
 
 
@@ -291,7 +296,19 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
         ]
     )
     dataset.attrs["hourly_continuity"] = {}
-    split = SimpleNamespace(x_train=[], y_train=[], x_cal=[], y_cal=[])
+    split = SimpleNamespace(
+        x_train=[],
+        y_train=[],
+        x_cal=[],
+        y_cal=[],
+        train_meta=pd.DataFrame(
+            {
+                "target": [],
+                "realized_gross_return": [],
+                "barrier_downside_rate": [],
+            }
+        ),
+    )
 
     monkeypatch.setattr(lifecycle, "make_barrier_dataset", lambda *_args, **_kwargs: dataset)
     monkeypatch.setattr(lifecycle, "chronological_split", lambda *_args, **_kwargs: split)

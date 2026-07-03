@@ -31,12 +31,14 @@ from app.ml.training import (
     MODEL_FEATURE_SCHEMA_VERSION,
     POLICY_METRIC_SCHEMA,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
+    TIMEOUT_RETURN_SCHEMA_VERSION,
     PolicyEvaluationConfig,
     TemporalCalibratedBarrierModel,
     chronological_split,
     evaluate_model,
     evaluate_policy_model,
     make_barrier_dataset,
+    timeout_return_r_targets,
 )
 from app.services.audit import append_audit_event, publish_outbox
 
@@ -315,12 +317,15 @@ def build_model_candidate(
     if dataset.empty:
         raise RuntimeError("No direction-specific barrier labels could be built from PostgreSQL candles")
     split = chronological_split(dataset, purge_rows=horizon)
+    if split.train_meta is None:
+        raise RuntimeError("Chronological split did not expose training metadata")
 
     model = TemporalCalibratedBarrierModel(model_type).fit(
         split.x_train,
         split.y_train,
         split.x_cal,
         split.y_cal,
+        timeout_return_r_train=timeout_return_r_targets(split.train_meta),
     )
     metrics = evaluate_model(model, split)
     label_data_end = _as_datetime(dataset.label_end_time.max())
@@ -415,6 +420,7 @@ def build_model_candidate(
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+        "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "label_data_end": label_data_end.isoformat(),
         "horizon_hours": horizon,
         "stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,

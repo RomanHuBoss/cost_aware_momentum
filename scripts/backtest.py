@@ -168,6 +168,7 @@ def policy_backtest(
     slippage_bps: float = 0.0,
     funding_rate: float = 0.0,
     timeout_return_rate: float = -0.002,
+    use_model_timeout_return: bool = True,
     minimum_net_rr: float = 0.0,
     minimum_net_ev_r: float | None = None,
     minimum_predicted_edge: float | None = None,
@@ -215,6 +216,32 @@ def policy_backtest(
     meta["p_sl"] = probabilities[:, indexes["SL"]]
     meta["p_timeout"] = probabilities[:, indexes["TIMEOUT"]]
 
+    timeout_predictor = getattr(model, "predict_timeout_return_r", None)
+    if use_model_timeout_return and callable(timeout_predictor):
+        timeout_return_r = np.asarray(timeout_predictor(split.x_test), dtype=float)
+        if timeout_return_r.ndim != 1 or len(timeout_return_r) != len(meta):
+            raise ValueError("Conditional TIMEOUT return estimates must align with backtest rows")
+        if not np.isfinite(timeout_return_r).all():
+            raise ValueError("Conditional TIMEOUT return estimates must be finite")
+        support_upper = meta["barrier_upside_rate"] / meta["barrier_downside_rate"]
+        bounded_timeout_return_r = np.minimum(
+            np.maximum(timeout_return_r, -1.0),
+            support_upper.to_numpy(float),
+        )
+        meta["timeout_return_r"] = bounded_timeout_return_r
+        meta["timeout_gross_return_rate"] = (
+            bounded_timeout_return_r * meta["barrier_downside_rate"]
+        )
+        timeout_return_source = "artifact_training_direction_median_r"
+    else:
+        meta["timeout_return_r"] = np.where(
+            meta["barrier_downside_rate"] > 0,
+            timeout_return_rate / meta["barrier_downside_rate"],
+            0.0,
+        )
+        meta["timeout_gross_return_rate"] = timeout_return_rate
+        timeout_return_source = "explicit_override" if not use_model_timeout_return else "fixed_fallback"
+
     is_long = meta["direction"].eq("LONG")
     fee_rate_per_leg = fee_rate_round_trip / 2.0
     funding_return = np.where(is_long, -funding_rate, funding_rate)
@@ -232,8 +259,8 @@ def policy_backtest(
     )
     timeout_exit_ratio = np.where(
         is_long,
-        1.0 + timeout_return_rate,
-        1.0 - timeout_return_rate,
+        1.0 + meta["timeout_gross_return_rate"],
+        1.0 - meta["timeout_gross_return_rate"],
     )
     realized_exit_ratio = np.where(
         is_long,
@@ -280,7 +307,10 @@ def policy_backtest(
         + adverse_funding
     )
     meta["timeout_net_rate"] = (
-        timeout_return_rate - timeout_fee_rate - slippage_rate + recognized_funding
+        meta["timeout_gross_return_rate"]
+        - timeout_fee_rate
+        - slippage_rate
+        + recognized_funding
     )
     meta["sl_net_rate"] = -(
         meta["barrier_downside_rate"] + sl_fee_rate + slippage_rate + gap_rate
@@ -394,7 +424,10 @@ def policy_backtest(
         "stop_gap_reserve_bps": stop_gap_reserve_bps,
         "stop_gap_reserve_accounting": "residual_after_realized_gap_v1",
         "funding_rate": funding_rate,
-        "timeout_return_rate": timeout_return_rate,
+        "timeout_return_rate": (
+            timeout_return_rate if timeout_return_source != "artifact_training_direction_median_r" else None
+        ),
+        "timeout_return_source": timeout_return_source,
         "minimum_net_rr": minimum_net_rr,
         "minimum_net_ev_r": minimum_net_ev_r,
         "minimum_predicted_edge": minimum_net_ev_r,
@@ -476,6 +509,7 @@ async def run(args) -> None:
         stop_gap_reserve_bps=stop_gap_reserve_bps,
         funding_rate=args.funding_rate,
         timeout_return_rate=timeout_return_rate,
+        use_model_timeout_return=args.timeout_return_rate is None,
         minimum_net_rr=minimum_net_rr,
         minimum_net_ev_r=minimum_net_ev_r,
         horizon_hours=horizon,
@@ -506,6 +540,10 @@ async def run(args) -> None:
                     "stop_gap_reserve_bps": stop_gap_reserve_bps,
                     "funding_rate": args.funding_rate,
                     "timeout_return_rate": timeout_return_rate,
+                    "timeout_return_source": trade_metrics["timeout_return_source"],
+                    "timeout_return_schema_version": bundle.get(
+                        "timeout_return_schema_version"
+                    ),
                     "minimum_net_rr": minimum_net_rr,
                     "minimum_net_ev_r": minimum_net_ev_r,
                     "purge_hours": horizon,

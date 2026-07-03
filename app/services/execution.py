@@ -64,6 +64,31 @@ class AcceptancePlanValidation:
     current_liquidity_notional_cap: Decimal
 
 
+def signal_timeout_return_rate(
+    signal: MarketSignal,
+    *,
+    fallback: Decimal,
+) -> Decimal:
+    """Read the immutable signal-level TIMEOUT assumption used for its EV.
+
+    Legacy signals created before the conditional estimator use the configured
+    fallback. Invalid persisted assumptions fail closed instead of silently
+    changing the economics between publication, planning and acceptance.
+    """
+
+    snapshot = getattr(signal, "feature_snapshot", None)
+    if isinstance(snapshot, dict):
+        assumptions = snapshot.get("economics_assumptions")
+        if isinstance(assumptions, dict) and assumptions.get(
+            "timeout_gross_return_rate"
+        ) is not None:
+            return finite_decimal(
+                assumptions["timeout_gross_return_rate"],
+                "signal timeout_gross_return_rate",
+            )
+    return finite_decimal(fallback, "fallback timeout_gross_return_rate")
+
+
 def _is_step_aligned(value: Decimal, step: Decimal) -> bool:
     return value % step == 0
 
@@ -222,7 +247,10 @@ def validate_execution_plan_for_acceptance(
         p_tp=signal.p_tp,
         p_sl=signal.p_sl,
         p_timeout=signal.p_timeout,
-        timeout_return_rate=Decimal(str(settings.timeout_gross_return_rate)),
+        timeout_return_rate=signal_timeout_return_rate(
+            signal,
+            fallback=Decimal(str(settings.timeout_gross_return_rate)),
+        ),
     )
     if current_net_rr < Decimal(str(settings.min_net_rr)) or current_net_ev_r < Decimal(
         str(settings.min_net_ev_r)
@@ -910,6 +938,10 @@ async def create_execution_plan(
     plan_upside_rate: Decimal | None = None
     plan_timeout_net_rate: Decimal | None = None
     plan_break_even_tp_probability: Decimal | None = None
+    timeout_return_rate = signal_timeout_return_rate(
+        signal,
+        fallback=Decimal(str(settings.timeout_gross_return_rate)),
+    )
     try:
         plan_net_rr, plan_net_ev_r, _, _ = net_rr_and_ev(
             entry=planning_entry,
@@ -920,7 +952,7 @@ async def create_execution_plan(
             p_tp=signal.p_tp,
             p_sl=signal.p_sl,
             p_timeout=signal.p_timeout,
-            timeout_return_rate=Decimal(str(settings.timeout_gross_return_rate)),
+            timeout_return_rate=timeout_return_rate,
         )
         plan_outcomes = net_outcome_rates(
             entry=planning_entry,
@@ -928,7 +960,7 @@ async def create_execution_plan(
             take_profit=signal.take_profit_1,
             direction=signal.direction,
             costs=costs,
-            timeout_return_rate=Decimal(str(settings.timeout_gross_return_rate)),
+            timeout_return_rate=timeout_return_rate,
         )
         plan_upside_rate = plan_outcomes.upside_rate
         plan_timeout_net_rate = plan_outcomes.timeout_net_rate
@@ -1008,7 +1040,7 @@ async def create_execution_plan(
             "entry_inside_signal_zone": not entry_outside_zone,
             "planning_time": now.isoformat(),
             "economics_schema_version": "tp-sl-timeout-v1",
-            "timeout_gross_return_rate": str(settings.timeout_gross_return_rate),
+            "timeout_gross_return_rate": str(timeout_return_rate),
             "net_rr": str(plan_net_rr),
             "net_ev_r": str(plan_net_ev_r),
             "stress_downside_rate": str(plan_math.stress_downside_rate),

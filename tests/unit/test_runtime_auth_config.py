@@ -14,12 +14,16 @@ from app.ml.training import (
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
+    TIMEOUT_RETURN_SCHEMA_VERSION,
     TemporalCalibratedBarrierModel,
 )
 
 
 class ArtifactStubModel:
     classes_ = np.array(["TP", "SL", "TIMEOUT"])
+
+    def predict_timeout_return_r(self, values: np.ndarray) -> np.ndarray:
+        return np.zeros(len(values), dtype=float)
 
 
 
@@ -89,7 +93,16 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
     x_cal[:, -1] = rng.choice([-1.0, 1.0], size=len(x_cal))
     signal_cal = x_cal[:, 0] * x_cal[:, -1]
     y_cal = np.where(signal_cal > 0.4, "TP", np.where(signal_cal < -0.4, "SL", "TIMEOUT"))
-    model = TemporalCalibratedBarrierModel().fit(x_train, y_train, x_cal, y_cal)
+    timeout_return_r = np.zeros(len(x_train), dtype=float)
+    timeout_return_r[(y_train == "TIMEOUT") & (x_train[:, -1] > 0)] = 0.1
+    timeout_return_r[(y_train == "TIMEOUT") & (x_train[:, -1] < 0)] = -0.1
+    model = TemporalCalibratedBarrierModel().fit(
+        x_train,
+        y_train,
+        x_cal,
+        y_cal,
+        timeout_return_r_train=timeout_return_r,
+    )
     path = tmp_path / "barrier.joblib"
     joblib.dump(
         {
@@ -102,6 +115,7 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+            "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": 1.7,
             "tp_atr_multiplier": 2.9,
@@ -150,6 +164,7 @@ def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) 
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+            "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": float("nan"),
             "tp_atr_multiplier": 2.2,

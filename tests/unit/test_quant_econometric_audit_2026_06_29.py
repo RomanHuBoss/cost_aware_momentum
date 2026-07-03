@@ -24,6 +24,7 @@ from app.ml.training import (
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
+    TIMEOUT_RETURN_SCHEMA_VERSION,
     DatasetSplit,
     PolicyEvaluationConfig,
     evaluate_policy_model,
@@ -38,6 +39,9 @@ class AuditArtifactModel:
 
     def predict_proba(self, values: np.ndarray) -> np.ndarray:
         return np.repeat([[0.4, 0.3, 0.3]], len(values), axis=0)
+
+    def predict_timeout_return_r(self, values: np.ndarray) -> np.ndarray:
+        return np.zeros(len(values), dtype=float)
 
 
 class RowProbabilityModel:
@@ -554,6 +558,7 @@ def _artifact_bundle(**overrides: object) -> dict[str, object]:
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+        "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "horizon_hours": 8,
         "stop_atr_multiplier": 1.5,
         "tp_atr_multiplier": 2.2,

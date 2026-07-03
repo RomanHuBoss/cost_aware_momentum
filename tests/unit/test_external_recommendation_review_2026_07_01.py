@@ -16,6 +16,7 @@ from app.ml.training import (
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
+    TIMEOUT_RETURN_SCHEMA_VERSION,
 )
 from app.risk.math import (
     CostScenario,
@@ -31,6 +32,9 @@ D = Decimal
 
 class StubModel:
     classes_ = ["TP", "SL", "TIMEOUT"]
+
+    def predict_timeout_return_r(self, values) -> list[float]:
+        return [0.0] * len(values)
 
 
 def _features(**updates: float) -> dict[str, float]:
@@ -77,6 +81,7 @@ def test_artifact_rejects_boolean_barrier_multiplier(tmp_path: Path) -> None:
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+            "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": True,
             "tp_atr_multiplier": 2.4,

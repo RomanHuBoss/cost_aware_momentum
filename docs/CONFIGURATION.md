@@ -11,6 +11,14 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.9.0
+
+Новых `.env`-переменных и migration нет. `TIMEOUT_GROSS_RETURN_RATE` теперь является только fallback для deterministic baseline и legacy diagnostic paths. Для нового ML artifact trainer вычисляет отдельно для LONG/SHORT медиану фактических train-window TIMEOUT returns в единицах gross stop-risk. Final holdout при оценке candidate не участвует в fit этой величины.
+
+Artifact обязан содержать `timeout_return_schema_version=training-direction-median-r-v1`; policy evidence использует `policy_metric_schema=decision-open-entry-exit-time-cohort-v10`. Artifact 1.8.x без нового контракта runtime отклоняет fail-closed. После замены release tree остановите старые процессы и запустите штатный trainer; вручную активировать старый artifact нельзя.
+
+Значение `TIMEOUT_GROSS_RETURN_RATE=-0.002` сохранять допустимо, но его изменение не меняет TIMEOUT economics нового ML artifact. Оно влияет только на baseline/fallback и должно оставаться конечным в `(-1, 1)`.
+
 ## Изменения 1.8.36
 
 Новых `.env`-переменных и migration нет. Изменена семантика обучающей выборки: entry proxy берётся из `open` первой свечи после `decision_time`, барьеры рассчитываются как `entry_price × atr_pct_14 × multiplier`.
@@ -38,7 +46,7 @@ Promotion дополнительно требует `log_loss_skill_vs_prior > 0
 Новые обратно совместимые переменные:
 
 - `ALLOW_BASELINE_ACTIONABLE=false` — deterministic baseline остаётся диагностическим fallback и не может создавать/сохранять исполнимый план. В `production` значение `true` запрещено.
-- `TIMEOUT_GROSS_RETURN_RATE=-0.002` — gross return исхода TIMEOUT до fee/slippage. Значение должно быть конечным и лежать в `(-1, 1)`; менять только после OOS/forward-калибровки.
+- `TIMEOUT_GROSS_RETURN_RATE=-0.002` — в релизах 1.8.x это была общая gross return гипотеза исхода TIMEOUT до fee/slippage. Начиная с 1.9.0 она остаётся только baseline/legacy fallback.
 - `AUTO_TRAIN_MIN_POLICY_COHORTS=20` — минимальное число независимых decision-time когорт. Оно больше не наследуется от `AUTO_TRAIN_MIN_POLICY_TRADES`.
 
 Изменение `.env` не обязательно: указанные defaults сохраняют совместимость. После обновления рекомендуется явно добавить переменные, чтобы policy assumptions были видны оператору.

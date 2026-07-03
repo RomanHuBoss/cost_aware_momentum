@@ -3,7 +3,8 @@
 | Requirement / invariant | Production path | Verification |
 |---|---|---|
 | Post-response receipt timestamps | `app/services/market_data.py::sync_instruments`, `sync_tickers`, `sync_funding_and_oi`, `sync_read_only_account` | `tests/unit/test_point_in_time_candle_integrity_2026_07_01.py` |
-| Candle confirmation uses response time | `app/services/market_data.py::sync_candles`, `sync_candle_history`, `sync_candle_windows` | `test_candle_confirmation_uses_api_response_time` |
+| Candle confirmation flag uses response time | `app/services/market_data.py::sync_candles`, `sync_candle_history`, `sync_candle_windows` | `test_candle_confirmation_uses_api_response_time` checks `confirmed`; its old `available_at==close_time` assertion documents a separate defect rather than receipt-time integrity |
+| Candle `available_at` equals actual receipt time | `app/services/market_data.py::_candle_values` | **CONFIRMED DEFECT / NOT FIXED IN 1.9.0**: current code writes `close_time`; requires migration/reingestion policy and dedicated next work package |
 | Confirmed candle immutable without revision policy | `app/services/market_data.py::_upsert_candle_values` | `test_confirmed_candle_upsert_is_immutable_without_revision_policy` |
 | Separate market and availability cutoffs | `app/services/signals.py::_candles_frame` | `test_feature_query_separates_market_and_availability_cutoffs` |
 | Instrument spec available at decision time | `app/services/signals.py::_latest_spec`, `publish_hourly_signals` | `test_spec_query_uses_decision_availability_cutoff` |
@@ -13,7 +14,7 @@
 | Terminal/blocking status precedence | `app/services/execution.py::create_execution_plan` | `test_terminal_signal_status_is_not_overwritten_by_liquidation_diagnostic` |
 | Non-negative live minimum EV | `app/config.py::Settings.validate_cross_field_policy` | `test_negative_minimum_net_ev_is_rejected` |
 | Diagnostic baseline cannot become actionable | `app/services/execution.py::signal_uses_unvalidated_baseline`, `create_execution_plan`, `validate_execution_plan_for_acceptance` | `test_unvalidated_baseline_plan_is_diagnostic_only`, `test_legacy_actionable_baseline_plan_cannot_be_accepted`, production config test |
-| Explicit TIMEOUT assumption parity | `app/config.py`, `app/services/signals.py`, `app/services/execution.py`, `app/api/serializers.py`, `app/ml/lifecycle.py`, `scripts/backtest.py` | timeout economics and serializer tests in `test_model_policy_safety_2026_07_02.py` |
+| Train-only conditional TIMEOUT economics parity | `app/ml/training.py::timeout_return_r_targets`, `TemporalCalibratedBarrierModel`, `evaluate_policy_model`; `app/ml/runtime.py`; `app/services/signals.py`; `app/services/execution.py` | six regressions in `test_conditional_timeout_economics_2026_07_02.py`; serializer snapshot test retained |
 | Horizon-independent policy cohort threshold | `app/ml/training.py::_count_horizon_separated_cohorts`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_hourly_overlapping_policy_cohorts_are_not_counted_as_independent`, `test_quality_gate_uses_independent_cohort_threshold` |
 | Minimum holdout calendar span | `app/ml/training.py::_holdout_time_bounds`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_rejects_large_cross_section_from_short_holdout` |
 | Bootstrap history is sufficient for configured split/gates | `app/ml/training.py::minimum_hourly_history_timestamps_for_quality_gate`, `app/workers/trainer.py::BackgroundTrainer.due_reason` | `test_bootstrap_waits_until_configured_holdout_span_is_mathematically_possible` |
@@ -33,7 +34,7 @@
 | Known TradFi symbol types excluded from crypto domain | `app/services/universe.py::select_dynamic_universe` | default-exclusion and explicit-opt-in tests in `test_execution_exchange_integrity_2026_07_01.py` |
 | Decision-time executable entry integrity | `app/ml/training.py::make_barrier_dataset` | `test_dataset_uses_first_post_decision_open_as_executable_entry_proxy`, `test_short_dataset_does_not_book_down_gap_before_executable_entry` |
 | Training/inference ATR barrier parity | `app/services/signals.py::publish_hourly_signals`, `app/ml/training.py::make_barrier_dataset` | `test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping`; decision-open barrier-rate assertions in `test_decision_time_entry_integrity_2026_07_02.py` |
-| Artifact semantic schemas | `app/ml/runtime.py::ModelRuntime.load` | five cases in `test_runtime_rejects_artifacts_with_incompatible_training_semantics` |
+| Artifact semantic schemas | `app/ml/runtime.py::ModelRuntime.load` | feature/label/temporal cases plus `test_runtime_rejects_artifact_without_timeout_return_schema` |
 | Comparable candidate/incumbent barrier geometry | `app/ml/lifecycle.py::build_model_candidate` | `test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_labels` |
 | No-loss profit-factor semantics | `app/ml/training.py::evaluate_policy_model`, `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded` |
 | Backtest artifact validation and hash | `scripts/backtest.py::load_validated_artifact` | `test_backtest_loader_enforces_runtime_artifact_contract` |

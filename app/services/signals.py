@@ -61,6 +61,7 @@ class SignalScenarioEconomics:
     ev_r: Decimal
     downside: Decimal
     upside: Decimal
+    timeout_return_rate: Decimal
 
 
 def select_cost_aware_scenario(
@@ -142,6 +143,24 @@ def select_cost_aware_scenario(
             stop = ceil_to_tick(reference + stop_distance)
             tp1 = ceil_to_tick(reference - tp_distance)
 
+        scenario_timeout_return_rate = timeout_return_rate
+        if prediction.timeout_return_r is not None:
+            timeout_return_r = decimal(prediction.timeout_return_r)
+            if not timeout_return_r.is_finite():
+                raise ValueError("Conditional TIMEOUT return R must be finite")
+            gross_downside_rate = abs(reference - stop) / reference
+            gross_upside_rate = abs(tp1 - reference) / reference
+            if gross_downside_rate <= 0:
+                raise ValueError("Conditional TIMEOUT return requires positive stop distance")
+            support_upper = gross_upside_rate / gross_downside_rate
+            bounded_timeout_return_r = min(
+                max(timeout_return_r, Decimal("-1")),
+                support_upper,
+            )
+            scenario_timeout_return_rate = (
+                bounded_timeout_return_r * gross_downside_rate
+            )
+
         net_rr, ev_r, downside, upside = net_rr_and_ev(
             entry=reference,
             stop=stop,
@@ -151,7 +170,7 @@ def select_cost_aware_scenario(
             p_tp=prediction.p_tp,
             p_sl=prediction.p_sl,
             p_timeout=prediction.p_timeout,
-            timeout_return_rate=timeout_return_rate,
+            timeout_return_rate=scenario_timeout_return_rate,
         )
         candidates.append(
             SignalScenarioEconomics(
@@ -166,6 +185,7 @@ def select_cost_aware_scenario(
                 ev_r=ev_r,
                 downside=downside,
                 upside=upside,
+                timeout_return_rate=scenario_timeout_return_rate,
             )
         )
 
@@ -592,7 +612,13 @@ async def publish_hourly_signals(
                 "spread_bps": spread_bps,
                 "model_runtime": runtime.metadata(),
                 "economics_assumptions": {
-                    "timeout_gross_return_rate": settings.timeout_gross_return_rate
+                    "timeout_gross_return_rate": str(scenario.timeout_return_rate),
+                    "timeout_return_r": prediction.timeout_return_r,
+                    "timeout_return_source": (
+                        "artifact_training_direction_median_r"
+                        if prediction.timeout_return_r is not None
+                        else "configured_fallback"
+                    ),
                 },
             },
         )

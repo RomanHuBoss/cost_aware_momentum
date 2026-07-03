@@ -13,6 +13,15 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.9.0
+
+1. Migration и новые `.env`-переменные не требуются.
+2. Остановите API, worker и trainer, замените release tree и выполните `python manage.py release-check`.
+3. Старый active artifact без `timeout_return_schema_version=training-direction-median-r-v1` будет отклонён runtime. Это ожидаемый fail-closed результат; не редактируйте artifact и не отключайте проверку.
+4. Запустите штатный trainer. Новый candidate должен пересчитать policy evidence schema v10 и пройти существующие absolute/relative gates. Incumbent не считается совместимым benchmark, если его TIMEOUT schema отсутствует.
+5. `TIMEOUT_GROSS_RETURN_RATE` не подбирайте для увеличения числа рекомендаций: для нового ML artifact это только baseline fallback. Проверяйте в signal/plan snapshot поля `timeout_gross_return_rate`, `timeout_return_r` и `timeout_return_source`.
+6. После activation проведите paper/shadow forward validation с фактическими fills. Техническое исправление EV не доказывает прибыльность и может как увеличить, так и уменьшить число рекомендаций.
+
 ## После обновления на 1.8.36
 
 1. Migration и новые `.env`-переменные не требуются.

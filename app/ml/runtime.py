@@ -18,6 +18,7 @@ from app.ml.training import (
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
+    TIMEOUT_RETURN_SCHEMA_VERSION,
 )
 from app.risk.math import validate_probability_simplex
 
@@ -34,6 +35,7 @@ class Prediction:
     model_version: str
     calibration_version: str
     reasons: tuple[str, ...]
+    timeout_return_r: float | None = None
 
 
 class ModelRuntime:
@@ -74,6 +76,11 @@ class ModelRuntime:
             ),
             "temporal_split_schema": (
                 self.bundle.get("temporal_split_schema") if self.bundle is not None else None
+            ),
+            "timeout_return_schema_version": (
+                self.bundle.get("timeout_return_schema_version")
+                if self.bundle is not None
+                else None
             ),
         }
 
@@ -136,12 +143,21 @@ class ModelRuntime:
                     f"expected {TEMPORAL_SPLIT_SCHEMA_VERSION}, "
                     f"got {temporal_split_schema or 'missing'}"
                 )
+            timeout_return_schema = str(bundle.get("timeout_return_schema_version") or "")
+            if timeout_return_schema != TIMEOUT_RETURN_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model timeout return schema mismatch: "
+                    f"expected {TIMEOUT_RETURN_SCHEMA_VERSION}, "
+                    f"got {timeout_return_schema or 'missing'}"
+                )
             model = bundle["model"]
             classes = [str(item) for item in getattr(model, "classes_", [])]
             if classes != list(OUTCOME_CLASSES):
                 raise ValueError(
                     f"Model outcome schema mismatch: expected {list(OUTCOME_CLASSES)}, got {classes}"
                 )
+            if not callable(getattr(model, "predict_timeout_return_r", None)):
+                raise ValueError("Model artifact is missing the conditional TIMEOUT return estimator")
             version = str(bundle.get("version", self.artifact_path.stem))
             if expected_version and version != expected_version:
                 raise RuntimeError(
@@ -213,13 +229,24 @@ class ModelRuntime:
             validated[name] = value
         return validated
 
-    def _scenario_utility(self, p_tp: float, p_sl: float, p_timeout: float) -> float:
+    def _scenario_utility(
+        self,
+        p_tp: float,
+        p_sl: float,
+        p_timeout: float,
+        timeout_return_r: float | None = None,
+    ) -> float:
         # Compatibility score only. Exact direction selection is performed later by
         # the cost-aware policy, but this score must still use the artifact geometry.
+        timeout_utility = (
+            -0.20
+            if timeout_return_r is None
+            else timeout_return_r * self.stop_atr_multiplier
+        )
         return (
             p_tp * self.tp_atr_multiplier
             - p_sl * self.stop_atr_multiplier
-            - p_timeout * 0.20
+            + p_timeout * timeout_utility
         )
 
     def _predict_artifact_scenarios(self, features: dict[str, float]) -> tuple[Prediction, Prediction]:
@@ -227,10 +254,11 @@ class ModelRuntime:
             raise RuntimeError("No artifact loaded")
         model = self.bundle["model"]
         vector_values_base = [features[name] for name in FEATURE_NAMES]
-        scenarios: list[tuple[Direction, float, dict[str, float]]] = []
+        scenarios: list[tuple[Direction, float, dict[str, float], float | None]] = []
         for direction, code in (("LONG", 1.0), ("SHORT", -1.0)):
             vector_values = vector_values_base + [code]
-            probabilities = model.predict_proba(np.array([vector_values], dtype=float))[0]
+            vector = np.array([vector_values], dtype=float)
+            probabilities = model.predict_proba(vector)[0]
             mapping = dict(zip([str(item) for item in model.classes_], probabilities, strict=True))
             p_tp, p_sl, p_timeout = validate_probability_simplex(
                 mapping["TP"], mapping["SL"], mapping["TIMEOUT"]
@@ -240,11 +268,21 @@ class ModelRuntime:
                 "p_sl": float(p_sl),
                 "p_timeout": float(p_timeout),
             }
-            utility = self._scenario_utility(**outcome)
-            scenarios.append((direction, utility, outcome))
+            timeout_predictor = getattr(model, "predict_timeout_return_r", None)
+            timeout_return_r: float | None = None
+            if callable(timeout_predictor):
+                estimate = np.asarray(timeout_predictor(vector), dtype=float)
+                if estimate.shape != (1,) or not np.isfinite(estimate[0]):
+                    raise ValueError("Model produced an invalid conditional TIMEOUT return")
+                timeout_return_r = float(estimate[0])
+            utility = self._scenario_utility(
+                **outcome,
+                timeout_return_r=timeout_return_r,
+            )
+            scenarios.append((direction, utility, outcome, timeout_return_r))
 
         predictions: list[Prediction] = []
-        for index, (direction, utility, outcome) in enumerate(scenarios):
+        for index, (direction, utility, outcome, timeout_return_r) in enumerate(scenarios):
             alternative_utility = scenarios[1 - index][1]
             reasons = list(self._reasons(features, direction))
             reasons.append(
@@ -262,6 +300,7 @@ class ModelRuntime:
                     model_version=self.version,
                     calibration_version=self.calibration_version,
                     reasons=tuple(reasons[:7]),
+                    timeout_return_r=timeout_return_r,
                 )
             )
         return predictions[0], predictions[1]

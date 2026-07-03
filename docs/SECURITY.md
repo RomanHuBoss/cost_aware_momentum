@@ -6,7 +6,7 @@
 - Реальные secrets хранятся только в локальном `.env`, который не входит в release archive.
 - Production mode обязан отклонять стандартные credentials, demo seed и небезопасные настройки через существующие config/runtime gates. Любой режим отклоняет отрицательный `MIN_NET_EV_R`; при auto-activation также отклоняются отрицательный minimum realized mean R и profit factor ниже 1.
 - PostgreSQL URLs валидируются; SQLite/file fallback отсутствует.
-- Model artifacts проверяются fail-closed по ожидаемому SHA-256 (когда он зарегистрирован), task/classes/horizon/calibration, feature schema, label-path schema, temporal-split schema и положительной barrier geometry.
+- Model artifacts проверяются fail-closed по ожидаемому SHA-256 (когда он зарегистрирован), task/classes/horizon/calibration, feature schema, label-path schema, temporal-split schema, TIMEOUT-return schema и положительной barrier geometry.
 - Release tree проверяется fail-closed скриптом `scripts/release_integrity.py` и manifest `SHA256SUMS`.
 - Логи и отчёты не должны содержать API secret, operator password, session secret или полные authentication headers.
 
@@ -21,3 +21,5 @@ Patch 1.8.34 не меняет authentication, network binding, Bybit permission
 
 Patch 1.8.35 сохраняет advisory-only/read-only границы и не меняет authentication, cookies, network binding или secrets. Он предотвращает auto-activation кандидата без положительного skill относительно class-prior и блокирует заведомо непроходимый bootstrap до fit.
 Patch 1.8.36 сохраняет advisory-only/read-only границы, не добавляет API permissions, order mutations, network exposure или secrets. Он блокирует artifacts и promotion evidence со старой entry-time семантикой, чтобы pre-entry price movement не использовалось как основание для рекомендации.
+
+Patch 1.9.0 сохраняет advisory-only/read-only границы, не добавляет order mutations, новые API permissions, network exposure, secrets или инфраструктуру. Новый artifact schema блокирует смешение старой фиксированной TIMEOUT-гипотезы с direction-conditional estimator. Persisted signal assumption валидируется как конечное число; повреждённое значение блокирует plan/acceptance вместо silent fallback.
