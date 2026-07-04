@@ -108,12 +108,8 @@ def _instrument_spec_values(item: dict) -> InstrumentSpecValues:
     leverage_filter = item.get("leverageFilter") or {}
     tick_size = _required_positive_decimal(price_filter.get("tickSize"), "priceFilter.tickSize")
     qty_step = _required_positive_decimal(lot_filter.get("qtyStep"), "lotSizeFilter.qtyStep")
-    min_qty = _required_positive_decimal(
-        lot_filter.get("minOrderQty"), "lotSizeFilter.minOrderQty"
-    )
-    max_qty = _required_positive_decimal(
-        lot_filter.get("maxOrderQty"), "lotSizeFilter.maxOrderQty"
-    )
+    min_qty = _required_positive_decimal(lot_filter.get("minOrderQty"), "lotSizeFilter.minOrderQty")
+    max_qty = _required_positive_decimal(lot_filter.get("maxOrderQty"), "lotSizeFilter.maxOrderQty")
     if max_qty < min_qty:
         raise ValueError("Bybit field lotSizeFilter.maxOrderQty must not be below minOrderQty")
     min_notional = _required_positive_decimal(
@@ -162,9 +158,7 @@ def _normalized_open_position(item: dict) -> dict[str, object] | None:
         "qty": size,
         "avg_price": _required_positive_decimal(item.get("avgPrice"), "position.avgPrice"),
         "mark_price": _required_positive_decimal(item.get("markPrice"), "position.markPrice"),
-        "unrealized_pnl": _required_finite_decimal(
-            item.get("unrealisedPnl"), "position.unrealisedPnl"
-        ),
+        "unrealized_pnl": _required_finite_decimal(item.get("unrealisedPnl"), "position.unrealisedPnl"),
     }
 
 
@@ -278,17 +272,34 @@ async def sync_candles(
     limit: int,
     price_types: tuple[str, ...] = ("last", "mark", "index"),
     request_batch_size: int = 40,
+    required_close_time: datetime | None = None,
+    diagnostics: dict[str, object] | None = None,
 ) -> int:
+    """Synchronize candles and optionally report exact last-price coverage.
+
+    Hourly inference is fail-closed and requires the confirmed last-price candle
+    whose ``close_time`` equals the decision timestamp.  A network call can
+    legitimately succeed only for part of the universe, so callers may request
+    explicit coverage diagnostics and retry the same idempotent job later.
+    """
+
+    if required_close_time is not None and (
+        required_close_time.tzinfo is None or required_close_time.utcoffset() is None
+    ):
+        raise ValueError("required_close_time must be timezone-aware")
+
+    symbol_list = list(dict.fromkeys(symbols))
     count = 0
     interval_minutes = int(interval)
-    requests = [(symbol, price_type) for symbol in symbols for price_type in price_types]
+    requests = [(symbol, price_type) for symbol in symbol_list for price_type in price_types]
     batch_size = max(1, request_batch_size)
+    covered_symbols: set[str] = set()
+    requests_succeeded = 0
+    requests_failed = 0
 
     async def fetch(symbol: str, price_type: str) -> tuple[str, str, list[list[str]] | None]:
         try:
-            rows = await client.get_kline(
-                symbol, interval=interval, limit=limit, price_type=price_type
-            )
+            rows = await client.get_kline(symbol, interval=interval, limit=limit, price_type=price_type)
             return symbol, price_type, rows
         except Exception:
             logger.exception(
@@ -305,6 +316,10 @@ async def sync_candles(
         batch = requests[offset : offset + batch_size]
         results = await asyncio.gather(*(fetch(symbol, price_type) for symbol, price_type in batch))
         for symbol, price_type, rows in results:
+            if rows is None:
+                requests_failed += 1
+                continue
+            requests_succeeded += 1
             if not rows:
                 continue
             values_list = _candle_values(
@@ -317,6 +332,31 @@ async def sync_candles(
             )
             await _upsert_candle_values(session, values_list)
             count += len(values_list)
+            if (
+                required_close_time is not None
+                and price_type == "last"
+                and any(
+                    value["close_time"] == required_close_time and value["confirmed"] for value in values_list
+                )
+            ):
+                covered_symbols.add(symbol)
+
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "symbols_total": len(symbol_list),
+                "symbols_covered": len(covered_symbols),
+                "requests_total": len(requests),
+                "requests_succeeded": requests_succeeded,
+                "requests_failed": requests_failed,
+                "required_close_time": required_close_time.isoformat()
+                if required_close_time is not None
+                else None,
+                "missing_symbols_sample": sorted(set(symbol_list) - covered_symbols)[:25]
+                if required_close_time is not None
+                else [],
+            }
+        )
     return count
 
 
@@ -344,10 +384,7 @@ async def sync_candle_windows(
         raise ValueError("now must be timezone-aware")
 
     unique_windows = sorted(
-        {
-            (item.symbol, item.start_time, item.end_time)
-            for item in windows
-        },
+        {(item.symbol, item.start_time, item.end_time) for item in windows},
         key=lambda item: (item[1], item[0], item[2]),
     )
     rows_received = 0
@@ -388,18 +425,12 @@ async def sync_candle_windows(
                 interval_minutes=interval_minutes,
             )
             values = [
-                item
-                for item in values
-                if item["open_time"] >= start_time and item["close_time"] <= end_time
+                item for item in values if item["open_time"] >= start_time and item["close_time"] <= end_time
             ]
-            expected_open_times = [
-                start_time + interval_delta * index for index in range(limit)
-            ]
+            expected_open_times = [start_time + interval_delta * index for index in range(limit)]
             actual_open_times = sorted(item["open_time"] for item in values)
             if actual_open_times != expected_open_times:
-                raise ValueError(
-                    f"partial_window: expected {limit} candles, received {len(values)}"
-                )
+                raise ValueError(f"partial_window: expected {limit} candles, received {len(values)}")
             await _upsert_candle_values(session, values)
             rows_received += len(values)
             succeeded += 1
@@ -511,9 +542,7 @@ async def symbols_needing_history_backfill(
     launches = dict(
         (
             await session.execute(
-                select(Instrument.symbol, Instrument.launch_time).where(
-                    Instrument.symbol.in_(symbol_list)
-                )
+                select(Instrument.symbol, Instrument.launch_time).where(Instrument.symbol.in_(symbol_list))
             )
         ).all()
     )
@@ -769,14 +798,10 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
         raise RuntimeError("Bybit wallet response contained no account")
     account = account_list[0]
     equity = _required_positive_decimal(account.get("totalEquity"), "totalEquity")
-    available = _required_nonnegative_decimal(
-        account.get("totalAvailableBalance"), "totalAvailableBalance"
-    )
+    available = _required_nonnegative_decimal(account.get("totalAvailableBalance"), "totalAvailableBalance")
     raw_positions = await client.get_positions("USDT")
     positions = [
-        normalized
-        for item in raw_positions
-        if (normalized := _normalized_open_position(item)) is not None
+        normalized for item in raw_positions if (normalized := _normalized_open_position(item)) is not None
     ]
     now = datetime.now(UTC)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)

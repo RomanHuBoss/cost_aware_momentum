@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.9.3: профиль капитала больше не может ослабить глобальные `MAX_TOTAL_OPEN_RISK_RATE` и `MAX_LEVERAGE`. Создание, изменение, активация, расчёт и принятие execution plan проверяют единую fail-closed risk policy.
+> Версия 1.9.4: hourly candle ingestion измеряет покрытие точной decision candle и ограниченно повторяет частично успешную загрузку. Временный сбой одного symbol больше не превращается в окончательный `SUCCESS` без возможности сетевого refetch в текущем часовом окне.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -25,6 +25,7 @@
 - Для ML artifacts TIMEOUT gross return оценивается отдельно для LONG/SHORT как медиана train-only TIMEOUT returns в единицах stop-risk и масштабируется к текущей barrier geometry. `TIMEOUT_GROSS_RETURN_RATE` остаётся явным fallback только для baseline/legacy diagnostic paths; опубликованный signal сохраняет фактически использованное значение, и plan/acceptance не пересчитывают его из текущего `.env`.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
 - Публикация hourly signal требует точной confirmed decision candle: последний `close_time` обязан совпадать с `event_time`; предыдущая свеча вызывает fail-closed `missing_decision_candle`, а не ранний сигнал текущего часа.
+- Hourly market-close job сохраняет `symbols_total`/`symbols_covered` и повторно запрашивает отсутствующие exact last-price candles после cooldown, максимум пять раз; полный охват или исчерпание лимита завершает retry без ослабления inference gate.
 - Для свечей `close_time` отражает рыночное закрытие, а `available_at` — фактическое время получения ответа. Поздний backfill не может появиться в point-in-time replay задним числом.
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, полная funding timeline, account reconciliation, текущий turnover-based liquidity cap, `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - Для manual/paper-профилей выделенный капитал одновременно задаёт теоретическую доступную маржу; margin reserve применяется до расчёта размера позиции. Уже принятые планы и открытые manual/paper-сделки уменьшают доступную маржинальную ёмкость; для read-only аккаунта открытые позиции повторно не вычитаются из биржевого available margin.

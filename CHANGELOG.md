@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.9.4 — 2026-07-04
+
+### Fixed
+
+- Hourly candle synchronization now records exact decision-candle coverage per symbol instead of treating any non-raising partial fetch as complete.
+- A partially successful `hourly_market_close` job is retried after cooldown, up to five times, and performs a real Bybit candle refetch before inference retries.
+- Retry bookkeeping is generalized without changing the existing incomplete-inference behavior or weakening `missing_decision_candle`.
+
+### Verification
+
+- Added red → green regressions for partial Bybit timeout coverage and retry configuration.
+- Added retry-limit and complete-coverage tests; no migration, dependency, environment variable or public API change.
+
 ## 1.9.3 — 2026-07-04
 
 ### Fixed

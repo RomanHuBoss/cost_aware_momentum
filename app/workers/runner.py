@@ -37,20 +37,35 @@ configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
-def should_retry_incomplete_inference(
-    details: dict[str, object], *, max_retries: int
+def should_retry_incomplete_coverage(
+    details: dict[str, object],
+    *,
+    total_key: str,
+    covered_keys: tuple[str, ...],
+    retry_count_key: str,
+    max_retries: int,
 ) -> bool:
-    """Return true when an hourly inference covered only part of its universe."""
+    """Return true when an idempotent successful job covered only part of its scope."""
 
     try:
-        retry_count = int(details.get("inference_retry_count", 0))
-        symbols_total = int(details.get("symbols_total", 0))
-        covered_symbols = int(details.get("published", 0)) + int(
-            details.get("existing_current_hour", 0)
-        )
+        retry_count = int(details.get(retry_count_key, 0))
+        items_total = int(details.get(total_key, 0))
+        items_covered = sum(int(details.get(key, 0)) for key in covered_keys)
     except (TypeError, ValueError):
         return False
-    return symbols_total > 0 and covered_symbols < symbols_total and retry_count < max_retries
+    return items_total > 0 and items_covered < items_total and retry_count < max_retries
+
+
+def should_retry_incomplete_inference(details: dict[str, object], *, max_retries: int) -> bool:
+    """Return true when an hourly inference covered only part of its universe."""
+
+    return should_retry_incomplete_coverage(
+        details,
+        total_key="symbols_total",
+        covered_keys=("published", "existing_current_hour"),
+        retry_count_key="inference_retry_count",
+        max_retries=max_retries,
+    )
 
 
 class Worker:
@@ -194,6 +209,9 @@ class Worker:
         retry_incomplete_success: bool = False,
         retry_after_seconds: int = 60,
         max_inference_retries: int = 5,
+        retry_total_key: str = "symbols_total",
+        retry_covered_keys: tuple[str, ...] = ("published", "existing_current_hour"),
+        retry_count_key: str = "inference_retry_count",
     ) -> dict:
         try:
             async with (
@@ -214,17 +232,23 @@ class Worker:
                 is_incomplete_retry = False
                 if existing and existing.status == "SUCCESS":
                     details = existing.details or {}
-                    retry_count = int(details.get("inference_retry_count", 0))
+                    try:
+                        retry_count = int(details.get(retry_count_key, 0))
+                    except (TypeError, ValueError):
+                        retry_count = 0
                     incomplete_retryable = bool(
                         retry_incomplete_success
-                        and should_retry_incomplete_inference(
-                            details, max_retries=max_inference_retries
+                        and should_retry_incomplete_coverage(
+                            details,
+                            total_key=retry_total_key,
+                            covered_keys=retry_covered_keys,
+                            retry_count_key=retry_count_key,
+                            max_retries=max_inference_retries,
                         )
                     )
                     cooldown_elapsed = bool(
                         existing.finished_at
-                        and (datetime.now(UTC) - existing.finished_at).total_seconds()
-                        >= retry_after_seconds
+                        and (datetime.now(UTC) - existing.finished_at).total_seconds() >= retry_after_seconds
                     )
                     if not (incomplete_retryable and cooldown_elapsed):
                         return {"skipped": "already_completed", "previous_details": details}
@@ -248,7 +272,7 @@ class Worker:
                 result = await coro(session)
                 if is_incomplete_retry:
                     result = dict(result or {})
-                    result["inference_retry_count"] = retry_count + 1
+                    result[retry_count_key] = retry_count + 1
                 job.status = "SUCCESS"
                 job.finished_at = datetime.now(UTC)
                 job.details = result or {}
@@ -314,9 +338,7 @@ class Worker:
                     request_batch_size=settings.universe_backfill_batch_size,
                 )
                 if settings.universe_enrich_funding_oi:
-                    funding, oi = await sync_funding_and_oi(
-                        session, self.client, sorted(newly_admitted)
-                    )
+                    funding, oi = await sync_funding_and_oi(session, self.client, sorted(newly_admitted))
 
             summary = selection.summary() if selection else self.universe_summary
             return {
@@ -334,8 +356,14 @@ class Worker:
         async def task(session):
             symbols = self.active_symbols
             if not symbols:
-                return {"symbols": 0, "candles": 0}
+                return {
+                    "symbols": 0,
+                    "candles": 0,
+                    "symbols_total": 0,
+                    "symbols_covered": 0,
+                }
             price_types = ("last", "mark") if settings.universe_sync_mark_price else ("last",)
+            diagnostics: dict[str, object] = {}
             candles = await sync_candles(
                 session,
                 self.client,
@@ -344,10 +372,22 @@ class Worker:
                 limit=3,
                 price_types=price_types,
                 request_batch_size=settings.universe_backfill_batch_size,
+                required_close_time=event_time,
+                diagnostics=diagnostics,
             )
-            return {"symbols": len(symbols), "candles": candles}
+            return {"symbols": len(symbols), "candles": candles, **diagnostics}
 
-        return await self.run_job("hourly_market_close", event_time, task)
+        return await self.run_job(
+            "hourly_market_close",
+            event_time,
+            task,
+            retry_incomplete_success=True,
+            retry_after_seconds=max(30, settings.market_poll_seconds),
+            max_inference_retries=5,
+            retry_total_key="symbols_total",
+            retry_covered_keys=("symbols_covered",),
+            retry_count_key="candle_sync_retry_count",
+        )
 
     async def history_backfill_job(self) -> dict:
         scheduled = datetime.now(UTC).replace(second=0, microsecond=0)
@@ -538,10 +578,14 @@ class Worker:
                     self.last_market_sync = now
                     if market_result.get("backfilled_symbols", 0) > 0:
                         await self.catchup_inference_job("universe_expanded")
-                if settings.history_backfill_enabled and self.active_symbols and (
-                    self.last_history_backfill is None
-                    or (now - self.last_history_backfill).total_seconds()
-                    >= settings.history_backfill_interval_seconds
+                if (
+                    settings.history_backfill_enabled
+                    and self.active_symbols
+                    and (
+                        self.last_history_backfill is None
+                        or (now - self.last_history_backfill).total_seconds()
+                        >= settings.history_backfill_interval_seconds
+                    )
                 ):
                     await self.history_backfill_job()
                 if settings.bybit_read_only_account and (
@@ -562,9 +606,7 @@ class Worker:
                 await self.heartbeat(
                     self.model_heartbeat_status(),
                     self.heartbeat_details(
-                        last_market_sync=self.last_market_sync.isoformat()
-                        if self.last_market_sync
-                        else None,
+                        last_market_sync=self.last_market_sync.isoformat() if self.last_market_sync else None,
                         history_backfill=self.history_backfill_summary,
                     ),
                 )

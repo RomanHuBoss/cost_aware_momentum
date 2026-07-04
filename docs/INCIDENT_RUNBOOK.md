@@ -10,9 +10,10 @@
 ## `missing_decision_candle` или сигнал на предыдущем часовом окне
 
 1. Не обходить gate увеличением `MAX_CANDLE_AGE_SECONDS`: current-hour signal требует `close_time == event_time`.
-2. Проверить ingestion job, последнюю confirmed candle, её `available_at`, `close_time` и worker clock.
-3. После появления точной decision candle разрешить обычный idempotent retry; не вставлять свечу и не менять signal natural key вручную.
-4. Если версия до 1.9.2 уже опубликовала signal текущего часа по предыдущей свече, сохранить signal/plan snapshots и не считать его пригодным доказательством model quality без отдельного разбора.
+2. В `hourly_market_close` проверить `symbols_total`, `symbols_covered`, `requests_failed`, `missing_symbols_sample`, `required_close_time` и `candle_sync_retry_count`; затем сверить последнюю confirmed candle, её `available_at`, `close_time` и worker clock.
+3. Начиная с 1.9.4 частичное покрытие автоматически выполняет bounded idempotent refetch после cooldown. Не вставлять свечу, не менять signal natural key вручную и не превращать partial fetch в fail-open.
+4. Если пять повторов исчерпаны, сохранить job diagnostics и Bybit error/rate-limit logs. Устранить connectivity/clock/payload причину; следующий час запускает новый независимый цикл.
+5. Если версия до 1.9.2 уже опубликовала signal текущего часа по предыдущей свече, сохранить signal/plan snapshots и не считать его пригодным доказательством model quality без отдельного разбора.
 
 ## Подозрение на revision confirmed candle
 

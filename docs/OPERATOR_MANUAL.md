@@ -1,5 +1,14 @@
 # Operator Manual
 
+## После обновления на 1.9.4
+
+Migration и новые `.env`-переменные не нужны. Замените файлы проекта и перезапустите worker/API/trainer штатной командой.
+
+- В diagnostics задания `hourly_market_close` проверяйте `symbols_total`, `symbols_covered`, `requests_failed`, `missing_symbols_sample` и `candle_sync_retry_count`.
+- Частичное покрытие вызывает сетевой refetch после cooldown, максимум пять раз. Не увеличивайте лимит и не ослабляйте `missing_decision_candle` только ради появления сигналов.
+- Если после лимита `symbols_covered < symbols_total`, проверяйте Bybit connectivity/rate limits, worker clock и фактический payload kline. Следующий час создаёт новый idempotency key и новый цикл.
+- Patch повышает шанс получить своевременную точную свечу, но не меняет модель, EV/RR/risk gates и не доказывает прибыльность.
+
 ## Запуск
 
 Используйте `manage.py setup`, `configure`, `db-init`, `migrate`, `doctor`, затем `run`. Web UI по умолчанию доступен только на `127.0.0.1:8000`.

@@ -28,6 +28,8 @@ Account-dependent path: `capital-profile request/persisted row → global risk-p
 
 Hourly publication дополнительно связывает natural key и feature cutoff одним временным якорем: `frame.latest.close_time` обязан быть равен `signal.event_time`. Если API/ingestion ещё не принёс decision candle, worker возвращает fail-closed diagnostic `missing_decision_candle` и не запускает scenario economics. Это предотвращает раннюю публикацию на предыдущем часе и последующую блокировку корректного retry уже занятым natural key.
 
+Перед hourly inference market-close job отдельно измеряет покрытие exact last-price candle (`symbols_total`, `symbols_covered`, sample отсутствующих symbols). Частично успешный read-only fetch остаётся `SUCCESS` с диагностикой, но является retryable: после cooldown тот же idempotent job повторно обращается к Bybit, максимум пять раз. Inference retry по-прежнему читает только PostgreSQL; сеть остаётся в market-data worker flow. Полное покрытие, нулевой universe или исчерпанный лимит прекращают retry.
+
 
 ## Model artifact and promotion contract
 
