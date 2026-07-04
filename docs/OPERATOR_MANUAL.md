@@ -13,6 +13,14 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.9.2
+
+1. Остановите API, worker и trainer; замените release tree.
+2. Выполните `python manage.py release-check` и `python manage.py doctor`.
+3. Migration и новые `.env`-переменные отсутствуют; ожидаемый Alembic head остаётся `0009_candle_receipt_availability`.
+4. Диагностика `missing_decision_candle` означает, что confirmed candle с `close_time == event_time` ещё не доступна. Не увеличивайте freshness limits и не запускайте ручной вход по предыдущему часовому окну; восстановите ingestion и разрешите штатный retry.
+5. Ранее опубликованные сигналы не пересчитываются автоматически. Для анализа подозрительного сигнала сопоставьте `signal.event_time`, `data_cutoff` и последний candle `close_time` в исходном журнале/БД.
+
 ## После обновления на 1.9.1
 
 1. Сделайте backup PostgreSQL и остановите API, worker и trainer.

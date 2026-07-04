@@ -1,20 +1,21 @@
-# QA Report — 1.9.1
+# QA Report — 1.9.2
 
-Дата: 2026-07-03
+Дата: 2026-07-04
 
 ## Входной архив
 
 - Архив: `cost_aware_momentum-main.zip`.
-- SHA-256: `0817de47461ad67551cab98a85216148bc3f5c71a34f3ad725e1125fec38f566`.
-- Исходная версия: `1.9.0`; Python requirement: `>=3.12`.
-- Исходный состав: 70 production/maintenance Python files (включая `manage.py`), 51 `test_*.py` modules, 18 Markdown files в `docs/`.
-- Исходный Alembic head: `0008_outcome_path_unavailable`.
-- В архиве не обнаружены `.env`, secrets, virtualenv, caches, dumps или реальные model artifacts.
-- Утверждения о количестве ошибок не сопровождались модулями, stack traces или reproductions; severity присвоена только воспроизведённому дефекту.
+- SHA-256: `276e17e3f527cfe1a228f9030ab25ba00cc63056ff71c64d49adfa819d5894ce`.
+- Исходная версия: `1.9.1`; Python requirement: `>=3.12`.
+- Исходный состав: 70 production/maintenance Python files (включая `manage.py`), 52 `test_*.py` modules, 20 Markdown files в `docs/`, 9 Alembic revisions.
+- Исходный Alembic head: `0009_candle_receipt_availability`.
+- ZIP содержал 169 файлов; `.env`, credentials, virtualenv, caches, dumps и реальные model artifacts не обнаружены.
+- Архив не содержал `SHA256SUMS`, `CHANGELOG.md` и `PATCH_*.md`, хотя iteration report 1.9.1 ссылался на эти release-файлы.
+- Заявленные внешними экспертами количества ошибок не сопровождались файлами, stack traces или reproductions; severity присвоена только воспроизведённым дефектам/пробелам.
 
 ## Baseline до правок
 
-Системное окружение не являлось project environment: отсутствовали `ruff` и `psycopg`, а глобальный `pip check` содержал посторонний конфликт `moviepy/Pillow`. Этот запуск зафиксирован как environment failure, не как дефект проекта.
+Первый запуск в общем системном Python не являлся валидным project environment: `ruff` отсутствовал, `psycopg` отсутствовал и pytest завершился 23 collection errors, а глобальный `pip check` содержал посторонний конфликт MoviePy/Pillow. Эти результаты классифицированы как environment failure, не как дефекты проекта.
 
 Повторный baseline выполнен в изолированном virtualenv после `pip install -e '.[dev]'`:
 
@@ -24,76 +25,75 @@
 | `python -m pip check` | PASSED | no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
 | `python -m ruff check .` | PASSED | all checks passed |
-| `python -m pytest -q` | PASSED | **432 passed, 4 skipped, 55 warnings** |
+| `python -m pytest -q` | PASSED | **434 passed, 4 skipped, 55 warnings** |
 | `node --check web/js/app.js` | PASSED | exit 0 |
-| `python -m alembic heads` | PASSED | `0008_outcome_path_unavailable` |
+| `python -m alembic heads` | PASSED | one head: `0009_candle_receipt_availability` |
+| `python manage.py release-check` | FAILED | 169 files checked, 0 manifest entries; `SHA256SUMS` missing |
 | `python manage.py doctor` | NOT RUN | operator `.env` и project PostgreSQL отсутствуют |
-| `python manage.py test --require-integration` | NOT RUN | `TEST_DATABASE_URL` и PostgreSQL client/server отсутствуют; user/production DB не использовалась |
+| `python manage.py test --require-integration` | NOT RUN | isolated `TEST_DATABASE_URL`/PostgreSQL недоступны; user/production DB не использовалась |
 
 Warnings — third-party NumPy/joblib deprecations в serialization tests.
 
 ## Подтверждённый дефект
 
-### HIGH — late candle backfill appeared historically available
+### HIGH — previous-hour candle могла публиковать current-hour signal
 
-Production path: `app/services/market_data.py::_candle_values`, вызываемый `sync_candles`, `sync_candle_history` и `sync_candle_windows`.
+Production path: `app/services/signals.py::publish_hourly_signals`.
 
-Фактическое поведение до исправления:
+До исправления worker выбирал последнюю candle с `close_time <= event_time`, затем разрешал её при:
 
 ```text
-close_time = open_time + interval
-available_at = close_time
-confirmed = close_time <= response_received_at
+(event_time - latest_candle_close) <= MAX_CANDLE_AGE_SECONDS
 ```
 
-Если часовая свеча закрылась в 09:00, но была впервые загружена в 12:00, запись утверждала `available_at=09:00`. Запросы point-in-time replay уже корректно применяли `Candle.available_at <= availability_cutoff`, но неверное значение позволяло использовать поздний backfill задним числом. Это temporal leakage и прямое нарушение разделения event time / availability time из спецификации.
+Default равен 4200 секунд. Сразу после часовой границы последняя доступная свеча предыдущего часа имеет age 3600 секунд и проходила gate. После этого signal получал natural key нового `event_time`. Когда точная decision candle становилась доступна, idempotency check находил уже существующий natural key и не заменял раннюю рекомендацию.
 
 Влияние:
 
-- исторический replay мог видеть свечу до фактического получения;
-- research/econometric evidence мог быть завышен;
-- результаты до/после backfill могли быть невоспроизводимы;
-- существующий тест закреплял неправильный oracle `available_at==close_time`.
+- features и market economics относились к предыдущему часовому окну, а signal metadata — к текущему;
+- корректный retry после ingestion блокировался как already published;
+- оператор мог видеть temporally misaligned LONG/SHORT recommendation;
+- outcome/model-quality attribution могла быть искажена.
+
+Это высокий дефект временной и торговой целостности, но source-only reproduction не доказывает, что он вызвал конкретные убытки пользователя.
+
+Почему прежние тесты не поймали: покрывались stale cutoff, point-in-time query и retry/idempotency по natural key, но отсутствовал контракт `latest close_time == event_time` до scenario economics.
+
+## Подтверждённый release gap
+
+### MEDIUM — release tree не проходил собственную проверку provenance
+
+Чистая распаковка входного ZIP завершала `python manage.py release-check` с ошибкой: `SHA256SUMS` отсутствовал, 169 release-файлов не были перечислены. Также отсутствовали changelog и patch note, заявленные внутренней документацией. Исправленный release содержит пересчитанный manifest и текущие release notes; непроверенная прежняя история не реконструировалась.
 
 ## Исправление
 
-- `_candle_values` сохраняет `available_at=now`, где `now` фиксируется после завершения Bybit response.
-- `confirmed` продолжает зависеть от `close_time <= receipt_time`.
-- Confirmed candle остаётся immutable; open candle может обновляться до первого confirmed snapshot.
-- Migration `0009_candle_receipt_availability` выполняет:
-
-```sql
-UPDATE market.candles
-SET available_at = GREATEST(available_at, CURRENT_TIMESTAMP)
-WHERE confirmed IS TRUE;
-```
-
-- Точные legacy receipt timestamps не реконструируются. Сдвиг к моменту migration намеренно консервативен и fail-closed.
-- Downgrade не возвращает ошибочные timestamps; data correction остаётся совместимой с 1.9.0.
+- Hourly publication требует точного `latest_candle_close == event_time`.
+- Previous-hour candle возвращает fail-closed `missing_decision_candle` до spread/funding/model-scenario/natural-key processing.
+- Невозможная future candle и явно старая candle имеют отдельные diagnostics `future_decision_candle` и `stale_candle_cutoff`.
+- ML gates, risk limits, fee/slippage/funding math, barrier geometry и auto-activation thresholds не изменены.
+- Добавлен независимый regression test и восстановлены release provenance files.
 
 ## Red → green
 
-До production change:
+RED на неизменённом 1.9.1:
 
 ```text
-python -m pytest -q tests/unit/test_candle_availability_integrity_2026_07_03.py
-2 failed
+PYTHONPATH=. python -m pytest -q /tmp/test_hourly_decision_candle_integrity_2026_07_04.py
+1 failed
+AssertionError: a prior-hour feature window reached current-hour signal economics
 ```
 
-Причины:
-
-1. late-fetched candle имел `available_at=close_time`, а не `response_received`;
-2. migration `0009_candle_receipt_availability.py` отсутствовала.
-
-После исправления:
+GREEN после production fix:
 
 ```text
 python -m pytest -q \
-  tests/unit/test_candle_availability_integrity_2026_07_03.py \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py \
-  tests/unit/test_migration_revision_contract.py
-12 passed
+  tests/unit/test_hourly_decision_candle_integrity_2026_07_04.py \
+  tests/unit/test_quant_integrity_2026_07_02.py \
+  tests/unit/test_inference_retry.py
+13 passed
 ```
+
+Новый test oracle задаёт independently controlled `event_time` и previous-hour `close_time`; ожидаемый результат не вычисляется тестируемой функцией.
 
 ## Post-check
 
@@ -101,27 +101,31 @@ python -m pytest -q \
 |---|---|---|
 | `python -m pip check` | PASSED | no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
-| `python -m ruff check .` | PASSED | all checks passed after import fix |
-| `python -m pytest -q` | PASSED | **434 passed, 4 skipped, 55 warnings** |
+| `python -m ruff check .` | PASSED | all checks passed |
+| `python -m pytest -q` | PASSED | **435 passed, 4 skipped, 55 warnings** |
 | `node --check web/js/app.js` | PASSED | exit 0 |
 | `python -m alembic heads` | PASSED | one head: `0009_candle_receipt_availability` |
-| `python -m alembic upgrade head --sql` | PASSED | complete offline SQL generated, including migration 0009 |
+| `python -m alembic upgrade head --sql` | PASSED | complete offline PostgreSQL SQL generated, 853 lines |
+| Static Bybit order-mutation scan | PASSED | create/amend/cancel routes/methods not found |
+| Secret filename scan | PASSED | `.env`, private keys/certificates not found |
 | PostgreSQL integration | NOT RUN | isolated database unavailable |
 | `python manage.py doctor` | NOT RUN | no local operator configuration/database |
 
+Final release tree passed `python manage.py release-check`: 173 eligible files, 173 manifest entries. Repacked-archive verification is recorded in final delivery metadata.
+
 ## Compatibility and operator actions
 
-- Version: `1.9.1` patch release.
+- Version: `1.9.2` patch release.
 - New `.env` variables: none.
-- Database migration: required, head `0009_candle_receipt_availability`.
-- Artifact/policy schemas: unchanged; retraining is not required solely by this patch.
-- Before update: backup PostgreSQL and stop API/worker/trainer.
-- After replacement: run `python manage.py release-check`, `python manage.py migrate`, then `python manage.py doctor` and restart.
+- Database migration: none; head remains `0009_candle_receipt_availability`.
+- Public API, DB schema, artifact and policy schemas: unchanged.
+- Retraining: not required solely by this patch.
+- Replace the release tree, run `python manage.py release-check`, then `python manage.py doctor` in the configured installation and restart worker/API/trainer.
 
 ## Residual risks
 
-- Real PostgreSQL upgrade/downgrade and data-update row counts were not verified in this environment.
-- Exact receipt time of legacy candles is unknowable; migration uses a conservative upper bound.
-- Historical order book, actual fills, operator latency, exact funding timeline, full rolling walk-forward, drift governance and PBO/DSR remain incomplete.
-- Source-only audit cannot explain particular losing trades without the running PostgreSQL state, candidate metrics, signal/plan snapshots and manual fills.
+- Real PostgreSQL integration, configured `doctor` and running-data behavior were not verified in this environment.
+- The archive contains no live database, candidate metrics, rejected-gate evidence, signal/plan snapshots or fill journal; therefore it cannot explain every rare recommendation or loss.
+- One day of hourly history is intentionally insufficient for current temporal validation. Defaults require at least 1206 unique hourly timestamps before candidate training can be mathematically feasible, and later quality gates may still reject it.
+- Full historical order book/fill/operator-delay replay, exact funding timeline, walk-forward/drift governance and PBO/DSR remain incomplete.
 - Passing tests and corrected temporal semantics do not establish profitability.

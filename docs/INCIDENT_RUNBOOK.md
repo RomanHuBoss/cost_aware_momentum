@@ -7,6 +7,13 @@
 3. Проверить `received_at`/`available_at`, candle continuity и instrument spec freshness.
 4. После восстановления повторно запустить ingestion; не редактировать confirmed candles вручную.
 
+## `missing_decision_candle` или сигнал на предыдущем часовом окне
+
+1. Не обходить gate увеличением `MAX_CANDLE_AGE_SECONDS`: current-hour signal требует `close_time == event_time`.
+2. Проверить ingestion job, последнюю confirmed candle, её `available_at`, `close_time` и worker clock.
+3. После появления точной decision candle разрешить обычный idempotent retry; не вставлять свечу и не менять signal natural key вручную.
+4. Если версия до 1.9.2 уже опубликовала signal текущего часа по предыдущей свече, сохранить signal/plan snapshots и не считать его пригодным доказательством model quality без отдельного разбора.
+
 ## Подозрение на revision confirmed candle
 
 1. Остановить публикацию затронутого symbol/time range.

@@ -18,6 +18,7 @@
 | Candidate must beat class-prior log-loss baseline | IMPLEMENTED / UNIT CHECKED in 1.8.35 | `log_loss_skill_vs_prior > 0`; missing/non-finite/inconsistent evidence fails closed |
 | Rejected deterministic bootstrap waits for new evidence | IMPLEMENTED / UNIT CHECKED in 1.8.34 | same-profile quality-gate rejection returns `quality_gate_failed_waiting_for_new_data`; retry resumes after new timestamps/material change |
 | Point-in-time event/availability separation | IMPLEMENTED / UNIT + OFFLINE SQL CHECKED in 1.9.1 | candle `available_at` uses post-response receipt time; migration 0009 moves legacy confirmed rows forward fail-closed; ticker/spec/account receipt timestamps and separate market/availability cutoffs remain enforced; real PostgreSQL migration not run in this environment |
+| Hourly signal is anchored to the exact decision candle | IMPLEMENTED / UNIT CHECKED in 1.9.2 | `publish_hourly_signals` requires latest confirmed `close_time == event_time`; previous-hour data returns `missing_decision_candle` before scenario economics/natural-key publication |
 | Fill/plan entry uses executable ask/bid | IMPLEMENTED / UNIT CHECKED in 1.8.26 | `create_execution_plan`; current quote, missing quote and zone regression tests |
 | Entry-zone содержит только исполнимые тики внутри policy band | IMPLEMENTED / UNIT CHECKED in 1.8.28 | inward tick rounding; coarse-tick regression test |
 | Entry outside zone requires new calculation / no entry | IMPLEMENTED / UNIT CHECKED | plan returns `NO_TRADE`; acceptance remains fail-closed |

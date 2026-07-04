@@ -440,11 +440,28 @@ async def publish_hourly_signals(
         if latest_candle_close.tzinfo is None:
             latest_candle_close = latest_candle_close.replace(tzinfo=UTC)
         data_age = (event_time - latest_candle_close).total_seconds()
-        if data_age < 0 or data_age > settings.max_candle_age_seconds:
-            count("stale_candle_cutoff")
+        # A recommendation keyed to ``event_time`` must be built from the candle
+        # that closes exactly at that decision boundary.  Allowing the preceding
+        # candle (the old MAX_CANDLE_AGE_SECONDS behaviour) can publish a signal
+        # one hour early; its natural key then prevents the correct retry from
+        # replacing it after the decision candle becomes available.
+        if latest_candle_close != event_time:
+            if data_age < 0:
+                reason = "future_decision_candle"
+            elif data_age > settings.max_candle_age_seconds:
+                reason = "stale_candle_cutoff"
+            else:
+                reason = "missing_decision_candle"
+            count(reason)
             logger.warning(
-                "Skipping symbol with stale candle cutoff",
-                extra={"symbol": symbol, "data_age_seconds": data_age, "event_time": event_time.isoformat()},
+                "Skipping symbol without the exact decision candle",
+                extra={
+                    "symbol": symbol,
+                    "reason": reason,
+                    "latest_candle_close": latest_candle_close.isoformat(),
+                    "event_time": event_time.isoformat(),
+                    "data_age_seconds": data_age,
+                },
             )
             continue
 

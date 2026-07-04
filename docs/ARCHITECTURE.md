@@ -24,6 +24,8 @@
 
 Открытая свеча обновляется до первого confirmed snapshot. Confirmed snapshot не изменяется обычным upsert.
 
+Hourly publication дополнительно связывает natural key и feature cutoff одним временным якорем: `frame.latest.close_time` обязан быть равен `signal.event_time`. Если API/ingestion ещё не принёс decision candle, worker возвращает fail-closed diagnostic `missing_decision_candle` и не запускает scenario economics. Это предотвращает раннюю публикацию на предыдущем часе и последующую блокировку корректного retry уже занятым natural key.
+
 
 ## Model artifact and promotion contract
 

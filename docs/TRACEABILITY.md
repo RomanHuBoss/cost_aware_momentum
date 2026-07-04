@@ -7,6 +7,7 @@
 | Candle `available_at` equals actual receipt time | `app/services/market_data.py::_candle_values`, migration `0009_candle_receipt_availability` | `test_late_fetched_confirmed_candle_is_available_only_after_receipt`, `test_legacy_candle_migration_moves_availability_forward_fail_closed`; PostgreSQL upgrade not run |
 | Confirmed candle immutable without revision policy | `app/services/market_data.py::_upsert_candle_values` | `test_confirmed_candle_upsert_is_immutable_without_revision_policy` |
 | Separate market and availability cutoffs | `app/services/signals.py::_candles_frame` | `test_feature_query_separates_market_and_availability_cutoffs` |
+| Exact hourly decision-candle anchor | `app/services/signals.py::publish_hourly_signals` | `tests/unit/test_hourly_decision_candle_integrity_2026_07_04.py::test_previous_hour_candle_cannot_publish_current_hour_signal` |
 | Instrument spec available at decision time | `app/services/signals.py::_latest_spec`, `publish_hourly_signals` | `test_spec_query_uses_decision_availability_cutoff` |
 | Current executable entry for account plan | `app/services/execution.py::create_execution_plan`, `executable_entry_price` | `test_execution_plan_reprices_from_current_executable_quote` |
 | Missing bid/ask fails closed | `app/services/execution.py::create_execution_plan` | `test_execution_plan_fails_closed_when_executable_quote_is_missing` |

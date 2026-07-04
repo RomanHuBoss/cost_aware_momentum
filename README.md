@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.9.1: подтверждённые свечи получают `available_at` по фактическому post-response времени приёма, а не задним числом по `close_time`. Migration 0009 консервативно переякоривает legacy candles, чтобы исторический replay не использовал поздний backfill до его реальной доступности.
+> Версия 1.9.2: hourly signal публикуется только при наличии confirmed decision candle с `close_time == signal.event_time`. Предыдущая часовая свеча больше не подменяет отсутствующую текущую и не резервирует natural key до корректного retry.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -23,6 +23,7 @@
 - Некалиброванный baseline может формировать диагностический market signal, но по умолчанию не создаёт исполнимый план и не может быть принят оператором.
 - Для ML artifacts TIMEOUT gross return оценивается отдельно для LONG/SHORT как медиана train-only TIMEOUT returns в единицах stop-risk и масштабируется к текущей barrier geometry. `TIMEOUT_GROSS_RETURN_RATE` остаётся явным fallback только для baseline/legacy diagnostic paths; опубликованный signal сохраняет фактически использованное значение, и plan/acceptance не пересчитывают его из текущего `.env`.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.
+- Публикация hourly signal требует точной confirmed decision candle: последний `close_time` обязан совпадать с `event_time`; предыдущая свеча вызывает fail-closed `missing_decision_candle`, а не ранний сигнал текущего часа.
 - Для свечей `close_time` отражает рыночное закрытие, а `available_at` — фактическое время получения ответа. Поздний backfill не может появиться в point-in-time replay задним числом.
 - Принятие плана использует ask для LONG и bid для SHORT, свежий account snapshot и сериализованный account/profile-scoped portfolio-risk check. Перед `ACCEPTED` заново проверяются per-trade risk, доступная маржа, полная funding timeline, account reconciliation, текущий turnover-based liquidity cap, `tickSize`/`qtyStep`/min-order/max-leverage ограничения и net policy economics; изменившиеся входы создают новую версию плана.
 - Для manual/paper-профилей выделенный капитал одновременно задаёт теоретическую доступную маржу; margin reserve применяется до расчёта размера позиции. Уже принятые планы и открытые manual/paper-сделки уменьшают доступную маржинальную ёмкость; для read-only аккаунта открытые позиции повторно не вычитаются из биржевого available margin.
@@ -109,7 +110,7 @@ HORIZONS_HOURS=[4,8,12]
 
 ### Inference worker
 
-Worker синхронизирует read-only market/account data, instrument specifications, confirmed candles, ticker/funding snapshots и строит рекомендации. Неполные или устаревшие данные блокируют публикацию.
+Worker синхронизирует read-only market/account data, instrument specifications, confirmed candles, ticker/funding snapshots и строит рекомендации. Неполные или устаревшие данные блокируют публикацию. Для hourly decision последняя confirmed свеча должна закрываться точно в `event_time`; окно с предыдущим часовым close не считается допустимо свежим даже при небольшом возрасте данных.
 
 Для point-in-time целостности время получения внешнего ответа фиксируется после завершения соответствующего API-вызова. Открытая свеча может обновляться до первого подтверждённого снимка; уже подтверждённая свеча считается неизменяемым рыночным фактом и не перезаписывается без отдельной аудируемой revision policy. Inference отдельно ограничивает рыночное время данных (`market cutoff`) и момент фактического решения (`availability cutoff`).
 

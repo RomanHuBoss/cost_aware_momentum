@@ -11,6 +11,12 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.9.2
+
+Новых `.env`-переменных и migration нет. `MAX_CANDLE_AGE_SECONDS` больше не разрешает использовать предыдущую часовую свечу для публикации сигнала текущего часа. Публикация требует точного `latest close_time == event_time`; параметр сохраняется для совместимости и классификации диагностики (`missing_decision_candle` против более старого `stale_candle_cutoff`).
+
+Не увеличивайте `MAX_CANDLE_AGE_SECONDS` ради появления рекомендаций: это не заменяет отсутствующую decision candle. Проверьте ingestion/job diagnostics и дождитесь подтверждённой свечи текущей границы часа.
+
 ## Изменения 1.9.1
 
 Новых `.env`-переменных нет. Требуется migration `0009_candle_receipt_availability`. После остановки процессов и backup выполните `python manage.py migrate`; текущий Alembic head — `0009_candle_receipt_availability`.
