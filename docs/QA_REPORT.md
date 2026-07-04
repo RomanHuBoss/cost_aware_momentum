@@ -1,131 +1,120 @@
-# QA Report — 1.9.2
+# QA Report — 1.9.3
 
 Дата: 2026-07-04
 
 ## Входной архив
 
 - Архив: `cost_aware_momentum-main.zip`.
-- SHA-256: `276e17e3f527cfe1a228f9030ab25ba00cc63056ff71c64d49adfa819d5894ce`.
-- Исходная версия: `1.9.1`; Python requirement: `>=3.12`.
-- Исходный состав: 70 production/maintenance Python files (включая `manage.py`), 52 `test_*.py` modules, 20 Markdown files в `docs/`, 9 Alembic revisions.
+- SHA-256: `bb815e0adc6f78853a3aad15441eb88ae3900cc073c275a620013de601045ce8`.
+- Исходная версия: `1.9.2`; Python requirement: `>=3.12`.
+- Исходный состав: 69 Python files в `app/` + `scripts/`, 53 `test_*.py` modules, 21 Markdown files в `docs/`, 9 Alembic revisions, 174 файла всего.
 - Исходный Alembic head: `0009_candle_receipt_availability`.
-- ZIP содержал 169 файлов; `.env`, credentials, virtualenv, caches, dumps и реальные model artifacts не обнаружены.
-- Архив не содержал `SHA256SUMS`, `CHANGELOG.md` и `PATCH_*.md`, хотя iteration report 1.9.1 ссылался на эти release-файлы.
-- Заявленные внешними экспертами количества ошибок не сопровождались файлами, stack traces или reproductions; severity присвоена только воспроизведённым дефектам/пробелам.
+- Исходный `SHA256SUMS` валиден: 173 release-файла проверены и перечислены.
+- `.env`, credentials, virtualenv, caches, dumps и реальные model artifacts во входном ZIP не обнаружены.
+- Заявленные внешними экспертами количества ошибок не сопровождались файлами, stack traces, данными или reproductions. Severity присвоена только воспроизведённому дефекту.
 
 ## Baseline до правок
 
-Первый запуск в общем системном Python не являлся валидным project environment: `ruff` отсутствовал, `psycopg` отсутствовал и pytest завершился 23 collection errors, а глобальный `pip check` содержал посторонний конфликт MoviePy/Pillow. Эти результаты классифицированы как environment failure, не как дефекты проекта.
-
-Повторный baseline выполнен в изолированном virtualenv после `pip install -e '.[dev]'`:
+Первый запуск в системном Python не являлся валидным project environment: отсутствовали `ruff` и `psycopg`, а глобальный `pip check` содержал посторонний конфликт MoviePy/Pillow. После штатного `python manage.py setup` baseline повторён в изолированной `.venv`.
 
 | Проверка | Статус | Результат |
 |---|---|---|
-| `python --version` | PASSED | Python 3.13.5; requirement `>=3.12` выполнен |
-| `python -m pip check` | PASSED | no broken requirements |
-| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
-| `python -m ruff check .` | PASSED | all checks passed |
-| `python -m pytest -q` | PASSED | **434 passed, 4 skipped, 55 warnings** |
+| `.venv/bin/python --version` | PASSED | Python 3.13.5; requirement выполнен |
+| `.venv/bin/python -m pip check` | PASSED | no broken requirements |
+| `.venv/bin/python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
+| `.venv/bin/python -m ruff check .` | PASSED | all checks passed |
+| `.venv/bin/python -m pytest -q` | PASSED | **435 passed, 4 skipped, 55 warnings** |
 | `node --check web/js/app.js` | PASSED | exit 0 |
-| `python -m alembic heads` | PASSED | one head: `0009_candle_receipt_availability` |
-| `python manage.py release-check` | FAILED | 169 files checked, 0 manifest entries; `SHA256SUMS` missing |
-| `python manage.py doctor` | NOT RUN | operator `.env` и project PostgreSQL отсутствуют |
-| `python manage.py test --require-integration` | NOT RUN | isolated `TEST_DATABASE_URL`/PostgreSQL недоступны; user/production DB не использовалась |
+| `.venv/bin/python -m alembic heads` | PASSED | one head: `0009_candle_receipt_availability` |
+| `python -B -m scripts.release_integrity --root .` | PASSED | 173 files checked / 173 manifest entries |
+| `.venv/bin/python manage.py doctor` | FAILED / ENVIRONMENT | default development secrets; `psql`, `pg_dump`, `pg_restore` and PostgreSQL server unavailable |
+| `.venv/bin/python manage.py test --require-integration` | NOT RUN | no isolated `POSTGRES_ADMIN_URL` or `TEST_DATABASE_URL`; production/user DB was not used |
 
-Warnings — third-party NumPy/joblib deprecations в serialization tests.
+Warnings are third-party NumPy/joblib deprecations in serialization tests.
 
 ## Подтверждённый дефект
 
-### HIGH — previous-hour candle могла публиковать current-hour signal
+### CRITICAL — capital profile обходил глобальный лимит совокупного риска
 
-Production path: `app/services/signals.py::publish_hourly_signals`.
+Конфигурация задавала:
 
-До исправления worker выбирал последнюю candle с `close_time <= event_time`, затем разрешал её при:
+- `MAX_TOTAL_OPEN_RISK_RATE=0.02`;
+- `MAX_LEVERAGE=5`.
 
-```text
-(event_time - latest_candle_close) <= MAX_CANDLE_AGE_SECONDS
-```
+Но фактический путь имел независимые, более широкие профильные значения:
 
-Default равен 4200 секунд. Сразу после часовой границы последняя доступная свеча предыдущего часа имеет age 3600 секунд и проходила gate. После этого signal получал natural key нового `event_time`. Когда точная decision candle становилась доступна, idempotency check находил уже существующий natural key и не заменял раннюю рекомендацию.
+- `app/api/schemas.py` разрешал `max_total_risk_rate <= 0.20`;
+- `app/api/v1/capital.py` сохранял payload без сверки с `Settings`;
+- `app/services/execution.py` вычислял `capital * profile.max_total_risk_rate`;
+- `app/api/v1/recommendations.py` повторно использовал тот же профильный лимит при acceptance;
+- глобальные `default_risk_rate`/`max_total_open_risk_rate` были проверены при старте, но не являлись обязательной policy для профилей.
 
-Влияние:
+Воспроизведение при default settings:
 
-- features и market economics относились к предыдущему часовому окну, а signal metadata — к текущему;
-- корректный retry после ingestion блокировался как already published;
-- оператор мог видеть temporally misaligned LONG/SHORT recommendation;
-- outcome/model-quality attribution могла быть искажена.
+1. legacy/profile `max_total_risk_rate=0.20`;
+2. plan construction возвращал `ACTIONABLE`;
+3. acceptance возвращал HTTP 200 и `ACCEPTED`.
 
-Это высокий дефект временной и торговой целостности, но source-only reproduction не доказывает, что он вызвал конкретные убытки пользователя.
+Влияние: профиль мог увеличить совокупный риск до десятикратного значения относительно заявленного process-wide ceiling. Это прямой финансово-безопасностный дефект. Source-only reproduction не доказывает, что он вызвал конкретные исторические убытки пользователя.
 
-Почему прежние тесты не поймали: покрывались stale cutoff, point-in-time query и retry/idempotency по natural key, но отсутствовал контракт `latest close_time == event_time` до scenario economics.
-
-## Подтверждённый release gap
-
-### MEDIUM — release tree не проходил собственную проверку provenance
-
-Чистая распаковка входного ZIP завершала `python manage.py release-check` с ошибкой: `SHA256SUMS` отсутствовал, 169 release-файлов не были перечислены. Также отсутствовали changelog и patch note, заявленные внутренней документацией. Исправленный release содержит пересчитанный manifest и текущие release notes; непроверенная прежняя история не реконструировалась.
+Почему прежние тесты не поймали: отдельно тестировались корректность `Settings`, per-trade sizing, portfolio cap и fresh acceptance, но не было сквозного инварианта `profile ceiling <= runtime ceiling`.
 
 ## Исправление
 
-- Hourly publication требует точного `latest_candle_close == event_time`.
-- Previous-hour candle возвращает fail-closed `missing_decision_candle` до spread/funding/model-scenario/natural-key processing.
-- Невозможная future candle и явно старая candle имеют отдельные diagnostics `future_decision_candle` и `stale_candle_cutoff`.
-- ML gates, risk limits, fee/slippage/funding math, barrier geometry и auto-activation thresholds не изменены.
-- Добавлен независимый regression test и восстановлены release provenance files.
+- Добавлен единый контракт `app/risk/policy.py`:
+  - `0 < risk_rate <= max_total_risk_rate <= MAX_TOTAL_OPEN_RISK_RATE`;
+  - `1 <= default_leverage <= max_leverage <= MAX_LEVERAGE`;
+  - конечный `margin_reserve_rate` в `[0, 1)`.
+- Create-profile получает отсутствующие значения из runtime settings, а не из скрытых frontend/API констант.
+- Create, patch и activate отклоняют небезопасный профиль HTTP 422 до mutation/recalculation.
+- Plan construction проверяет persisted legacy row. Небезопасный профиль получает `BLOCKED_INVALID_INPUT`; safe runtime defaults используются только для неисполняемого diagnostic snapshot.
+- Acceptance повторяет ту же проверку и требует новую версию плана вместо `ACCEPTED`.
+- Portfolio API показывает effective global cap и блок `INVALID_CAPITAL_PROFILE_POLICY` для legacy row.
+- Frontend перестал отправлять жёстко заданные `max_total_risk_rate=0.02` и `margin_reserve_rate=0.25`, показывает общий профильный лимит.
+- Advisory-only, PostgreSQL-only, read-only Bybit и model lifecycle не изменены.
 
 ## Red → green
 
-RED на неизменённом 1.9.1:
+До production fix:
 
 ```text
-PYTHONPATH=. python -m pytest -q /tmp/test_hourly_decision_candle_integrity_2026_07_04.py
-1 failed
-AssertionError: a prior-hour feature window reached current-hour signal economics
+2 failed
+- expected BLOCKED_INVALID_INPUT, actual ACTIONABLE
+- expected HTTP 409, actual HTTP 200
 ```
 
-GREEN после production fix:
+После production fix той же командой:
 
 ```text
-python -m pytest -q \
-  tests/unit/test_hourly_decision_candle_integrity_2026_07_04.py \
-  tests/unit/test_quant_integrity_2026_07_02.py \
-  tests/unit/test_inference_retry.py
-13 passed
+2 passed in 1.27s
 ```
 
-Новый test oracle задаёт independently controlled `event_time` и previous-hour `close_time`; ожидаемый результат не вычисляется тестируемой функцией.
+Дополнительно добавлены policy/default/patch/frontend regressions.
 
 ## Post-check
 
 | Проверка | Статус | Результат |
 |---|---|---|
-| `python -m pip check` | PASSED | no broken requirements |
-| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
-| `python -m ruff check .` | PASSED | all checks passed |
-| `python -m pytest -q` | PASSED | **435 passed, 4 skipped, 55 warnings** |
+| `.venv/bin/python -m pip check` | PASSED | no broken requirements |
+| `.venv/bin/python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
+| `.venv/bin/python -m ruff check .` | PASSED | all checks passed |
+| `.venv/bin/python -m pytest -q` | PASSED | **444 passed, 4 skipped, 55 warnings** |
 | `node --check web/js/app.js` | PASSED | exit 0 |
-| `python -m alembic heads` | PASSED | one head: `0009_candle_receipt_availability` |
-| `python -m alembic upgrade head --sql` | PASSED | complete offline PostgreSQL SQL generated, 853 lines |
-| Static Bybit order-mutation scan | PASSED | create/amend/cancel routes/methods not found |
-| Secret filename scan | PASSED | `.env`, private keys/certificates not found |
-| PostgreSQL integration | NOT RUN | isolated database unavailable |
-| `python manage.py doctor` | NOT RUN | no local operator configuration/database |
+| `.venv/bin/python -m alembic heads` | PASSED | one head: `0009_candle_receipt_availability` |
+| `.venv/bin/python manage.py doctor` | FAILED / ENVIRONMENT | unchanged environment limitations: development secrets, no PostgreSQL CLI/server |
+| `.venv/bin/python manage.py test --require-integration` | NOT RUN | isolated PostgreSQL unavailable |
+| Final release integrity / ZIP test | PASSED | 177 release files / 177 manifest entries; `unzip -t` and clean re-extraction passed |
 
-Final release tree passed `python manage.py release-check`: 173 eligible files, 173 manifest entries. Repacked-archive verification is recorded in final delivery metadata.
+## Не проверено и остаточные риски
 
-## Compatibility and operator actions
+- Не было пользовательской PostgreSQL-БД, job diagnostics, actual recommendations, candidate metrics, fills и outcomes. Причина редких сигналов и конкретных убытков не может быть доказана по source archive alone.
+- PostgreSQL migrations/concurrency не запускались на реальном сервере; schema не менялась.
+- Historical order-book/fill/funding parity в research остаётся частичной.
+- Полный walk-forward, drift/regime governance, PBO/DSR и forward profitability evidence не реализованы полностью.
+- Patch не ослабляет model-quality/policy gates и не обещает прибыльность.
 
-- Version: `1.9.2` patch release.
-- New `.env` variables: none.
-- Database migration: none; head remains `0009_candle_receipt_availability`.
-- Public API, DB schema, artifact and policy schemas: unchanged.
-- Retraining: not required solely by this patch.
-- Replace the release tree, run `python manage.py release-check`, then `python manage.py doctor` in the configured installation and restart worker/API/trainer.
+## Version
 
-## Residual risks
-
-- Real PostgreSQL integration, configured `doctor` and running-data behavior were not verified in this environment.
-- The archive contains no live database, candidate metrics, rejected-gate evidence, signal/plan snapshots or fill journal; therefore it cannot explain every rare recommendation or loss.
-- One day of hourly history is intentionally insufficient for current temporal validation. Defaults require at least 1206 unique hourly timestamps before candidate training can be mathematically feasible, and later quality gates may still reject it.
-- Full historical order book/fill/operator-delay replay, exact funding timeline, walk-forward/drift governance and PBO/DSR remain incomplete.
-- Passing tests and corrected temporal semantics do not establish profitability.
+- Result: `1.9.3` patch release.
+- Migration: none; head `0009_candle_receipt_availability`.
+- New environment variables: none.

@@ -28,6 +28,7 @@ DEFAULT_MIN_QTY = D("0.001")
 DEFAULT_MIN_NOTIONAL = D("5")
 DEFAULT_MAX_QTY = D("1000")
 DEFAULT_MAX_LEVERAGE = D("100")
+DEFAULT_PROFILE_MAX_TOTAL_RISK_RATE = D("0.02")
 DEFAULT_FUNDING_RATE = D("0")
 DEFAULT_TURNOVER_24H = D("100000000")
 DEFAULT_BID_PRICE = D("99.9")
@@ -212,6 +213,7 @@ async def _build_plan_for_safety_case(
     ask_price: Decimal | None = DEFAULT_ASK_PRICE,
     signal_status: str = "PUBLISHED",
     baseline: bool = False,
+    profile_max_total_risk_rate: Decimal = DEFAULT_PROFILE_MAX_TOTAL_RISK_RATE,
 ):
     from uuid import uuid4
 
@@ -237,12 +239,8 @@ async def _build_plan_for_safety_case(
         take_profit_1=D("120"),
         direction="LONG",
         model_version="baseline-momentum-v1" if baseline else "model-v1",
-        calibration_version=(
-            "uncalibrated-baseline-v1" if baseline else "calibrated-v1"
-        ),
-        feature_snapshot={
-            "model_runtime": {"baseline": baseline, "source": "test"}
-        },
+        calibration_version=("uncalibrated-baseline-v1" if baseline else "calibrated-v1"),
+        feature_snapshot={"model_runtime": {"baseline": baseline, "source": "test"}},
     )
     profile = SimpleNamespace(
         id=uuid4(),
@@ -252,7 +250,7 @@ async def _build_plan_for_safety_case(
         capital_verified=profile_mode != "bybit_read_only",
         max_leverage=3,
         default_leverage=3,
-        max_total_risk_rate=D("0.02"),
+        max_total_risk_rate=profile_max_total_risk_rate,
         risk_rate=D("0.01"),
         margin_reserve_rate=D("0.25"),
         version=1,
@@ -407,6 +405,21 @@ async def test_execution_plan_blocks_unverified_bybit_capital_as_stale_data(
     assert any("Снимок капитала" in warning for warning in plan.warnings)
 
 
+async def test_execution_plan_blocks_profile_above_global_total_risk_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        profile_max_total_risk_rate=D("0.20"),
+    )
+
+    assert plan.status == "BLOCKED_INVALID_INPUT"
+    assert any("MAX_TOTAL_OPEN_RISK_RATE" in warning for warning in plan.warnings)
+
+
 async def test_execution_plan_snapshot_persists_three_outcome_economics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -450,6 +463,7 @@ async def _run_acceptance_case(
     funding_snapshot_complete: bool = True,
     turnover_24h: Decimal | None = DEFAULT_TURNOVER_24H,
     reconciliation_failures: list[str] | None = None,
+    profile_max_total_risk_rate: Decimal = DEFAULT_PROFILE_MAX_TOTAL_RISK_RATE,
 ):
     from uuid import uuid4
 
@@ -502,8 +516,9 @@ async def _run_acceptance_case(
         source_account_id="account-1",
         version=1,
         risk_rate=D("0.01"),
-        max_total_risk_rate=D("0.20"),
+        max_total_risk_rate=profile_max_total_risk_rate,
         margin_reserve_rate=D("0.25"),
+        default_leverage=3,
         max_leverage=5,
         capital_verified=True,
     )
@@ -585,6 +600,20 @@ async def _run_acceptance_case(
         "acceptance-safety-test",
     )
     return response, plan
+
+
+async def test_acceptance_rejects_profile_above_global_total_risk_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        profile_max_total_risk_rate=D("0.20"),
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"MAX_TOTAL_OPEN_RISK_RATE" in response.body
+    assert plan.status == "SUPERSEDED"
 
 
 async def test_acceptance_recalculates_when_fresh_capital_breaks_per_trade_risk(

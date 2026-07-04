@@ -5,7 +5,7 @@ from decimal import Decimal
 from fastapi import APIRouter
 from sqlalchemy import desc, select
 
-from app.api.deps import SessionDep
+from app.api.deps import SessionDep, SettingsDep
 from app.db.models import (
     AccountEquitySnapshot,
     CapitalProfile,
@@ -14,13 +14,14 @@ from app.db.models import (
     MarketSignal,
     PositionSnapshot,
 )
+from app.risk.policy import validate_capital_profile_policy
 from app.services.execution import execution_plan_scope_clause, reconciliation_issues
 
 router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
 
 
 @router.get("/risk")
-async def portfolio_risk(session: SessionDep) -> dict:
+async def portfolio_risk(session: SessionDep, settings: SettingsDep) -> dict:
     active_profile = (
         await session.execute(select(CapitalProfile).where(CapitalProfile.active.is_(True)).limit(1))
     ).scalar_one_or_none()
@@ -48,7 +49,17 @@ async def portfolio_risk(session: SessionDep) -> dict:
         Decimal("0"),
     )
     capital = active_profile.allocated_capital if active_profile else Decimal("0")
-    risk_limit = capital * active_profile.max_total_risk_rate if active_profile else Decimal("0")
+    risk_policy_issues: list[str] = []
+    effective_total_risk_rate = Decimal("0")
+    if active_profile is not None:
+        try:
+            effective_total_risk_rate = validate_capital_profile_policy(
+                active_profile, settings=settings
+            ).max_total_risk_rate
+        except (TypeError, ValueError) as exc:
+            risk_policy_issues.append(str(exc))
+            effective_total_risk_rate = Decimal(str(settings.max_total_open_risk_rate))
+    risk_limit = capital * effective_total_risk_rate
     account_snapshot = None
     exchange_positions = []
     reconciliation: list[str] = []
@@ -112,7 +123,10 @@ async def portfolio_risk(session: SessionDep) -> dict:
         "blocks": (
             (["TOTAL_RISK_LIMIT"] if total_open_risk >= risk_limit and risk_limit > 0 else [])
             + (["RECONCILIATION_MISMATCH"] if reconciliation else [])
+            + (["INVALID_CAPITAL_PROFILE_POLICY"] if risk_policy_issues else [])
         ),
+        "risk_policy_issues": risk_policy_issues,
+        "effective_max_total_risk_rate": float(effective_total_risk_rate),
         "reconciliation_issues": reconciliation,
         "exchange_snapshot_time": account_snapshot.source_time.isoformat() if account_snapshot else None,
         "exchange_positions": [

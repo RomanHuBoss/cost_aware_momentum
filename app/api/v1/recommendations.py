@@ -120,12 +120,7 @@ def recommendation_signal_query(
             .limit(limit)
         )
 
-    return (
-        select(MarketSignal)
-        .where(*filters)
-        .order_by(desc(MarketSignal.publish_time))
-        .limit(limit)
-    )
+    return select(MarketSignal).where(*filters).order_by(desc(MarketSignal.publish_time)).limit(limit)
 
 
 @router.get("")
@@ -400,9 +395,7 @@ async def accept_recommendation(
     if conflict_reason is None and profile.mode == "bybit_read_only":
         reconciliation_failures = await reconciliation_issues(session, profile=profile)
         if reconciliation_failures:
-            conflict_reason = "Account reconciliation failed: " + "; ".join(
-                reconciliation_failures
-            )
+            conflict_reason = "Account reconciliation failed: " + "; ".join(reconciliation_failures)
 
     acceptance_validation = None
     current_spec = None
@@ -440,7 +433,7 @@ async def accept_recommendation(
         conflict_reason is None
         and acceptance_validation is not None
         and current_open_risk + acceptance_validation.current_stress_loss
-        > current_capital * profile.max_total_risk_rate
+        > current_capital * acceptance_validation.max_total_risk_rate
     ):
         conflict_reason = "Portfolio risk limit changed"
 
@@ -551,9 +544,7 @@ async def accept_recommendation(
                 if acceptance_validation.available_margin_capacity is not None
                 else None
             ),
-            "current_liquidity_notional_cap": str(
-                acceptance_validation.current_liquidity_notional_cap
-            ),
+            "current_liquidity_notional_cap": str(acceptance_validation.current_liquidity_notional_cap),
             "instrument_spec_valid_from": (
                 current_spec.valid_from.isoformat() if current_spec is not None else None
             ),

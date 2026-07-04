@@ -10,6 +10,7 @@
 | API / worker / trainer separation | IMPLEMENTED | process entry points и README |
 | LONG/SHORT directional geometry | IMPLEMENTED / UNIT CHECKED | risk/labels/outcomes tests и independent randomized P&L audit |
 | TP/SL/TIMEOUT, NO TRADE в policy | IMPLEMENTED | runtime/training/research audit |
+| Global capital risk/leverage ceilings cannot be weakened by a profile | IMPLEMENTED / UNIT CHECKED in 1.9.3 | centralized policy validates create/patch/activate/planning/acceptance; unsafe legacy row blocks; PostgreSQL integration not run |
 | Некалиброванный baseline не становится исполнимой рекомендацией | IMPLEMENTED / UNIT CHECKED in 1.8.33 | diagnostic market signal allowed; plan forced to `NO_TRADE`; legacy acceptance blocked; production override rejected |
 | TIMEOUT economics is estimated without holdout leakage and persisted end-to-end | IMPLEMENTED / UNIT CHECKED in 1.9.0 | train-only direction-specific median TIMEOUT return in stop-risk units; scaled to current barriers; exact signal value reused by plan/acceptance; baseline keeps explicit fallback |
 | Raw trade and horizon-independent cohort promotion minima are separate | IMPLEMENTED / UNIT CHECKED in 1.8.34 | `policy_cohorts` remains descriptive; gate uses `policy_independent_cohorts` separated by full label horizon |

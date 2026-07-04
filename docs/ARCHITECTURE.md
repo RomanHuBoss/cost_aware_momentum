@@ -17,6 +17,8 @@
 
 `Bybit read-only response → validation/normalization → event time + availability/receipt time → PostgreSQL → feature/inference cutoff → signal → execution plan → UI`.
 
+Account-dependent path: `capital-profile request/persisted row → global risk-policy validation → safe sizing → fresh acceptance revalidation → portfolio diagnostics`. Runtime settings are authoritative ceilings; invalid legacy rows fail closed and are never silently clamped into an actionable plan.
+
 Для свечей `close_time` описывает рыночное время закрытия, а `available_at` всегда фиксирует локальное post-response receipt time. Поэтому поздний history/backfill не становится доступным replay задним числом. Legacy confirmed candles переякориваются migration 0009 к времени migration, поскольку точное исходное receipt time восстановить нельзя. Для остальных endpoint-данных без надёжного publish timestamp также используется локальное post-response receipt time. Inference применяет отдельно:
 
 - `market_cutoff`: какие рыночные события относятся к решению;

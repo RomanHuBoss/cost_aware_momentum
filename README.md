@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.9.2: hourly signal публикуется только при наличии confirmed decision candle с `close_time == signal.event_time`. Предыдущая часовая свеча больше не подменяет отсутствующую текущую и не резервирует natural key до корректного retry.
+> Версия 1.9.3: профиль капитала больше не может ослабить глобальные `MAX_TOTAL_OPEN_RISK_RATE` и `MAX_LEVERAGE`. Создание, изменение, активация, расчёт и принятие execution plan проверяют единую fail-closed risk policy.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -20,6 +20,7 @@
 - Decimal-арифметика для денежных и контрактных расчётов.
 - Market-signal economics остается независимой от капитала; account-dependent execution-plan economics пересчитывается отдельно и проверяется по immutable snapshot перед показом.
 - Fail-closed при stale/invalid data, несовместимом artifact, нарушенной геометрии, невалидных вероятностях или превышении риска.
+- Глобальные `MAX_TOTAL_OPEN_RISK_RATE` и `MAX_LEVERAGE` являются жёсткими верхними границами для всех capital profiles; `risk_rate` также не может превышать профильный общий лимит. Небезопасный legacy-профиль блокирует plan/acceptance, а не расширяет риск.
 - Некалиброванный baseline может формировать диагностический market signal, но по умолчанию не создаёт исполнимый план и не может быть принят оператором.
 - Для ML artifacts TIMEOUT gross return оценивается отдельно для LONG/SHORT как медиана train-only TIMEOUT returns в единицах stop-risk и масштабируется к текущей barrier geometry. `TIMEOUT_GROSS_RETURN_RATE` остаётся явным fallback только для baseline/legacy diagnostic paths; опубликованный signal сохраняет фактически использованное значение, и plan/acceptance не пересчитывают его из текущего `.env`.
 - Stateful features (EMA/ATR/rolling statistics) рассчитываются только внутри непрерывного сегмента валидных часовых свечей.

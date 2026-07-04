@@ -35,6 +35,10 @@ from app.risk.math import (
     projected_funding_rate,
     stress_downside_rate,
 )
+from app.risk.policy import (
+    configured_capital_risk_policy,
+    validate_capital_profile_policy,
+)
 from app.services.audit import append_audit_event, publish_outbox
 
 IMMUTABLE_PLAN_STATUSES = frozenset({"ACCEPTED", "ENTERED", "PARTIAL", "CLOSED"})
@@ -62,6 +66,7 @@ class AcceptancePlanValidation:
     per_trade_risk_limit: Decimal
     available_margin_capacity: Decimal | None
     current_liquidity_notional_cap: Decimal
+    max_total_risk_rate: Decimal
 
 
 def signal_timeout_return_rate(
@@ -79,9 +84,7 @@ def signal_timeout_return_rate(
     snapshot = getattr(signal, "feature_snapshot", None)
     if isinstance(snapshot, dict):
         assumptions = snapshot.get("economics_assumptions")
-        if isinstance(assumptions, dict) and assumptions.get(
-            "timeout_gross_return_rate"
-        ) is not None:
+        if isinstance(assumptions, dict) and assumptions.get("timeout_gross_return_rate") is not None:
             return finite_decimal(
                 assumptions["timeout_gross_return_rate"],
                 "signal timeout_gross_return_rate",
@@ -122,7 +125,6 @@ def liquidity_notional_cap(turnover_24h: Decimal | None) -> Decimal:
     )
 
 
-
 def signal_uses_unvalidated_baseline(signal: MarketSignal) -> bool:
     """Return True when a signal originated from the diagnostic baseline runtime."""
 
@@ -133,9 +135,8 @@ def signal_uses_unvalidated_baseline(signal: MarketSignal) -> bool:
             return True
     calibration = str(getattr(signal, "calibration_version", "") or "").lower()
     model_version = str(getattr(signal, "model_version", "") or "").lower()
-    return calibration.startswith("uncalibrated-baseline") or model_version.startswith(
-        "baseline-"
-    )
+    return calibration.startswith("uncalibrated-baseline") or model_version.startswith("baseline-")
+
 
 def validate_execution_plan_for_acceptance(
     *,
@@ -160,12 +161,13 @@ def validate_execution_plan_for_acceptance(
     if signal_uses_unvalidated_baseline(signal) and not settings.allow_baseline_actionable:
         raise ValueError("Uncalibrated baseline signals are diagnostic-only")
 
+    profile_policy = validate_capital_profile_policy(profile, settings=settings)
     entry = positive_finite_decimal(executable_price, "current executable price")
     qty = positive_finite_decimal(plan.qty, "plan qty")
     leverage = positive_integer(plan.leverage, "plan leverage")
     capital = positive_finite_decimal(risk_state.effective_capital, "effective capital")
-    risk_rate = positive_finite_decimal(profile.risk_rate, "profile risk_rate")
-    reserve_rate = nonnegative_finite_decimal(profile.margin_reserve_rate, "margin_reserve_rate")
+    risk_rate = profile_policy.risk_rate
+    reserve_rate = profile_policy.margin_reserve_rate
     if reserve_rate >= 1:
         raise ValueError("Fresh available margin policy is invalid")
 
@@ -176,7 +178,7 @@ def validate_execution_plan_for_acceptance(
     max_qty = positive_finite_decimal(spec.max_qty, "max_qty") if spec.max_qty is not None else None
     tick_size = positive_finite_decimal(spec.tick_size, "tick_size")
     current_notional = qty * entry
-    allowed_leverage = min(max_leverage, Decimal(profile.max_leverage))
+    allowed_leverage = min(max_leverage, Decimal(profile_policy.max_leverage))
     if (
         qty < min_qty
         or not _is_step_aligned(qty, qty_step)
@@ -224,9 +226,7 @@ def validate_execution_plan_for_acceptance(
 
     current_margin_estimate = current_notional / Decimal(leverage)
     margin_capacity: Decimal | None = None
-    reserved_margin = nonnegative_finite_decimal(
-        risk_state.reserved_margin_usdt, "reserved_margin_usdt"
-    )
+    reserved_margin = nonnegative_finite_decimal(risk_state.reserved_margin_usdt, "reserved_margin_usdt")
     if risk_state.available_margin is not None:
         available_margin = nonnegative_finite_decimal(risk_state.available_margin, "available_margin")
         margin_capacity = max(
@@ -267,6 +267,7 @@ def validate_execution_plan_for_acceptance(
         per_trade_risk_limit=per_trade_risk_limit,
         available_margin_capacity=margin_capacity,
         current_liquidity_notional_cap=liquidity_cap,
+        max_total_risk_rate=profile_policy.max_total_risk_rate,
     )
 
 
@@ -423,9 +424,7 @@ async def effective_capital(
 ) -> tuple[Decimal, Decimal | None, bool, dict]:
     if profile.mode in {"manual", "paper"}:
         try:
-            allocated_capital = positive_finite_decimal(
-                profile.allocated_capital, "allocated_capital"
-            )
+            allocated_capital = positive_finite_decimal(profile.allocated_capital, "allocated_capital")
         except ValueError as exc:
             return (
                 Decimal("0"),
@@ -614,20 +613,14 @@ async def reserved_margin_usdt(
         .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
         .where(ExecutionPlan.status == "ACCEPTED", scope_clause)
     )
-    accepted_margin = nonnegative_finite_decimal(
-        accepted_result.scalar_one(), "accepted_plan_margin"
-    )
+    accepted_margin = nonnegative_finite_decimal(accepted_result.scalar_one(), "accepted_plan_margin")
     if profile.mode == "bybit_read_only":
         return accepted_margin
 
     trade_result = await session.execute(
         select(
             func.coalesce(
-                func.sum(
-                    ManualTrade.remaining_qty
-                    * ManualTrade.entry_price
-                    / ManualTrade.leverage
-                ),
+                func.sum(ManualTrade.remaining_qty * ManualTrade.entry_price / ManualTrade.leverage),
                 0,
             )
         )
@@ -635,9 +628,7 @@ async def reserved_margin_usdt(
         .join(CapitalProfile, ExecutionPlan.profile_id == CapitalProfile.id)
         .where(ManualTrade.status.in_(["OPEN", "PARTIAL"]), scope_clause)
     )
-    trade_margin = nonnegative_finite_decimal(
-        trade_result.scalar_one(), "open_trade_margin"
-    )
+    trade_margin = nonnegative_finite_decimal(trade_result.scalar_one(), "open_trade_margin")
     return accepted_margin + trade_margin
 
 
@@ -790,14 +781,19 @@ async def create_execution_plan(
     spec = await latest_spec(session, signal.symbol, cutoff=now)
     warnings: list[str] = list(signal.warnings or [])
     status_override: str | None = None
+    profile_policy_error: str | None = None
+    try:
+        profile_policy = validate_capital_profile_policy(profile, settings=settings)
+    except (TypeError, ValueError) as exc:
+        profile_policy_error = str(exc)
+        profile_policy = configured_capital_risk_policy(settings)
+        warnings.append(f"Профиль капитала нарушает глобальную risk policy: {exc}")
     entry_outside_zone = False
     baseline_policy_blocked = (
         signal_uses_unvalidated_baseline(signal) and not settings.allow_baseline_actionable
     )
     if baseline_policy_blocked:
-        warnings.append(
-            "Некалиброванный baseline разрешен только для диагностики; исполнение заблокировано"
-        )
+        warnings.append("Некалиброванный baseline разрешен только для диагностики; исполнение заблокировано")
     entry_source = "explicit" if entry_price is not None else "current_executable_quote"
     if entry_price is not None:
         planning_entry = positive_finite_decimal(entry_price, "planning entry")
@@ -862,7 +858,7 @@ async def create_execution_plan(
             min_qty=spec.min_qty,
             min_notional=spec.min_notional,
             max_qty=spec.max_qty,
-            max_leverage=min(spec.max_leverage, Decimal(profile.max_leverage)),
+            max_leverage=min(spec.max_leverage, Decimal(profile_policy.max_leverage)),
         )
 
     funding_rate = Decimal("0")
@@ -903,7 +899,7 @@ async def create_execution_plan(
             warnings.append(f"Снимок ликвидности отсутствует или некорректен: {exc}")
     open_risk = await open_risk_usdt(session, profile=profile)
     reserved_margin = await reserved_margin_usdt(session, profile=profile)
-    max_total_risk = c_eff * profile.max_total_risk_rate
+    max_total_risk = c_eff * profile_policy.max_total_risk_rate
     remaining_portfolio_risk = max(Decimal("0"), max_total_risk - open_risk)
     try:
         planning_downside_rate = stress_downside_rate(
@@ -920,16 +916,16 @@ async def create_execution_plan(
 
     plan_math = calculate_position_plan(
         effective_capital=c_eff,
-        risk_rate=profile.risk_rate,
+        risk_rate=profile_policy.risk_rate,
         entry=planning_entry,
         stop=signal.stop_loss,
         take_profit=signal.take_profit_1,
         direction=signal.direction,
         costs=costs,
         constraints=constraints,
-        leverage=profile.default_leverage,
+        leverage=profile_policy.default_leverage,
         available_margin=available_margin,
-        margin_reserve_rate=profile.margin_reserve_rate,
+        margin_reserve_rate=profile_policy.margin_reserve_rate,
         reserved_margin=reserved_margin,
         liquidity_notional_cap=liquidity_cap,
         portfolio_notional_cap=portfolio_notional_cap,
@@ -982,6 +978,8 @@ async def create_execution_plan(
     elif signal.expires_at <= now:
         status = "EXPIRED"
         warnings.append("Срок действия рекомендации истек")
+    elif profile_policy_error is not None:
+        status = "BLOCKED_INVALID_INPUT"
     elif status_override is not None:
         status = status_override
     elif plan_math.status.startswith("BLOCKED_"):
@@ -1022,7 +1020,7 @@ async def create_execution_plan(
         status=status,
         effective_capital=plan_math.effective_capital,
         capital_verified=verified,
-        risk_rate=profile.risk_rate,
+        risk_rate=profile_policy.risk_rate,
         risk_budget=plan_math.risk_budget,
         actual_stress_loss=plan_math.actual_stress_loss,
         qty_raw=plan_math.qty_raw,
@@ -1065,6 +1063,9 @@ async def create_execution_plan(
                 "available_margin": str(available_margin) if available_margin is not None else None,
                 "reserved_margin_usdt": str(reserved_margin),
                 "open_risk_usdt": str(open_risk),
+                "profile_max_total_risk_rate": str(profile_policy.max_total_risk_rate),
+                "global_max_total_open_risk_rate": str(settings.max_total_open_risk_rate),
+                "profile_policy_valid": profile_policy_error is None,
             },
             "costs": {
                 "fee_rate_round_trip": str(costs.fee_rate_round_trip),

@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 import app.services.execution as execution
+from app.config import Settings
 from app.db.models import PositionSnapshot
 
 D = Decimal
@@ -64,9 +65,7 @@ def test_risk_scope_key_is_profile_local_but_account_shared() -> None:
 
 async def test_open_risk_is_filtered_to_manual_profile() -> None:
     profile = _profile(PROFILE_A, mode="manual")
-    session = SimpleNamespace(
-        execute=AsyncMock(side_effect=[_Result(D("7.5")), _Result(D("4.25"))])
-    )
+    session = SimpleNamespace(execute=AsyncMock(side_effect=[_Result(D("7.5")), _Result(D("4.25"))]))
 
     result = await execution.open_risk_usdt(session, profile=profile)
 
@@ -82,9 +81,7 @@ async def test_open_risk_is_filtered_to_shared_bybit_account() -> None:
         mode="bybit_read_only",
         source_account_id="account-1",
     )
-    session = SimpleNamespace(
-        execute=AsyncMock(side_effect=[_Result(D("5")), _Result(D("2"))])
-    )
+    session = SimpleNamespace(execute=AsyncMock(side_effect=[_Result(D("5")), _Result(D("2"))]))
 
     assert await execution.open_risk_usdt(session, profile=profile) == D("7")
     statements = [str(call.args[0]) for call in session.execute.await_args_list]
@@ -199,13 +196,15 @@ async def test_portfolio_api_filters_manual_journal_to_active_profile() -> None:
         mode="manual",
         source_account_id=None,
         allocated_capital=D("1000"),
+        risk_rate=D("0.0035"),
         max_total_risk_rate=D("0.02"),
+        default_leverage=3,
+        max_leverage=5,
+        margin_reserve_rate=D("0.25"),
     )
-    session = SimpleNamespace(
-        execute=AsyncMock(side_effect=[_Result(profile), _Result([])])
-    )
+    session = SimpleNamespace(execute=AsyncMock(side_effect=[_Result(profile), _Result([])]))
 
-    result = await portfolio_risk(session)
+    result = await portfolio_risk(session, Settings(database_url="postgresql+psycopg://u:p@localhost/db"))
 
     journal_statement = str(session.execute.await_args_list[1].args[0])
     assert "execution_plans.profile_id" in journal_statement

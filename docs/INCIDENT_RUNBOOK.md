@@ -40,6 +40,14 @@
 3. установить 1.8.31 и повторить `python manage.py migrate`;
 4. подтвердить head `0008_outcome_path_unavailable` и только затем запускать процессы.
 
+## `INVALID_CAPITAL_PROFILE_POLICY` или предупреждение global risk policy
+
+1. Не принимайте план и не увеличивайте глобальные лимиты только ради снятия блокировки.
+2. Сравните профиль с `.env`: `risk_rate <= max_total_risk_rate <= MAX_TOTAL_OPEN_RISK_RATE`, `default_leverage <= max_leverage <= MAX_LEVERAGE`.
+3. Исправьте профиль штатным PATCH-запросом/интерфейсом; не редактируйте строку PostgreSQL вручную.
+4. Повторно активируйте профиль и убедитесь, что планы пересчитаны с новой `profile_version`.
+5. Если уже есть открытые ручные позиции выше нового глобального лимита, не скрывайте превышение: портфельная панель должна оставаться blocked до снижения фактического риска.
+
 ## Model incident
 
 Оставить incumbent active, заблокировать candidate activation, проверить hash/task/classes/horizon/calibration, `feature_schema_version`, `label_path_schema_version`, `temporal_split_schema`, `timeout_return_schema_version` и ATR barrier multipliers. Не сравнивать candidate с incumbent при различной barrier geometry; переобучить совместимый artifact или выполнить documented rollback.

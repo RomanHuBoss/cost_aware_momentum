@@ -743,7 +743,7 @@ $('#profile-select').addEventListener('change', async event => {
 });
 
 function renderProfiles() {
-  $('#profiles-list').innerHTML = state.profiles.map(p => `<div class="profile-row"><div><strong>${escapeHtml(p.name)} ${p.active ? '· активен' : ''}</strong><small>${fmt(p.allocated_capital)} USDT · риск ${fmt(p.risk_rate_pct)}% · ${p.default_leverage}× · v${p.version}<br>${p.capital_verified ? 'Капитал подтвержден' : 'Капитал не подтвержден биржей'}</small></div><button class="button secondary activate-profile" data-id="${p.id}" ${p.active ? 'disabled' : ''}>Активировать</button></div>`).join('');
+  $('#profiles-list').innerHTML = state.profiles.map(p => `<div class="profile-row"><div><strong>${escapeHtml(p.name)} ${p.active ? '· активен' : ''}</strong><small>${fmt(p.allocated_capital)} USDT · риск ${fmt(p.risk_rate_pct)}% · общий лимит ${fmt(p.max_total_risk_rate_pct)}% · ${p.default_leverage}× · v${p.version}<br>${p.capital_verified ? 'Капитал подтвержден' : 'Капитал не подтвержден биржей'}</small></div><button class="button secondary activate-profile" data-id="${p.id}" ${p.active ? 'disabled' : ''}>Активировать</button></div>`).join('');
   $$('.activate-profile').forEach(button => button.addEventListener('click', async () => {
     try { await api(`/api/v1/capital-profiles/${button.dataset.id}/activate`, { method: 'POST', body: '{}' }); await loadProfiles(); await loadRecommendations(); } catch (e) { toast(e.message, 'error'); }
   }));
@@ -753,8 +753,8 @@ $('#profile-form').addEventListener('submit', async event => {
   event.preventDefault();
   const payload = {
     name: $('#profile-name').value, mode: $('#profile-mode').value, allocated_capital: $('#profile-capital').value,
-    risk_rate: Number($('#profile-risk').value) / 100, max_total_risk_rate: 0.02,
-    default_leverage: Number($('#profile-leverage').value), max_leverage: Number($('#profile-max-leverage').value), margin_reserve_rate: 0.25,
+    risk_rate: Number($('#profile-risk').value) / 100,
+    default_leverage: Number($('#profile-leverage').value), max_leverage: Number($('#profile-max-leverage').value),
     source_account_id: $('#profile-mode').value === 'bybit_read_only' ? 'bybit-unified' : null,
   };
   try { await api('/api/v1/capital-profiles', { method: 'POST', body: JSON.stringify(payload) }); event.target.reset(); await loadProfiles(); toast('Профиль создан'); } catch (error) { toast(error.message, 'error'); }

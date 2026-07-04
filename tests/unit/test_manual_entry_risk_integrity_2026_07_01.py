@@ -143,9 +143,7 @@ async def test_manual_profile_allocated_capital_is_theoretical_margin_capacity()
         capital_verified=False,
     )
 
-    capital, available_margin, verified, diagnostics = await effective_capital(
-        _NoQuerySession(), profile
-    )
+    capital, available_margin, verified, diagnostics = await effective_capital(_NoQuerySession(), profile)
 
     assert capital == D("1000")
     assert available_margin == D("1000")
@@ -174,9 +172,7 @@ async def test_manual_profile_margin_capacity_limits_position_sizing() -> None:
         allocated_capital=D("1000"),
         capital_verified=False,
     )
-    capital, available_margin, verified, _ = await effective_capital(
-        _NoQuerySession(), profile
-    )
+    capital, available_margin, verified, _ = await effective_capital(_NoQuerySession(), profile)
 
     plan = calculate_position_plan(
         effective_capital=capital,
@@ -306,7 +302,9 @@ def test_acceptance_rejects_plan_when_other_reservations_exhaust_margin() -> Non
     )
     profile = SimpleNamespace(
         risk_rate=D("0.10"),
+        max_total_risk_rate=D("0.20"),
         margin_reserve_rate=D("0.25"),
+        default_leverage=1,
         max_leverage=5,
         mode="manual",
     )
@@ -338,6 +336,7 @@ def test_acceptance_rejects_plan_when_other_reservations_exhaust_margin() -> Non
                 database_url="postgresql+psycopg://u:p@localhost/db",
                 min_net_rr=0,
                 min_net_ev_r=0,
+                max_total_open_risk_rate=0.20,
             ),
         )
 

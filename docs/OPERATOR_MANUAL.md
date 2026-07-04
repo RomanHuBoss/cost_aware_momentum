@@ -13,6 +13,14 @@
 - `BLOCKED_DATA` при отсутствии bid/ask нельзя обходить использованием last/mark или старой reference price.
 - Перед `ACCEPTED` система повторно валидирует freshness, entry-zone, risk, margin, funding, instrument specs и plan version.
 
+## После обновления на 1.9.3
+
+1. Migration и новые `.env`-переменные не требуются; остановите процессы и замените release tree целиком.
+2. Проверьте `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `DEFAULT_LEVERAGE`, `MAX_LEVERAGE` и `MARGIN_RESERVE_RATE` в `.env`.
+3. Откройте список профилей. Профиль с общим лимитом выше глобального, с `risk_rate > max_total_risk_rate` или с плечом выше `MAX_LEVERAGE` нельзя активировать; исправьте его PATCH-запросом/интерфейсом до допустимых значений.
+4. После изменения/активации профиль пересчитывает текущие планы. План с предупреждением о global risk policy не принимайте и не обходите ручным изменением БД.
+5. На панели профилей отображается риск на сделку и общий профильный лимит; портфельная панель добавляет `INVALID_CAPITAL_PROFILE_POLICY` для небезопасного legacy-профиля.
+
 ## После обновления на 1.9.2
 
 1. Остановите API, worker и trainer; замените release tree.

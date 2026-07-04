@@ -11,6 +11,12 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.9.3
+
+Новых `.env`-переменных и migration нет. `MAX_TOTAL_OPEN_RISK_RATE` и `MAX_LEVERAGE` теперь являются жёсткими глобальными потолками для capital profiles, а не только проверяемыми значениями конфигурации. Если поля риска/плеча при создании профиля не переданы, API использует `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `DEFAULT_LEVERAGE`, `MAX_LEVERAGE` и `MARGIN_RESERVE_RATE` из текущего runtime.
+
+Профиль должен удовлетворять `0 < risk_rate <= max_total_risk_rate <= MAX_TOTAL_OPEN_RISK_RATE` и `1 <= default_leverage <= max_leverage <= MAX_LEVERAGE`. Небезопасный legacy-профиль нельзя активировать; его планы получают `BLOCKED_INVALID_INPUT`, а acceptance требует пересчёта. Не увеличивайте глобальные потолки для обхода блокировки без отдельной risk review.
+
 ## Изменения 1.9.2
 
 Новых `.env`-переменных и migration нет. `MAX_CANDLE_AGE_SECONDS` больше не разрешает использовать предыдущую часовую свечу для публикации сигнала текущего часа. Публикация требует точного `latest close_time == event_time`; параметр сохраняется для совместимости и классификации диагностики (`missing_decision_candle` против более старого `stale_candle_cutoff`).

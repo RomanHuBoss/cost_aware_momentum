@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.9.3 — 2026-07-04
+
+### Fixed
+
+- Enforced `MAX_TOTAL_OPEN_RISK_RATE` and `MAX_LEVERAGE` as process-wide ceilings for all capital profiles.
+- Unsafe legacy profiles now fail closed during plan creation, activation and acceptance instead of producing actionable sizing.
+- Omitted profile-policy fields resolve from runtime settings; frontend no longer injects hard-coded total-risk and margin defaults.
+- Portfolio diagnostics expose invalid profile policy while calculating the effective limit from the global cap.
+
+### Verification
+
+- Added red → green regressions proving that a 20% profile could previously create and accept an actionable plan under the default 2% global cap.
+- Added policy/API/default/patch/frontend tests; no migration or new environment variable.
+
 ## 1.9.2 — 2026-07-04
 
 ### Fixed

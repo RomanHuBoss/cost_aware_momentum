@@ -2,6 +2,7 @@
 
 | Requirement / invariant | Production path | Verification |
 |---|---|---|
+| Global capital-profile risk policy | `app/risk/policy.py`; `app/api/v1/capital.py`; `app/services/execution.py`; `app/api/v1/recommendations.py`; `app/api/v1/portfolio.py` | `tests/unit/test_capital_profile_policy_2026_07_04.py`, `test_execution_plan_blocks_profile_above_global_total_risk_cap`, `test_acceptance_rejects_profile_above_global_total_risk_cap` |
 | Post-response receipt timestamps | `app/services/market_data.py::sync_instruments`, `sync_tickers`, `sync_funding_and_oi`, `sync_read_only_account`, `sync_candles`, `sync_candle_windows` | `tests/unit/test_point_in_time_candle_integrity_2026_07_01.py`, `test_candle_availability_integrity_2026_07_03.py` |
 | Candle confirmation flag uses response time | `app/services/market_data.py::sync_candles`, `sync_candle_history`, `sync_candle_windows` | `test_candle_confirmation_uses_api_response_time` |
 | Candle `available_at` equals actual receipt time | `app/services/market_data.py::_candle_values`, migration `0009_candle_receipt_availability` | `test_late_fetched_confirmed_candle_is_available_only_after_receipt`, `test_legacy_candle_migration_moves_availability_forward_fail_closed`; PostgreSQL upgrade not run |
