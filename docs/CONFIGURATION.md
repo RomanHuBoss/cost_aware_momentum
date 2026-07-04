@@ -11,6 +11,12 @@
 - Risk/economics: `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `MIN_NET_RR`, `MIN_NET_EV_R`, fee/slippage/gap reserve и freshness limits.
 - Model lifecycle: `AUTO_TRAIN_*`, `MODEL_DIR`, `ACTIVE_MODEL_PATH`.
 
+## Изменения 1.9.5
+
+Добавлена обратно совместимая переменная `AUTO_TRAIN_MIN_POLICY_TRADE_RATE=0.01`. Она задаёт минимальную долю `policy_trades / policy_candidates` на final holdout после cost/EV/RR filtering и запрета перекрывающихся сделок одного symbol. Порог дополняет, но не заменяет `AUTO_TRAIN_MIN_POLICY_TRADES` и `AUTO_TRAIN_MIN_POLICY_COHORTS`.
+
+Допустимый диапазон — `(0, 1]`; missing, non-finite, out-of-range или несогласованная с counts метрика блокирует auto-activation. Уменьшение порога ради прохождения модели не рекомендуется: это повышает риск отбора нескольких случайно удачных эпизодов из большой cross-sectional выборки. Migration нет; явное добавление переменной в существующий `.env` необязательно, default применяется автоматически.
+
 ## Изменения 1.9.3
 
 Новых `.env`-переменных и migration нет. `MAX_TOTAL_OPEN_RISK_RATE` и `MAX_LEVERAGE` теперь являются жёсткими глобальными потолками для capital profiles, а не только проверяемыми значениями конфигурации. Если поля риска/плеча при создании профиля не переданы, API использует `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE`, `DEFAULT_LEVERAGE`, `MAX_LEVERAGE` и `MARGIN_RESERVE_RATE` из текущего runtime.

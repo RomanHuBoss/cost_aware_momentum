@@ -58,7 +58,9 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "policy_metric_schema": "decision-open-entry-exit-time-cohort-v10",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
+        "policy_candidates": 1_000,
         "policy_trades": 80,
+        "policy_trade_rate": 0.08,
         "policy_cohorts": 80,
         "policy_independent_cohorts": 80,
         "policy_realized_mean_r": 0.05,
@@ -151,6 +153,7 @@ def test_quality_gate_remains_strict_json_when_incumbent_has_no_policy_trades(
     incumbent_metrics.update(
         {
             "policy_trades": 0,
+            "policy_trade_rate": 0.0,
             "policy_realized_mean_r": None,
             "policy_profit_factor": None,
             "policy_max_drawdown_r": 0.0,
@@ -180,6 +183,7 @@ def test_quality_gate_serializes_missing_candidate_policy_metrics_as_null(
     metrics.update(
         {
             "policy_trades": 0,
+            "policy_trade_rate": 0.0,
             "policy_realized_mean_r": None,
             "policy_profit_factor": None,
             "policy_max_drawdown_r": None,

@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     auto_train_max_brier_regression: float = 0.01
     auto_train_min_metric_improvement: float = 0.002
     auto_train_min_policy_trades: int = 20
+    auto_train_min_policy_trade_rate: float = 0.01
     auto_train_min_policy_cohorts: int = 20
     auto_train_min_policy_realized_mean_r: float = 0.0
     auto_train_min_policy_profit_factor: float = 1.0
@@ -241,6 +242,7 @@ class Settings(BaseSettings):
             "AUTO_TRAIN_MAX_LOG_LOSS_REGRESSION": self.auto_train_max_log_loss_regression,
             "AUTO_TRAIN_MAX_BRIER_REGRESSION": self.auto_train_max_brier_regression,
             "AUTO_TRAIN_MIN_METRIC_IMPROVEMENT": self.auto_train_min_metric_improvement,
+            "AUTO_TRAIN_MIN_POLICY_TRADE_RATE": self.auto_train_min_policy_trade_rate,
             "AUTO_TRAIN_MIN_POLICY_REALIZED_MEAN_R": self.auto_train_min_policy_realized_mean_r,
             "AUTO_TRAIN_MIN_POLICY_PROFIT_FACTOR": self.auto_train_min_policy_profit_factor,
             "AUTO_TRAIN_MAX_POLICY_DRAWDOWN_R": self.auto_train_max_policy_drawdown_r,
@@ -353,6 +355,8 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_MIN_METRIC_IMPROVEMENT cannot be negative")
         if self.auto_train_min_policy_trades < 1:
             raise ValueError("AUTO_TRAIN_MIN_POLICY_TRADES must be positive")
+        if not 0 < self.auto_train_min_policy_trade_rate <= 1:
+            raise ValueError("AUTO_TRAIN_MIN_POLICY_TRADE_RATE must be in (0, 1]")
         if self.auto_train_min_policy_cohorts < 1:
             raise ValueError("AUTO_TRAIN_MIN_POLICY_COHORTS must be positive")
         if self.auto_train_min_policy_profit_factor < 0:

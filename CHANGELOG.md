@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.9.5 — 2026-07-04
+
+### Fixed
+
+- Automatic model promotion now enforces a configurable minimum holdout policy trade rate instead of accepting a fixed handful of trades from an arbitrarily large candidate set.
+- The quality gate validates `policy_candidates`, `policy_trades` and `policy_trade_rate` as one internally consistent evidence tuple and fails closed on missing, non-finite or contradictory values.
+- Trainer diagnostics and status configuration expose the effective `AUTO_TRAIN_MIN_POLICY_TRADE_RATE` threshold.
+
+### Verification
+
+- Added a red → green regression proving that 80 trades among 100,000 candidates previously passed the gate.
+- Added boundary, consistency and invalid-configuration tests; no migration, dependency or public API contract change.
+
 ## 1.9.4 — 2026-07-04
 
 ### Fixed

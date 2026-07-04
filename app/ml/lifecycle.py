@@ -531,7 +531,29 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         min_class_fraction = 0.0
     else:
         min_class_fraction = min(distribution_values)
+    policy_candidates = nonnegative_int_metric("policy_candidates")
     policy_trades = nonnegative_int_metric("policy_trades")
+    policy_trade_rate = finite_or_none(metrics.get("policy_trade_rate"))
+    valid_policy_trade_rate = (
+        policy_trade_rate is not None and 0.0 <= policy_trade_rate <= 1.0
+    )
+    if policy_trade_rate is None:
+        reasons.append("missing_or_non_finite_policy_trade_rate")
+    elif not valid_policy_trade_rate:
+        reasons.append("invalid_policy_trade_rate")
+    if policy_trades > policy_candidates:
+        reasons.append("policy_trades_exceed_candidates")
+    if valid_policy_trade_rate:
+        expected_policy_trade_rate = (
+            policy_trades / policy_candidates if policy_candidates else 0.0
+        )
+        if not math.isclose(
+            policy_trade_rate,
+            expected_policy_trade_rate,
+            rel_tol=1e-7,
+            abs_tol=1e-12,
+        ):
+            reasons.append("inconsistent_policy_trade_rate")
     policy_cohorts = nonnegative_int_metric("policy_cohorts")
     policy_independent_cohorts = nonnegative_int_metric("policy_independent_cohorts")
     policy_mean_r = finite_or_none(metrics.get("policy_realized_mean_r"))
@@ -602,6 +624,11 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("holdout_class_fraction_below_minimum")
     if policy_trades < settings.auto_train_min_policy_trades:
         reasons.append("policy_trade_count_below_minimum")
+    if (
+        not valid_policy_trade_rate
+        or policy_trade_rate < settings.auto_train_min_policy_trade_rate
+    ):
+        reasons.append("policy_trade_rate_below_minimum")
     if policy_independent_cohorts < settings.auto_train_min_policy_cohorts:
         reasons.append("policy_independent_cohort_count_below_minimum")
     if policy_mean_r_check < settings.auto_train_min_policy_realized_mean_r:
@@ -763,7 +790,10 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "max_ece_limit": settings.auto_train_max_ece,
             "min_class_fraction": min_class_fraction,
             "min_class_fraction_limit": settings.auto_train_min_class_fraction,
+            "policy_candidates": policy_candidates,
             "policy_trades": policy_trades,
+            "policy_trade_rate": policy_trade_rate,
+            "min_policy_trade_rate": settings.auto_train_min_policy_trade_rate,
             "policy_cohorts": policy_cohorts,
             "policy_independent_cohorts": policy_independent_cohorts,
             "min_policy_trades": settings.auto_train_min_policy_trades,

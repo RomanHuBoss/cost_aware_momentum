@@ -460,6 +460,7 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "max_symbols": settings.auto_train_max_symbols,
             "require_improvement": settings.auto_train_require_improvement,
             "minimum_policy_trades": settings.auto_train_min_policy_trades,
+            "minimum_policy_trade_rate": settings.auto_train_min_policy_trade_rate,
             "minimum_policy_cohorts": settings.auto_train_min_policy_cohorts,
             "minimum_policy_independent_cohorts": settings.auto_train_min_policy_cohorts,
             "timeout_gross_return_rate": settings.timeout_gross_return_rate,

@@ -65,7 +65,9 @@ def _passing_metrics() -> dict[str, object]:
         "policy_metric_schema": "decision-open-entry-exit-time-cohort-v10",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
+        "policy_candidates": 1_000,
         "policy_trades": 80,
+        "policy_trade_rate": 0.08,
         "policy_cohorts": 80,
         "policy_independent_cohorts": 80,
         "policy_realized_mean_r": 0.05,
@@ -198,6 +200,7 @@ def test_quality_gate_uses_independent_cohort_threshold(tmp_path: Path) -> None:
 def test_quality_gate_rejects_many_cross_sectional_trades_from_one_hour(tmp_path: Path) -> None:
     metrics = _passing_metrics()
     metrics["policy_trades"] = 100
+    metrics["policy_trade_rate"] = 0.1
     metrics["policy_cohorts"] = 1
     metrics["policy_independent_cohorts"] = 1
 
