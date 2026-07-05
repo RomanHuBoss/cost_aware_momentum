@@ -28,8 +28,9 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "decision-open-entry-ohlc-path-v2"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v11"
-POLICY_UNCERTAINTY_SCHEMA = "horizon-separated-circular-moving-block-v1"
+POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v12"
+POLICY_UNCERTAINTY_SCHEMA = "all-horizon-phases-circular-moving-block-v2"
+HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
 MIN_TIMEOUT_SAMPLES_PER_DIRECTION = 5
 
@@ -878,19 +879,7 @@ def _holdout_time_bounds(test_meta: pd.DataFrame) -> tuple[pd.Timestamp, pd.Time
     return start, end, span_hours
 
 
-def _horizon_separated_cohort_series(
-    cohorts: pd.Series,
-    *,
-    horizon_hours: int,
-) -> pd.Series:
-    """Select non-overlapping label windows using a deterministic greedy schedule."""
-
-    if isinstance(horizon_hours, bool) or not isinstance(
-        horizon_hours, (int, np.integer)
-    ):
-        raise TypeError("horizon_hours must be an integer")
-    if int(horizon_hours) <= 0:
-        raise ValueError("horizon_hours must be positive")
+def _validated_policy_cohort_series(cohorts: pd.Series) -> pd.Series:
     if not isinstance(cohorts.index, pd.DatetimeIndex):
         decision_times = pd.to_datetime(cohorts.index, utc=True, errors="coerce")
     else:
@@ -901,15 +890,52 @@ def _horizon_separated_cohort_series(
     ordered = pd.Series(values, index=decision_times).sort_index(kind="mergesort")
     if ordered.index.has_duplicates:
         raise ValueError("Policy cohorts must have unique decision_time values")
-    selected: list[pd.Timestamp] = []
-    next_eligible: pd.Timestamp | None = None
-    separation = pd.to_timedelta(int(horizon_hours), unit="h")
-    for decision_time in ordered.index:
-        if next_eligible is not None and decision_time < next_eligible:
+    return ordered
+
+
+def _horizon_separated_phase_series(
+    cohorts: pd.Series,
+    *,
+    horizon_hours: int,
+) -> dict[int, pd.Series]:
+    """Partition hourly decisions into every non-overlapping horizon phase.
+
+    A horizon-H label overlaps the following H-1 hourly labels.  Selecting only
+    the first greedy sequence makes uncertainty depend on the arbitrary first
+    holdout timestamp.  Epoch-hour phases cover every decision exactly once;
+    observations inside each phase are at least H hours apart.
+    """
+
+    if isinstance(horizon_hours, bool) or not isinstance(
+        horizon_hours, (int, np.integer)
+    ):
+        raise TypeError("horizon_hours must be an integer")
+    if int(horizon_hours) <= 0:
+        raise ValueError("horizon_hours must be positive")
+    resolved_horizon = int(horizon_hours)
+    ordered = _validated_policy_cohort_series(cohorts)
+    epoch_hours = ordered.index.asi8 // HOUR_NS
+    phases: dict[int, pd.Series] = {}
+    for phase in range(resolved_horizon):
+        selected = ordered[(epoch_hours % resolved_horizon) == phase]
+        if selected.empty:
             continue
-        selected.append(pd.Timestamp(decision_time))
-        next_eligible = pd.Timestamp(decision_time) + separation
-    return ordered.loc[selected]
+        separation_hours = selected.index.to_series().diff().dt.total_seconds() / 3600.0
+        if (separation_hours.dropna() < resolved_horizon).any():
+            raise ValueError("Policy phase contains overlapping label windows")
+        phases[phase] = selected
+    return phases
+
+
+def _horizon_separated_cohort_series(
+    cohorts: pd.Series,
+    *,
+    horizon_hours: int,
+) -> pd.Series:
+    """Compatibility view of the earliest populated non-overlapping phase."""
+
+    phases = _horizon_separated_phase_series(cohorts, horizon_hours=horizon_hours)
+    return phases[min(phases)] if phases else _validated_policy_cohort_series(cohorts)
 
 
 def _policy_mean_r_bootstrap(
@@ -1165,16 +1191,17 @@ def evaluate_policy_model(
         ),
         0.0,
     )
-    meta["realized_stop_gap_reserve_rate"] = np.where(
+    meta["unused_stop_gap_reserve_rate"] = np.where(
         target.eq("SL"),
         np.maximum(config.stop_gap_reserve_rate - embedded_stop_gap, 0.0),
         0.0,
     )
+    # The reserve is a sizing/stress allowance, not a cash flow.  Any actual
+    # gap through the stop is already present in realized_gross_return.
     meta["realized_net_rate"] = (
         meta["realized_gross_return"]
         - meta["realized_fee_rate"]
         - config.slippage_rate
-        - meta["realized_stop_gap_reserve_rate"]
     )
     meta["net_rr"] = np.where(
         meta["stress_downside_rate"] > 0,
@@ -1224,6 +1251,8 @@ def evaluate_policy_model(
         "policy_trades": 0,
         "policy_cohorts": 0,
         "policy_independent_cohorts": 0,
+        "policy_horizon_phase_count": 0,
+        "policy_horizon_phase_expected": resolved_horizon,
         "policy_independent_mean_r": None,
         "policy_mean_r_lcb": None,
         "policy_mean_r_confidence_level": float(config.confidence_level),
@@ -1261,23 +1290,41 @@ def evaluate_policy_model(
         realized_mean_r=("realized_r", "mean"),
         expected_mean_ev_r=("expected_ev_r", "mean"),
     )
-    independent_returns = _horizon_separated_cohort_series(
+    horizon_phases = _horizon_separated_phase_series(
         cohort_metrics["realized_mean_r"],
         horizon_hours=resolved_horizon,
     )
-    independent_mean_r, policy_mean_r_lcb, bootstrap_block_length = (
-        _policy_mean_r_bootstrap(
-            independent_returns.to_numpy(float),
-            samples=config.bootstrap_samples,
-            confidence_level=config.confidence_level,
-        )
-        if len(independent_returns) >= 2
-        else (
-            float(independent_returns.mean()) if len(independent_returns) else None,
-            None,
-            0,
-        )
+    phase_count = len(horizon_phases)
+    independent_cohort_count = (
+        min(len(values) for values in horizon_phases.values()) if horizon_phases else 0
     )
+    phase_means: list[float] = []
+    phase_lower_bounds: list[float] = []
+    phase_block_lengths: list[int] = []
+    if phase_count == resolved_horizon and independent_cohort_count >= 2:
+        # Balance the phases to the same recent sample length so no phase gains
+        # more influence merely because the holdout starts or ends mid-cycle.
+        for values in horizon_phases.values():
+            balanced = values.iloc[-independent_cohort_count:].to_numpy(float)
+            phase_mean, phase_lcb, phase_block_length = _policy_mean_r_bootstrap(
+                balanced,
+                samples=config.bootstrap_samples,
+                confidence_level=config.confidence_level,
+            )
+            phase_means.append(phase_mean)
+            phase_lower_bounds.append(phase_lcb)
+            phase_block_lengths.append(phase_block_length)
+        independent_mean_r = float(min(phase_means))
+        policy_mean_r_lcb = float(min(phase_lower_bounds))
+        bootstrap_block_length = int(max(phase_block_lengths))
+    else:
+        independent_mean_r = (
+            float(min(values.mean() for values in horizon_phases.values()))
+            if horizon_phases
+            else None
+        )
+        policy_mean_r_lcb = None
+        bootstrap_block_length = 0
     exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
     trade_contributions = trades["realized_r_contribution"]
     gains = float(trade_contributions[trade_contributions > 0].sum())
@@ -1298,7 +1345,9 @@ def evaluate_policy_model(
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": int(len(trades)),
         "policy_cohorts": int(len(cohort_metrics)),
-        "policy_independent_cohorts": int(len(independent_returns)),
+        "policy_independent_cohorts": int(independent_cohort_count),
+        "policy_horizon_phase_count": int(phase_count),
+        "policy_horizon_phase_expected": resolved_horizon,
         "policy_independent_mean_r": independent_mean_r,
         "policy_mean_r_lcb": policy_mean_r_lcb,
         "policy_mean_r_confidence_level": float(config.confidence_level),

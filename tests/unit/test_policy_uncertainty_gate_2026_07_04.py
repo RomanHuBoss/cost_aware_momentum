@@ -26,9 +26,11 @@ def _candidate(tmp_path: Path, *, lower_bound: float) -> ModelCandidate:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v11",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v12",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
+        "policy_horizon_phase_count": 8,
+        "policy_horizon_phase_expected": 8,
         "policy_candidates": 1_000,
         "policy_trades": 80,
         "policy_trade_rate": 0.08,
@@ -40,7 +42,7 @@ def _candidate(tmp_path: Path, *, lower_bound: float) -> ModelCandidate:
         "policy_mean_r_confidence_level": 0.95,
         "policy_mean_r_bootstrap_samples": 2_000,
         "policy_mean_r_bootstrap_block_length": 6,
-        "policy_mean_r_uncertainty_schema": "horizon-separated-circular-moving-block-v1",
+        "policy_mean_r_uncertainty_schema": "all-horizon-phases-circular-moving-block-v2",
         "policy_profit_factor": 1.2,
         "policy_gross_gain_r": 12.0,
         "policy_gross_loss_r": 10.0,
@@ -133,3 +135,16 @@ def test_policy_bootstrap_rejects_non_finite_or_too_short_series() -> None:
         _policy_mean_r_bootstrap(
             np.asarray([0.1, np.nan]), samples=2_000, confidence_level=0.95
         )
+
+
+def test_quality_gate_rejects_incomplete_horizon_phase_evidence(tmp_path: Path) -> None:
+    candidate = _candidate(tmp_path, lower_bound=0.01)
+    candidate.metrics["policy_horizon_phase_count"] = 7
+
+    result = evaluate_quality_gate(
+        candidate,
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is False
+    assert "incomplete_policy_horizon_phase_coverage" in result["reasons"]

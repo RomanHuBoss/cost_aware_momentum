@@ -559,6 +559,10 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             reasons.append("inconsistent_policy_trade_rate")
     policy_cohorts = nonnegative_int_metric("policy_cohorts")
     policy_independent_cohorts = nonnegative_int_metric("policy_independent_cohorts")
+    policy_horizon_phase_count = nonnegative_int_metric("policy_horizon_phase_count")
+    policy_horizon_phase_expected = nonnegative_int_metric(
+        "policy_horizon_phase_expected"
+    )
     policy_independent_mean_r = finite_or_none(metrics.get("policy_independent_mean_r"))
     policy_mean_r_lcb = finite_or_none(metrics.get("policy_mean_r_lcb"))
     policy_confidence_level = finite_or_none(
@@ -638,6 +642,10 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         or int(policy_sleeves) != candidate.horizon
     ):
         reasons.append("policy_capital_sleeves_mismatch")
+    if policy_horizon_phase_expected != candidate.horizon:
+        reasons.append("policy_horizon_phase_expected_mismatch")
+    if policy_horizon_phase_count != policy_horizon_phase_expected:
+        reasons.append("incomplete_policy_horizon_phase_coverage")
 
     if rows < settings.auto_train_min_holdout_rows:
         reasons.append("holdout_rows_below_minimum")
@@ -851,6 +859,8 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "min_policy_trade_rate": settings.auto_train_min_policy_trade_rate,
             "policy_cohorts": policy_cohorts,
             "policy_independent_cohorts": policy_independent_cohorts,
+            "policy_horizon_phase_count": policy_horizon_phase_count,
+            "policy_horizon_phase_expected": policy_horizon_phase_expected,
             "min_policy_trades": settings.auto_train_min_policy_trades,
             "min_policy_cohorts": settings.auto_train_min_policy_cohorts,
             "policy_realized_mean_r": policy_mean_r,

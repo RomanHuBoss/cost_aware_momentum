@@ -291,7 +291,7 @@ def policy_backtest(
         ),
         0.0,
     )
-    meta["realized_stop_gap_reserve_rate"] = np.where(
+    meta["unused_stop_gap_reserve_rate"] = np.where(
         target_is_sl,
         np.maximum(gap_rate - meta["embedded_stop_gap_rate"], 0.0),
         0.0,
@@ -350,10 +350,9 @@ def policy_backtest(
         - chosen["realized_fee_rate"]
         - slippage_rate
         + chosen["funding_return_rate"]
-        - chosen["realized_stop_gap_reserve_rate"]
     )
-    chosen["net_return_without_stop_reserve"] = (
-        chosen["net_return"] + chosen["realized_stop_gap_reserve_rate"]
+    chosen["stress_net_return_with_stop_reserve"] = (
+        chosen["net_return"] - chosen["unused_stop_gap_reserve_rate"]
     )
     actionable_trades = chosen[chosen["traded"]].copy()
     traded, overlap_blocked_trades = filter_single_active_trade_per_symbol(
@@ -366,9 +365,9 @@ def policy_backtest(
         return_column="net_return",
         horizon_hours=horizon_hours,
     )
-    reserve_free_return, _, _ = _simulate_capital_sleeves(
+    stress_return_with_stop_reserve, _, _ = _simulate_capital_sleeves(
         traded,
-        return_column="net_return_without_stop_reserve",
+        return_column="stress_net_return_with_stop_reserve",
         horizon_hours=horizon_hours,
     )
     max_concurrent_trades, mean_concurrent_trades = _active_trade_statistics(traded)
@@ -408,7 +407,8 @@ def policy_backtest(
         "trades": int(len(traded)),
         "no_trade_rate": float(1.0 - len(traded) / len(chosen)) if len(chosen) else 1.0,
         "net_return": net_return,
-        "net_return_without_stop_gap_reserve": reserve_free_return,
+        "net_return_without_stop_gap_reserve": net_return,
+        "stress_net_return_with_stop_gap_reserve": stress_return_with_stop_reserve,
         "mean_net_return_per_trade": float(traded["net_return"].mean()) if len(traded) else 0.0,
         "mean_expected_ev_r": float(traded["expected_ev_r"].mean()) if len(traded) else None,
         "win_rate": float((traded["net_return"] > 0).mean()) if len(traded) else 0.0,
@@ -422,7 +422,7 @@ def policy_backtest(
         "round_trip_cost_bps": round_trip_cost_bps,
         "slippage_bps": slippage_bps,
         "stop_gap_reserve_bps": stop_gap_reserve_bps,
-        "stop_gap_reserve_accounting": "residual_after_realized_gap_v1",
+        "stop_gap_reserve_accounting": "risk-and-stress-only-actual-gap-in-realized-v2",
         "funding_rate": funding_rate,
         "timeout_return_rate": (
             timeout_return_rate if timeout_return_source != "artifact_training_direction_median_r" else None

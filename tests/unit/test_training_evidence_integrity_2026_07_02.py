@@ -54,9 +54,11 @@ def _passing_metrics() -> dict[str, object]:
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v11",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v12",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
+        "policy_horizon_phase_count": 8,
+        "policy_horizon_phase_expected": 8,
         "policy_candidates": 1_000,
         "policy_trades": 80,
         "policy_trade_rate": 0.08,
@@ -67,7 +69,7 @@ def _passing_metrics() -> dict[str, object]:
         "policy_mean_r_confidence_level": 0.95,
         "policy_mean_r_bootstrap_samples": 2_000,
         "policy_mean_r_bootstrap_block_length": 1,
-        "policy_mean_r_uncertainty_schema": "horizon-separated-circular-moving-block-v1",
+        "policy_mean_r_uncertainty_schema": "all-horizon-phases-circular-moving-block-v2",
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
         "policy_max_drawdown_r": 5.0,
@@ -145,7 +147,7 @@ def test_hourly_overlapping_policy_cohorts_are_not_counted_as_independent() -> N
     )
 
     assert metrics["policy_cohorts"] == 20
-    assert metrics["policy_independent_cohorts"] == 3
+    assert metrics["policy_independent_cohorts"] == 2
 
 
 def test_quality_gate_rejects_large_cross_section_from_short_holdout(tmp_path: Path) -> None:
