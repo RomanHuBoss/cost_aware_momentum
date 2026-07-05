@@ -21,6 +21,7 @@ from app.ml.lifecycle import (
 from app.services.model_promotion import (
     blocked_experiment_promotion_gate,
     evaluate_experiment_promotion_gate,
+    require_experiment_policy_binding,
 )
 
 
@@ -95,6 +96,9 @@ async def run(args: argparse.Namespace) -> None:
             horizon_hours=candidate.horizon,
         )
     else:
+        policy_binding = require_experiment_policy_binding(
+            candidate.metrics.get("promotion_policy_binding")
+        )
         async with SessionFactory() as promotion_session:
             experiment_promotion_gate = await evaluate_experiment_promotion_gate(
                 promotion_session,
@@ -102,6 +106,7 @@ async def run(args: argparse.Namespace) -> None:
                 model_version=candidate.version,
                 model_sha256=candidate_digest,
                 horizon_hours=candidate.horizon,
+                expected_policy_binding=policy_binding,
             )
 
     activation = None

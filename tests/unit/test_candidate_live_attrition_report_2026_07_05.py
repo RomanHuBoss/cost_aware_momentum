@@ -6,11 +6,12 @@ from app.services.attrition import (
     build_attrition_report_from_records,
     execution_plan_attrition_evidence,
 )
+from app.services.model_promotion import EXPERIMENT_PROMOTION_GATE_SCHEMA
 
 
 def _experiment_gate(*, passed: bool, reasons: list[str]) -> dict[str, object]:
     return {
-        "schema": "model-promotion-experiment-governance-v1",
+        "schema": EXPERIMENT_PROMOTION_GATE_SCHEMA,
         "passed": passed,
         "reasons": reasons,
         "experiment_family": "family-v1",

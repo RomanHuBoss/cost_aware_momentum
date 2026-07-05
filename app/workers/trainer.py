@@ -37,6 +37,7 @@ from app.services.model_activation import activate_registered_model
 from app.services.model_promotion import (
     blocked_experiment_promotion_gate,
     evaluate_experiment_promotion_gate,
+    require_experiment_policy_binding,
 )
 from app.services.trainer_control import (
     TRAINER_CONTROL_ACTIONS,
@@ -225,6 +226,19 @@ class BackgroundTrainer:
                 "reason": "candidate_artifact_sha256_missing_or_invalid",
                 "candidate_version": candidate.version,
             }
+        try:
+            policy_binding = require_experiment_policy_binding(
+                metrics.get("promotion_policy_binding")
+                if isinstance(metrics, dict)
+                else None
+            )
+        except RuntimeError as exc:
+            return {
+                "status": "BLOCKED",
+                "reason": "candidate_policy_binding_missing_or_invalid",
+                "candidate_version": candidate.version,
+                "error": str(exc),
+            }
 
         async with SessionFactory() as promotion_session:
             experiment_gate = await evaluate_experiment_promotion_gate(
@@ -233,6 +247,7 @@ class BackgroundTrainer:
                 model_version=candidate.version,
                 model_sha256=artifact_sha256,
                 horizon_hours=horizon_hours,
+                expected_policy_binding=policy_binding,
             )
         if experiment_gate.get("passed") is not True:
             return {
@@ -857,6 +872,9 @@ class BackgroundTrainer:
                             horizon_hours=candidate.horizon,
                         )
                     else:
+                        policy_binding = require_experiment_policy_binding(
+                            candidate.metrics.get("promotion_policy_binding")
+                        )
                         async with SessionFactory() as promotion_session:
                             experiment_promotion_gate = await evaluate_experiment_promotion_gate(
                                 promotion_session,
@@ -864,6 +882,7 @@ class BackgroundTrainer:
                                 model_version=candidate.version,
                                 model_sha256=candidate_digest,
                                 horizon_hours=candidate.horizon,
+                                expected_policy_binding=policy_binding,
                             )
                     can_activate = bool(
                         settings.auto_train_auto_activate

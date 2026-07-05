@@ -4,6 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services.model_promotion import (
+    EXPERIMENT_PROMOTION_GATE_SCHEMA,
+    experiment_policy_binding_from_settings,
+)
 from app.workers import trainer as trainer_module
 
 
@@ -20,6 +24,7 @@ async def test_trainer_promotes_registered_candidate_after_evidence_becomes_read
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trainer = trainer_module.BackgroundTrainer()
+    policy_binding = experiment_policy_binding_from_settings(trainer_module.settings)
     candidate = SimpleNamespace(
         version="candidate-v2",
         artifact_sha256="a" * 64,
@@ -30,6 +35,7 @@ async def test_trainer_promotes_registered_candidate_after_evidence_becomes_read
             "horizon_hours": 8,
             "quality_gate": {"passed": True, "reasons": []},
             "experiment_promotion_gate": {"experiment_family": "family-v2"},
+            "promotion_policy_binding": policy_binding,
         },
     )
     incumbent = SimpleNamespace(version="incumbent-v1", active=True)
@@ -44,7 +50,7 @@ async def test_trainer_promotes_registered_candidate_after_evidence_becomes_read
     async def ready_gate(_session: object, **kwargs: object) -> dict[str, object]:
         calls["gate_kwargs"] = kwargs
         return {
-            "schema": "model-promotion-experiment-governance-v1",
+            "schema": EXPERIMENT_PROMOTION_GATE_SCHEMA,
             "passed": True,
             "reasons": [],
             "experiment_family": "family-v2",
@@ -80,6 +86,7 @@ async def test_trainer_promotes_registered_candidate_after_evidence_becomes_read
         "model_version": "candidate-v2",
         "model_sha256": "a" * 64,
         "horizon_hours": 8,
+        "expected_policy_binding": policy_binding,
     }
     assert calls["activation"] == {
         "version": "candidate-v2",
@@ -125,6 +132,7 @@ async def test_deferred_promotion_remains_fail_closed_until_experiment_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trainer = trainer_module.BackgroundTrainer()
+    policy_binding = experiment_policy_binding_from_settings(trainer_module.settings)
     candidate = SimpleNamespace(
         version="candidate-waiting",
         artifact_sha256="b" * 64,
@@ -135,6 +143,7 @@ async def test_deferred_promotion_remains_fail_closed_until_experiment_is_ready(
             "horizon_hours": 8,
             "quality_gate": {"passed": True, "reasons": []},
             "experiment_promotion_gate": {"experiment_family": "family-waiting"},
+            "promotion_policy_binding": policy_binding,
         },
     )
 
@@ -143,7 +152,7 @@ async def test_deferred_promotion_remains_fail_closed_until_experiment_is_ready(
 
     async def blocked_gate(_session: object, **_kwargs: object) -> dict[str, object]:
         return {
-            "schema": "model-promotion-experiment-governance-v1",
+            "schema": EXPERIMENT_PROMOTION_GATE_SCHEMA,
             "passed": False,
             "reasons": ["experiment_governance_in_progress"],
             "experiment_family": "family-waiting",

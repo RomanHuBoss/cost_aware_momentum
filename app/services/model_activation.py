@@ -12,6 +12,8 @@ from app.ml.runtime import ModelRuntime
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.model_promotion import (
     evaluate_experiment_promotion_gate,
+    experiment_policy_binding_from_settings,
+    require_experiment_policy_binding,
     require_passed_experiment_promotion_gate,
 )
 
@@ -48,6 +50,7 @@ def registered_activation_governance(
     model: ModelRegistry,
     *,
     experiment_promotion_gate: dict[str, object] | None,
+    expected_policy_binding: dict[str, object] | None,
     emergency_gate_override: bool,
     override_reason: str | None,
 ) -> dict[str, object]:
@@ -74,6 +77,7 @@ def registered_activation_governance(
             expected_model_version=model.version,
             expected_model_sha256=getattr(model, "artifact_sha256", None),
             expected_horizon_hours=expected_horizon,
+            expected_policy_binding=expected_policy_binding,
         )
     except RuntimeError as exc:
         experiment_error = exc
@@ -154,6 +158,7 @@ async def activate_registered_model(
         )
         selected_family = (experiment_family or stored_family or "").strip() or None
         experiment_gate: dict[str, object] | None = None
+        expected_policy_binding: dict[str, object] | None = None
         if not emergency_gate_override:
             if selected_family is None:
                 raise RuntimeError(
@@ -167,6 +172,14 @@ async def activate_registered_model(
                 horizon_hours = int(horizon)
             except (TypeError, ValueError):
                 horizon_hours = 0
+            expected_policy_binding = require_experiment_policy_binding(
+                metrics.get("promotion_policy_binding")
+            )
+            configured_policy_binding = experiment_policy_binding_from_settings(get_settings())
+            if expected_policy_binding != configured_policy_binding:
+                raise RuntimeError(
+                    "Registered model policy evidence does not match current deployment settings"
+                )
             experiment_gate = await evaluate_experiment_promotion_gate(
                 session,
                 experiment_family=selected_family,
@@ -174,6 +187,7 @@ async def activate_registered_model(
                 model_sha256=target.artifact_sha256 or "",
                 horizon_hours=horizon_hours,
                 lock_family=True,
+                expected_policy_binding=expected_policy_binding,
             )
         else:
             experiment_gate = (
@@ -185,6 +199,7 @@ async def activate_registered_model(
         activation_governance = registered_activation_governance(
             target,
             experiment_promotion_gate=experiment_gate,
+            expected_policy_binding=expected_policy_binding,
             emergency_gate_override=emergency_gate_override,
             override_reason=override_reason,
         )

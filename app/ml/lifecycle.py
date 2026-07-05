@@ -13,7 +13,7 @@ import joblib
 import pandas as pd
 from sqlalchemy import desc, func, select, update
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.db.engine import SessionFactory
 from app.db.models import (
     Candle,
@@ -76,7 +76,10 @@ from app.ml.training import (
 )
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.model_promotion import (
+    build_experiment_policy_binding,
     evaluate_experiment_promotion_gate,
+    experiment_policy_binding_from_settings,
+    require_experiment_policy_binding,
     require_passed_experiment_promotion_gate,
 )
 
@@ -770,6 +773,20 @@ def build_model_candidate(
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
         metrics.update(evaluate_policy_model(model, split, policy_config, horizon_hours=horizon))
+        metrics["promotion_policy_binding"] = build_experiment_policy_binding(
+            entry_spread_bps=entry_spread_bps,
+            research_leverage=policy_config.research_leverage,
+            liquidation_equity_reserve_fraction=(
+                policy_config.liquidation_equity_reserve_fraction
+            ),
+            round_trip_cost_bps=policy_config.fee_rate_round_trip * 10000.0,
+            slippage_bps=policy_config.slippage_rate * 10000.0,
+            stop_gap_reserve_bps=policy_config.stop_gap_reserve_rate * 10000.0,
+            funding_rate_override=0.0,
+            timeout_return_rate_override=None,
+            minimum_net_rr=policy_config.min_net_rr,
+            minimum_net_ev_r=policy_config.min_net_ev_r,
+        )
     policy_candidates = int(metrics.get("policy_candidates") or 0)
     policy_actionable_candidates = int(metrics.get("policy_actionable_candidates") or 0)
     actionability_rate = (
@@ -1861,6 +1878,20 @@ async def register_and_activate_model_candidate(
         expected_model_sha256=digest,
         expected_horizon_hours=expected_horizon_hours,
     )
+    policy_activation_binding = require_experiment_policy_binding(
+        candidate.metrics.get("promotion_policy_binding")
+        if isinstance(candidate.metrics, dict)
+        else None
+    )
+    configured_policy_binding = experiment_policy_binding_from_settings(get_settings())
+    if policy_activation_binding != configured_policy_binding:
+        raise RuntimeError(
+            "Model candidate policy evidence does not match current deployment settings"
+        )
+    experiment_activation_gate = require_passed_experiment_promotion_gate(
+        experiment_activation_gate,
+        expected_policy_binding=policy_activation_binding,
+    )
     runtime_metadata = _validate_candidate_artifact_for_activation(
         candidate,
         digest=digest,
@@ -1875,12 +1906,14 @@ async def register_and_activate_model_candidate(
             model_sha256=digest,
             horizon_hours=expected_horizon_hours,
             lock_family=True,
+            expected_policy_binding=policy_activation_binding,
         )
         experiment_activation_gate = require_passed_experiment_promotion_gate(
             fresh_experiment_gate,
             expected_model_version=candidate.version,
             expected_model_sha256=digest,
             expected_horizon_hours=expected_horizon_hours,
+            expected_policy_binding=policy_activation_binding,
         )
         previous = (
             await session.execute(

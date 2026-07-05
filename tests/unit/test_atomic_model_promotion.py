@@ -8,8 +8,13 @@ from uuid import uuid4
 
 import pytest
 
+from app.config import get_settings
 from app.ml.data_profile import profile_from_symbol_rows
 from app.ml.lifecycle import ModelCandidate, register_and_activate_model_candidate
+from app.services.model_promotion import (
+    EXPERIMENT_PROMOTION_GATE_SCHEMA,
+    experiment_policy_binding_from_settings,
+)
 
 
 class _ScalarResult:
@@ -92,15 +97,19 @@ def _candidate(tmp_path: Path) -> ModelCandidate:
         symbol_count=1,
         symbol_sample=("BTCUSDT",),
         training_data_profile=profile,
-        metrics={"rows": 100},
+        metrics={
+            "rows": 100,
+            "promotion_policy_binding": experiment_policy_binding_from_settings(get_settings()),
+        },
         incumbent_metrics=None,
         incumbent_version="incumbent-v1",
     )
 
 
 def _experiment_gate() -> dict[str, object]:
+    policy_binding = experiment_policy_binding_from_settings(get_settings())
     return {
-        "schema": "model-promotion-experiment-governance-v1",
+        "schema": EXPERIMENT_PROMOTION_GATE_SCHEMA,
         "passed": True,
         "reasons": [],
         "experiment_family": "family-v1",
@@ -110,6 +119,14 @@ def _experiment_gate() -> dict[str, object]:
             "model_version": "candidate-v2",
             "model_sha256": hashlib.sha256(b"immutable-candidate").hexdigest(),
             "horizon_hours": 8,
+        },
+        "policy_binding": {
+            "schema": policy_binding["schema"],
+            "expected": policy_binding,
+            "selected": {
+                key: value for key, value in policy_binding.items() if key != "schema"
+            },
+            "mismatches": [],
         },
     }
 
