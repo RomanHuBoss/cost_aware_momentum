@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.12.0 — 2026-07-05
+
+### Added
+
+- Progressive read-only backfill of actual Bybit funding settlement events using bounded `endTime` pagination and the existing PostgreSQL funding table.
+- Event-time historical funding replay over `(entry_time, exit_time]`, with completeness checks against the configured instrument settlement interval.
+- Funding timeline metadata and `historical_funding_schema=bybit-settlement-timestamp-replay-v1` in candidate artifacts and runtime validation.
+- Seven regression tests for settlement boundaries, missing events, LONG/SHORT signs, request bounds and future-funding leakage.
+
+### Changed
+
+- Training and backtest load candles, funding history and instrument funding intervals as one research-data bundle.
+- Realized OOS policy/backtest PnL includes only funding settlements actually crossed before the modeled exit.
+- Actual future funding rates are excluded from ex-ante direction selection, RR, EV and actionability; the explicit backtest funding override remains an adverse stress only.
+- Policy metric schema is `decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14`.
+
+### Compatibility
+
+- No database migration and no new `.env` variable.
+- Artifact 1.11.0 lacks the mandatory historical-funding contract and must be retrained after funding history reaches the required coverage.
+
 ## 1.11.0 — 2026-07-05
 
 ### Добавлено

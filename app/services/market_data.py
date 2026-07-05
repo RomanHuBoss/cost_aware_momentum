@@ -692,6 +692,224 @@ async def sync_candle_history(
     }
 
 
+async def symbols_needing_funding_history_backfill(
+    session: AsyncSession,
+    symbols: Iterable[str],
+    *,
+    target_days: int,
+    limit: int,
+) -> list[dict[str, object]]:
+    symbol_list = list(dict.fromkeys(str(item).upper() for item in symbols if item))
+    if not symbol_list:
+        return []
+    now = datetime.now(UTC)
+    default_target_start = now - timedelta(days=target_days)
+    launches = dict(
+        (
+            await session.execute(
+                select(Instrument.symbol, Instrument.launch_time).where(
+                    Instrument.symbol.in_(symbol_list)
+                )
+            )
+        ).all()
+    )
+    spec_rows = (
+        await session.execute(
+            select(InstrumentSpecHistory)
+            .where(InstrumentSpecHistory.symbol.in_(symbol_list))
+            .order_by(
+                InstrumentSpecHistory.symbol,
+                desc(InstrumentSpecHistory.valid_from),
+            )
+        )
+    ).scalars().all()
+    intervals: dict[str, int] = {}
+    for row in spec_rows:
+        if row.symbol in intervals or row.funding_interval_minutes is None:
+            continue
+        interval_minutes = int(row.funding_interval_minutes)
+        if interval_minutes > 0:
+            intervals[row.symbol] = interval_minutes
+
+    grouped = (
+        await session.execute(
+            select(
+                FundingRate.symbol,
+                func.count(FundingRate.id).label("rows"),
+                func.min(FundingRate.funding_time).label("earliest"),
+                func.max(FundingRate.funding_time).label("latest"),
+            )
+            .where(FundingRate.symbol.in_(symbol_list))
+            .group_by(FundingRate.symbol)
+        )
+    ).all()
+    by_symbol = {
+        row.symbol: {
+            "rows": int(row.rows),
+            "earliest": row.earliest,
+            "latest": row.latest,
+        }
+        for row in grouped
+    }
+    candidates: list[dict[str, object]] = []
+    for symbol in symbol_list:
+        interval_minutes = intervals.get(symbol)
+        if interval_minutes is None:
+            continue
+        interval = timedelta(minutes=interval_minutes)
+        launch_time = launches.get(symbol)
+        target_start = max(
+            default_target_start,
+            launch_time if isinstance(launch_time, datetime) else default_target_start,
+        )
+        current = by_symbol.get(symbol, {"rows": 0, "earliest": None, "latest": None})
+        earliest = current["earliest"]
+        latest = current["latest"]
+        history_missing = (
+            earliest is None
+            or earliest > target_start + interval
+        )
+        current_missing = latest is None or latest < now - interval * 2
+        if history_missing or current_missing:
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "rows": int(current["rows"]),
+                    "earliest": earliest,
+                    "latest": latest,
+                    "target_start": target_start,
+                    "funding_interval_minutes": interval_minutes,
+                    "history_missing": history_missing,
+                    "current_missing": current_missing,
+                }
+            )
+    candidates.sort(
+        key=lambda item: (
+            not bool(item["current_missing"]),
+            int(item["rows"]),
+            item["earliest"] or datetime.max.replace(tzinfo=UTC),
+            str(item["symbol"]),
+        )
+    )
+    return candidates[: max(1, limit)]
+
+
+async def sync_funding_history(
+    session: AsyncSession,
+    client: BybitClient,
+    candidates: Iterable[dict[str, object]],
+    *,
+    target_days: int,
+    page_size: int,
+    max_pages_per_symbol: int,
+) -> dict[str, object]:
+    """Progressively backfill actual Bybit funding settlement events."""
+
+    now = datetime.now(UTC)
+    default_target_start = now - timedelta(days=target_days)
+    rows_received = 0
+    symbols_processed = 0
+    completed_symbols: list[str] = []
+    progress: list[dict[str, object]] = []
+    request_limit = min(max(int(page_size), 1), 200)
+
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        interval_minutes = int(candidate["funding_interval_minutes"])
+        interval = timedelta(minutes=interval_minutes)
+        target_start = candidate.get("target_start")
+        if not isinstance(target_start, datetime):
+            target_start = default_target_start
+        anchor_target = target_start - interval
+        earliest = candidate.get("earliest")
+        latest = candidate.get("latest")
+        current_missing = bool(candidate.get("current_missing"))
+        end_ms = (
+            int(now.timestamp() * 1000)
+            if current_missing or not isinstance(earliest, datetime)
+            else int(earliest.timestamp() * 1000) - 1
+        )
+        symbol_rows = 0
+        oldest_seen = earliest if isinstance(earliest, datetime) else None
+        newest_seen = latest if isinstance(latest, datetime) else None
+        exhausted = False
+        error: str | None = None
+        try:
+            for _page in range(max_pages_per_symbol):
+                items = await client.get_funding_history(
+                    symbol,
+                    limit=request_limit,
+                    end_ms=end_ms,
+                )
+                if not items:
+                    exhausted = True
+                    break
+                received_at = datetime.now(UTC)
+                parsed: list[tuple[datetime, Decimal]] = []
+                for item in items:
+                    funding_time = _dt_ms(item.get("fundingRateTimestamp"))
+                    if funding_time is None:
+                        raise ValueError("Bybit fundingRateTimestamp is required")
+                    rate = _required_finite_decimal(item.get("fundingRate"), "fundingRate")
+                    parsed.append((funding_time, rate))
+                page_times = [item[0] for item in parsed]
+                oldest_page = min(page_times)
+                newest_page = max(page_times)
+                oldest_seen = min(oldest_seen, oldest_page) if oldest_seen else oldest_page
+                newest_seen = max(newest_seen, newest_page) if newest_seen else newest_page
+                values = [
+                    {
+                        "symbol": symbol,
+                        "funding_time": funding_time,
+                        "available_at": received_at,
+                        "rate": rate,
+                    }
+                    for funding_time, rate in parsed
+                    if funding_time >= anchor_target
+                ]
+                if values:
+                    await session.execute(
+                        insert(FundingRate)
+                        .values(values)
+                        .on_conflict_do_nothing(constraint="uq_funding_symbol_time")
+                    )
+                    symbol_rows += len(values)
+                if oldest_page <= anchor_target or len(items) < request_limit:
+                    exhausted = True
+                    break
+                end_ms = int(oldest_page.timestamp() * 1000) - 1
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("Historical funding backfill failed", extra={"symbol": symbol})
+        symbols_processed += 1
+        rows_received += symbol_rows
+        current_complete = newest_seen is not None and newest_seen >= now - interval * 2
+        history_complete = oldest_seen is not None and oldest_seen <= anchor_target
+        if current_complete and (history_complete or exhausted):
+            completed_symbols.append(symbol)
+        progress.append(
+            {
+                "symbol": symbol,
+                "rows_received": symbol_rows,
+                "oldest_seen": oldest_seen.isoformat() if oldest_seen else None,
+                "newest_seen": newest_seen.isoformat() if newest_seen else None,
+                "target_start": target_start.isoformat(),
+                "anchor_target": anchor_target.isoformat(),
+                "funding_interval_minutes": interval_minutes,
+                "completed": symbol in completed_symbols,
+                "error": error,
+            }
+        )
+
+    return {
+        "symbols_processed": symbols_processed,
+        "rows_received": rows_received,
+        "completed_symbols": completed_symbols,
+        "progress": progress,
+        "default_target_start": default_target_start.isoformat(),
+    }
+
+
 async def sync_tickers(
     session: AsyncSession,
     client: BybitClient,

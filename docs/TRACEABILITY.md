@@ -1,5 +1,24 @@
 # Traceability
 
+## Work package: historical funding settlement replay
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Actual settlement timestamps are progressively backfilled | `app/services/market_data.py::sync_funding_history`, `app/workers/runner.py::history_backfill_job` | Bybit bounded-request regression plus static/full suite |
+| Funding is aggregated only over `(entry_time, exit_time]` | `app/ml/funding.py::HistoricalFundingTimeline.aggregate` | `test_funding_replay_uses_open_closed_settlement_window` |
+| Missing expected settlement fails closed | same | `test_funding_replay_fails_closed_on_missing_expected_settlement` |
+| LONG pays and SHORT receives positive exchange funding | `app/ml/funding.py::funding_return_rate_for_direction` | `test_policy_funding_components_preserve_long_short_cashflow_signs` |
+| Actual-exit funding affects realized PnL | `app/ml/training.py::evaluate_policy_model`, `scripts/backtest.py::policy_backtest` | funding component and policy selection tests |
+| Future actual funding cannot affect ex-ante selection | same; `evaluate_quality_gate` contract | `test_future_funding_does_not_leak_into_policy_direction_selection`, gate regression |
+| Artifact/runtime require settlement replay schema | `app/ml/lifecycle.py`, `app/ml/runtime.py` | runtime/artifact fixtures and full suite |
+| Funding history query is bounded and read-only | `app/bybit/client.py::get_funding_history` | two Bybit request-contract tests |
+
+## Schema changes 1.12.0
+
+- Historical funding: `bybit-settlement-timestamp-replay-v1`.
+- Policy metrics: `decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14`.
+- Expected funding source: `none-no-point-in-time-forecast`; realized source must equal the historical funding schema.
+
 ## Work package: purged expanding walk-forward validation
 
 | Acceptance criterion | Production implementation | Tests |

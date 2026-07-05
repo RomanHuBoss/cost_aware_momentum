@@ -15,13 +15,20 @@ from sqlalchemy import desc, func, select, update
 
 from app.config import Settings
 from app.db.engine import SessionFactory
-from app.db.models import Candle, ModelRegistry, TickerSnapshot
+from app.db.models import (
+    Candle,
+    FundingRate,
+    InstrumentSpecHistory,
+    ModelRegistry,
+    TickerSnapshot,
+)
 from app.json_utils import json_compatible
 from app.ml.data_profile import (
     TrainingDataProfile,
     profile_from_symbol_rows,
     profile_training_frame,
 )
+from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
@@ -79,6 +86,13 @@ class ModelCandidate:
     incumbent_metrics: dict[str, Any] | None
     incumbent_version: str | None
     feature_schema_version: str = MODEL_FEATURE_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class TrainingMarketData:
+    candles: pd.DataFrame
+    funding: pd.DataFrame
+    funding_interval_minutes: dict[str, int]
 
 
 def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
@@ -245,13 +259,13 @@ async def load_training_data_profile(
     )
 
 
-async def load_training_candles(
+async def load_training_market_data(
     symbols: list[str] | tuple[str, ...] | None,
     *,
     lookback_days: int | None = None,
     max_symbols: int = 0,
     interval: str = "60",
-) -> pd.DataFrame:
+) -> TrainingMarketData:
     async with SessionFactory() as session:
         selected_symbols = await _select_training_symbols(
             session, symbols, max_symbols=max_symbols, interval=interval
@@ -272,9 +286,43 @@ async def load_training_candles(
             query = query.where(Candle.symbol.in_(selected_symbols))
         if cutoff is not None:
             query = query.where(Candle.open_time >= cutoff)
-        rows = (await session.execute(query.order_by(Candle.open_time, Candle.symbol))).scalars().all()
+        candle_rows = (
+            await session.execute(query.order_by(Candle.open_time, Candle.symbol))
+        ).scalars().all()
 
-    return pd.DataFrame(
+        spec_query = select(InstrumentSpecHistory).order_by(
+            InstrumentSpecHistory.symbol,
+            desc(InstrumentSpecHistory.valid_from),
+        )
+        if selected_symbols:
+            spec_query = spec_query.where(InstrumentSpecHistory.symbol.in_(selected_symbols))
+        spec_rows = (await session.execute(spec_query)).scalars().all()
+        funding_intervals: dict[str, int] = {}
+        for row in spec_rows:
+            if row.symbol in funding_intervals or row.funding_interval_minutes is None:
+                continue
+            interval_minutes = int(row.funding_interval_minutes)
+            if interval_minutes > 0:
+                funding_intervals[row.symbol] = interval_minutes
+
+        funding_rows: list[FundingRate] = []
+        if candle_rows:
+            earliest_candle = min(row.open_time for row in candle_rows)
+            latest_candle_close = max(row.close_time for row in candle_rows)
+            max_interval = max(funding_intervals.values(), default=1440)
+            funding_query = select(FundingRate).where(
+                FundingRate.funding_time >= earliest_candle - timedelta(minutes=max_interval),
+                FundingRate.funding_time <= latest_candle_close,
+            )
+            if selected_symbols:
+                funding_query = funding_query.where(FundingRate.symbol.in_(selected_symbols))
+            funding_rows = (
+                await session.execute(
+                    funding_query.order_by(FundingRate.funding_time, FundingRate.symbol)
+                )
+            ).scalars().all()
+
+    candles = pd.DataFrame(
         [
             {
                 "symbol": row.symbol,
@@ -287,9 +335,42 @@ async def load_training_candles(
                 "volume": float(row.volume),
                 "turnover": float(row.turnover),
             }
-            for row in rows
+            for row in candle_rows
         ]
     )
+    funding = pd.DataFrame(
+        [
+            {
+                "symbol": row.symbol,
+                "funding_time": row.funding_time,
+                "available_at": row.available_at,
+                "rate": float(row.rate),
+            }
+            for row in funding_rows
+        ]
+    )
+    return TrainingMarketData(
+        candles=candles,
+        funding=funding,
+        funding_interval_minutes=funding_intervals,
+    )
+
+
+async def load_training_candles(
+    symbols: list[str] | tuple[str, ...] | None,
+    *,
+    lookback_days: int | None = None,
+    max_symbols: int = 0,
+    interval: str = "60",
+) -> pd.DataFrame:
+    return (
+        await load_training_market_data(
+            symbols,
+            lookback_days=lookback_days,
+            max_symbols=max_symbols,
+            interval=interval,
+        )
+    ).candles
 
 
 def incumbent_from_registry(model: ModelRegistry | None) -> IncumbentSnapshot | None:
@@ -451,6 +532,8 @@ def build_model_candidate(
     model_type: str,
     model_dir: Path,
     entry_spread_bps: float = 0.0,
+    funding_history: pd.DataFrame | None = None,
+    funding_interval_minutes: dict[str, int] | None = None,
     version: str | None = None,
     output: Path | None = None,
     incumbent: IncumbentSnapshot | None = None,
@@ -466,6 +549,9 @@ def build_model_candidate(
         candles,
         horizon=horizon,
         entry_spread_bps=entry_spread_bps,
+        funding_history=funding_history,
+        funding_interval_minutes=funding_interval_minutes,
+        require_funding_timeline=True,
     )
     if dataset.empty:
         raise RuntimeError("No direction-specific barrier labels could be built from PostgreSQL candles")
@@ -487,6 +573,9 @@ def build_model_candidate(
     metrics["label_path_schema_version"] = LABEL_PATH_SCHEMA_VERSION
     metrics["entry_execution_model"] = json_compatible(
         dataset.attrs.get("entry_execution_model") or {}
+    )
+    metrics["historical_funding_timeline"] = json_compatible(
+        dataset.attrs.get("historical_funding_timeline") or {}
     )
     metrics["hourly_continuity"] = json_compatible(
         dataset.attrs.get("hourly_continuity") or {}
@@ -594,6 +683,8 @@ def build_model_candidate(
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": float(entry_spread_bps),
         "entry_execution_model": metrics["entry_execution_model"],
+        "historical_funding_schema": HISTORICAL_FUNDING_SCHEMA_VERSION,
+        "historical_funding_timeline": metrics["historical_funding_timeline"],
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
@@ -709,6 +800,37 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         abs_tol=1e-12,
     ):
         reasons.append("entry_spread_bps_mismatch")
+
+    funding_timeline = metrics.get("historical_funding_timeline")
+    funding_schema = (
+        funding_timeline.get("schema")
+        if isinstance(funding_timeline, dict)
+        else None
+    )
+    funding_symbols = finite_or_none(
+        funding_timeline.get("symbols") if isinstance(funding_timeline, dict) else None
+    )
+    funding_settlements = finite_or_none(
+        funding_timeline.get("settlements") if isinstance(funding_timeline, dict) else None
+    )
+    if funding_schema != HISTORICAL_FUNDING_SCHEMA_VERSION:
+        reasons.append("invalid_historical_funding_schema")
+    if funding_symbols is None or funding_symbols < 1 or not funding_symbols.is_integer():
+        reasons.append("missing_historical_funding_symbols")
+    if (
+        funding_settlements is None
+        or funding_settlements < 1
+        or not funding_settlements.is_integer()
+    ):
+        reasons.append("missing_historical_funding_settlements")
+    if metrics.get("historical_funding_schema") != HISTORICAL_FUNDING_SCHEMA_VERSION:
+        reasons.append("policy_historical_funding_schema_mismatch")
+    if metrics.get("policy_funding_timeline_complete") is not True:
+        reasons.append("policy_historical_funding_timeline_incomplete")
+    if metrics.get("policy_expected_funding_source") != "none-no-point-in-time-forecast":
+        reasons.append("policy_expected_funding_lookahead_risk")
+    if metrics.get("policy_realized_funding_source") != HISTORICAL_FUNDING_SCHEMA_VERSION:
+        reasons.append("policy_realized_funding_source_mismatch")
 
     walk_forward_schema = metrics.get("walk_forward_schema")
     walk_forward_requested = finite_or_none(metrics.get("walk_forward_folds_requested"))

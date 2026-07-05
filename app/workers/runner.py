@@ -19,11 +19,13 @@ from app.logging import configure_logging
 from app.ml.runtime import ModelRuntime
 from app.ml.runtime_selection import select_model_runtime
 from app.services.market_data import (
+    symbols_needing_funding_history_backfill,
     symbols_needing_history_backfill,
     sync_candle_history,
     sync_candle_windows,
     sync_candles,
     sync_funding_and_oi,
+    sync_funding_history,
     sync_instruments,
     sync_read_only_account,
     sync_tickers,
@@ -393,35 +395,64 @@ class Worker:
         scheduled = datetime.now(UTC).replace(second=0, microsecond=0)
 
         async def task(session):
-            candidates = await symbols_needing_history_backfill(
+            candle_candidates = await symbols_needing_history_backfill(
                 session,
                 self.active_symbols,
                 interval=settings.candle_interval,
                 target_days=settings.history_backfill_target_days,
                 limit=settings.history_backfill_symbols_per_cycle,
             )
-            if not candidates:
+            funding_candidates = await symbols_needing_funding_history_backfill(
+                session,
+                self.active_symbols,
+                target_days=settings.history_backfill_target_days,
+                limit=settings.history_backfill_symbols_per_cycle,
+            )
+            if not candle_candidates and not funding_candidates:
                 return {
                     "enabled": True,
                     "status": "COMPLETE",
                     "symbols_processed": 0,
                     "rows_received": 0,
+                    "candle_history": {"symbols_processed": 0, "rows_received": 0},
+                    "funding_history": {"symbols_processed": 0, "rows_received": 0},
                     "target_days": settings.history_backfill_target_days,
                 }
-            result = await sync_candle_history(
-                session,
-                self.client,
-                candidates,
-                interval=settings.candle_interval,
-                target_days=settings.history_backfill_target_days,
-                page_size=settings.history_backfill_page_size,
-                max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+            candle_result = (
+                await sync_candle_history(
+                    session,
+                    self.client,
+                    candle_candidates,
+                    interval=settings.candle_interval,
+                    target_days=settings.history_backfill_target_days,
+                    page_size=settings.history_backfill_page_size,
+                    max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+                )
+                if candle_candidates
+                else {"symbols_processed": 0, "rows_received": 0, "progress": []}
+            )
+            funding_result = (
+                await sync_funding_history(
+                    session,
+                    self.client,
+                    funding_candidates,
+                    target_days=settings.history_backfill_target_days,
+                    page_size=min(settings.history_backfill_page_size, 200),
+                    max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+                )
+                if funding_candidates
+                else {"symbols_processed": 0, "rows_received": 0, "progress": []}
             )
             return {
                 "enabled": True,
                 "status": "RUNNING",
                 "target_days": settings.history_backfill_target_days,
-                **result,
+                "symbols_processed": int(candle_result["symbols_processed"])
+                + int(funding_result["symbols_processed"]),
+                "rows_received": int(candle_result["rows_received"])
+                + int(funding_result["rows_received"]),
+                "candle_history": candle_result,
+                "funding_history": funding_result,
             }
 
         result = await self.run_job("history_backfill", scheduled, task)

@@ -22,8 +22,8 @@ from app.ml.lifecycle import (
     build_model_candidate,
     evaluate_quality_gate,
     incumbent_from_registry,
-    load_training_candles,
     load_training_data_profile,
+    load_training_market_data,
     policy_evaluation_config,
     register_and_activate_model_candidate,
     register_model_candidate,
@@ -670,7 +670,7 @@ class BackgroundTrainer:
                             "incumbent_recovery": incumbent_recovery,
                         }
                     )
-                    candles = await load_training_candles(
+                    market_data = await load_training_market_data(
                         symbols,
                         lookback_days=settings.auto_train_lookback_days,
                         max_symbols=settings.auto_train_max_symbols,
@@ -684,11 +684,13 @@ class BackgroundTrainer:
                     self.state["phase"] = "FITTING"
                     candidate = await asyncio.to_thread(
                         build_model_candidate,
-                        candles,
+                        market_data.candles,
                         horizon=settings.default_horizon_hours,
                         model_type=settings.auto_train_model_type,
                         model_dir=settings.model_dir,
                         entry_spread_bps=settings.model_entry_spread_bps,
+                        funding_history=market_data.funding,
+                        funding_interval_minutes=market_data.funding_interval_minutes,
                         incumbent=incumbent,
                         source="background_trainer",
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,

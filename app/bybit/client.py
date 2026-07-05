@@ -152,12 +152,32 @@ class BybitClient:
         )
         return response.result.get("list") or []
 
-    async def get_funding_history(self, symbol: str, limit: int = 50) -> list[dict]:
+    async def get_funding_history(
+        self,
+        symbol: str,
+        limit: int = 50,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[dict]:
+        if start_ms is not None and end_ms is None:
+            raise ValueError("Bybit funding history requires end_ms when start_ms is provided")
+        if start_ms is not None and end_ms is not None and start_ms > end_ms:
+            raise ValueError("Bybit funding history start_ms must not exceed end_ms")
         response = await self._get(
             "/v5/market/funding/history",
-            {"category": "linear", "symbol": symbol, "limit": min(limit, 200)},
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "limit": min(max(int(limit), 1), 200),
+                "startTime": start_ms,
+                "endTime": end_ms,
+            },
         )
-        return response.result.get("list") or []
+        items = response.result.get("list") or []
+        if not isinstance(items, list):
+            raise RuntimeError("Bybit funding history response list is invalid")
+        return items
 
     async def get_open_interest(self, symbol: str, interval: str = "1h", limit: int = 50) -> list[dict]:
         response = await self._get(

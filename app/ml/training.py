@@ -18,6 +18,11 @@ from app.ml.features import (
     MARKET_BAR_VALID_COLUMN,
     build_feature_frame,
 )
+from app.ml.funding import (
+    HISTORICAL_FUNDING_SCHEMA_VERSION,
+    HistoricalFundingTimeline,
+    funding_return_rate_for_direction,
+)
 from app.ml.labels import triple_barrier_outcome
 
 OUTCOME_CLASSES = np.array(["TP", "SL", "TIMEOUT"])
@@ -32,7 +37,7 @@ TEMPORAL_SPLIT_SCHEMA_VERSION = "final-holdout-plus-expanding-walk-forward-v4"
 WALK_FORWARD_SCHEMA_VERSION = "expanding-train-rolling-calibration-purged-v1"
 DEFAULT_WALK_FORWARD_FOLDS = 3
 MIN_WALK_FORWARD_POSITIVE_FRACTION = 2.0 / 3.0
-POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-exit-time-cohort-v13"
+POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14"
 POLICY_UNCERTAINTY_SCHEMA = "all-horizon-phases-circular-moving-block-v2"
 HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
@@ -328,6 +333,9 @@ def make_barrier_dataset(
     stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
     tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
     entry_spread_bps: float = 0.0,
+    funding_history: pd.DataFrame | None = None,
+    funding_interval_minutes: dict[str, int] | None = None,
+    require_funding_timeline: bool = False,
 ) -> pd.DataFrame:
     """Build point-in-time LONG/SHORT scenarios from strict hourly windows.
 
@@ -356,6 +364,14 @@ def make_barrier_dataset(
         raise ValueError("entry_spread_bps must be non-negative and finite") from exc
     if not np.isfinite(parsed_entry_spread_bps) or parsed_entry_spread_bps < 0:
         raise ValueError("entry_spread_bps must be non-negative and finite")
+    funding_timeline: HistoricalFundingTimeline | None = None
+    if funding_history is not None:
+        funding_timeline = HistoricalFundingTimeline(
+            funding_history,
+            interval_minutes=funding_interval_minutes or {},
+        )
+    elif require_funding_timeline:
+        raise ValueError("Historical funding timeline is required for research training")
     frame = build_feature_frame(candles).sort_values(["symbol", "open_time"]).reset_index(drop=True)
     rows: list[dict] = []
     diagnostics: dict[str, int | str] = {
@@ -368,6 +384,7 @@ def make_barrier_dataset(
         "skipped_label_gap_timestamps": 0,
         "skipped_invalid_label_bar_timestamps": 0,
         "skipped_incomplete_direction_pair_timestamps": 0,
+        "skipped_incomplete_funding_timeline_timestamps": 0,
     }
     hourly = pd.Timedelta(1, unit="h")
 
@@ -474,6 +491,27 @@ def make_barrier_dataset(
                     conservative_ambiguity=True,
                 )
                 realized_return = sign * (float(result.exit_price) - entry) / entry
+                exit_offset_hours = int(result.exit_index) + (0 if result.exit_at_open else 1)
+                exit_time = decision_time + pd.Timedelta(exit_offset_hours, unit="h")
+                funding_values: dict[str, float | int | bool] = {}
+                if funding_timeline is not None:
+                    try:
+                        horizon_funding = funding_timeline.aggregate(
+                            symbol, start_time=decision_time, end_time=label_end_time
+                        )
+                        realized_funding = funding_timeline.aggregate(
+                            symbol, start_time=decision_time, end_time=exit_time
+                        )
+                    except ValueError:
+                        direction_rows = []
+                        break
+                    funding_values = {
+                        "historical_funding_timeline_complete": True,
+                        "historical_funding_horizon_rate": horizon_funding.cumulative_rate,
+                        "historical_funding_horizon_settlements": horizon_funding.settlements,
+                        "historical_funding_realized_rate": realized_funding.cumulative_rate,
+                        "historical_funding_realized_settlements": realized_funding.settlements,
+                    }
                 row = {name: float(current[name]) for name in FEATURE_NAMES}
                 row.update(
                     {
@@ -497,6 +535,7 @@ def make_barrier_dataset(
                         "realized_gross_return": float(realized_return),
                         "barrier_upside_rate": float(abs(take_profit - entry) / entry),
                         "barrier_downside_rate": float(abs(entry - stop) / entry),
+                        **funding_values,
                     }
                 )
                 direction_rows.append(row)
@@ -505,10 +544,21 @@ def make_barrier_dataset(
                 diagnostics["labeled_timestamps"] += 1
             else:
                 diagnostics["skipped_incomplete_direction_pair_timestamps"] += 1
+                if funding_timeline is not None:
+                    diagnostics["skipped_incomplete_funding_timeline_timestamps"] += 1
 
     dataset = pd.DataFrame.from_records(rows)
     dataset.attrs["hourly_continuity"] = diagnostics
     dataset.attrs["label_path_schema"] = LABEL_PATH_SCHEMA_VERSION
+    dataset.attrs["historical_funding_timeline"] = (
+        funding_timeline.describe()
+        if funding_timeline is not None
+        else {
+            "schema": None,
+            "required": bool(require_funding_timeline),
+            "status": "not_provided",
+        }
+    )
     dataset.attrs["entry_execution_model"] = {
         "schema": ENTRY_EXECUTION_MODEL_SCHEMA,
         "entry_spread_bps": parsed_entry_spread_bps,
@@ -1220,6 +1270,61 @@ def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -
     return metrics
 
 
+def historical_funding_components(
+    meta: pd.DataFrame,
+    *,
+    context: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, str | None]:
+    required = {
+        "historical_funding_timeline_complete",
+        "historical_funding_horizon_rate",
+        "historical_funding_horizon_settlements",
+        "historical_funding_realized_rate",
+        "historical_funding_realized_settlements",
+    }
+    if not required.issubset(meta.columns):
+        zeros = np.zeros(len(meta), dtype=float)
+        return zeros, zeros, zeros, None
+    if not meta["historical_funding_timeline_complete"].map(bool).all():
+        raise ValueError(f"{context} contains an incomplete historical funding timeline")
+    for column in (
+        "historical_funding_horizon_rate",
+        "historical_funding_realized_rate",
+    ):
+        values = pd.to_numeric(meta[column], errors="coerce")
+        if values.isna().any() or not np.isfinite(values.to_numpy(float)).all():
+            raise ValueError(f"{context} {column} must be finite")
+        meta[column] = values.astype(float)
+    for column in (
+        "historical_funding_horizon_settlements",
+        "historical_funding_realized_settlements",
+    ):
+        values = pd.to_numeric(meta[column], errors="coerce")
+        if (
+            values.isna().any()
+            or not np.isfinite(values.to_numpy(float)).all()
+            or (values < 0).any()
+            or not np.allclose(values, np.floor(values))
+        ):
+            raise ValueError(f"{context} {column} must contain non-negative integers")
+        meta[column] = values.astype(int)
+    if (
+        meta["historical_funding_realized_settlements"]
+        > meta["historical_funding_horizon_settlements"]
+    ).any():
+        raise ValueError(f"{context} realized funding settlements exceed the horizon")
+
+    horizon_signed = funding_return_rate_for_direction(
+        meta["direction"], meta["historical_funding_horizon_rate"]
+    )
+    realized_signed = funding_return_rate_for_direction(
+        meta["direction"], meta["historical_funding_realized_rate"]
+    )
+    recognized_horizon = np.minimum(horizon_signed, 0.0)
+    adverse_horizon = np.maximum(-recognized_horizon, 0.0)
+    return recognized_horizon, adverse_horizon, realized_signed, HISTORICAL_FUNDING_SCHEMA_VERSION
+
+
 def evaluate_policy_model(
     model: TemporalCalibratedBarrierModel,
     split: DatasetSplit,
@@ -1329,6 +1434,25 @@ def evaluate_policy_model(
         timeout_return_source = "fixed-config-fallback"
 
     fee_rate_per_leg = config.fee_rate_round_trip / 2.0
+    (
+        historical_horizon_recognized_funding,
+        historical_horizon_adverse_funding,
+        realized_funding,
+        historical_funding_schema,
+    ) = historical_funding_components(meta, context="Policy evaluation")
+    # Actual future settlement rates are valid realized-cost evidence, but they
+    # were not available at decision time and therefore must never influence
+    # direction selection, actionability, or expected EV. A point-in-time
+    # funding forecast can be added separately when historical forecast
+    # snapshots exist.
+    recognized_funding = np.zeros(len(meta), dtype=float)
+    adverse_funding = np.zeros(len(meta), dtype=float)
+    meta["historical_funding_horizon_recognized_rate"] = (
+        historical_horizon_recognized_funding
+    )
+    meta["historical_funding_horizon_adverse_rate"] = (
+        historical_horizon_adverse_funding
+    )
     is_long = meta["direction"].eq("LONG")
     tp_exit_ratio = np.where(
         is_long,
@@ -1361,16 +1485,23 @@ def evaluate_policy_model(
     sl_fee_rate = fee_rate_per_leg * (1.0 + sl_exit_ratio)
     timeout_fee_rate = fee_rate_per_leg * (1.0 + timeout_exit_ratio)
     meta["net_upside_rate"] = (
-        meta["barrier_upside_rate"] - tp_fee_rate - config.slippage_rate
+        meta["barrier_upside_rate"]
+        - tp_fee_rate
+        - config.slippage_rate
+        + recognized_funding
     )
     meta["stress_downside_rate"] = (
         meta["barrier_downside_rate"]
         + sl_fee_rate
         + config.slippage_rate
         + config.stop_gap_reserve_rate
+        + adverse_funding
     )
     meta["timeout_net_rate"] = (
-        meta["timeout_gross_return_rate"] - timeout_fee_rate - config.slippage_rate
+        meta["timeout_gross_return_rate"]
+        - timeout_fee_rate
+        - config.slippage_rate
+        + recognized_funding
     )
     meta["realized_fee_rate"] = fee_rate_per_leg * (1.0 + realized_exit_ratio)
     target = meta["target"].astype(str)
@@ -1393,6 +1524,7 @@ def evaluate_policy_model(
         meta["realized_gross_return"]
         - meta["realized_fee_rate"]
         - config.slippage_rate
+        + realized_funding
     )
     meta["net_rr"] = np.where(
         meta["stress_downside_rate"] > 0,
@@ -1433,6 +1565,10 @@ def evaluate_policy_model(
 
     empty_metrics: dict[str, object] = {
         "policy_metric_schema": POLICY_METRIC_SCHEMA,
+        "historical_funding_schema": historical_funding_schema,
+        "policy_funding_timeline_complete": historical_funding_schema is not None,
+        "policy_expected_funding_source": "none-no-point-in-time-forecast",
+        "policy_realized_funding_source": historical_funding_schema,
         "policy_timeout_return_schema": timeout_return_source,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
@@ -1528,6 +1664,10 @@ def evaluate_policy_model(
 
     return {
         "policy_metric_schema": POLICY_METRIC_SCHEMA,
+        "historical_funding_schema": historical_funding_schema,
+        "policy_funding_timeline_complete": historical_funding_schema is not None,
+        "policy_expected_funding_source": "none-no-point-in-time-forecast",
+        "policy_realized_funding_source": historical_funding_schema,
         "policy_timeout_return_schema": timeout_return_source,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,

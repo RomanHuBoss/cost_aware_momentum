@@ -8,17 +8,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import select
 
 from app.asyncio_compat import run_with_compatible_event_loop
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
-from app.db.models import BacktestRun, Candle
+from app.db.models import BacktestRun
+from app.ml.lifecycle import load_training_market_data
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     chronological_split,
     evaluate_model,
     filter_single_active_trade_per_symbol,
+    historical_funding_components,
     make_barrier_dataset,
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
@@ -39,35 +40,6 @@ def load_validated_artifact(
     if runtime.bundle is None or runtime.horizon_hours is None:
         raise RuntimeError("Backtest requires a validated model artifact")
     return runtime
-
-
-async def load_frame() -> pd.DataFrame:
-    settings = get_settings()
-    async with SessionFactory() as session:
-        query = select(Candle).where(
-            Candle.interval == "60",
-            Candle.price_type == "last",
-            Candle.confirmed.is_(True),
-        )
-        if settings.universe_mode == "static":
-            query = query.where(Candle.symbol.in_(settings.symbols))
-        rows = (await session.execute(query.order_by(Candle.open_time))).scalars().all()
-    return pd.DataFrame(
-        [
-            {
-                "symbol": row.symbol,
-                "open_time": row.open_time,
-                "close_time": row.close_time,
-                "open": float(row.open),
-                "high": float(row.high),
-                "low": float(row.low),
-                "close": float(row.close),
-                "volume": float(row.volume),
-                "turnover": float(row.turnover),
-            }
-            for row in rows
-        ]
-    )
 
 
 def _finite_nonnegative(value: float, name: str) -> float:
@@ -244,9 +216,22 @@ def policy_backtest(
 
     is_long = meta["direction"].eq("LONG")
     fee_rate_per_leg = fee_rate_round_trip / 2.0
-    funding_return = np.where(is_long, -funding_rate, funding_rate)
-    recognized_funding = np.minimum(funding_return, 0.0)
-    adverse_funding = np.maximum(-recognized_funding, 0.0)
+    (
+        historical_recognized_funding,
+        historical_adverse_funding,
+        historical_realized_funding,
+        historical_funding_schema,
+    ) = historical_funding_components(meta, context="Backtest")
+    override_funding_return = np.where(is_long, -funding_rate, funding_rate)
+    override_recognized_funding = np.minimum(override_funding_return, 0.0)
+    # Historical future settlements belong only to realized PnL. The explicit
+    # CLI funding rate is an ex-ante adverse stress override and must not rewrite
+    # realized historical cash flows.
+    recognized_funding = override_recognized_funding
+    adverse_funding = np.maximum(-override_recognized_funding, 0.0)
+    realized_funding = historical_realized_funding
+    meta["historical_funding_horizon_recognized_rate"] = historical_recognized_funding
+    meta["historical_funding_horizon_adverse_rate"] = historical_adverse_funding
     tp_exit_ratio = np.where(
         is_long,
         1.0 + meta["barrier_upside_rate"],
@@ -280,7 +265,8 @@ def policy_backtest(
     timeout_fee_rate = fee_rate_per_leg * (1.0 + timeout_exit_ratio)
     realized_fee_rate = fee_rate_per_leg * (1.0 + realized_exit_ratio)
     meta["realized_fee_rate"] = realized_fee_rate
-    meta["funding_return_rate"] = recognized_funding
+    meta["funding_horizon_return_rate"] = recognized_funding
+    meta["funding_return_rate"] = realized_funding
     meta["adverse_funding_rate"] = adverse_funding
     target_is_sl = meta["target"].eq("SL")
     meta["embedded_stop_gap_rate"] = np.where(
@@ -424,6 +410,9 @@ def policy_backtest(
         "stop_gap_reserve_bps": stop_gap_reserve_bps,
         "stop_gap_reserve_accounting": "risk-and-stress-only-actual-gap-in-realized-v2",
         "funding_rate": funding_rate,
+        "funding_rate_override": funding_rate,
+        "historical_funding_schema": historical_funding_schema,
+        "historical_funding_timeline_complete": historical_funding_schema is not None,
         "timeout_return_rate": (
             timeout_return_rate if timeout_return_source != "artifact_training_direction_median_r" else None
         ),
@@ -447,7 +436,13 @@ def policy_backtest(
 async def run(args) -> None:
     started = datetime.now(UTC)
     settings = get_settings()
-    frame = await load_frame()
+    symbols = settings.symbols if settings.universe_mode == "static" else None
+    market_data = await load_training_market_data(
+        symbols,
+        lookback_days=None,
+        max_symbols=0,
+    )
+    frame = market_data.candles
     runtime = load_validated_artifact(
         args.model,
         expected_sha256=getattr(args, "model_sha256", None),
@@ -467,6 +462,9 @@ async def run(args) -> None:
         stop_atr_multiplier=runtime.stop_atr_multiplier,
         tp_atr_multiplier=runtime.tp_atr_multiplier,
         entry_spread_bps=runtime.entry_spread_bps,
+        funding_history=market_data.funding,
+        funding_interval_minutes=market_data.funding_interval_minutes,
+        require_funding_timeline=True,
     )
     split = chronological_split(dataset, purge_rows=horizon)
     round_trip_cost_bps = (
@@ -576,7 +574,15 @@ def main() -> None:
     parser.add_argument("--round-trip-cost-bps", type=float)
     parser.add_argument("--slippage-bps", type=float)
     parser.add_argument("--stop-gap-reserve-bps", type=float)
-    parser.add_argument("--funding-rate", type=float, default=0.0)
+    parser.add_argument(
+        "--funding-rate",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional additional per-trade adverse funding stress. Historical settlement "
+            "events from PostgreSQL are replayed independently."
+        ),
+    )
     parser.add_argument("--timeout-return-rate", type=float)
     parser.add_argument("--minimum-net-rr", type=float)
     parser.add_argument("--minimum-net-ev-r", type=float)

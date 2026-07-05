@@ -10,6 +10,7 @@ import joblib
 import numpy as np
 
 from app.ml.features import FEATURE_NAMES
+from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
@@ -83,6 +84,9 @@ class ModelRuntime:
             ),
             "walk_forward_schema": (
                 self.bundle.get("walk_forward_schema") if self.bundle is not None else None
+            ),
+            "historical_funding_schema": (
+                self.bundle.get("historical_funding_schema") if self.bundle is not None else None
             ),
             "timeout_return_schema_version": (
                 self.bundle.get("timeout_return_schema_version")
@@ -158,6 +162,18 @@ class ModelRuntime:
                     f"expected {WALK_FORWARD_SCHEMA_VERSION}, "
                     f"got {walk_forward_schema or 'missing'}"
                 )
+            historical_funding_schema = str(bundle.get("historical_funding_schema") or "")
+            if historical_funding_schema != HISTORICAL_FUNDING_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model historical funding schema mismatch: "
+                    f"expected {HISTORICAL_FUNDING_SCHEMA_VERSION}, "
+                    f"got {historical_funding_schema or 'missing'}"
+                )
+            historical_funding_timeline = bundle.get("historical_funding_timeline")
+            if not isinstance(historical_funding_timeline, dict):
+                raise ValueError("Model artifact historical funding timeline is required")
+            if historical_funding_timeline.get("schema") != HISTORICAL_FUNDING_SCHEMA_VERSION:
+                raise ValueError("Model artifact historical funding timeline schema mismatch")
             timeout_return_schema = str(bundle.get("timeout_return_schema_version") or "")
             if timeout_return_schema != TIMEOUT_RETURN_SCHEMA_VERSION:
                 raise ValueError(

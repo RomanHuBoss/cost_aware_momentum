@@ -1,5 +1,17 @@
 # Incident Runbook
 
+## Симптом: active artifact не загружается после 1.12.0
+
+Вероятная причина: artifact создан до `bybit-settlement-timestamp-replay-v1` либо timeline metadata отсутствует/повреждена. Не редактируйте joblib вручную. Сохраните artifact для аудита, завершите funding backfill, переобучите candidate и активируйте только artifact с корректным SHA-256 и funding schema.
+
+## Симптом: training не строит labels после обновления
+
+Проверьте `history_backfill.funding_history.progress`: anchor до entry, earliest/newest settlement, instrument funding interval и ошибки Bybit response. Пропущенный ожидаемый settlement блокирует cohort намеренно. Не подставляйте нулевую ставку и не отключайте completeness check.
+
+## Симптом: `policy_expected_funding_lookahead_risk`
+
+Candidate metrics заявляют использование будущего actual funding в ex-ante policy. Такой candidate запрещён к activation. Исправьте research pipeline и переобучите модель; не меняйте reason severity.
+
 ## Симптом: active artifact не загружается после 1.11.0
 
 Вероятная причина: artifact создан до введения `final-holdout-plus-expanding-walk-forward-v4` либо не содержит `walk_forward_schema`.

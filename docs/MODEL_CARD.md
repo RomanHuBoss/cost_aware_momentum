@@ -33,6 +33,14 @@ Decision доступен после close исходной свечи. Entry mi
 
 Artifact сохраняет `label_path_schema_version`, execution schema и `entry_spread_bps`.
 
+## Historical funding replay, schema v1
+
+Research labels сохраняют фактические funding events для полного горизонта и для modeled actual exit. Settlement window — `(entry_time, exit_time]`: событие на момент входа не списывается повторно, событие на момент выхода учитывается. Positive exchange rate означает отрицательный cash flow LONG и положительный SHORT.
+
+Actual future rates используются только как realized OOS cost. Они не участвуют в выборе направления, expected RR/EV или actionability, потому что не были доступны оператору в decision time. Point-in-time funding forecast пока отсутствует; expected funding source фиксируется как `none-no-point-in-time-forecast`.
+
+Artifact сохраняет `historical_funding_schema=bybit-settlement-timestamp-replay-v1` и summary settlement coverage. Runtime и promotion gate требуют этот contract fail-closed.
+
 ## Promotion
 
 Auto-activation требует:
@@ -46,4 +54,4 @@ Auto-activation требует:
 
 ## Known limitations
 
-Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Нет historical bid/ask/depth, operator latency, path-dependent fill model, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.
+Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Нет historical bid/ask/depth, operator latency, path-dependent fill model, point-in-time funding forecasts, historical interval-change reconstruction, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.

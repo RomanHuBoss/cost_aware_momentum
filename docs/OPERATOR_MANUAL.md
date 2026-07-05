@@ -1,5 +1,15 @@
 # Operator Manual
 
+## Upgrade to 1.12.0
+
+1. Сохраните backup PostgreSQL, model registry и active artifact.
+2. Обновите исходники; Alembic migration и новые `.env` переменные не требуются.
+3. Запустите worker и дождитесь progressive `history_backfill`, включая вложенный `funding_history` progress.
+4. Проверьте покрытие всех training symbols до требуемого `HISTORY_BACKFILL_TARGET_DAYS`; ошибки или незавершённые symbols не обходите.
+5. Переобучите candidate. Artifact 1.11.0 не содержит обязательный historical-funding contract и должен быть отклонён runtime fail-closed.
+6. Проверьте artifact metadata: funding schema, symbols, settlements, start/end time и policy funding sources.
+7. После gates выполните новый paper/shadow период. Старые backtest/policy metrics без settlement replay напрямую несопоставимы с 1.12.0.
+
 ## Upgrade to 1.11.0
 
 1. Сохраните backup PostgreSQL, model registry и active artifact.

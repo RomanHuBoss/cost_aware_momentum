@@ -1,5 +1,13 @@
 # Configuration
 
+## Historical funding replay
+
+Release 1.12.0 не добавляет новую `.env` переменную. Progressive funding backfill использует существующие `HISTORY_BACKFILL_ENABLED`, `HISTORY_BACKFILL_TARGET_DAYS`, `HISTORY_BACKFILL_INTERVAL_SECONDS`, `HISTORY_BACKFILL_SYMBOLS_PER_CYCLE`, `HISTORY_BACKFILL_PAGES_PER_SYMBOL` и `HISTORY_BACKFILL_PAGE_SIZE`. Для funding endpoint effective page size ограничивается 200.
+
+Training требует фактическую settlement timeline на всём исследуемом интервале и один anchor event не позднее entry. При гэпе cohort исключается; если пригодных labels не осталось, candidate не создаётся. После увеличения target history дождитесь завершения funding и candle backfill до retraining.
+
+`--funding-rate` в research backtest является только дополнительным adverse ex-ante stress. Он не заменяет и не изменяет realized historical settlement cash flows.
+
 ## Walk-forward validation
 
 Release 1.11.0 не добавляет новую `.env` переменную. Safety protocol зафиксирован в code/artifact contract:

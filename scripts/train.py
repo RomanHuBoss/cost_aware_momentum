@@ -11,7 +11,7 @@ from app.db.models import ModelRegistry
 from app.ml.lifecycle import (
     build_model_candidate,
     incumbent_from_registry,
-    load_training_candles,
+    load_training_market_data,
     policy_evaluation_config,
     register_and_activate_model_candidate,
     register_model_candidate,
@@ -39,17 +39,19 @@ async def run(args: argparse.Namespace) -> None:
 
     incumbent_model = await active_model()
     symbols = settings.symbols if settings.universe_mode == "static" else None
-    frame = await load_training_candles(
+    market_data = await load_training_market_data(
         symbols,
         lookback_days=args.lookback_days,
         max_symbols=settings.auto_train_max_symbols,
     )
     candidate = build_model_candidate(
-        frame,
+        market_data.candles,
         horizon=args.horizon,
         model_type=args.model_type,
         model_dir=settings.model_dir,
         entry_spread_bps=settings.model_entry_spread_bps,
+        funding_history=market_data.funding,
+        funding_interval_minutes=market_data.funding_interval_minutes,
         version=args.version,
         output=args.output,
         incumbent=incumbent_from_registry(incumbent_model),

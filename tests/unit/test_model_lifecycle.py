@@ -59,6 +59,14 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
             "schema": "directional-half-spread-on-next-hour-open-v1",
             "entry_spread_bps": 18.0,
         },
+        "historical_funding_schema": "bybit-settlement-timestamp-replay-v1",
+        "historical_funding_timeline": {
+            "schema": "bybit-settlement-timestamp-replay-v1",
+            "symbols": 3,
+            "settlements": 100,
+            "start_time": "2024-01-01T00:00:00+00:00",
+            "end_time": "2025-12-31T00:00:00+00:00",
+        },
         "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
         "walk_forward_folds_requested": 3,
         "walk_forward_folds_completed": 3,
@@ -97,7 +105,10 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-exit-time-cohort-v13",
+        "policy_metric_schema": "decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14",
+        "policy_funding_timeline_complete": True,
+        "policy_expected_funding_source": "none-no-point-in-time-forecast",
+        "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v1",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,
@@ -130,7 +141,7 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
 
 def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
     metrics = _metrics()
-    metrics["policy_metric_schema"] = "decision-open-directional-spread-entry-exit-time-cohort-v13"
+    metrics["policy_metric_schema"] = "decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14"
 
     result = evaluate_quality_gate(
         _candidate(tmp_path, metrics=metrics),
@@ -334,3 +345,16 @@ def test_quality_gate_rejects_overlapping_walk_forward_test_windows(
 
     assert result["passed"] is False
     assert "invalid_walk_forward_evidence" in result["reasons"]
+
+
+def test_quality_gate_rejects_future_actual_funding_as_expected_policy_input(
+    tmp_path: Path,
+) -> None:
+    metrics = _metrics()
+    metrics["policy_expected_funding_source"] = "future-actual-settlement-rate"
+    settings = Settings(database_url="postgresql+psycopg://u:p@localhost/db")
+
+    result = evaluate_quality_gate(_candidate(tmp_path, metrics=metrics), settings)
+
+    assert result["passed"] is False
+    assert "policy_expected_funding_lookahead_risk" in result["reasons"]
