@@ -1,5 +1,15 @@
 # Security
 
+## Production drift integrity boundary 1.17.0
+
+- Drift reference is created from the untouched final holdout and embedded in the immutable artifact/registry evidence; production cannot redefine bins to hide drift.
+- Runtime and promotion gate require exact reference, feature order and selected-direction calibration-cohort schemas.
+- Monitoring filters by active model version and uses only resolved outcomes; future outcomes or another model's observations cannot enter the report.
+- Failed inference jobs and invalid coverage accounting are visible `BLOCKED` conditions, not silently discarded observations.
+- Reports contain model diagnostics but no API secrets, order mutation capability or raw credentials.
+- `automatic_model_action=none`: monitor code cannot activate, deactivate, roll back or weaken gates.
+- Disabling the monitor produces a visible blocked state; it is not treated as healthy.
+
 ## Market-context integrity boundary 1.16.0
 
 - OI, mark/index and funding sources remain public/read-only GET; trade mutation methods are not introduced.

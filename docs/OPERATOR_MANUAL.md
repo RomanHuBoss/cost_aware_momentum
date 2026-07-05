@@ -1,5 +1,25 @@
 # Operator Manual
 
+## Upgrade to 1.17.0
+
+1. Back up PostgreSQL, model registry and the active artifact.
+2. Update source files. Alembic migration is not required; expected head remains `0011_selection_experiment`.
+3. Copy/review `DRIFT_*` values from `.env.example`.
+4. Retrain a candidate. Artifact 1.16.0 is intentionally incompatible because it has no immutable drift reference.
+5. Activate only a candidate that passes the existing quality gate and runtime validation.
+6. Run `python manage.py drift-report` and inspect `reports/production_drift.json`.
+7. Confirm worker heartbeat contains `production_drift` and that `automatic_model_action` is `none`.
+8. Do not lower thresholds only to turn `BLOCKED/CRITICAL` green; first distinguish failed inference/data gaps, regime drift and delayed outcome availability.
+
+## Interpreting drift status
+
+- `OK`: minimum evidence exists and configured limits are not crossed.
+- `WARN`: at least one PSI/actionability diagnostic crossed the warning level.
+- `CRITICAL`: material feature/probability/calibration/actionability drift was detected.
+- `BLOCKED`: evidence is insufficient or structurally unreliable, including failed inference jobs, low coverage, excessive missingness or incompatible reference.
+
+`DEGRADED` heartbeat is an operator alert, not an automatic rollback. Preserve the incumbent artifact, investigate data quality and compare paper/shadow performance before any manual model action.
+
 ## Upgrade to 1.16.0
 
 1. Остановите API, worker и trainer; сохраните backup PostgreSQL, model registry и active artifact.

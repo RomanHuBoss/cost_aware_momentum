@@ -18,6 +18,7 @@ from app.ml.training import (
     TEMPORAL_SPLIT_SCHEMA_VERSION,
     TIMEOUT_RETURN_SCHEMA_VERSION,
 )
+from tests.drift_reference import valid_production_drift_reference
 
 
 class _RecoveryArtifactModel:
@@ -39,6 +40,7 @@ def _passing_metrics() -> dict[str, object]:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
+        "production_drift_reference": valid_production_drift_reference(),
         "market_context": {
             "schema": "hourly-oi-basis-settled-funding-turnover-v1",
             "availability_schema": "exchange-event-close-live-receipt-v1",
@@ -165,6 +167,7 @@ def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8)
                 "historical_receipt_time_reconstructed": False,
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
+            "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {

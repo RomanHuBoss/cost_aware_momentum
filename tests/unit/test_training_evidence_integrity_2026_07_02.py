@@ -16,10 +16,13 @@ from app.ml.training import (
     PolicyEvaluationConfig,
     evaluate_policy_model,
 )
+from tests.drift_reference import valid_production_drift_reference
 
 
 def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
     now = datetime(2026, 1, 1, tzinfo=UTC)
+    metrics = dict(metrics)
+    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",

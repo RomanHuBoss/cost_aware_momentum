@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.17.0 — 2026-07-05
+
+- Добавлен immutable final-holdout drift reference для всех 17 ex-ante base features, обеих directional probability distributions, selected-direction calibration и policy actionability density.
+- Hourly production monitor рассчитывает inference coverage, feature missingness, feature/probability PSI, selected-direction log-loss/Brier deltas и actionability-rate drift только для активной model version.
+- Reference использует фиксированные holdout quantile bins; production не переоценивает границы по текущему окну и не смешивает версии модели.
+- Failed inference jobs, некорректный coverage accounting, недостаток наблюдений или несовместимый artifact дают `BLOCKED`; критический drift переводит worker heartbeat в `DEGRADED`.
+- Монитор не активирует, не деактивирует и не откатывает модели и не ослабляет ML/policy/risk gates; `automatic_model_action=none` фиксируется в каждом отчёте.
+- Добавлены `manage.py drift-report`, `cam-drift-report`, включение drift diagnostics в daily report и fail-closed `DRIFT_*` настройки.
+- Artifact/runtime/promotion contracts требуют `final-holdout-feature-probability-selected-calibration-reference-v2`; pre-1.17 artifacts необходимо переобучить.
+- Новых migration нет; добавлены regression-тесты для PSI, calibration, coverage/missingness, failed inference jobs, runtime cohort compatibility и heartbeat degradation.
+
 ## 1.16.0 — 2026-07-05
 
 - Добавлен строгий point-in-time market-context layer: OI log changes 1h/24h, mark/index basis и его часовая динамика, последняя settled funding rate/age и turnover-to-OI liquidity proxy.

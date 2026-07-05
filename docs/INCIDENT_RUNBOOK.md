@@ -1,5 +1,25 @@
 # Incident Runbook
 
+## Симптом: production drift status `BLOCKED`
+
+Проверьте `alerts`, число hourly inference jobs, `failed_inference_jobs`, coverage, feature/probability observations и resolved outcomes. `active_artifact_model_required` означает baseline/отсутствие активного artifact; `invalid_production_drift_reference` — legacy или повреждённый artifact; `failed_inference_jobs_in_window` нельзя устранять исключением failed rows из отчёта. Исправьте worker/data flow или переобучите artifact, не переводите monitor в fail-open.
+
+## Симптом: `feature_distribution_drift` / `probability_distribution_drift`
+
+Сравните drift по отдельным признакам/классам, missingness, model version, universe composition и market regime. PSI использует фиксированные final-holdout bins; не пересчитывайте bins на production окне. Проверьте также schema/feature order и live context availability до изменения thresholds.
+
+## Симптом: `calibration_drift`
+
+Убедитесь, что накоплено достаточно resolved `SignalOutcome`, outcome resolver работает, а сравнение относится к той же active model version. Calibration baseline и production используют selected direction; смешивание counterfactual LONG/SHORT rows запрещено. Не интерпретируйте задержку outcome как отсутствие drift.
+
+## Симптом: `actionability_density_drift`
+
+Проверьте RR/EV thresholds, fees/slippage/funding inputs, spread/orderbook regime и universe. Изменение плотности рекомендаций может быть экономически нормальным, но требует анализа; monitor не меняет policy автоматически.
+
+## Симптом: heartbeat `DEGRADED`, но модель продолжает работать
+
+Это ожидаемо: drift monitor является diagnostic alert gate. Поле `automatic_model_action=none` запрещает скрытую деактивацию/rollback. Оператор должен сохранить evidence, проверить data quality, paper/shadow результаты и только затем принять явное governance-решение.
+
 ## Симптом: `incomplete_market_context` / рекомендации исчезли после 1.16.0
 
 Проверьте, что `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`, worker успешно сохраняет current `price_type=mark/index`, hourly OI и funding, а `available_at` не позже inference cutoff. Сравните exact `event_time/close_time` с decision boundary. Не подставляйте нули, stale OI или last price вместо mark/index.

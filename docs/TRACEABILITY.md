@@ -1,5 +1,28 @@
 # Traceability
 
+## Work package: production drift monitoring
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Reference is immutable and derived only from final holdout | `app/ml/lifecycle.py`, `app/ml/drift.py::build_production_drift_reference` | reference schema and same-distribution tests |
+| Calibration baseline matches production selected-direction cohort | `evaluate_policy_model` selected calibration metrics; drift reference v2 | policy calibration assertions and runtime mismatch regression |
+| Both directional probability distributions are observable | `app/services/signals.py`, `directional_prediction_snapshot` | directional snapshot test |
+| Monitor compares only the active model version | `app/services/drift_monitor.py` model-version query | service/report contract tests and full suite |
+| Coverage and missingness fail closed | `evaluate_production_drift`, inference JobRun accounting | low-coverage/missingness and failed-job tests |
+| Fixed-bin feature and probability PSI | artifact histogram reference and `_population_stability_index` | same-distribution and large-shift tests |
+| Delayed outcomes drive selected-direction calibration drift | `SignalOutcome` join with selected signal probabilities | calibration degradation test |
+| Actionability-density drift is compared with artifact policy thresholds | reference actionability contract and production RR/EV evaluation | same-distribution/threshold tests |
+| Critical or blocked evidence degrades operations without model mutation | worker heartbeat integration, `automatic_model_action=none` | heartbeat and failed-job tests |
+| CLI/daily reports expose complete evidence | `scripts/drift_report.py`, `scripts/daily_report.py` | command/static/full suite |
+
+## Schema changes 1.17.0
+
+- Drift reference: `final-holdout-feature-probability-selected-calibration-reference-v2`.
+- Calibration cohort: `selected-direction-final-holdout-v1`.
+- Directional probability snapshot: `both-directional-probabilities-v1`.
+- Drift report: `production-drift-report-v1`.
+- Alembic head unchanged: `0011_selection_experiment`.
+
 ## Work package: point-in-time market-context features
 
 | Acceptance criterion | Production implementation | Tests |

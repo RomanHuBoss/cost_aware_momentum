@@ -1,5 +1,18 @@
 # Architecture
 
+## Production drift flow 1.17.0
+
+1. Candidate training uses the untouched final holdout to create fixed histogram references for the 17 base features and all LONG/SHORT probability vectors.
+2. Policy evaluation selects one direction per symbol/timestamp using the same ex-ante economics as production and stores selected-cohort log-loss/Brier plus actionability density. This avoids comparing production selected outcomes with an all-direction calibration baseline.
+3. The immutable reference is stored in both artifact and model-registry metrics and is checked by quality gate and runtime.
+4. Every published signal stores the common feature vector and both directional probability vectors under `directional_predictions`; the selected signal probabilities remain the calibration observation.
+5. Hourly monitor queries only signals from the active model version and the configured trailing window. It joins only already resolved `SignalOutcome` rows.
+6. Fixed holdout bins are used for feature/probability PSI. Coverage comes from hourly inference JobRun scope and completion counts; failed jobs or invalid accounting block the report.
+7. Reports classify evidence as `OK`, `WARN`, `CRITICAL` or `BLOCKED`. `CRITICAL/BLOCKED` changes worker heartbeat to `DEGRADED`.
+8. The monitor is observational: `automatic_model_action=none`. It does not activate, deactivate, roll back, retrain or weaken any model/policy/risk gate.
+
+Data flow: final holdout → immutable reference → active-version signals/jobs/outcomes → fixed-bin drift evaluation → JobRun/heartbeat/JSON report.
+
 ## Point-in-time market-context flow 1.16.0
 
 1. Worker progressively stores confirmed hourly `last`, `mark` and `index` candles, hourly `OpenInterest` rows and actual funding settlements from public/read-only Bybit endpoints.

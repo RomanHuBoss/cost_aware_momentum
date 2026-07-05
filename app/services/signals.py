@@ -27,6 +27,7 @@ from app.ml.context import (
     MARKET_CONTEXT_FEATURE_NAMES,
     build_market_context_frame,
 )
+from app.ml.drift import directional_prediction_snapshot
 from app.ml.features import BASELINE_FEATURE_SCHEMA_VERSION, latest_feature_snapshot
 from app.ml.runtime import ModelRuntime, Prediction
 from app.ml.training import DEFAULT_STOP_ATR_MULTIPLIER, DEFAULT_TP_ATR_MULTIPLIER
@@ -674,8 +675,9 @@ async def publish_hourly_signals(
             funding_rate=decimal(funding_scenario),
         )
         try:
+            directional_predictions = runtime.predict_scenarios(model_features)
             scenario = select_cost_aware_scenario(
-                runtime.predict_scenarios(model_features),
+                directional_predictions,
                 bid_price=ticker.bid_price,
                 ask_price=ticker.ask_price,
                 last_price=ticker.last_price,
@@ -775,6 +777,9 @@ async def publish_hourly_signals(
                 **model_features,
                 "score": prediction.score,
                 "spread_bps": spread_bps,
+                "directional_predictions": directional_prediction_snapshot(
+                    directional_predictions
+                ),
                 "model_runtime": runtime.metadata(),
                 "economics_assumptions": {
                     "timeout_gross_return_rate": str(scenario.timeout_return_rate),

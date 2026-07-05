@@ -17,6 +17,7 @@ from app.ml.context import (
     MARKET_CONTEXT_SCHEMA_VERSION,
     build_market_context_frame,
 )
+from app.ml.drift import PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA
 from app.ml.features import (
     FEATURE_CONTINUITY_COLUMN,
     FEATURE_LOOKBACK_HOURS,
@@ -1940,6 +1941,23 @@ def evaluate_policy_model(
         .sort_values(["decision_time", "symbol"], kind="mergesort")
         .reset_index(drop=True)
     )
+    selected_outcomes = selected["target"].astype(str).to_numpy()
+    if not np.isin(selected_outcomes, OUTCOME_CLASSES).all():
+        raise ValueError("Policy-selected calibration target contains an unsupported outcome")
+    selected_probabilities = selected[["p_tp", "p_sl", "p_timeout"]].to_numpy(float)
+    selected_log_loss = _ordered_multiclass_log_loss(
+        selected_outcomes,
+        selected_probabilities,
+        OUTCOME_CLASSES,
+    )
+    selected_indexes = np.array(
+        [{label: index for index, label in enumerate(OUTCOME_CLASSES)}[label] for label in selected_outcomes],
+        dtype=int,
+    )
+    selected_one_hot = np.eye(len(OUTCOME_CLASSES), dtype=float)[selected_indexes]
+    selected_multiclass_brier = float(
+        np.mean(np.sum((selected_probabilities - selected_one_hot) ** 2, axis=1))
+    )
     selected["actionable"] = (selected["net_rr"] >= config.min_net_rr) & (
         selected["expected_ev_r"] >= config.min_net_ev_r
     )
@@ -1970,6 +1988,10 @@ def evaluate_policy_model(
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
         "policy_actionable_candidates": int(len(actionable_trades)),
+        "policy_selected_calibration_schema": PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA,
+        "policy_selected_calibration_rows": int(len(selected)),
+        "policy_selected_log_loss": float(selected_log_loss),
+        "policy_selected_multiclass_brier": selected_multiclass_brier,
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": 0,
         "policy_cohorts": 0,
@@ -2071,6 +2093,10 @@ def evaluate_policy_model(
         "policy_capital_sleeves": resolved_horizon,
         "policy_candidates": int(len(selected)),
         "policy_actionable_candidates": int(len(actionable_trades)),
+        "policy_selected_calibration_schema": PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA,
+        "policy_selected_calibration_rows": int(len(selected)),
+        "policy_selected_log_loss": float(selected_log_loss),
+        "policy_selected_multiclass_brier": selected_multiclass_brier,
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": int(len(trades)),
         "policy_cohorts": int(len(cohort_metrics)),

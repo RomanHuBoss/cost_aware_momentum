@@ -7,6 +7,7 @@ from pathlib import Path
 from app.config import Settings
 from app.ml.data_profile import profile_from_symbol_rows
 from app.ml.lifecycle import ModelCandidate, evaluate_quality_gate
+from tests.drift_reference import valid_production_drift_reference
 
 
 def _candidate(
@@ -25,6 +26,8 @@ def _candidate(
         unique_timestamps=500,
         minimum_rows_for_coverage=300,
     )
+    metrics = dict(metrics)
+    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",

@@ -86,6 +86,19 @@ Selection model не является market model и не влияет на sig
 
 Поскольку counterfactual outcomes доступны и для непринятых plans, primary benchmark — прямое среднее всех eligible valued opportunities. IPSW accepted-only estimate служит проверяемой диагностикой selection bias. Отчёт не доказывает causal operator skill, actual fill profitability или отсутствие unmeasured confounding.
 
+## Production drift reference and monitoring 1.17.0
+
+Every artifact persists a reference derived only from its untouched final holdout:
+
+- fixed quantile-bin histograms for all 17 base features;
+- fixed histograms for TP/SL/TIMEOUT probabilities across both hypothetical directions;
+- log-loss and multiclass Brier for the policy-selected direction only;
+- selected-plan actionability density and the RR/EV thresholds used to define it.
+
+Production monitoring uses only signals emitted by the same active model version. Feature/probability PSI, missingness and inference coverage are available immediately; calibration evidence appears only after `SignalOutcome` resolution. Failed inference jobs, inadequate samples or corrupt/incompatible reference produce `BLOCKED`. Critical distribution/calibration/actionability drift produces `CRITICAL` and degrades the worker heartbeat.
+
+The monitor does not alter artifacts or registry state and cannot bypass promotion gates. PSI and delayed calibration are diagnostics, not proof of causal deterioration or profitability.
+
 ## Promotion
 
 Auto-activation требует:
@@ -101,4 +114,4 @@ Auto-activation требует:
 
 ## Known limitations
 
-Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют historical receipt-time reconstruction, point-in-time funding forecasts, orderbook-depth/cross-asset model features, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.
+Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют historical receipt-time reconstruction, point-in-time funding forecasts, orderbook-depth/cross-asset model features, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe, multivariate drift tests, adaptive control limits и automatic drift rollback. Результаты не являются доказательством прибыльности.

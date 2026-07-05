@@ -26,6 +26,7 @@ from app.risk.math import (
     upside_rate,
     validate_probability_simplex,
 )
+from tests.drift_reference import valid_production_drift_reference
 
 D = Decimal
 
@@ -87,6 +88,7 @@ def test_artifact_rejects_boolean_barrier_multiplier(tmp_path: Path) -> None:
                 "historical_receipt_time_reconstructed": False,
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
+            "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {

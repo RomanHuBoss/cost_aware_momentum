@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import joblib
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -25,6 +26,7 @@ from app.ml.training import (
     TIMEOUT_RETURN_SCHEMA_VERSION,
     WALK_FORWARD_SCHEMA_VERSION,
 )
+from tests.drift_reference import valid_production_drift_reference
 
 
 class _ScalarsResult:
@@ -156,6 +158,7 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
             "historical_receipt_time_reconstructed": False,
         },
         "market_context_ablation_schema": "same-split-zeroed-context-v1",
+        "production_drift_reference": valid_production_drift_reference(),
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": 18.0,
         "entry_execution_model": {
@@ -249,6 +252,8 @@ def test_runtime_rejects_inconsistent_entry_execution_metadata(tmp_path: Path) -
 
 def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
     now = datetime(2026, 7, 2, tzinfo=UTC)
+    metrics = dict(metrics)
+    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",
@@ -424,6 +429,9 @@ class _TrainableArtifactModel(_ArtifactModel):
     def fit(self, *_args: object, **_kwargs: object) -> _TrainableArtifactModel:
         return self
 
+    def predict_proba(self, values) -> np.ndarray:
+        return np.repeat(np.array([[0.34, 0.33, 0.33]], dtype=float), len(values), axis=0)
+
 
 def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_labels(
     tmp_path: Path,
@@ -456,6 +464,8 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
         y_train=[],
         x_cal=[],
         y_cal=[],
+        x_test=np.zeros((3, len(MODEL_FEATURE_NAMES)), dtype=float),
+        y_test=np.array(["TP", "SL", "TIMEOUT"], dtype=object),
         train_meta=pd.DataFrame(
             {
                 "target": [],
@@ -550,4 +560,18 @@ def test_runtime_rejects_artifact_without_market_context_contract(tmp_path: Path
     joblib.dump(bundle, path)
 
     with pytest.raises(ValueError, match="market context schema mismatch"):
+        ModelRuntime(path, allow_baseline=False).load()
+
+
+def test_runtime_rejects_drift_reference_from_unselected_calibration_cohort(
+    tmp_path: Path,
+) -> None:
+    bundle = _artifact_bundle()
+    bundle["production_drift_reference"]["calibration"]["schema"] = (
+        "all-direction-final-holdout-v0"
+    )
+    path = tmp_path / "unselected-drift-calibration.joblib"
+    joblib.dump(bundle, path)
+
+    with pytest.raises(ValueError, match="drift calibration cohort"):
         ModelRuntime(path, allow_baseline=False).load()

@@ -1,5 +1,29 @@
 # Configuration
 
+## Release 1.17.0 — production drift monitoring
+
+No database migration is required. Add or review the following settings:
+
+```env
+DRIFT_MONITOR_ENABLED=true
+DRIFT_WINDOW_HOURS=168
+DRIFT_MIN_FEATURE_OBSERVATIONS=48
+DRIFT_MIN_OUTCOME_OBSERVATIONS=30
+DRIFT_MIN_COVERAGE_RATE=0.80
+DRIFT_MAX_MISSING_RATE=0.02
+DRIFT_WARNING_PSI=0.10
+DRIFT_CRITICAL_PSI=0.25
+DRIFT_MAX_LOG_LOSS_DELTA=0.10
+DRIFT_MAX_BRIER_DELTA=0.05
+DRIFT_MAX_ACTIONABILITY_RATE_DELTA=0.20
+```
+
+`DRIFT_WINDOW_HOURS` must be at least 24. Coverage is the fraction of scoped universe opportunities represented by newly published or already-current signals in successful hourly inference jobs. Any failed inference job in the window blocks the report rather than being omitted from the denominator.
+
+PSI thresholds apply independently to every feature and TP/SL/TIMEOUT probability component. Calibration deltas use only resolved outcomes for the production-selected direction and compare with the same selected-direction final-holdout cohort. Until `DRIFT_MIN_OUTCOME_OBSERVATIONS` is reached, calibration is reported as insufficient evidence rather than silently assumed healthy.
+
+`DRIFT_MONITOR_ENABLED=false` yields a visible `BLOCKED` report. The monitor never changes the active model. Artifact 1.16.0 lacks the mandatory drift reference; complete retraining and activation of a 1.17.0 candidate are required.
+
 ## Release 1.16.0 — market-context features
 
 Новых имён `.env` и migration нет. Однако active artifact теперь требует ongoing mark/index/funding/OI refresh, поэтому defaults и `.env.example` изменены на:

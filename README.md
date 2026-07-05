@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.16.0: market model расширен с 10 OHLCV-признаков до 17 ex-ante признаков: добавлены изменения open interest за 1/24 часа, mark/index basis и его часовая динамика, последняя уже состоявшаяся funding-ставка и её возраст, а также turnover/OI liquidity proxy. Историческое обучение использует exchange event/close timestamps, live inference дополнительно требует `available_at <= now`; пропуски блокируются fail-closed. Отдельная same-split ablation и три walk-forward проверки не позволяют активировать materially ухудшившийся context model.
+> Версия 1.17.0: добавлен production drift monitor. Immutable artifact сохраняет final-holdout reference для 17 ex-ante признаков, обеих directional probability distributions, выбранного policy-направления, calibration и actionability density. Hourly worker считает coverage/missingness, PSI, log-loss/Brier deltas и actionability drift только для активной версии модели. Недостаток данных, failed inference jobs или несовместимый reference дают `BLOCKED`; критический drift переводит heartbeat в `DEGRADED`, но не деактивирует модель и не ослабляет gates.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -14,6 +14,7 @@
 - Artifact model использует 10 OHLCV-derived и 7 point-in-time market-context features: OI momentum, mark/index basis, settled funding state и turnover/OI liquidity proxy. Точный OI/basis и свежий funding anchor обязательны; zero-fill и future event leakage запрещены.
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
+- Production drift monitoring сравнивает только активную model version с её immutable final-holdout reference: feature/probability PSI, coverage/missingness, selected-direction calibration и actionability density. `CRITICAL/BLOCKED` деградирует operational heartbeat; automatic model action намеренно отсутствует.
 - Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов final holdout; число символов не заменяет временную глубину. До final holdout candidate обязан пройти три последовательных purged expanding walk-forward folds с независимым переобучением и калибровкой.
 - Экономический promotion gate использует не только point mean R, но и 95% one-sided lower confidence bound. Для горизонта `H` часов отдельно оцениваются все `H` неперекрывающихся часовых фаз; gate использует худшую фазовую LCB и требует полного покрытия фаз. Default требует `LCB > 0`.
 - До запуска bootstrap trainer вычисляет необходимую часовую историю из feature warm-up, horizon, temporal split и holdout gates. При defaults требуется не менее 1206 уникальных часовых timestamps; это необходимое, но не достаточное условие при гэпах/невалидных свечах.
@@ -89,6 +90,7 @@ python manage.py backup         создать PostgreSQL backup
 python manage.py restore-check  проверить backup восстановлением
 python manage.py report         сформировать ежедневный отчёт, включая selection diagnostics
 python manage.py selection-report  сформировать 90-дневный отчёт смещения отбора
+python manage.py drift-report    сформировать отчёт production drift
 python manage.py release-check  проверить release tree и SHA256SUMS
 ```
 
@@ -96,7 +98,7 @@ python manage.py release-check  проверить release tree и SHA256SUMS
 
 `manage.py configure` создаёт локальный `.env`. Реальные credentials не должны попадать в архив или систему контроля версий. Шаблон переменных находится в `.env.example`.
 
-`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.14.0 добавил live advisory execution evidence, release 1.15.0 — prospective selection ledger. Release 1.16.0 не добавляет migration или новые имена `.env`, но меняет model feature/artifact contract и требует retraining. Для непрерывного live-context refresh установите `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`; в новом шаблоне и defaults они включены.
+`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.17.0 не добавляет migration, но добавляет `DRIFT_*` настройки и обязательный drift-reference contract. Artifact 1.16.0 необходимо переобучить. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
 
 Поддерживаются оба формата списков:
 
@@ -159,6 +161,9 @@ Market outcome `TP / SL / TIMEOUT` вычисляется по пути от `si
 При создании любой execution-plan version система сохраняет отдельную строку `advisory.selection_experiment_ledger`. Строка содержит eligibility status, planning timestamp, идентификаторы signal/profile/plan, фиксированную схему видимых до решения числовых признаков и SHA-256 canonical payload. Решение оператора и результат плана присоединяются только при построении отчёта; они не могут попасть в propensity features.
 
 `python manage.py selection-report -- --days 90` создаёт `reports/operator_selection_bias.json`. Основной benchmark — средний counterfactual R всех eligible/valued plans. Отдельно показываются selected-only, unselected, acceptance rate и chronological expanding OOS propensity diagnostics. IPSW-оценка публикуется только при достаточном размере обеих групп, overlap и effective sample size; при class collapse, повреждении ledger или слабом overlap результат блокируется. Unit анализа — plan version, а не подтверждённый просмотр UI; это ограничение явно указано в отчёте.
+
+`python manage.py drift-report` создаёт `reports/production_drift.json`. Reference берётся из final holdout активного artifact; calibration baseline использует тот же selected-direction cohort, что и production outcomes. PSI рассчитывается по фиксированным holdout-бинам. Failed inference jobs, недостаточная coverage/missingness или малая выборка дают `BLOCKED`; `CRITICAL` и `BLOCKED` отображаются как `DEGRADED` в worker heartbeat. Поле `automatic_model_action` всегда равно `none`.
+
 
 ## Временная семантика ML
 

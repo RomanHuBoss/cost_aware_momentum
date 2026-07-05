@@ -18,6 +18,7 @@ from app.db.models import JobRun, ModelRegistry, OrderBookSnapshot, ServiceHeart
 from app.logging import configure_logging
 from app.ml.runtime import ModelRuntime
 from app.ml.runtime_selection import select_model_runtime
+from app.services.drift_monitor import build_production_drift_report
 from app.services.market_data import (
     symbols_needing_funding_history_backfill,
     symbols_needing_history_backfill,
@@ -92,6 +93,7 @@ class Worker:
         self.last_model_refresh: datetime | None = None
         self.active_model_registry_id: str | None = None
         self.model_notice: dict[str, object] | None = None
+        self.last_drift_summary: dict[str, object] | None = None
         self.active_symbols: tuple[str, ...] = tuple(settings.symbols)
         self.universe_summary: dict = {
             "mode": settings.universe_mode,
@@ -148,13 +150,19 @@ class Worker:
         return changed
 
     def model_heartbeat_status(self) -> str:
-        return "DEGRADED" if self.model_notice is not None else "RUNNING"
+        drift_status = (self.last_drift_summary or {}).get("status")
+        return (
+            "DEGRADED"
+            if self.model_notice is not None or drift_status in {"CRITICAL", "BLOCKED"}
+            else "RUNNING"
+        )
 
     def heartbeat_details(self, **extra: object) -> dict[str, object]:
         return {
             "model": self.runtime.metadata(),
             "model_registry_id": self.active_model_registry_id,
             "model_notice": self.model_notice,
+            "production_drift": self.last_drift_summary,
             "universe": self.universe_summary,
             **extra,
         }
@@ -654,6 +662,19 @@ class Worker:
 
         return await self.run_job("counterfactual_outcomes", event_time, task)
 
+    async def drift_monitor_job(self, event_time: datetime) -> dict:
+        async def task(session):
+            return await build_production_drift_report(session, settings)
+
+        result = await self.run_job("production_drift_monitor", event_time, task)
+        if result.get("skipped") == "already_completed":
+            previous = result.get("previous_details")
+            if isinstance(previous, dict):
+                self.last_drift_summary = previous
+        elif not result.get("skipped"):
+            self.last_drift_summary = result
+        return result
+
     async def retention_job(self, event_time: datetime) -> dict:
         async def task(session):
             now = datetime.now(UTC)
@@ -694,6 +715,8 @@ class Worker:
             await self.counterfactual_outcome_job(startup_event_time)
             if self.active_symbols and not market_result.get("skipped"):
                 await self.catchup_inference_job("startup_backfill")
+            if settings.drift_monitor_enabled:
+                await self.drift_monitor_job(startup_event_time)
             if settings.bybit_read_only_account:
                 await self.account_job()
                 self.last_account_sync = datetime.now(UTC)
@@ -742,6 +765,8 @@ class Worker:
                     await self.hourly_market_close_job(event_time)
                     await self.counterfactual_outcome_job(event_time)
                     await self.inference_job(event_time)
+                    if settings.drift_monitor_enabled:
+                        await self.drift_monitor_job(event_time)
                     await self.retention_job(event_time)
                 await self.expiry_job()
                 await self.heartbeat(

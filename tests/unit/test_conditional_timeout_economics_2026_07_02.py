@@ -20,6 +20,7 @@ from app.ml.training import (
 )
 from app.risk.math import CostScenario
 from app.services.signals import select_cost_aware_scenario
+from tests.drift_reference import valid_production_drift_reference
 
 D = Decimal
 
@@ -118,6 +119,7 @@ def test_runtime_rejects_artifact_without_timeout_return_schema(tmp_path: Path) 
                 "historical_receipt_time_reconstructed": False,
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
+            "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {
@@ -174,6 +176,7 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
                 "historical_receipt_time_reconstructed": False,
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
+            "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {

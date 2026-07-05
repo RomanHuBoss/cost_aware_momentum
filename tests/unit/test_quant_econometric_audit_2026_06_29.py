@@ -31,6 +31,7 @@ from app.ml.training import (
     evaluate_policy_model,
 )
 from scripts.backtest import _active_trade_statistics, policy_backtest
+from tests.drift_reference import valid_production_drift_reference
 
 D = Decimal
 
@@ -291,6 +292,8 @@ def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
         unique_timestamps=500,
         minimum_rows_for_coverage=300,
     )
+    metrics = dict(metrics)
+    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",
@@ -575,6 +578,7 @@ def _artifact_bundle(**overrides: object) -> dict[str, object]:
             "historical_receipt_time_reconstructed": False,
         },
         "market_context_ablation_schema": "same-split-zeroed-context-v1",
+        "production_drift_reference": valid_production_drift_reference(),
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": 18.0,
         "entry_execution_model": {

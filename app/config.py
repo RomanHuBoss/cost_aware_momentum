@@ -114,6 +114,20 @@ class Settings(BaseSettings):
     allow_baseline_actionable: bool = False
     model_refresh_seconds: int = 300
 
+    # Production drift monitoring is diagnostic and fail-closed. It can degrade
+    # operational status but never weakens promotion gates or auto-deactivates a model.
+    drift_monitor_enabled: bool = True
+    drift_window_hours: int = 168
+    drift_min_feature_observations: int = 48
+    drift_min_outcome_observations: int = 30
+    drift_min_coverage_rate: float = 0.80
+    drift_max_missing_rate: float = 0.02
+    drift_warning_psi: float = 0.10
+    drift_critical_psi: float = 0.25
+    drift_max_log_loss_delta: float = 0.10
+    drift_max_brier_delta: float = 0.05
+    drift_max_actionability_rate_delta: float = 0.20
+
     # Background model lifecycle. The trainer creates immutable candidates in a
     # separate process so CPU-heavy fitting never blocks API or inference work.
     auto_train_enabled: bool = True
@@ -303,6 +317,26 @@ class Settings(BaseSettings):
             raise ValueError("Leverage policy is inconsistent")
         if self.model_refresh_seconds < 30:
             raise ValueError("MODEL_REFRESH_SECONDS must be at least 30")
+        if self.drift_window_hours < 24:
+            raise ValueError("DRIFT_WINDOW_HOURS must be at least 24")
+        if self.drift_min_feature_observations < 1:
+            raise ValueError("DRIFT_MIN_FEATURE_OBSERVATIONS must be positive")
+        if self.drift_min_outcome_observations < 1:
+            raise ValueError("DRIFT_MIN_OUTCOME_OBSERVATIONS must be positive")
+        if not 0 < self.drift_min_coverage_rate <= 1:
+            raise ValueError("DRIFT_MIN_COVERAGE_RATE must be in (0, 1]")
+        if not 0 <= self.drift_max_missing_rate < 1:
+            raise ValueError("DRIFT_MAX_MISSING_RATE must be in [0, 1)")
+        if not 0 < self.drift_warning_psi < self.drift_critical_psi:
+            raise ValueError(
+                "DRIFT_WARNING_PSI must be positive and lower than DRIFT_CRITICAL_PSI"
+            )
+        if self.drift_max_log_loss_delta < 0:
+            raise ValueError("DRIFT_MAX_LOG_LOSS_DELTA cannot be negative")
+        if self.drift_max_brier_delta < 0:
+            raise ValueError("DRIFT_MAX_BRIER_DELTA cannot be negative")
+        if not 0 <= self.drift_max_actionability_rate_delta <= 1:
+            raise ValueError("DRIFT_MAX_ACTIONABILITY_RATE_DELTA must be in [0, 1]")
         if self.max_account_snapshot_age_seconds < 30:
             raise ValueError("MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS must be at least 30")
         if self.initial_backfill_bars < self.universe_min_history_bars:

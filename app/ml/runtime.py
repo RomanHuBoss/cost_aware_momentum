@@ -13,6 +13,11 @@ from app.ml.context import (
     MARKET_CONTEXT_AVAILABILITY_SCHEMA,
     MARKET_CONTEXT_SCHEMA_VERSION,
 )
+from app.ml.drift import (
+    PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA,
+    PRODUCTION_DRIFT_REFERENCE_SCHEMA,
+    validate_production_drift_reference,
+)
 from app.ml.features import FEATURE_NAMES
 from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
 from app.ml.mtm import (
@@ -95,6 +100,18 @@ class ModelRuntime:
             ),
             "market_context_availability_schema": (
                 self.bundle.get("market_context_availability_schema")
+                if self.bundle is not None
+                else None
+            ),
+            "production_drift_reference_schema": (
+                (self.bundle.get("production_drift_reference") or {}).get("schema")
+                if self.bundle is not None
+                else None
+            ),
+            "production_drift_calibration_cohort_schema": (
+                ((self.bundle.get("production_drift_reference") or {}).get("calibration") or {}).get(
+                    "schema"
+                )
                 if self.bundle is not None
                 else None
             ),
@@ -327,6 +344,18 @@ class ModelRuntime:
                 nested_reserve_value, reserve_fraction, rel_tol=0.0, abs_tol=1e-12
             ):
                 raise ValueError("Model artifact reserve fraction conflicts with margin path metadata")
+            production_drift_reference = validate_production_drift_reference(
+                bundle.get("production_drift_reference")
+            )
+            if production_drift_reference.get("schema") != PRODUCTION_DRIFT_REFERENCE_SCHEMA:
+                raise ValueError("Model production drift reference schema mismatch")
+            if production_drift_reference.get("feature_names") != MODEL_BASE_FEATURE_NAMES:
+                raise ValueError("Model production drift feature order mismatch")
+            if (
+                (production_drift_reference.get("calibration") or {}).get("schema")
+                != PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA
+            ):
+                raise ValueError("Model production drift calibration cohort mismatch")
             self.bundle = bundle
             self.sha256 = digest
             self.version = version

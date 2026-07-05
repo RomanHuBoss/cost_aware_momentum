@@ -8,8 +8,10 @@ from pathlib import Path
 from sqlalchemy import func, select
 
 from app.asyncio_compat import run_with_compatible_event_loop
+from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import ExecutionPlan, ManualTrade, MarketSignal, OperatorDecision
+from app.services.drift_monitor import build_production_drift_report
 from app.services.selection_experiments import selection_bias_report
 
 
@@ -49,6 +51,7 @@ async def build_report(hours: int, selection_days: int = 90) -> dict:
             )
         ).one()
         selection_report = await selection_bias_report(session, since=selection_since)
+        drift_report = await build_production_drift_report(session, get_settings())
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "window_hours": hours,
@@ -62,6 +65,7 @@ async def build_report(hours: int, selection_days: int = 90) -> dict:
             "funding_cash_flow": str(trade_rows[3]),
         },
         "operator_selection_bias": selection_report,
+        "production_drift": drift_report,
     }
 
 

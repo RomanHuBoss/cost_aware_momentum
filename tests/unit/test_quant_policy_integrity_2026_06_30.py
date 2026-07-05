@@ -22,12 +22,15 @@ from app.ml.training import (
     evaluate_policy_model,
 )
 from app.risk.math import CostScenario, net_rr_and_ev
+from tests.drift_reference import valid_production_drift_reference
 
 D = Decimal
 
 
 def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
     now = datetime(2026, 1, 1, tzinfo=UTC)
+    metrics = dict(metrics)
+    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",
@@ -268,6 +271,12 @@ def test_policy_metrics_weight_hourly_cohorts_not_raw_symbol_count() -> None:
 
     assert metrics["policy_cohorts"] == 2
     assert metrics["policy_realized_mean_r"] == pytest.approx(0.4)
+    assert metrics["policy_selected_calibration_schema"] == (
+        "selected-direction-final-holdout-v1"
+    )
+    assert metrics["policy_selected_calibration_rows"] == 10
+    assert metrics["policy_selected_log_loss"] >= 0
+    assert metrics["policy_selected_multiclass_brier"] >= 0
 
 
 def test_quality_gate_uses_independent_cohort_threshold(tmp_path: Path) -> None:

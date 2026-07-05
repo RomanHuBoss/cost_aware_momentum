@@ -18,6 +18,7 @@ from app.ml.training import (
     TIMEOUT_RETURN_SCHEMA_VERSION,
     TemporalCalibratedBarrierModel,
 )
+from tests.drift_reference import valid_production_drift_reference
 
 
 class ArtifactStubModel:
@@ -121,6 +122,7 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
                 "historical_receipt_time_reconstructed": False,
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
+            "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {
@@ -202,6 +204,7 @@ def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) 
                 "historical_receipt_time_reconstructed": False,
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
+            "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {

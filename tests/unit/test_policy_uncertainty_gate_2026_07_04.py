@@ -6,6 +6,7 @@ from pathlib import Path
 from app.config import Settings
 from app.ml.data_profile import profile_from_symbol_rows
 from app.ml.lifecycle import ModelCandidate, evaluate_quality_gate
+from tests.drift_reference import valid_production_drift_reference
 
 
 def _candidate(tmp_path: Path, *, lower_bound: float) -> ModelCandidate:
@@ -26,6 +27,7 @@ def _candidate(tmp_path: Path, *, lower_bound: float) -> ModelCandidate:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
+        "production_drift_reference": valid_production_drift_reference(),
         "market_context": {
             "schema": "hourly-oi-basis-settled-funding-turnover-v1",
             "availability_schema": "exchange-event-close-live-receipt-v1",

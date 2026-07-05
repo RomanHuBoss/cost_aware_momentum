@@ -33,6 +33,12 @@ from app.ml.data_profile import (
     profile_from_symbol_rows,
     profile_training_frame,
 )
+from app.ml.drift import (
+    PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA,
+    PRODUCTION_DRIFT_REFERENCE_SCHEMA,
+    build_production_drift_reference,
+    validate_production_drift_reference,
+)
 from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
 from app.ml.mtm import (
     DEFAULT_EQUITY_RESERVE_FRACTION,
@@ -47,6 +53,7 @@ from app.ml.training import (
     LABEL_PATH_SCHEMA_VERSION,
     MARKET_CONTEXT_ABLATION_SCHEMA_VERSION,
     MIN_WALK_FORWARD_POSITIVE_FRACTION,
+    MODEL_BASE_FEATURE_NAMES,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     POLICY_METRIC_SCHEMA,
@@ -704,6 +711,38 @@ def build_model_candidate(
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
         metrics.update(evaluate_policy_model(model, split, policy_config, horizon_hours=horizon))
+    policy_candidates = int(metrics.get("policy_candidates") or 0)
+    policy_actionable_candidates = int(metrics.get("policy_actionable_candidates") or 0)
+    actionability_rate = (
+        float(policy_actionable_candidates / policy_candidates) if policy_candidates > 0 else 0.0
+    )
+    calibration_reference = None
+    calibration_cohort_schema = None
+    if policy_config is not None:
+        calibration_reference = {
+            "rows": metrics.get("policy_selected_calibration_rows"),
+            "log_loss": metrics.get("policy_selected_log_loss"),
+            "multiclass_brier": metrics.get("policy_selected_multiclass_brier"),
+        }
+        calibration_cohort_schema = str(metrics.get("policy_selected_calibration_schema") or "")
+    metrics["production_drift_reference"] = json_compatible(
+        build_production_drift_reference(
+            split.x_test[:, : len(MODEL_BASE_FEATURE_NAMES)],
+            model.predict_proba(split.x_test),
+            split.y_test,
+            feature_names=MODEL_BASE_FEATURE_NAMES,
+            classes=[str(item) for item in model.classes_],
+            actionability_rate=actionability_rate,
+            min_net_rr=(policy_config.min_net_rr if policy_config is not None else 0.0),
+            min_net_ev_r=(policy_config.min_net_ev_r if policy_config is not None else 0.0),
+            calibration_reference=calibration_reference,
+            **(
+                {"calibration_cohort_schema": calibration_cohort_schema}
+                if calibration_cohort_schema is not None
+                else {}
+            ),
+        )
+    )
     metrics.update(
         evaluate_walk_forward_validation(
             dataset,
@@ -821,6 +860,7 @@ def build_model_candidate(
         "market_context_availability_schema": MARKET_CONTEXT_AVAILABILITY_SCHEMA,
         "market_context": metrics["market_context"],
         "market_context_ablation_schema": MARKET_CONTEXT_ABLATION_SCHEMA_VERSION,
+        "production_drift_reference": metrics["production_drift_reference"],
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": float(entry_spread_bps),
         "entry_execution_model": metrics["entry_execution_model"],
@@ -1012,6 +1052,24 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         or int(context_noninferior_folds) < 2
     ):
         reasons.append("market_context_walk_forward_instability")
+
+    drift_reference = metrics.get("production_drift_reference")
+    try:
+        validated_drift_reference = validate_production_drift_reference(drift_reference)
+    except (TypeError, ValueError):
+        validated_drift_reference = None
+        reasons.append("invalid_production_drift_reference")
+    if (
+        validated_drift_reference is not None
+        and validated_drift_reference.get("schema") != PRODUCTION_DRIFT_REFERENCE_SCHEMA
+    ):
+        reasons.append("invalid_production_drift_reference_schema")
+    if (
+        validated_drift_reference is not None
+        and (validated_drift_reference.get("calibration") or {}).get("schema")
+        != PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA
+    ):
+        reasons.append("invalid_production_drift_calibration_cohort")
 
     margin_path = metrics.get("intrahorizon_margin_path")
     margin_schema = margin_path.get("schema") if isinstance(margin_path, dict) else None
