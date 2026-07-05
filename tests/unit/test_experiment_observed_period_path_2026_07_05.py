@@ -226,3 +226,63 @@ async def test_promotion_gate_blocks_invalid_period_return_evidence(monkeypatch)
     assert gate["passed"] is False
     assert gate["reasons"] == ["invalid_experiment_return_evidence"]
     assert "unsupported" in gate["error"]
+
+
+def test_experiment_evidence_carries_aligned_cost_stress_paths() -> None:
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    metrics = policy_backtest(
+        CertainTpModel(),
+        _paired_split([start]),
+        round_trip_cost_bps=20.0,
+        slippage_bps=10.0,
+        stop_gap_reserve_bps=0.0,
+        minimum_net_rr=0.0,
+        minimum_net_ev_r=-1.0,
+        horizon_hours=1,
+        include_experiment_evidence=True,
+    )
+
+    evidence = metrics["experiment_evidence"]
+    stress = evidence["cost_stress"]
+    assert stress["schema"] == "hourly-mark-to-market-cost-stress-v1"
+    assert set(stress["scenarios"]) == {"x1_5", "x2"}
+    assert metrics["stress_net_return_cost_x1_5"] == pytest.approx(0.09535)
+    assert metrics["stress_net_return_cost_x2"] == pytest.approx(0.0938)
+    assert stress["scenarios"]["x1_5"]["period_returns"][0]["return"] == pytest.approx(-0.003)
+    assert stress["scenarios"]["x2"]["period_returns"][0]["return"] == pytest.approx(-0.004)
+    nominal_timestamps = [row["timestamp"] for row in evidence["period_returns"]]
+    for scenario_name, expected_total in (
+        ("x1_5", metrics["stress_net_return_cost_x1_5"]),
+        ("x2", metrics["stress_net_return_cost_x2"]),
+    ):
+        scenario = stress["scenarios"][scenario_name]
+        assert [row["timestamp"] for row in scenario["period_returns"]] == nominal_timestamps
+        compounded = float(
+            np.prod(1.0 + np.asarray([row["return"] for row in scenario["period_returns"]]))
+            - 1.0
+        )
+        assert scenario["terminal_return"] == pytest.approx(expected_total)
+        assert compounded == pytest.approx(expected_total)
+
+
+def test_success_event_without_cost_stress_evidence_is_rejected() -> None:
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    row = SimpleNamespace(
+        trial_id="11111111-1111-1111-1111-111111111111",
+        configuration_hash="a" * 64,
+        evidence={
+            "period_return_schema": (
+                "observed-opportunity-covered-hourly-mark-to-market-capital-return-path-v3"
+            ),
+            "period_returns": [
+                {"timestamp": start.isoformat(), "return": 0.0},
+                {"timestamp": (start + timedelta(hours=1)).isoformat(), "return": 0.01},
+            ],
+            "observed_opportunity_period_count": 1,
+            "covered_period_count": 2,
+            "omitted_unobserved_calendar_period_count": 0,
+        },
+    )
+
+    with pytest.raises(ValueError, match="cost stress"):
+        _trial_evidence_from_success(row)

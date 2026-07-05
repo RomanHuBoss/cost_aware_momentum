@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import ResearchExperimentEvent
 from app.json_utils import json_compatible
 from app.research.overfitting import (
+    EXPERIMENT_COST_STRESS_SCHEMA_VERSION,
     EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION,
     ExperimentFamilyEvidence,
     ExperimentTrialEvidence,
@@ -196,6 +198,34 @@ async def append_experiment_event(
     return row
 
 
+def _parse_period_return_records(
+    raw_records: Any,
+    *,
+    evidence_name: str,
+) -> tuple[tuple[datetime, ...], tuple[float, ...]]:
+    if not isinstance(raw_records, list) or not raw_records:
+        raise ValueError(f"Successful experiment {evidence_name} must be a non-empty list")
+    timestamps: list[datetime] = []
+    returns: list[float] = []
+    for item in raw_records:
+        if not isinstance(item, dict) or set(item) != {"timestamp", "return"}:
+            raise ValueError(f"Successful experiment {evidence_name} schema is invalid")
+        timestamp = datetime.fromisoformat(str(item["timestamp"]))
+        value = float(item["return"])
+        if not math.isfinite(value) or value <= -1.0:
+            raise ValueError(
+                f"Successful experiment {evidence_name} returns must be finite and above -100%"
+            )
+        timestamps.append(_aware(timestamp, f"{evidence_name} timestamp"))
+        returns.append(value)
+    ordered_timestamps = tuple(timestamps)
+    if tuple(sorted(ordered_timestamps)) != ordered_timestamps:
+        raise ValueError(f"Successful experiment {evidence_name} timestamps must be chronological")
+    if len(set(ordered_timestamps)) != len(ordered_timestamps):
+        raise ValueError(f"Successful experiment {evidence_name} timestamps must be unique")
+    return ordered_timestamps, tuple(returns)
+
+
 def _trial_evidence_from_success(row: ResearchExperimentEvent) -> ExperimentTrialEvidence:
     period_return_schema = row.evidence.get("period_return_schema")
     if period_return_schema != EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION:
@@ -204,9 +234,10 @@ def _trial_evidence_from_success(row: ResearchExperimentEvent) -> ExperimentTria
             f"expected {EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION!r}, "
             f"received {period_return_schema!r}"
         )
-    period_returns = row.evidence.get("period_returns")
-    if not isinstance(period_returns, list) or not period_returns:
-        raise ValueError("Successful experiment event lacks period_returns")
+    ordered_timestamps, returns = _parse_period_return_records(
+        row.evidence.get("period_returns"),
+        evidence_name="period_returns",
+    )
 
     count_fields: dict[str, int] = {}
     for field in (
@@ -220,24 +251,11 @@ def _trial_evidence_from_success(row: ResearchExperimentEvent) -> ExperimentTria
         count_fields[field] = raw_value
     if count_fields["observed_opportunity_period_count"] <= 0:
         raise ValueError("Successful experiment must contain observed opportunity periods")
-    if count_fields["covered_period_count"] != len(period_returns):
+    if count_fields["covered_period_count"] != len(returns):
         raise ValueError("Successful experiment covered period count does not match period_returns")
     if count_fields["observed_opportunity_period_count"] > count_fields["covered_period_count"]:
         raise ValueError("Successful experiment opportunity periods exceed covered periods")
 
-    timestamps: list[datetime] = []
-    returns: list[float] = []
-    for item in period_returns:
-        if not isinstance(item, dict) or set(item) != {"timestamp", "return"}:
-            raise ValueError("Experiment period_returns schema is invalid")
-        timestamp = datetime.fromisoformat(str(item["timestamp"]))
-        timestamps.append(_aware(timestamp, "period return timestamp"))
-        returns.append(float(item["return"]))
-    ordered_timestamps = tuple(timestamps)
-    if tuple(sorted(ordered_timestamps)) != ordered_timestamps:
-        raise ValueError("Experiment period return timestamps must be strictly chronological")
-    if len(set(ordered_timestamps)) != len(ordered_timestamps):
-        raise ValueError("Experiment period return timestamps must be unique")
     full_calendar_periods = (
         int((ordered_timestamps[-1] - ordered_timestamps[0]).total_seconds() // 3600) + 1
     )
@@ -248,11 +266,76 @@ def _trial_evidence_from_success(row: ResearchExperimentEvent) -> ExperimentTria
         != count_fields["omitted_unobserved_calendar_period_count"]
     ):
         raise ValueError("Experiment omitted calendar period count is inconsistent")
+
+    cost_stress = row.evidence.get("cost_stress")
+    if not isinstance(cost_stress, dict):
+        raise ValueError("Successful experiment cost stress evidence is required")
+    if cost_stress.get("schema") != EXPERIMENT_COST_STRESS_SCHEMA_VERSION:
+        raise ValueError("Successful experiment cost stress schema is unsupported")
+    scenarios = cost_stress.get("scenarios")
+    if not isinstance(scenarios, dict) or set(scenarios) != {"x1_5", "x2"}:
+        raise ValueError("Successful experiment cost stress scenarios are invalid")
+
+    parsed_stress: dict[str, tuple[float, ...]] = {}
+    for scenario_name, expected_multiplier in (("x1_5", 1.5), ("x2", 2.0)):
+        scenario = scenarios[scenario_name]
+        if not isinstance(scenario, dict) or set(scenario) != {
+            "cost_multiplier",
+            "terminal_return",
+            "max_drawdown",
+            "period_returns",
+        }:
+            raise ValueError(f"Successful experiment cost stress {scenario_name} schema is invalid")
+        multiplier = float(scenario["cost_multiplier"])
+        terminal_return = float(scenario["terminal_return"] )
+        max_drawdown = float(scenario["max_drawdown"] )
+        if (
+            not math.isfinite(multiplier)
+            or not math.isclose(multiplier, expected_multiplier, rel_tol=0.0, abs_tol=1e-12)
+            or not math.isfinite(terminal_return)
+            or terminal_return <= -1.0
+            or not math.isfinite(max_drawdown)
+            or not -1.0 < max_drawdown <= 0.0
+        ):
+            raise ValueError(f"Successful experiment cost stress {scenario_name} summary is invalid")
+        stress_timestamps, stress_returns = _parse_period_return_records(
+            scenario["period_returns"],
+            evidence_name=f"cost stress {scenario_name} period_returns",
+        )
+        if stress_timestamps != ordered_timestamps:
+            raise ValueError(
+                f"Successful experiment cost stress {scenario_name} timestamps must align exactly"
+            )
+        compounded = math.prod(1.0 + value for value in stress_returns) - 1.0
+        if not math.isclose(compounded, terminal_return, rel_tol=1e-10, abs_tol=1e-12):
+            raise ValueError(
+                f"Successful experiment cost stress {scenario_name} terminal return does not reconcile"
+            )
+        capital = 1.0
+        peak = 1.0
+        computed_max_drawdown = 0.0
+        for value in stress_returns:
+            capital *= 1.0 + value
+            peak = max(peak, capital)
+            computed_max_drawdown = min(computed_max_drawdown, capital / peak - 1.0)
+        if not math.isclose(
+            computed_max_drawdown,
+            max_drawdown,
+            rel_tol=1e-10,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                f"Successful experiment cost stress {scenario_name} max drawdown does not reconcile"
+            )
+        parsed_stress[scenario_name] = stress_returns
+
     return ExperimentTrialEvidence(
         trial_id=str(row.trial_id),
         configuration_hash=row.configuration_hash,
         timestamps=ordered_timestamps,
-        returns=tuple(returns),
+        returns=returns,
+        cost_stress_x1_5_returns=parsed_stress["x1_5"],
+        cost_stress_x2_returns=parsed_stress["x2"],
     )
 
 
@@ -370,7 +453,7 @@ async def experiment_governance_report(
             experiment_family=experiment_family,
         )
         return {
-            "schema": "experiment-selection-preregistered-governance-v3",
+            "schema": "experiment-selection-preregistered-governance-v4",
             "experiment_family": experiment_family,
             "status": "BLOCKED_UNREGISTERED_FAMILY",
             "reason": "A formal immutable preregistration is required before the first trial",
@@ -396,7 +479,7 @@ async def experiment_governance_report(
         }
         if mismatches:
             return {
-                "schema": "experiment-selection-preregistered-governance-v3",
+                "schema": "experiment-selection-preregistered-governance-v4",
                 "experiment_family": experiment_family,
                 "status": "BLOCKED_PREREGISTRATION_POLICY_MISMATCH",
                 "mismatches": mismatches,
@@ -415,7 +498,7 @@ async def experiment_governance_report(
     maximum = int(specification["stopping_rule"]["max_unique_configurations"])
     if unique_attempts > maximum:
         return {
-            "schema": "experiment-selection-preregistered-governance-v3",
+            "schema": "experiment-selection-preregistered-governance-v4",
             "experiment_family": experiment_family,
             "status": "BLOCKED_PREREGISTRATION_VIOLATION",
             "reason": "Unique attempted configurations exceed the preregistered stopping budget",
@@ -439,7 +522,7 @@ async def experiment_governance_report(
         bootstrap_replicates=int(governance["bootstrap_replicates"]),
         confidence_level=float(governance["confidence_level"]),
     )
-    report["schema"] = "experiment-selection-preregistered-governance-v3"
+    report["schema"] = "experiment-selection-preregistered-governance-v4"
     report["preregistration"] = preregistration_report_metadata(registration)
     report["preregistration"]["unique_attempted_configurations"] = unique_attempts
     report["ledger"] = {

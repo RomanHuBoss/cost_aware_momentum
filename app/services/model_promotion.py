@@ -13,14 +13,15 @@ from app.config import Settings
 from app.db.models import ResearchExperimentEvent
 from app.json_utils import json_compatible
 from app.ml.mtm import DEFAULT_EQUITY_RESERVE_FRACTION
+from app.research.overfitting import EXPERIMENT_COST_STRESS_SCHEMA_VERSION
 from app.services.experiment_ledger import (
     experiment_configuration_hash,
     experiment_governance_report,
     verify_experiment_event_integrity,
 )
 
-EXPERIMENT_PROMOTION_GATE_SCHEMA = "model-promotion-experiment-governance-v2"
-EXPERIMENT_GOVERNANCE_REPORT_SCHEMA = "experiment-selection-preregistered-governance-v3"
+EXPERIMENT_PROMOTION_GATE_SCHEMA = "model-promotion-experiment-governance-v3"
+EXPERIMENT_GOVERNANCE_REPORT_SCHEMA = "experiment-selection-preregistered-governance-v4"
 EXPERIMENT_POLICY_BINDING_SCHEMA = "model-promotion-policy-binding-v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -219,6 +220,7 @@ def blocked_experiment_promotion_gate(
             "pbo": None,
             "deflated_sharpe_probability": None,
             "dependence_supported": None,
+            "cost_stress": None,
         }
     )
 
@@ -287,6 +289,13 @@ async def evaluate_experiment_promotion_gate(
         reasons.append("invalid_experiment_governance_report_schema")
     if report_status != "READY":
         reasons.append(_normalized_reason(report_status))
+    cost_stress = report.get("cost_stress") if isinstance(report, Mapping) else None
+    if report_status == "READY" and (
+        not isinstance(cost_stress, Mapping)
+        or cost_stress.get("schema") != EXPERIMENT_COST_STRESS_SCHEMA_VERSION
+        or cost_stress.get("passed") is not True
+    ):
+        reasons.append("invalid_experiment_cost_stress_evidence")
 
     selected_trial_id = report.get("selected_trial_id") if isinstance(report, Mapping) else None
     selected_hash = (
@@ -324,6 +333,7 @@ async def evaluate_experiment_promotion_gate(
                     if isinstance(report.get("dependence_aware_inference"), Mapping)
                     else None
                 ),
+                "cost_stress": report.get("cost_stress"),
             }
         )
 
@@ -423,6 +433,7 @@ async def evaluate_experiment_promotion_gate(
                 if isinstance(dependence, Mapping)
                 else None
             ),
+            "cost_stress": report.get("cost_stress"),
         }
     )
 
@@ -447,6 +458,32 @@ def require_passed_experiment_promotion_gate(
     if gate.get("passed") is not True or reasons:
         detail = ", ".join(reasons) if reasons else "gate_not_passed"
         raise RuntimeError(f"Model activation experiment promotion gate did not pass: {detail}")
+    cost_stress = gate.get("cost_stress")
+    if (
+        not isinstance(cost_stress, Mapping)
+        or cost_stress.get("schema") != EXPERIMENT_COST_STRESS_SCHEMA_VERSION
+        or cost_stress.get("passed") is not True
+    ):
+        raise RuntimeError(
+            "Model activation experiment promotion gate lacks passed cost stress evidence"
+        )
+    scenarios = cost_stress.get("scenarios")
+    if not isinstance(scenarios, Mapping) or set(scenarios) != {"x1_5", "x2"}:
+        raise RuntimeError(
+            "Model activation experiment promotion gate has invalid cost stress scenarios"
+        )
+    for scenario_name in ("x1_5", "x2"):
+        scenario = scenarios.get(scenario_name)
+        terminal_return = scenario.get("terminal_return") if isinstance(scenario, Mapping) else None
+        if (
+            isinstance(terminal_return, bool)
+            or not isinstance(terminal_return, (int, float))
+            or not math.isfinite(float(terminal_return))
+            or float(terminal_return) < 0.0
+        ):
+            raise RuntimeError(
+                f"Model activation experiment promotion gate cost stress {scenario_name} failed"
+            )
     family = gate.get("experiment_family")
     selected_hash = gate.get("selected_configuration_hash")
     preregistration_hash = gate.get("preregistration_record_hash")

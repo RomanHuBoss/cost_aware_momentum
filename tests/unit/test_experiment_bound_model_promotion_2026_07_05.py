@@ -19,6 +19,26 @@ NOW = datetime(2026, 7, 5, 18, tzinfo=UTC)
 TRIAL_ID = UUID("11111111-1111-1111-1111-111111111111")
 
 
+def _passed_cost_stress() -> dict[str, object]:
+    return {
+        "schema": "hourly-mark-to-market-cost-stress-v1",
+        "minimum_terminal_return": 0.0,
+        "scenarios": {
+            "x1_5": {
+                "period_count": 60,
+                "terminal_return": 0.08,
+                "max_drawdown": -0.04,
+            },
+            "x2": {
+                "period_count": 60,
+                "terminal_return": 0.03,
+                "max_drawdown": -0.07,
+            },
+        },
+        "passed": True,
+    }
+
+
 class _ScalarResult:
     def __init__(self, value: object = None) -> None:
         self.value = value
@@ -48,7 +68,7 @@ def _configuration(*, model_sha256: str = "b" * 64) -> dict[str, object]:
 def _ready_report(*, model_sha256: str = "b" * 64) -> dict[str, object]:
     selected_hash = experiment_configuration_hash(_configuration(model_sha256=model_sha256))
     return {
-        "schema": "experiment-selection-preregistered-governance-v3",
+        "schema": "experiment-selection-preregistered-governance-v4",
         "experiment_family": "family-v1",
         "status": "READY",
         "selected_trial_id": str(TRIAL_ID),
@@ -56,6 +76,7 @@ def _ready_report(*, model_sha256: str = "b" * 64) -> dict[str, object]:
         "pbo": {"pbo": 0.10},
         "deflated_sharpe": {"probability": 0.98},
         "dependence_aware_inference": {"dependence_supported": True},
+        "cost_stress": _passed_cost_stress(),
         "preregistration": {"record_hash": "d" * 64},
         "ledger": {"schema": "append-only-research-experiment-events-v1"},
     }
@@ -137,7 +158,7 @@ async def test_non_ready_family_fails_closed_without_selected_trial_lookup(
 
     async def report(*_args: object, **_kwargs: object) -> dict[str, object]:
         return {
-            "schema": "experiment-selection-preregistered-governance-v3",
+            "schema": "experiment-selection-preregistered-governance-v4",
             "experiment_family": "family-v1",
             "status": "REJECTED",
         }
@@ -181,6 +202,43 @@ def _candidate(tmp_path: Path) -> ModelCandidate:
         incumbent_metrics=None,
         incumbent_version="incumbent-v1",
     )
+
+
+@pytest.mark.asyncio
+async def test_ready_report_without_cost_stress_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import model_promotion
+
+    async def report(*_args: object, **_kwargs: object) -> dict[str, object]:
+        value = _ready_report()
+        value.pop("cost_stress")
+        return value
+
+    monkeypatch.setattr(model_promotion, "experiment_governance_report", report)
+    gate = await evaluate_experiment_promotion_gate(
+        _Session(_started_event()),
+        experiment_family="family-v1",
+        model_version="candidate-v1",
+        model_sha256="b" * 64,
+        horizon_hours=8,
+    )
+
+    assert gate["passed"] is False
+    assert "invalid_experiment_cost_stress_evidence" in gate["reasons"]
+
+
+def test_legacy_promotion_gate_schema_cannot_authorize_activation() -> None:
+    gate = {
+        "schema": "model-promotion-experiment-governance-v2",
+        "passed": True,
+        "reasons": [],
+    }
+
+    from app.services.model_promotion import require_passed_experiment_promotion_gate
+
+    with pytest.raises(RuntimeError, match="invalid schema"):
+        require_passed_experiment_promotion_gate(gate)
 
 
 @pytest.mark.asyncio
@@ -250,6 +308,7 @@ async def test_atomic_activation_rejects_gate_bound_to_different_artifact(
             "model_sha256": "0" * 64,
             "horizon_hours": 8,
         },
+        "cost_stress": _passed_cost_stress(),
     }
 
     with pytest.raises(RuntimeError, match="artifact SHA-256 mismatch"):

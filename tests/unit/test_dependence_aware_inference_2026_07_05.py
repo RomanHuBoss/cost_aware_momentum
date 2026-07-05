@@ -111,6 +111,8 @@ def _trial(name: str, values: np.ndarray) -> ExperimentTrialEvidence:
         configuration_hash=(name * 64)[:64],
         timestamps=timestamps,
         returns=tuple(float(value) for value in values),
+        cost_stress_x1_5_returns=tuple(float(value) for value in values),
+        cost_stress_x2_returns=tuple(float(value) for value in values),
     )
 
 

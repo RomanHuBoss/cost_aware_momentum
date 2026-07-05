@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.26.7 — 2026-07-06
+
+### Fixed
+
+- Backtest now emits aligned hourly mark-to-market capital-return paths for the mandatory ×1.5 and ×2 cost-stress scenarios instead of exposing only terminal diagnostic totals.
+- Successful experiment events fail closed unless both stress paths use the exact nominal timestamps and reconcile their terminal return and maximum drawdown.
+- Experiment governance rejects a statistically admissible selected configuration with `REJECTED_COST_STRESS` when either mandatory scenario compounds below 0%.
+- Model promotion report/gate schemas were raised to v4/v3; legacy persisted gate v2 cannot authorize normal activation without passed cost-stress evidence.
+
+### Compatibility
+
+- No database migration, public HTTP API change, model feature/artifact schema change or `.env` addition.
+- Trading recommendation thresholds are unchanged. The new non-negative cost-stress terminal-return requirement is an experiment-promotion safety invariant.
+- Active artifacts remain active. Existing experiment families whose successful events lack v1 cost-stress paths must rerun preregistered backtests before normal promotion.
+
+### Verification
+
+- Clean isolated baseline: 622 passed, 4 skipped, 62 warnings.
+- Red evidence: 2 targeted tests failed before implementation.
+- Post-change suite: 627 passed, 4 skipped, 62 warnings.
+
 ## 1.26.6 — 2026-07-05
 
 ### Fixed

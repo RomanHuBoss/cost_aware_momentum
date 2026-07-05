@@ -1,53 +1,56 @@
 # QA Report
 
-Release: **1.26.6**
+Release: **1.26.7**
 
-Date: **2026-07-05**
-Scope: **hourly mark-to-market experiment return path**
+Date: **2026-07-06**
+Scope: **cost-stress experiment promotion gate**
 
 ## Environment
 
-- Python: 3.13.5 in isolated virtual environment `/mnt/data/cam_1265_venv`.
+- Python: 3.13.5 in isolated virtual environment `/mnt/data/cam_venv`.
 - Project requirement: Python >=3.12.
 - Node syntax check available.
 - Separate PostgreSQL integration database: not configured.
-- Host/global Python was unsuitable for comparable results: `ruff` and `psycopg` were absent and global `pip check` had an unrelated Pillow/MoviePy conflict.
+- Host/global Python was unsuitable: `ruff`/`psycopg` were absent and global `pip check` had an unrelated MoviePy/Pillow conflict.
 
 ## Baseline before changes
 
 | Check | Result |
 |---|---|
-| input ZIP SHA-256 | `6a7b5bb89053eb519c3afc023a6e3c3d526221e5261da48070b8f9a3a72f7357` |
+| input ZIP SHA-256 | `1ef3ca05de319366abc9db5fc207b59d8814f54d1728016ab6f4b7fd9a9ed3ab` |
+| source version | 1.26.6 |
+| source inventory | 223 files; 73 app, 83 tests, 9 docs; 14 migrations; head `0014_ui_exposure_ledger` |
 | `python --version` | PASSED: Python 3.13.5 |
 | `python -m pip check` | PASSED in isolated venv |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 618 passed, 4 skipped, 61 warnings |
+| `python -m pytest -q` | PASSED: 622 passed, 4 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED |
-| package/application version | PASSED: 1.26.5 |
 
-Under host/global Python, compileall and JavaScript syntax passed; `pip check` failed on an unrelated global package conflict, `ruff` was unavailable, and pytest collection stopped with 34 import errors because `psycopg` was absent.
+## Confirmed gap and red evidence
 
-## Confirmed defect and red evidence
-
-`_simulate_capital_sleeves_evidence` posted the complete trade P&L only at `exit_time`. For a two-hour trade with cumulative returns `0%, -20%, +1%` and a 50% horizon sleeve, the old code emitted portfolio period returns `[0.0, 0.0, 0.005]` and `max_drawdown=0`. The economically consistent path is `[0.0, -0.10, 0.116666…]`, ending at the same +0.5% portfolio result but with a -10% drawdown.
+`policy_backtest` computed ×1.5/×2 terminal stress totals, but successful experiment events persisted only nominal period returns. `analyze_experiment_family` therefore selected and approved configurations without any cost-stress path or sign check. This contradicted the specification's mandatory commission/slippage stress analysis and allowed normal promotion despite a negative stressed capital result.
 
 Red command:
 
 ```text
-python -m pytest -q tests/unit/test_experiment_overfitting_governance_2026_07_05.py::test_capital_sleeve_evidence_marks_intrahorizon_drawdown_before_profitable_exit
+python -m pytest -q \
+  tests/unit/test_experiment_observed_period_path_2026_07_05.py::test_experiment_evidence_carries_aligned_cost_stress_paths \
+  tests/unit/test_experiment_observed_period_path_2026_07_05.py::test_success_event_without_cost_stress_evidence_is_rejected
 ```
 
-Before implementation: **1 failed** with the exit-only values above.
-
-After implementation: **1 passed**.
+Before implementation: **2 failed** (`KeyError: cost_stress`; missing evidence was accepted).
+After implementation: **2 passed**.
 
 ## Added/extended regression coverage
 
-- Intrahorizon drawdown is recognized before a profitable exit and reconciles to terminal sleeve capital.
-- Experiment evidence fails closed when cumulative hourly MTM metadata is missing.
-- Exit-realized v2 period evidence is rejected under the v3 schema.
-- Existing dataset and split tests now verify MTM schema/path preservation and terminal liquidation reconciliation.
+- ×1.5/×2 paths align exactly with nominal timestamps and independently reconcile to terminal compounded returns.
+- Known fee/slippage example verifies stressed entry and terminal arithmetic.
+- Missing/legacy stress evidence fails closed.
+- Negative selected ×2 path returns `REJECTED_COST_STRESS`.
+- READY report without stress evidence is rejected.
+- Legacy persisted promotion gate v2 cannot authorize activation.
+- Existing atomic promotion, policy binding and dependence tests now carry valid stress evidence.
 
 ## Post-change checks
 
@@ -56,23 +59,23 @@ After implementation: **1 passed**.
 | `python -m pip check` | PASSED: no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 622 passed, 4 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED: 627 passed, 4 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED |
-| application/package version consistency | PASSED: app and package are 1.26.6 |
-| static Alembic head check | PASSED: one head, `0014_ui_exposure_ledger` |
-| release integrity / manifest | PASSED: 222 files checked, 222 manifest entries |
-| clean ZIP test and re-extraction | PASSED: one root directory; `unzip -t` clean; re-extracted manifest verified; forbidden-artifact scan clean |
+| application/package version consistency | PASSED: 1.26.7 |
+| Alembic heads | PASSED: one head, `0014_ui_exposure_ledger` |
+| release manifest | PASSED: 224 files verified by `sha256sum -c SHA256SUMS` |
+| clean ZIP/re-extraction | PASSED: one root directory, `unzip -t` clean, re-extracted manifest and forbidden-artifact scan clean |
 
 ## Environment-dependent checks
 
 | Check | Result |
 |---|---|
-| `python manage.py doctor` | FAILED as expected for sandbox: `.env` absent, default secrets unresolved, `psql`/`pg_dump`/`pg_restore` absent, PostgreSQL unreachable |
-| `python manage.py test --require-integration` | FAILED before test execution: neither `POSTGRES_ADMIN_URL` nor `TEST_DATABASE_URL` is configured |
+| `python manage.py doctor` | FAILED: `.env` absent, default secrets unresolved, `psql`/`pg_dump`/`pg_restore` absent, PostgreSQL unreachable |
+| `python manage.py test --require-integration` | NOT RUN: neither `POSTGRES_ADMIN_URL` nor `TEST_DATABASE_URL` is configured |
 
 ## Warnings
 
-62 warnings are Joblib/NumPy and pandas timedelta deprecations. The new regression tests add no warning category; one additional occurrence comes from extending an existing timedelta assertion.
+62 warnings are existing Joblib/NumPy and pandas timedelta deprecations. No new warning category was introduced.
 
 ## Release boundary
 
@@ -80,7 +83,7 @@ After implementation: **1 passed**.
 - Public HTTP API: unchanged.
 - `.env` variables: unchanged.
 - Model feature/label/runtime artifact schemas: unchanged.
-- Trading/risk/model-quality thresholds: unchanged.
-- Advisory-only/read-only Bybit boundary: unchanged.
-- Experiment period-return schema: `observed-opportunity-covered-hourly-capital-return-path-v2` → `observed-opportunity-covered-hourly-mark-to-market-capital-return-path-v3`.
-- Active artifacts remain runnable. Existing experiment families with successful v2 trials require rerun before normal activation.
+- Recommendation/risk/quality thresholds: unchanged.
+- New governance invariant: selected trial terminal capital return must be non-negative at both ×1.5 and ×2 costs.
+- Experiment report schema: v3 → v4. Promotion gate schema: v2 → v3.
+- Active artifacts remain runnable. Existing successful experiment evidence without cost-stress v1 must be rerun before normal promotion.

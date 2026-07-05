@@ -20,6 +20,26 @@ TRIAL_ID = UUID("22222222-2222-2222-2222-222222222222")
 MODEL_SHA256 = "b" * 64
 
 
+def _passed_cost_stress() -> dict[str, object]:
+    return {
+        "schema": "hourly-mark-to-market-cost-stress-v1",
+        "minimum_terminal_return": 0.0,
+        "scenarios": {
+            "x1_5": {
+                "period_count": 60,
+                "terminal_return": 0.08,
+                "max_drawdown": -0.04,
+            },
+            "x2": {
+                "period_count": 60,
+                "terminal_return": 0.03,
+                "max_drawdown": -0.07,
+            },
+        },
+        "passed": True,
+    }
+
+
 class _ScalarResult:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -85,7 +105,7 @@ def _started_event(configuration: dict[str, object]) -> SimpleNamespace:
 
 def _ready_report(configuration: dict[str, object]) -> dict[str, object]:
     return {
-        "schema": "experiment-selection-preregistered-governance-v3",
+        "schema": "experiment-selection-preregistered-governance-v4",
         "experiment_family": "family-v1",
         "status": "READY",
         "selected_trial_id": str(TRIAL_ID),
@@ -93,6 +113,7 @@ def _ready_report(configuration: dict[str, object]) -> dict[str, object]:
         "pbo": {"pbo": 0.10},
         "deflated_sharpe": {"probability": 0.98},
         "dependence_aware_inference": {"dependence_supported": True},
+        "cost_stress": _passed_cost_stress(),
         "preregistration": {"record_hash": "d" * 64},
     }
 
@@ -175,6 +196,7 @@ def _passed_gate(policy_binding: dict[str, object]) -> dict[str, object]:
             "selected": _policy_values(),
             "mismatches": [],
         },
+        "cost_stress": _passed_cost_stress(),
     }
 
 

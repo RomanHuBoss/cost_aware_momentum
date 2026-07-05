@@ -34,6 +34,8 @@ def _trial(name: str, returns: np.ndarray) -> ExperimentTrialEvidence:
         configuration_hash=(name * 64)[:64],
         timestamps=_timestamps(len(returns)),
         returns=tuple(float(value) for value in returns),
+        cost_stress_x1_5_returns=tuple(float(value) for value in returns),
+        cost_stress_x2_returns=tuple(float(value) for value in returns),
     )
 
 
@@ -161,6 +163,12 @@ def test_family_analysis_deduplicates_repeated_configuration_and_returns_governa
             configuration_hash="a" * 64,
             timestamps=_timestamps(periods),
             returns=tuple(float(value) for value in 0.010 + 0.002 * np.sin(phase)),
+            cost_stress_x1_5_returns=tuple(
+                float(value) for value in 0.010 + 0.002 * np.sin(phase)
+            ),
+            cost_stress_x2_returns=tuple(
+                float(value) for value in 0.010 + 0.002 * np.sin(phase)
+            ),
         ),
     )
     evidence = ExperimentFamilyEvidence(
@@ -187,6 +195,48 @@ def test_family_analysis_deduplicates_repeated_configuration_and_returns_governa
     assert report["deflated_sharpe"]["status"] == "READY"
     assert report["automatic_model_action"] == "none"
 
+
+
+def test_family_analysis_rejects_selected_trial_with_negative_cost_stress() -> None:
+    periods = 48
+    phase = np.arange(periods, dtype=float)
+    selected_nominal = 0.010 + 0.002 * np.sin(phase)
+    selected = ExperimentTrialEvidence(
+        trial_id="trial-a",
+        configuration_hash="a" * 64,
+        timestamps=_timestamps(periods),
+        returns=tuple(float(value) for value in selected_nominal),
+        cost_stress_x1_5_returns=tuple(float(value) for value in selected_nominal * 0.5),
+        cost_stress_x2_returns=tuple(-0.001 for _ in range(periods)),
+    )
+    trials = (
+        selected,
+        _trial("b", 0.004 + 0.002 * np.cos(phase)),
+        _trial("c", -0.001 + 0.003 * np.sin(phase / 2.0)),
+        _trial("d", -0.004 + 0.002 * np.cos(phase / 3.0)),
+    )
+    evidence = ExperimentFamilyEvidence(
+        experiment_family="family-cost-stress",
+        attempted_configuration_hashes=tuple(item.configuration_hash for item in trials),
+        successful_trials=trials,
+        failed_configuration_hashes=(),
+        open_trial_ids=(),
+    )
+
+    report = analyze_experiment_family(
+        evidence,
+        segments=4,
+        minimum_trials=4,
+        minimum_periods=24,
+        maximum_pbo=0.25,
+        minimum_dsr_probability=0.80,
+    )
+
+    assert report["selected_configuration_hash"] == "a" * 64
+    assert report["status"] == "REJECTED_COST_STRESS"
+    assert report["cost_stress"]["passed"] is False
+    assert report["cost_stress"]["scenarios"]["x1_5"]["terminal_return"] > 0.0
+    assert report["cost_stress"]["scenarios"]["x2"]["terminal_return"] < 0.0
 
 def test_experiment_event_hash_changes_when_result_is_mutated() -> None:
     base = {

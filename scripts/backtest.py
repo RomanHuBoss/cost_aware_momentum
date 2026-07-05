@@ -29,7 +29,10 @@ from app.ml.training import (
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
 )
-from app.research.overfitting import EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION
+from app.research.overfitting import (
+    EXPERIMENT_COST_STRESS_SCHEMA_VERSION,
+    EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION,
+)
 from app.research.preregistration import build_preregistration_template
 from app.services.experiment_ledger import (
     append_experiment_event,
@@ -503,21 +506,55 @@ def policy_backtest(
         - slippage_rate
         + chosen["funding_return_rate"]
     )
+
+    stress_columns = {"x1_5": (1.5, "stress_net_return_cost_x1_5"), "x2": (2.0, "stress_net_return_cost_x2")}
+    for _, (multiplier, column) in stress_columns.items():
+        stressed_gap_reserve = np.where(
+            chosen["target"].eq("SL"),
+            np.maximum(
+                gap_rate * multiplier - chosen["embedded_stop_gap_rate"],
+                0.0,
+            ),
+            0.0,
+        )
+        chosen[column] = (
+            chosen["effective_realized_gross_return"]
+            - chosen["realized_fee_rate"] * multiplier
+            - slippage_rate * multiplier
+            + np.where(
+                chosen["funding_return_rate"] < 0,
+                chosen["funding_return_rate"] * multiplier,
+                chosen["funding_return_rate"],
+            )
+            - stressed_gap_reserve
+        )
+
     if intrahorizon_mark_to_market_schema is not None:
-        def cumulative_net_path(row: pd.Series) -> list[dict[str, object]]:
+        def cumulative_net_path(
+            row: pd.Series,
+            *,
+            terminal_return_column: str,
+            cost_multiplier: float,
+        ) -> list[dict[str, object]]:
             effective_exit = pd.Timestamp(row["exit_time"])
-            final_net_return = float(row["net_return"])
+            final_net_return = float(row[terminal_return_column])
             path: list[dict[str, object]] = []
             for item in row["intrahorizon_mark_to_market_path"]:
                 timestamp = pd.Timestamp(item["timestamp"])
                 if timestamp == effective_exit:
                     cumulative_net_return = final_net_return
                 else:
+                    funding_return = float(item["funding_return_rate"])
+                    stressed_funding = (
+                        funding_return * cost_multiplier
+                        if funding_return < 0
+                        else funding_return
+                    )
                     cumulative_net_return = (
                         float(item["gross_return_rate"])
-                        + float(item["funding_return_rate"])
-                        - fee_rate_per_leg
-                        - slippage_rate
+                        + stressed_funding
+                        - fee_rate_per_leg * cost_multiplier
+                        - slippage_rate * cost_multiplier
                     )
                 path.append(
                     {
@@ -527,7 +564,24 @@ def policy_backtest(
                 )
             return path
 
-        chosen["intrahorizon_net_return_path"] = chosen.apply(cumulative_net_path, axis=1)
+        chosen["intrahorizon_net_return_path"] = chosen.apply(
+            lambda row: cumulative_net_path(
+                row,
+                terminal_return_column="net_return",
+                cost_multiplier=1.0,
+            ),
+            axis=1,
+        )
+        for scenario_name, (multiplier, terminal_column) in stress_columns.items():
+            path_column = f"intrahorizon_{scenario_name}_cost_stress_return_path"
+            chosen[path_column] = chosen.apply(
+                lambda row, multiplier=multiplier, terminal_column=terminal_column: cumulative_net_path(
+                    row,
+                    terminal_return_column=terminal_column,
+                    cost_multiplier=multiplier,
+                ),
+                axis=1,
+            )
     chosen["stress_net_return_with_stop_reserve"] = (
         chosen["net_return"] - chosen["unused_stop_gap_reserve_rate"]
     )
@@ -551,6 +605,22 @@ def policy_backtest(
         horizon_hours=horizon_hours,
         period_grid=period_grid,
     )
+    stress_evidence: dict[str, dict[str, object]] = {}
+    for scenario_name, (multiplier, return_column) in stress_columns.items():
+        path_column = f"intrahorizon_{scenario_name}_cost_stress_return_path"
+        scenario_evidence = _simulate_capital_sleeves_evidence(
+            traded,
+            return_column=return_column,
+            horizon_hours=horizon_hours,
+            period_grid=period_grid,
+            cumulative_path_column=path_column,
+        )
+        stress_evidence[scenario_name] = {
+            "cost_multiplier": multiplier,
+            "terminal_return": float(scenario_evidence["net_return"]),
+            "max_drawdown": float(scenario_evidence["max_drawdown"]),
+            "period_returns": scenario_evidence["period_returns"],
+        }
     net_return = float(portfolio_evidence["net_return"])
     max_drawdown = float(portfolio_evidence["max_drawdown"])
     portfolio_periods = int(portfolio_evidence["portfolio_periods"])
@@ -560,34 +630,6 @@ def policy_backtest(
         horizon_hours=horizon_hours,
     )
     max_concurrent_trades, mean_concurrent_trades = _active_trade_statistics(traded)
-
-    def stressed(multiplier: float) -> float:
-        stressed_rows = traded.copy()
-        stressed_gap_reserve = np.where(
-            stressed_rows["target"].eq("SL"),
-            np.maximum(
-                gap_rate * multiplier - stressed_rows["embedded_stop_gap_rate"],
-                0.0,
-            ),
-            0.0,
-        )
-        stressed_rows["stressed_net_return"] = (
-            stressed_rows["effective_realized_gross_return"]
-            - stressed_rows["realized_fee_rate"] * multiplier
-            - slippage_rate * multiplier
-            + np.where(
-                stressed_rows["funding_return_rate"] < 0,
-                stressed_rows["funding_return_rate"] * multiplier,
-                stressed_rows["funding_return_rate"],
-            )
-            - stressed_gap_reserve
-        )
-        result, _, _ = _simulate_capital_sleeves(
-            stressed_rows,
-            return_column="stressed_net_return",
-            horizon_hours=horizon_hours,
-        )
-        return result
 
     result = {
         "candidate_rows": int(len(chosen)),
@@ -653,8 +695,12 @@ def policy_backtest(
         "minimum_net_ev_r": minimum_net_ev_r,
         "minimum_predicted_edge": minimum_net_ev_r,
         "minimum_predicted_edge_semantics": "deprecated_alias_of_minimum_net_ev_r",
-        "stress_net_return_cost_x1_5": stressed(1.5),
-        "stress_net_return_cost_x2": stressed(2.0),
+        "stress_net_return_cost_x1_5": float(
+            stress_evidence["x1_5"]["terminal_return"]
+        ),
+        "stress_net_return_cost_x2": float(
+            stress_evidence["x2"]["terminal_return"]
+        ),
         "warning": (
             "Barrier-policy research backtest with conservative hourly ambiguity and "
             "non-overlapping horizon capital sleeves and the live one-active-plan-per-symbol "
@@ -675,6 +721,10 @@ def policy_backtest(
             "omitted_unobserved_calendar_period_count": (
                 omitted_unobserved_calendar_period_count
             ),
+            "cost_stress": {
+                "schema": EXPERIMENT_COST_STRESS_SCHEMA_VERSION,
+                "scenarios": stress_evidence,
+            },
         }
     return result
 
@@ -895,6 +945,15 @@ async def run(args) -> None:
                 "omitted_unobserved_calendar_period_count": experiment_evidence[
                     "omitted_unobserved_calendar_period_count"
                 ],
+                "cost_stress": {
+                    "schema": experiment_evidence["cost_stress"]["schema"],
+                    "terminal_returns": {
+                        name: scenario["terminal_return"]
+                        for name, scenario in experiment_evidence["cost_stress"][
+                            "scenarios"
+                        ].items()
+                    },
+                },
             },
         }
         output = Path(args.output or f"reports/backtest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
@@ -943,6 +1002,7 @@ async def run(args) -> None:
                     "omitted_unobserved_calendar_period_count": experiment_evidence[
                         "omitted_unobserved_calendar_period_count"
                     ],
+                    "cost_stress": experiment_evidence["cost_stress"],
                     "prediction_metrics": prediction_metrics,
                     "policy_metrics": trade_metrics,
                     "output_path": str(output),

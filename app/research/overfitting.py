@@ -14,10 +14,12 @@ from app.research.dependence import time_series_dependence_report
 EULER_MASCHERONI = 0.5772156649015329
 PBO_SCHEMA_VERSION = "cscv-pbo-contiguous-segments-v1"
 DSR_SCHEMA_VERSION = "deflated-sharpe-bailey-lopez-de-prado-hac-effective-n-v2"
-EXPERIMENT_REPORT_SCHEMA_VERSION = "experiment-selection-dependence-governance-v2"
+EXPERIMENT_REPORT_SCHEMA_VERSION = "experiment-selection-dependence-governance-v3"
 EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION = (
     "observed-opportunity-covered-hourly-mark-to-market-capital-return-path-v3"
 )
+EXPERIMENT_COST_STRESS_SCHEMA_VERSION = "hourly-mark-to-market-cost-stress-v1"
+EXPERIMENT_MIN_COST_STRESS_TERMINAL_RETURN = 0.0
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,8 @@ class ExperimentTrialEvidence:
     configuration_hash: str
     timestamps: tuple[datetime, ...]
     returns: tuple[float, ...]
+    cost_stress_x1_5_returns: tuple[float, ...]
+    cost_stress_x2_returns: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,18 @@ def _return_matrix(values: Any, *, minimum_rows: int = 2, minimum_trials: int = 
     if np.any(matrix <= -1.0):
         raise ValueError("Period returns at or below -100% are invalid")
     return matrix
+
+
+def _period_return_path_statistics(values: Any) -> dict[str, float | int]:
+    vector = _return_vector(values)
+    equity = np.cumprod(1.0 + vector)
+    peaks = np.maximum.accumulate(np.concatenate((np.asarray([1.0]), equity)))[1:]
+    drawdowns = equity / peaks - 1.0
+    return {
+        "period_count": int(len(vector)),
+        "terminal_return": float(equity[-1] - 1.0),
+        "max_drawdown": float(np.min(drawdowns)),
+    }
 
 
 def nonannualized_sharpe(returns: Any) -> float:
@@ -242,6 +258,15 @@ def _validate_trial(trial: ExperimentTrialEvidence) -> None:
     if tuple(sorted(trial.timestamps)) != trial.timestamps:
         raise ValueError("Experiment timestamps must be strictly chronological")
     _return_vector(trial.returns)
+    for scenario_name, values in (
+        ("x1_5", trial.cost_stress_x1_5_returns),
+        ("x2", trial.cost_stress_x2_returns),
+    ):
+        if len(values) != len(trial.timestamps):
+            raise ValueError(
+                f"Experiment cost stress {scenario_name} returns must align with timestamps"
+            )
+        _return_vector(values)
 
 
 def analyze_experiment_family(
@@ -291,6 +316,7 @@ def analyze_experiment_family(
         "pbo": None,
         "deflated_sharpe": None,
         "dependence_aware_inference": None,
+        "cost_stress": None,
         "selected_configuration_hash": None,
         "thresholds": {
             "maximum_pbo": float(maximum_pbo),
@@ -302,6 +328,9 @@ def analyze_experiment_family(
             "minimum_independent_blocks": int(minimum_independent_blocks),
             "bootstrap_replicates": int(bootstrap_replicates),
             "confidence_level": float(confidence_level),
+            "minimum_cost_stress_terminal_return": (
+                EXPERIMENT_MIN_COST_STRESS_TERMINAL_RETURN
+            ),
         },
         "automatic_model_action": "none",
         "profitability_claimed": False,
@@ -329,6 +358,27 @@ def analyze_experiment_family(
     try:
         sharpes = _trial_scores(matrix)
         selected_index = int(np.argmax(sharpes))
+        selected_trial = trials[selected_index]
+        stress_scenarios = {
+            "x1_5": _period_return_path_statistics(
+                selected_trial.cost_stress_x1_5_returns
+            ),
+            "x2": _period_return_path_statistics(
+                selected_trial.cost_stress_x2_returns
+            ),
+        }
+        cost_stress = {
+            "schema": EXPERIMENT_COST_STRESS_SCHEMA_VERSION,
+            "minimum_terminal_return": (
+                EXPERIMENT_MIN_COST_STRESS_TERMINAL_RETURN
+            ),
+            "scenarios": stress_scenarios,
+            "passed": all(
+                float(item["terminal_return"])
+                >= EXPERIMENT_MIN_COST_STRESS_TERMINAL_RETURN
+                for item in stress_scenarios.values()
+            ),
+        }
         independence = effective_independent_trials(matrix)
         if float(independence["effective_trials"]) < 2.0:
             report["status"] = "BLOCKED_REDUNDANT_TRIALS"
@@ -359,6 +409,7 @@ def analyze_experiment_family(
                     "period_end": reference_timestamps[-1].isoformat(),
                     "pbo": pbo,
                     "dependence_aware_inference": dependence,
+                    "cost_stress": cost_stress,
                 }
             )
             return report
@@ -385,6 +436,7 @@ def analyze_experiment_family(
             "pbo": pbo,
             "deflated_sharpe": dsr,
             "dependence_aware_inference": dependence,
+            "cost_stress": cost_stress,
         }
     )
     passed = (
@@ -392,5 +444,10 @@ def analyze_experiment_family(
         and dsr["probability"] >= minimum_dsr_probability
         and bool(dependence["dependence_supported"])
     )
-    report["status"] = "READY" if passed else "REJECTED"
+    if not passed:
+        report["status"] = "REJECTED"
+    elif not bool(cost_stress["passed"]):
+        report["status"] = "REJECTED_COST_STRESS"
+    else:
+        report["status"] = "READY"
     return report

@@ -106,6 +106,28 @@ def _candidate(tmp_path: Path) -> ModelCandidate:
     )
 
 
+
+
+def _passed_cost_stress() -> dict[str, object]:
+    return {
+        "schema": "hourly-mark-to-market-cost-stress-v1",
+        "minimum_terminal_return": 0.0,
+        "scenarios": {
+            "x1_5": {
+                "period_count": 60,
+                "terminal_return": 0.08,
+                "max_drawdown": -0.04,
+            },
+            "x2": {
+                "period_count": 60,
+                "terminal_return": 0.03,
+                "max_drawdown": -0.07,
+            },
+        },
+        "passed": True,
+    }
+
+
 def _experiment_gate() -> dict[str, object]:
     policy_binding = experiment_policy_binding_from_settings(get_settings())
     return {
@@ -128,6 +150,7 @@ def _experiment_gate() -> dict[str, object]:
             },
             "mismatches": [],
         },
+        "cost_stress": _passed_cost_stress(),
     }
 
 
