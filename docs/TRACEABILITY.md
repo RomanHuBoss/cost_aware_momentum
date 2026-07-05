@@ -1,5 +1,27 @@
 # Traceability
 
+## Work package: point-in-time funding interval replay
+
+| Acceptance criterion | Production/research implementation | Tests |
+|---|---|---|
+| Historical replay does not apply the latest interval to older periods | `app/ml/funding.py::FundingIntervalSchedule`, `HistoricalFundingTimeline` | complete 8h→4h transition regression |
+| Missing settlement after an interval change still fails closed | transition-aware cadence validation in `HistoricalFundingTimeline.aggregate` | missing 4h settlement regression |
+| Funding age uses interval effective at each decision time | `app/ml/context.py::_attach_latest_settled_funding` | old/new decision-time age fractions |
+| Trainer and backtest receive full spec history | `load_training_market_data`, trainer, `scripts/train.py`, `scripts/backtest.py` | static/full suite contracts |
+| Artifact/promotion/runtime reject legacy or fallback-only semantics | schemas v5/v2/v2 and schedule metadata checks | artifact, recovery and quality-gate suites |
+| Unknown pre-observation history is disclosed | schedule metadata `backward_assumption_symbols` | focused metadata regression/full suite |
+
+## Schema changes 1.22.0
+
+- Feature schema: `hourly-barrier-market-context-v5`.
+- Context schema: `hourly-oi-basis-settled-funding-turnover-v2`.
+- Historical funding schema: `bybit-settlement-timestamp-replay-v2`.
+- Funding interval schedule: `instrument-spec-point-in-time-v1`.
+- Policy metric schema: `decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16`.
+- Database head unchanged: `0014_ui_exposure_ledger`.
+- No `.env` changes; legacy model artifacts require retraining.
+
+
 ## Work package: prospective recommendation UI exposure ledger
 
 | Acceptance criterion | Production/research implementation | Tests |

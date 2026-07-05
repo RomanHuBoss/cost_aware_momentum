@@ -567,6 +567,7 @@ async def run(args) -> None:
             entry_spread_bps=runtime.entry_spread_bps,
             funding_history=market_data.funding,
             funding_interval_minutes=market_data.funding_interval_minutes,
+            funding_interval_history=market_data.funding_interval_history,
             require_funding_timeline=True,
             mark_candles=market_data.mark_candles,
             index_candles=market_data.index_candles,

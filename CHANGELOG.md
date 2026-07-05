@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.22.0 — 2026-07-05
+
+- Historical funding replay now selects `funding_interval_minutes` point-in-time from `InstrumentSpecHistory.valid_from` instead of applying the latest interval to the entire training history.
+- `funding_age_fraction` uses the interval effective at each historical decision timestamp.
+- Settlement completeness remains fail-closed on stable cadence and after observed interval transitions; a valid 8-hour to 4-hour transition no longer produces a false missing-settlement error.
+- Trainer, manual training and research backtest now pass full interval history through the dataset pipeline.
+- Candidate metrics, promotion gate and runtime require `instrument-spec-point-in-time-v1` evidence; feature/context/funding/policy schemas advanced to v5/v2/v2/v16 and legacy artifacts must be retrained.
+- Pre-observation interval use is explicitly disclosed as a backward assumption; historical funding forecasts and schedules before the first local spec record remain unavailable.
+- No database migration or `.env` change. Added four focused regressions and synchronized model/compliance/operator documentation.
+
 ## 1.21.0 — 2026-07-05
 
 - Added immutable prospective `advisory.selection_exposure_ledger` evidence for the first verified UI display of each execution-plan version.

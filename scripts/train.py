@@ -53,6 +53,7 @@ async def run(args: argparse.Namespace) -> None:
         entry_spread_bps=settings.model_entry_spread_bps,
         funding_history=market_data.funding,
         funding_interval_minutes=market_data.funding_interval_minutes,
+        funding_interval_history=market_data.funding_interval_history,
         version=args.version,
         output=args.output,
         incumbent=incumbent_from_registry(incumbent_model),

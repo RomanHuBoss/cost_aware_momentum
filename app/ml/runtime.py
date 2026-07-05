@@ -19,7 +19,10 @@ from app.ml.drift import (
     validate_production_drift_reference,
 )
 from app.ml.features import FEATURE_NAMES
-from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
+from app.ml.funding import (
+    FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION,
+    HISTORICAL_FUNDING_SCHEMA_VERSION,
+)
 from app.ml.mtm import (
     DEFAULT_EQUITY_RESERVE_FRACTION,
     INTRAHORIZON_MARGIN_SCHEMA_VERSION,
@@ -203,6 +206,15 @@ class ModelRuntime:
                 raise ValueError("Model artifact market context availability metadata mismatch")
             if context_metadata.get("historical_receipt_time_reconstructed") is not False:
                 raise ValueError("Model artifact must not claim reconstructed historical receipt times")
+            if (
+                context_metadata.get("funding_interval_schedule_schema")
+                != FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION
+            ):
+                raise ValueError("Model artifact market-context funding interval schedule mismatch")
+            if context_metadata.get("funding_interval_source") != (
+                "instrument_spec_history_point_in_time"
+            ):
+                raise ValueError("Model artifact market context did not use point-in-time funding intervals")
             if str(bundle.get("market_context_ablation_schema") or "") != MARKET_CONTEXT_ABLATION_SCHEMA_VERSION:
                 raise ValueError("Model artifact market context ablation schema mismatch")
             label_path_schema_version = str(bundle.get("label_path_schema_version") or "")
@@ -238,6 +250,15 @@ class ModelRuntime:
                 raise ValueError("Model artifact historical funding timeline is required")
             if historical_funding_timeline.get("schema") != HISTORICAL_FUNDING_SCHEMA_VERSION:
                 raise ValueError("Model artifact historical funding timeline schema mismatch")
+            if (
+                historical_funding_timeline.get("funding_interval_schedule_schema")
+                != FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION
+            ):
+                raise ValueError("Model artifact funding interval schedule schema mismatch")
+            if historical_funding_timeline.get("interval_source") != (
+                "instrument_spec_history_point_in_time"
+            ):
+                raise ValueError("Model artifact did not use point-in-time funding interval history")
             timeout_return_schema = str(bundle.get("timeout_return_schema_version") or "")
             if timeout_return_schema != TIMEOUT_RETURN_SCHEMA_VERSION:
                 raise ValueError(

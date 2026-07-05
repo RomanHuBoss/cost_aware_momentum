@@ -59,7 +59,9 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
         "market_context": {
-            "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "schema": "hourly-oi-basis-settled-funding-turnover-v2",
+                "funding_interval_schedule_schema": "instrument-spec-point-in-time-v1",
+                "funding_interval_source": "instrument_spec_history_point_in_time",
             "availability_schema": "exchange-event-close-live-receipt-v1",
             "historical_receipt_time_reconstructed": False,
             "complete_rows": 300,
@@ -77,9 +79,12 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
             "schema": "directional-half-spread-on-next-hour-open-v1",
             "entry_spread_bps": 18.0,
         },
-        "historical_funding_schema": "bybit-settlement-timestamp-replay-v1",
+        "historical_funding_schema": "bybit-settlement-timestamp-replay-v2",
         "historical_funding_timeline": {
-            "schema": "bybit-settlement-timestamp-replay-v1",
+            "schema": "bybit-settlement-timestamp-replay-v2",
+                "funding_interval_schedule_schema": "instrument-spec-point-in-time-v1",
+                "interval_source": "instrument_spec_history_point_in_time",
+                "interval_history_symbols": 3,
             "symbols": 3,
             "settlements": 100,
             "start_time": "2024-01-01T00:00:00+00:00",
@@ -133,10 +138,10 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15",
+        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
-        "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v1",
+        "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",
         "policy_intrahorizon_margin_schema": "bybit-mark-price-hourly-isolated-margin-proxy-v1",
         "policy_intrahorizon_margin_complete": True,
         "policy_research_leverage": 3,
@@ -176,7 +181,7 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
 def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
     metrics = _metrics()
     metrics["policy_metric_schema"] = (
-        "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15"
+        "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16"
     )
 
     result = evaluate_quality_gate(

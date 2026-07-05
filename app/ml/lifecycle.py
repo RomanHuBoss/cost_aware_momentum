@@ -39,7 +39,10 @@ from app.ml.drift import (
     build_production_drift_reference,
     validate_production_drift_reference,
 )
-from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
+from app.ml.funding import (
+    FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION,
+    HISTORICAL_FUNDING_SCHEMA_VERSION,
+)
 from app.ml.mtm import (
     DEFAULT_EQUITY_RESERVE_FRACTION,
     INTRAHORIZON_MARGIN_SCHEMA_VERSION,
@@ -114,6 +117,7 @@ class TrainingMarketData:
     open_interest: pd.DataFrame
     funding: pd.DataFrame
     funding_interval_minutes: dict[str, int]
+    funding_interval_history: pd.DataFrame
 
 
 def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
@@ -336,12 +340,23 @@ async def load_training_market_data(
             spec_query = spec_query.where(InstrumentSpecHistory.symbol.in_(selected_symbols))
         spec_rows = (await session.execute(spec_query)).scalars().all()
         funding_intervals: dict[str, int] = {}
+        funding_interval_history_records: list[dict[str, object]] = []
         for row in spec_rows:
-            if row.symbol in funding_intervals or row.funding_interval_minutes is None:
+            if row.funding_interval_minutes is None:
                 continue
             interval_minutes = int(row.funding_interval_minutes)
-            if interval_minutes > 0:
-                funding_intervals[row.symbol] = interval_minutes
+            if interval_minutes <= 0:
+                continue
+            symbol = str(row.symbol).strip().upper()
+            funding_interval_history_records.append(
+                {
+                    "symbol": symbol,
+                    "valid_from": row.valid_from,
+                    "funding_interval_minutes": interval_minutes,
+                }
+            )
+            if symbol not in funding_intervals:
+                funding_intervals[symbol] = interval_minutes
 
         funding_rows: list[FundingRate] = []
         open_interest_rows: list[OpenInterest] = []
@@ -360,7 +375,11 @@ async def load_training_market_data(
                 .scalars()
                 .all()
             )
-            max_interval = max(funding_intervals.values(), default=1440)
+            historical_intervals = [
+                int(item["funding_interval_minutes"])
+                for item in funding_interval_history_records
+            ]
+            max_interval = max([*funding_intervals.values(), *historical_intervals], default=1440)
             funding_query = select(FundingRate).where(
                 FundingRate.funding_time >= earliest_candle - timedelta(minutes=max_interval),
                 FundingRate.funding_time <= latest_candle_close,
@@ -439,6 +458,10 @@ async def load_training_market_data(
             for row in funding_rows
         ]
     )
+    funding_interval_history = pd.DataFrame.from_records(
+        funding_interval_history_records,
+        columns=["symbol", "valid_from", "funding_interval_minutes"],
+    )
     return TrainingMarketData(
         candles=candles,
         mark_candles=mark_candles,
@@ -446,6 +469,7 @@ async def load_training_market_data(
         open_interest=open_interest,
         funding=funding,
         funding_interval_minutes=funding_intervals,
+        funding_interval_history=funding_interval_history,
     )
 
 
@@ -642,6 +666,7 @@ def build_model_candidate(
     entry_spread_bps: float = 0.0,
     funding_history: pd.DataFrame | None = None,
     funding_interval_minutes: dict[str, int] | None = None,
+    funding_interval_history: pd.DataFrame | None = None,
     version: str | None = None,
     output: Path | None = None,
     incumbent: IncumbentSnapshot | None = None,
@@ -659,6 +684,7 @@ def build_model_candidate(
         entry_spread_bps=entry_spread_bps,
         funding_history=funding_history,
         funding_interval_minutes=funding_interval_minutes,
+        funding_interval_history=funding_interval_history,
         require_funding_timeline=True,
         mark_candles=mark_candles,
         require_mark_timeline=True,
@@ -1008,6 +1034,29 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("policy_expected_funding_lookahead_risk")
     if metrics.get("policy_realized_funding_source") != HISTORICAL_FUNDING_SCHEMA_VERSION:
         reasons.append("policy_realized_funding_source_mismatch")
+    funding_interval_schedule_schema = (
+        funding_timeline.get("funding_interval_schedule_schema")
+        if isinstance(funding_timeline, dict)
+        else None
+    )
+    funding_interval_source = (
+        funding_timeline.get("interval_source") if isinstance(funding_timeline, dict) else None
+    )
+    funding_interval_history_symbols = finite_or_none(
+        funding_timeline.get("interval_history_symbols")
+        if isinstance(funding_timeline, dict)
+        else None
+    )
+    if funding_interval_schedule_schema != FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION:
+        reasons.append("invalid_funding_interval_schedule_schema")
+    if funding_interval_source != "instrument_spec_history_point_in_time":
+        reasons.append("funding_interval_history_not_point_in_time")
+    if (
+        funding_interval_history_symbols is None
+        or funding_symbols is None
+        or funding_interval_history_symbols < funding_symbols
+    ):
+        reasons.append("incomplete_funding_interval_history_symbols")
 
     market_context = metrics.get("market_context")
     context_schema = market_context.get("schema") if isinstance(market_context, dict) else None
@@ -1022,6 +1071,14 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         "historical_receipt_time_reconstructed"
     ) is not False:
         reasons.append("invalid_market_context_receipt_semantics")
+    if not isinstance(market_context, dict) or market_context.get(
+        "funding_interval_schedule_schema"
+    ) != FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION:
+        reasons.append("invalid_market_context_funding_interval_schedule_schema")
+    if not isinstance(market_context, dict) or market_context.get(
+        "funding_interval_source"
+    ) != "instrument_spec_history_point_in_time":
+        reasons.append("market_context_funding_interval_history_not_point_in_time")
 
     context_ablation = metrics.get("market_context_ablation")
     ablation_schema = (

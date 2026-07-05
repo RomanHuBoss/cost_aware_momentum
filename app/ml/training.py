@@ -43,7 +43,7 @@ MODEL_BASE_FEATURE_NAMES = [*FEATURE_NAMES, *MARKET_CONTEXT_FEATURE_NAMES]
 MODEL_FEATURE_NAMES = [*MODEL_BASE_FEATURE_NAMES, "scenario_direction"]
 DEFAULT_STOP_ATR_MULTIPLIER = 1.15
 DEFAULT_TP_ATR_MULTIPLIER = 2.20
-MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-market-context-v4"
+MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-market-context-v5"
 MARKET_CONTEXT_ABLATION_SCHEMA_VERSION = "same-split-zeroed-context-v1"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
@@ -52,7 +52,7 @@ TEMPORAL_SPLIT_SCHEMA_VERSION = "final-holdout-plus-expanding-walk-forward-v4"
 WALK_FORWARD_SCHEMA_VERSION = "expanding-train-rolling-calibration-purged-v1"
 DEFAULT_WALK_FORWARD_FOLDS = 3
 MIN_WALK_FORWARD_POSITIVE_FRACTION = 2.0 / 3.0
-POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15"
+POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16"
 POLICY_UNCERTAINTY_SCHEMA = "all-horizon-phases-circular-moving-block-v2"
 HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
@@ -367,6 +367,7 @@ def make_barrier_dataset(
     entry_spread_bps: float = 0.0,
     funding_history: pd.DataFrame | None = None,
     funding_interval_minutes: dict[str, int] | None = None,
+    funding_interval_history: pd.DataFrame | None = None,
     require_funding_timeline: bool = False,
     mark_candles: pd.DataFrame | None = None,
     require_mark_timeline: bool = False,
@@ -408,6 +409,7 @@ def make_barrier_dataset(
         funding_timeline = HistoricalFundingTimeline(
             funding_history,
             interval_minutes=funding_interval_minutes or {},
+            interval_history=funding_interval_history,
         )
     elif require_funding_timeline:
         raise ValueError("Historical funding timeline is required for research training")
@@ -462,6 +464,7 @@ def make_barrier_dataset(
             open_interest=open_interest,
             funding_history=funding_history,
             funding_interval_minutes=funding_interval_minutes or {},
+            funding_interval_history=funding_interval_history,
         )
         context_metadata = dict(context_frame.attrs.get("market_context") or {})
     elif require_market_context:

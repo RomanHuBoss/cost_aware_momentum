@@ -678,6 +678,7 @@ class BackgroundTrainer:
                         entry_spread_bps=settings.model_entry_spread_bps,
                         funding_history=market_data.funding,
                         funding_interval_minutes=market_data.funding_interval_minutes,
+                        funding_interval_history=market_data.funding_interval_history,
                         incumbent=incumbent,
                         source="background_trainer",
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,

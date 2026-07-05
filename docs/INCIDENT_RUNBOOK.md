@@ -1,5 +1,22 @@
 # Incident Runbook
 
+## Symptom: candidate/runtime reports legacy funding or context schema
+
+Artifacts created before 1.22.0 use the latest funding interval across history and are intentionally incompatible. Preserve the artifact for audit, complete instrument/funding synchronization, retrain and activate only an artifact with `hourly-barrier-market-context-v5`, `hourly-oi-basis-settled-funding-turnover-v2`, `bybit-settlement-timestamp-replay-v2` and `instrument-spec-point-in-time-v1`. Do not edit joblib metadata or weaken runtime validation.
+
+## Symptom: `funding_interval_history_not_point_in_time` or incomplete interval-history symbols
+
+Check `reference.instrument_spec_history` for every training symbol. There must be at least one positive `funding_interval_minutes` row and no conflicting rows at the same `valid_from`. Run the read-only instrument sync; do not fabricate past timestamps. If a symbol has no observed spec history, exclude it or accumulate valid history rather than falling back silently for promotion.
+
+## Symptom: historical funding is missing near an interval transition
+
+Inspect actual `market.funding_rates` timestamps together with `reference.instrument_spec_history.valid_from`. On stable segments, each expected settlement must exist exactly. Around a recorded change, the validator permits only a conservative transition gap and then enforces the new cadence. Do not insert zero-rate rows. Correct ingestion/backfill or exclude the affected cohort.
+
+## Symptom: artifact reports `interval_backward_assumption_symbols`
+
+The training window begins before the first locally observed instrument-spec row. The system uses the earliest observed interval as an explicit assumption for that earlier portion. This is not corruption, but it is not verified historical schedule evidence. Shorten the training window, obtain independently audited history, or retain the limitation in research reporting; do not remove the metadata.
+
+
 ## `LOW_EXPOSURE_COVERAGE` or decisions without exposure
 
 1. Confirm migration head `0014_ui_exposure_ledger` and that the API and static frontend come from the same 1.21.0 release.
@@ -147,9 +164,9 @@ Candidate создан при других margin assumptions. Верните с
 
 Сначала проверьте mark data quality, leverage, funding timing и отсутствие duplicate/gap. Затем исследуйте режим рынка. Не называйте proxy событие точной исторической ликвидацией: hourly OHLC и fixed reserve дают консервативную, но неполную геометрию.
 
-## Симптом: active artifact не загружается после 1.12.0
+## Legacy note: active artifact не загружался после 1.12.0
 
-Вероятная причина: artifact создан до `bybit-settlement-timestamp-replay-v1` либо timeline metadata отсутствует/повреждена. Не редактируйте joblib вручную. Сохраните artifact для аудита, завершите funding backfill, переобучите candidate и активируйте только artifact с корректным SHA-256 и funding schema.
+Историческая причина — отсутствие `bybit-settlement-timestamp-replay-v1`. Для текущего release руководствуйтесь разделом 1.22.0 в начале runbook: требуется schema v2 и point-in-time interval evidence. Не редактируйте joblib вручную.
 
 ## Симптом: training не строит labels после обновления
 

@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.21.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.22.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -9,13 +9,28 @@
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
-| Historical funding tied to actual settlements in research labels | Реализовано 1.12.0 для realized costs | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]` и fail-closed при гэпах. Будущая фактическая ставка не участвует в ex-ante selection. Исторические forecast snapshots и point-in-time изменения interval пока отсутствуют. |
+| Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках на стабильных участках и после наблюдаемой смены cadence. Будущая фактическая ставка не участвует в ex-ante selection. Historical forecast snapshots и interval до первой локально наблюдаемой spec-записи не реконструируются. |
 | Rolling/expanding walk-forward | Реализовано 1.11.0 | Три purged expanding folds внутри development period, fresh fit/calibration на каждом fold и отдельный final holdout. Не является nested CV/PBO. |
 | Operator-selection bias correction | Частично реализовано 1.21.0 | Prospective ex-ante opportunity ledger, immutable first UI-exposure evidence и ACCEPT/REJECT/NO_DECISION сохранены. Denominator теперь включает только plan versions, действительно показанные first-party UI после ≥50% видимости в активной вкладке в течение ≥1 секунды; exposure time задаёт chronological ordering, coverage/anomalies публикуются и низкое coverage блокирует IPSW. Signal-atomic OOS propensity split и cluster moving-block intervals сохранены. Это не causal treatment model: eye tracking, comprehension, latent operator state, propensity refit внутри bootstrap, API/CLI exposures и pre-1.15 opportunities отсутствуют. |
 | Intrahorizon MTM and liquidation simulation | Частично реализовано 1.13.0 | Training/backtest требуют exact hourly Bybit mark-price path, рассчитывают directional MAE/MFE/minimum equity и conservative isolated-margin liquidation proxy с actual funding timing; future mark path влияет только на realized evidence. Не реализованы sub-hour ordering, historical MMR/risk tiers, liquidation fees, cross/portfolio margin, ADL и точная exchange fill/liquidation mechanics. |
-| OI/basis/funding/liquidity/context features | Частично реализовано 1.16.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
+| OI/basis/funding/liquidity/context features | Частично реализовано 1.22.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age с interval effective at decision time и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.20.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Новая family до первого `STARTED` требует immutable preregistration: hypothesis, exact cohort fingerprint/horizon, exhaustive fixed/search contract, primary metric, thresholds, stopping rule и exclusions. Trial outside contract и post-result policy override блокируются. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding и automatic model-promotion gate отсутствуют. |
 | Production drift monitoring | Частично реализовано 1.17.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Failed jobs/insufficient evidence дают `BLOCKED`, critical drift деградирует heartbeat. Multivariate tests, adaptive control limits, delayed-label correction и automated rollback отсутствуют. |
+
+
+## Work package: point-in-time funding interval replay
+
+Release 1.22.0 устраняет применение последнего известного `funding_interval_minutes` ко всей исторической выборке. Реализовано:
+
+- нормализованный `FundingIntervalSchedule` по `InstrumentSpecHistory.valid_from` с явным schema `instrument-spec-point-in-time-v1`;
+- replay actual settlements и `funding_age_fraction` используют interval, effective в соответствующий event/decision time;
+- на стабильных участках cadence проверяется точно; при наблюдаемой смене interval переход валидируется консервативно, а последующие пропуски снова блокируются fail-closed;
+- trainer, manual train и backtest получают всю историю interval, а не только latest mapping;
+- promotion gate и runtime требуют point-in-time interval metadata;
+- feature/context/funding/policy schemas повышены, поэтому legacy artifacts отклоняются и должны быть переобучены;
+- backward use earliest observed interval до первой локальной spec-записи раскрывается в metadata, а не маскируется как подтверждённая история.
+
+Ограничения: `InstrumentSpecHistory` накапливается проспективно при instrument sync; release не реконструирует интервалы до первой локально наблюдаемой записи и не добавляет historical funding forecast. Переходная cadence проверяется по наблюдаемым settlement events, а не по недоступному архиву расписаний биржи.
 
 ## Work package: prospective recommendation UI exposure ledger
 

@@ -1,5 +1,14 @@
 # Model Card
 
+## Point-in-time funding interval semantics 1.22.0
+
+Release 1.22.0 changes the market-model data contract. Actual settlement replay and `funding_age_fraction` now use `InstrumentSpecHistory.valid_from` to select the interval effective at each historical event or decision. Applying the latest 4-hour interval retroactively to an older 8-hour regime could falsely mark valid history incomplete and distort the context feature; that behavior is removed.
+
+Observed interval changes are validated without future-rate leakage. Actual future rates remain realized-cost evidence only and never enter ex-ante direction selection. The artifact contracts are now feature `hourly-barrier-market-context-v5`, context `hourly-oi-basis-settled-funding-turnover-v2`, historical funding `bybit-settlement-timestamp-replay-v2` and schedule `instrument-spec-point-in-time-v1`. Legacy artifacts must be retrained.
+
+The local spec ledger is prospective. For timestamps before its first row, the earliest observed interval is used as an explicit backward assumption and listed in artifact metadata. This does not reconstruct historical exchange schedules or funding forecasts and remains a material research limitation.
+
+
 ## Operator-exposure evidence 1.21.0
 
 The market model and active artifact are unchanged. Release 1.21.0 changes only prospective human-selection diagnostics. A plan enters the operator-selection denominator only after the first-party UI verifies that at least half of its recommendation tile remained visible in an active document for at least one second.
@@ -34,7 +43,7 @@ A `READY` report means configured PBO and DSR thresholds were met on the disclos
 
 Direction-conditional multiclass probability model для hypothetical LONG и SHORT scenarios. Classes: `TP`, `SL`, `TIMEOUT`. `NO TRADE` определяется downstream policy. Intrahorizon liquidation не является новым ML-классом и не переписывает обучающий target.
 
-## Features, schema v4
+## Features, schema v5
 
 Artifact model использует 17 ex-ante base features и direction code:
 
@@ -44,7 +53,7 @@ Artifact model использует 17 ex-ante base features и direction code:
 - `settled_funding_rate`, `funding_age_fraction` только по последнему уже состоявшемуся settlement;
 - `turnover_oi_log_ratio` как ограниченный liquidity/participation proxy.
 
-Schema: `hourly-barrier-market-context-v4`; context schema: `hourly-oi-basis-settled-funding-turnover-v1`. Exact OI/basis rows обязательны, funding join только backward, missing/duplicate/non-finite input блокирует timestamp. Historical public replay опирается на exchange event/close timestamps и не утверждает reconstruction локального receipt time; live inference дополнительно фильтрует `available_at`.
+Schema: `hourly-barrier-market-context-v5`; context schema: `hourly-oi-basis-settled-funding-turnover-v2`. Exact OI/basis rows обязательны, funding join только backward, missing/duplicate/non-finite input блокирует timestamp. Historical public replay опирается на exchange event/close timestamps и не утверждает reconstruction локального receipt time; live inference дополнительно фильтрует `available_at`.
 
 Context ablation: на тех же train/calibration/test timestamps независимо переобучается comparator с нулевыми context columns. Final holdout допускает не более 0.005 ухудшения log loss; минимум два из трёх walk-forward folds должны быть non-inferior. Это защита от декоративного расширения признаков, а не доказательство устойчивого edge.
 
@@ -73,13 +82,13 @@ Decision доступен после close исходной свечи. Entry mi
 
 Artifact сохраняет `label_path_schema_version`, execution schema и `entry_spread_bps`.
 
-## Historical funding replay, schema v1
+## Historical funding replay, schema v2
 
 Research labels сохраняют фактические funding events для полного горизонта и для modeled actual exit. Settlement window — `(entry_time, exit_time]`: событие на момент входа не списывается повторно, событие на момент выхода учитывается. Positive exchange rate означает отрицательный cash flow LONG и положительный SHORT.
 
 Actual future rates используются только как realized OOS cost. Они не участвуют в выборе направления, expected RR/EV или actionability, потому что не были доступны оператору в decision time. Point-in-time funding forecast пока отсутствует; expected funding source фиксируется как `none-no-point-in-time-forecast`.
 
-Artifact сохраняет `historical_funding_schema=bybit-settlement-timestamp-replay-v1` и summary settlement coverage. Runtime и promotion gate требуют этот contract fail-closed.
+Artifact сохраняет `historical_funding_schema=bybit-settlement-timestamp-replay-v2`, `funding_interval_schedule_schema=instrument-spec-point-in-time-v1`, point-in-time source, interval-change count и backward-assumption symbols. Runtime и promotion gate требуют этот contract fail-closed.
 
 ## Intrahorizon mark-to-market, schema v1
 

@@ -1,5 +1,17 @@
 # Operator Manual
 
+## Upgrade and model-retraining workflow 1.22.0
+
+1. Stop trainer/backtest/API processes and preserve the current active artifact plus PostgreSQL backup for rollback.
+2. Update sources. No new migration is introduced; expected Alembic head remains `0014_ui_exposure_ledger`.
+3. Run instrument sync and funding history backfill before training. Confirm every selected symbol has positive `funding_interval_minutes` history and actual settlement coverage including an anchor before the training window.
+4. Do not reuse an artifact from 1.21.0 or earlier. Version 1.22.0 requires feature/context/funding schedule schemas v5/v2/v2.
+5. Train a new candidate with `python manage.py train ...` or the background trainer. Inspect `historical_funding_timeline.interval_source`, `interval_change_count` and `interval_backward_assumption_symbols`.
+6. A non-empty backward-assumption list means data predates the first locally observed spec. Treat this as disclosed uncertainty; do not describe it as reconstructed exchange history.
+7. Activate only after the normal absolute and incumbent-relative gates pass. Do not lower funding, context or policy gates merely to increase recommendation count.
+8. Existing UI-exposure migration/configuration from 1.21.0 remains required.
+
+
 ## Upgrade and exposure workflow 1.21.0
 
 1. Stop API/report processes and back up PostgreSQL.
@@ -84,7 +96,7 @@ Legacy backtests are intentionally absent. A process killed after `STARTED` may 
 2. Обновите исходники. Migration отсутствует; ожидаемый Alembic head остаётся `0011_selection_experiment`.
 3. В существующем `.env` установите `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
 4. Запустите worker и проверьте `history_backfill.index_price_history` и `history_backfill.open_interest_history` для всех training symbols. Не подставляйте last price вместо index/mark и не заполняйте OI гэпы нулями.
-5. Дождитесь достаточного покрытия, затем переобучите candidate. Artifact 1.15.0 несовместим с `hourly-barrier-market-context-v4` и должен быть отклонён fail-closed.
+5. Дождитесь достаточного покрытия, затем переобучите candidate. Любой artifact до 1.22.0 несовместим с `hourly-barrier-market-context-v5` и должен быть отклонён fail-closed.
 6. Перед activation проверьте artifact metadata: context/availability/ablation schemas, complete/incomplete row counts, final ablation benefit и число non-inferior walk-forward folds.
 7. Проведите новый paper/shadow период. Расширение feature schema не является доказательством прибыльности.
 

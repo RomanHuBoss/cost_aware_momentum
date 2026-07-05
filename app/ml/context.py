@@ -5,6 +5,8 @@ import math
 import numpy as np
 import pandas as pd
 
+from app.ml.funding import FundingIntervalSchedule
+
 MARKET_CONTEXT_FEATURE_NAMES = [
     "oi_log_change_1h",
     "oi_log_change_24h",
@@ -15,7 +17,7 @@ MARKET_CONTEXT_FEATURE_NAMES = [
     "turnover_oi_log_ratio",
 ]
 MARKET_CONTEXT_COMPLETE_COLUMN = "market_context_complete"
-MARKET_CONTEXT_SCHEMA_VERSION = "hourly-oi-basis-settled-funding-turnover-v1"
+MARKET_CONTEXT_SCHEMA_VERSION = "hourly-oi-basis-settled-funding-turnover-v2"
 MARKET_CONTEXT_AVAILABILITY_SCHEMA = "exchange-event-close-live-receipt-v1"
 _HOUR = pd.Timedelta(1, unit="h")
 _REQUIRED_SOURCES = [
@@ -119,7 +121,7 @@ def _attach_latest_settled_funding(
     decisions: pd.DataFrame,
     funding: pd.DataFrame,
     *,
-    funding_interval_minutes: dict[str, int],
+    funding_interval_schedule: FundingIntervalSchedule,
 ) -> pd.DataFrame:
     pieces: list[pd.DataFrame] = []
     for symbol, group in decisions.groupby("symbol", sort=False):
@@ -139,16 +141,22 @@ def _attach_latest_settled_funding(
                 direction="backward",
                 allow_exact_matches=True,
             )
-        interval_minutes = funding_interval_minutes.get(str(symbol))
-        if isinstance(interval_minutes, bool) or not isinstance(interval_minutes, int) or interval_minutes <= 0:
-            ordered["funding_age_fraction"] = np.nan
-        else:
-            age_minutes = (
-                ordered["decision_time"] - ordered["funding_time"]
-            ).dt.total_seconds() / 60.0
-            ordered["funding_age_fraction"] = age_minutes / float(interval_minutes)
-            valid_age = age_minutes.ge(0.0) & age_minutes.le(float(interval_minutes) + 1e-9)
-            ordered.loc[~valid_age, ["settled_funding_rate", "funding_age_fraction"]] = np.nan
+        try:
+            interval_values = funding_interval_schedule.intervals_at(
+                str(symbol), ordered["decision_time"]
+            )
+        except ValueError:
+            interval_values = np.full(len(ordered), np.nan, dtype=float)
+        age_minutes = (
+            ordered["decision_time"] - ordered["funding_time"]
+        ).dt.total_seconds() / 60.0
+        ordered["funding_age_fraction"] = age_minutes / interval_values
+        valid_interval = np.isfinite(interval_values) & (interval_values > 0.0)
+        valid_age = age_minutes.ge(0.0) & age_minutes.le(interval_values + 1e-9)
+        ordered.loc[
+            ~(valid_interval & valid_age),
+            ["settled_funding_rate", "funding_age_fraction"],
+        ] = np.nan
         pieces.append(ordered)
     if not pieces:
         return decisions.assign(
@@ -169,6 +177,7 @@ def build_market_context_frame(
     open_interest: pd.DataFrame,
     funding_history: pd.DataFrame,
     funding_interval_minutes: dict[str, int],
+    funding_interval_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build strict hourly market-context features without future-event leakage.
 
@@ -189,6 +198,10 @@ def build_market_context_frame(
     index = _normalise_candle_close(index_candles, source="index_price_hourly")
     oi = _normalise_open_interest(open_interest)
     funding = _normalise_funding(funding_history)
+    funding_interval_schedule = FundingIntervalSchedule(
+        funding_interval_minutes,
+        interval_history=funding_interval_history,
+    )
 
     decisions = decision_candles[["symbol", "close_time", "turnover"]].rename(
         columns={"close_time": "decision_time"}
@@ -269,7 +282,7 @@ def build_market_context_frame(
     result = _attach_latest_settled_funding(
         result,
         funding,
-        funding_interval_minutes=funding_interval_minutes,
+        funding_interval_schedule=funding_interval_schedule,
     )
     open_interest_notional = result["open_interest"] * result["index_close"]
     result["turnover_oi_log_ratio"] = np.log1p(result["turnover"]) - np.log1p(
@@ -279,6 +292,11 @@ def build_market_context_frame(
     feature_matrix = result[MARKET_CONTEXT_FEATURE_NAMES].to_numpy(dtype=float)
     finite = np.isfinite(feature_matrix).all(axis=1)
     result[MARKET_CONTEXT_COMPLETE_COLUMN] = finite
+    interval_references = {
+        str(symbol): group["decision_time"]
+        for symbol, group in result.groupby("symbol", sort=False)
+    }
+    interval_metadata = funding_interval_schedule.describe(reference_times=interval_references)
     result.attrs["market_context"] = {
         "schema": MARKET_CONTEXT_SCHEMA_VERSION,
         "availability_schema": MARKET_CONTEXT_AVAILABILITY_SCHEMA,
@@ -288,6 +306,14 @@ def build_market_context_frame(
         "rows": int(len(result)),
         "complete_rows": int(finite.sum()),
         "incomplete_rows": int((~finite).sum()),
+        "funding_interval_schedule_schema": interval_metadata["schema"],
+        "funding_interval_source": interval_metadata["interval_source"],
+        "funding_interval_history_symbols": interval_metadata["history_symbols"],
+        "funding_interval_history_rows": interval_metadata["history_rows"],
+        "funding_interval_change_count": interval_metadata["interval_change_count"],
+        "funding_interval_backward_assumption_symbols": interval_metadata[
+            "backward_assumption_symbols"
+        ],
     }
     return result.sort_values(["symbol", "decision_time"], kind="mergesort").reset_index(drop=True)
 

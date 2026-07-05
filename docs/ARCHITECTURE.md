@@ -1,5 +1,18 @@
 # Architecture
 
+## Point-in-time funding interval replay 1.22.0
+
+1. Instrument sync appends `reference.instrument_spec_history` only when the spec fingerprint changes, including `funding_interval_minutes` and `valid_from`.
+2. Training data loading keeps both the latest interval map for compatibility and the complete positive interval history for selected symbols.
+3. `FundingIntervalSchedule` normalizes duplicate/conflicting records, selects the interval effective at each UTC timestamp and records backward assumptions before the first observed spec.
+4. `HistoricalFundingTimeline` validates settlement cadence against that schedule. Stable segments remain exact; a recorded interval transition is accepted only within a conservative maximum-gap bound, after which the new exact cadence applies.
+5. Market-context construction divides funding age by the interval effective at each historical decision, so old 8-hour regimes are not evaluated as 4-hour regimes.
+6. Candidate metrics and artifacts persist funding/context schedule evidence. Promotion and runtime require the new schemas and point-in-time source; older artifacts fail closed.
+7. The change remains research/advisory-only. It does not forecast funding, place orders or alter account-dependent execution sizing.
+
+Data flow: instrument spec observations → point-in-time interval schedule → settlement replay and funding-age features → dataset → candidate metrics/artifact → promotion/runtime validation.
+
+
 ## Verified recommendation UI exposure 1.21.0
 
 1. Every execution-plan version still creates an immutable ex-ante `selection_experiment_ledger` row in the plan transaction.

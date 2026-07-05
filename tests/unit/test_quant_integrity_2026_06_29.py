@@ -69,7 +69,7 @@ def test_policy_evaluation_blocks_same_symbol_overlap_like_live_acceptance() -> 
     )
     assert (
         metrics["policy_metric_schema"]
-        == "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15"
+        == "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16"
     )
     assert metrics["policy_capital_sleeves"] == 2
     assert metrics["policy_trades"] == 1
