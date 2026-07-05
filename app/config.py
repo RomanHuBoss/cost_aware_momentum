@@ -135,6 +135,12 @@ class Settings(BaseSettings):
     experiment_min_periods: int = 60
     experiment_max_pbo: float = 0.20
     experiment_min_dsr_probability: float = 0.95
+    research_bootstrap_replicates: int = 1000
+    research_confidence_level: float = 0.95
+    experiment_dependence_block_periods: int = 8
+    experiment_min_independent_blocks: int = 6
+    selection_dependence_block_clusters: int = 5
+    selection_min_independent_clusters: int = 30
 
     # Background model lifecycle. The trainer creates immutable candidates in a
     # separate process so CPU-heavy fitting never blocks API or inference work.
@@ -357,6 +363,20 @@ class Settings(BaseSettings):
             raise ValueError("EXPERIMENT_MAX_PBO must be in [0, 1]")
         if not 0 <= self.experiment_min_dsr_probability <= 1:
             raise ValueError("EXPERIMENT_MIN_DSR_PROBABILITY must be in [0, 1]")
+        if self.research_bootstrap_replicates < 100:
+            raise ValueError("RESEARCH_BOOTSTRAP_REPLICATES must be at least 100")
+        if not 0.5 < self.research_confidence_level < 1:
+            raise ValueError("RESEARCH_CONFIDENCE_LEVEL must be in (0.5, 1)")
+        if self.experiment_dependence_block_periods < 2:
+            raise ValueError("EXPERIMENT_DEPENDENCE_BLOCK_PERIODS must be at least two")
+        if self.experiment_min_independent_blocks < 2:
+            raise ValueError("EXPERIMENT_MIN_INDEPENDENT_BLOCKS must be at least two")
+        if self.selection_dependence_block_clusters < 2:
+            raise ValueError("SELECTION_DEPENDENCE_BLOCK_CLUSTERS must be at least two")
+        if self.selection_min_independent_clusters < 2 * self.selection_dependence_block_clusters:
+            raise ValueError(
+                "SELECTION_MIN_INDEPENDENT_CLUSTERS must cover at least two cluster blocks"
+            )
         if self.max_account_snapshot_age_seconds < 30:
             raise ValueError("MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS must be at least 30")
         if self.initial_backfill_bars < self.universe_min_history_bars:

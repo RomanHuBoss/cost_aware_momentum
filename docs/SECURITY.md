@@ -1,5 +1,14 @@
 # Security
 
+## Dependence-evidence integrity boundary 1.19.0
+
+- Bootstrap seeds and algorithms are deterministic for identical evidence; researchers cannot repeatedly rerun random seeds and report only a favourable interval.
+- Experiment blocks preserve chronological return segments and cannot be shorter than the ledger-declared horizon.
+- Operator propensity train/OOS assignment is signal-cluster atomic; one signal cannot leak through another plan version into both sides.
+- Cluster bootstrap resamples complete signal clusters and never modifies ledger, decisions or outcomes.
+- Insufficient blocks/clusters and invalid evidence are visible blocked states; no IID fallback is permitted.
+- Dependence reports remain read-only research diagnostics and cannot activate/rollback models, change risk or call Bybit order mutations.
+
 ## Research experiment integrity boundary 1.18.0
 
 - Experiment events are append-only application records with unique trial sequence and record hash constraints.

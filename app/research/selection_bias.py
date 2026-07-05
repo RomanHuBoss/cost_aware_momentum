@@ -11,7 +11,10 @@ from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from app.research.dependence import cluster_moving_block_bootstrap
+
 SELECTION_FEATURE_SCHEMA = "operator-selection-predecision-v1"
+SELECTION_REPORT_SCHEMA = "operator-selection-ipsw-clustered-report-v2"
 SELECTION_FEATURE_NAMES = (
     "p_tp",
     "p_sl",
@@ -46,10 +49,15 @@ class SelectionObservation:
     decision_action: str
     counterfactual_r: float
     features: Mapping[str, float]
+    cluster_id: str | None = None
 
     @property
     def selected(self) -> int:
         return int(self.decision_action == "ACCEPT")
+
+    @property
+    def dependence_cluster_id(self) -> str:
+        return self.cluster_id or self.plan_id
 
 
 def _base_report(observations: list[SelectionObservation]) -> dict:
@@ -60,7 +68,7 @@ def _base_report(observations: list[SelectionObservation]) -> dict:
     unselected = [row.counterfactual_r for row in observations if not row.selected]
     all_values = [row.counterfactual_r for row in observations]
     return {
-        "schema": "operator-selection-ipsw-report-v1",
+        "schema": SELECTION_REPORT_SCHEMA,
         "status": "NOT_EVALUATED",
         "eligible_valued_count": len(observations),
         "decision_counts": actions,
@@ -72,8 +80,9 @@ def _base_report(observations: list[SelectionObservation]) -> dict:
             float(np.mean(selected) - np.mean(all_values)) if selected and all_values else None
         ),
         "ipsw_selected_mean_r": None,
+        "dependence_aware_inference": None,
         "propensity": {
-            "method": "chronological-expanding-logistic-v1",
+            "method": "chronological-expanding-signal-cluster-logistic-v2",
             "feature_schema": SELECTION_FEATURE_SCHEMA,
             "feature_names": list(SELECTION_FEATURE_NAMES),
             "out_of_sample_count": 0,
@@ -100,6 +109,8 @@ def _validate_observations(observations: list[SelectionObservation]) -> None:
     for row in observations:
         if not row.plan_id or row.plan_id in seen:
             raise ValueError("Selection observations require unique non-empty plan_id values")
+        if not row.dependence_cluster_id:
+            raise ValueError("Selection observations require a non-empty dependence cluster")
         seen.add(row.plan_id)
         if row.observed_at.tzinfo is None or row.observed_at.utcoffset() is None:
             raise ValueError("Selection observed_at must be timezone-aware")
@@ -131,29 +142,63 @@ def _chronological_propensity_scores(
     )
     labels = np.asarray([row.selected for row in observations], dtype=int)
     scores = np.full(len(observations), np.nan, dtype=float)
-    start = min(warmup_observations, len(observations))
-    while start < len(observations):
-        train_labels = labels[:start]
-        if np.unique(train_labels).size < 2 or np.sum(train_labels == 1) < 5 or np.sum(train_labels == 0) < 5:
-            start += 1
-            continue
-        stop = min(len(observations), start + block_size)
-        model = Pipeline(
-            [
-                ("scale", StandardScaler()),
-                (
-                    "logit",
-                    LogisticRegression(
-                        solver="lbfgs",
-                        max_iter=2000,
-                        random_state=0,
-                    ),
-                ),
-            ]
-        )
-        model.fit(matrix[:start], train_labels)
-        scores[start:stop] = model.predict_proba(matrix[start:stop])[:, 1]
-        start = stop
+
+    grouped: dict[str, list[int]] = {}
+    for index, row in enumerate(observations):
+        grouped.setdefault(row.dependence_cluster_id, []).append(index)
+    clusters = sorted(
+        grouped,
+        key=lambda cluster: (
+            min(observations[index].observed_at for index in grouped[cluster]),
+            cluster,
+        ),
+    )
+    cluster_rows = [np.asarray(grouped[cluster], dtype=int) for cluster in clusters]
+    cluster_min_time = [min(observations[index].observed_at for index in rows) for rows in cluster_rows]
+    cluster_max_time = [max(observations[index].observed_at for index in rows) for rows in cluster_rows]
+
+    cursor = 0
+    warmup_rows = 0
+    while cursor < len(cluster_rows) and warmup_rows < warmup_observations:
+        warmup_rows += len(cluster_rows[cursor])
+        cursor += 1
+    while cursor < len(cluster_rows):
+        stop = cursor
+        test_row_count = 0
+        while stop < len(cluster_rows) and test_row_count < block_size:
+            test_row_count += len(cluster_rows[stop])
+            stop += 1
+        test_indexes = np.concatenate(cluster_rows[cursor:stop])
+        test_start = min(cluster_min_time[cursor:stop])
+        eligible_train_groups = [
+            cluster_rows[index]
+            for index in range(cursor)
+            if cluster_max_time[index] < test_start
+        ]
+        if eligible_train_groups:
+            train_indexes = np.concatenate(eligible_train_groups)
+            train_labels = labels[train_indexes]
+            if (
+                np.unique(train_labels).size >= 2
+                and np.sum(train_labels == 1) >= 5
+                and np.sum(train_labels == 0) >= 5
+            ):
+                model = Pipeline(
+                    [
+                        ("scale", StandardScaler()),
+                        (
+                            "logit",
+                            LogisticRegression(
+                                solver="lbfgs",
+                                max_iter=2000,
+                                random_state=0,
+                            ),
+                        ),
+                    ]
+                )
+                model.fit(matrix[train_indexes], train_labels)
+                scores[test_indexes] = model.predict_proba(matrix[test_indexes])[:, 1]
+        cursor = stop
     mask = np.isfinite(scores)
     return labels[mask], scores[mask], np.flatnonzero(mask)
 
@@ -167,6 +212,10 @@ def analyze_operator_selection(
     warmup_observations: int = 40,
     block_size: int = 20,
     propensity_floor: float = 0.05,
+    dependence_block_clusters: int = 5,
+    minimum_independent_clusters: int = 30,
+    bootstrap_replicates: int = 500,
+    confidence_level: float = 0.95,
 ) -> dict:
     """Quantify operator-selection bias with honest chronological OOS propensities.
 
@@ -180,6 +229,12 @@ def analyze_operator_selection(
         raise ValueError("Selection minimum sample requirements cannot be negative")
     if not 0 < propensity_floor < 0.5:
         raise ValueError("propensity_floor must be between zero and 0.5")
+    if dependence_block_clusters < 2:
+        raise ValueError("dependence_block_clusters must be at least two")
+    if minimum_independent_clusters < 2 * dependence_block_clusters:
+        raise ValueError(
+            "minimum_independent_clusters must cover at least two dependence blocks"
+        )
     ordered = sorted(observations, key=lambda row: (row.observed_at, row.plan_id))
     _validate_observations(ordered)
     report = _base_report(ordered)
@@ -229,6 +284,18 @@ def analyze_operator_selection(
         return report
 
     scored_outcomes = np.asarray([ordered[index].counterfactual_r for index in scored_indexes], dtype=float)
+    scored_clusters = [ordered[index].dependence_cluster_id for index in scored_indexes]
+    unique_cluster_count = len(set(scored_clusters))
+    if unique_cluster_count < minimum_independent_clusters:
+        report["status"] = "INSUFFICIENT_CLUSTER_EVIDENCE"
+        report["dependence_aware_inference"] = {
+            "schema": "signal-cluster-moving-block-bootstrap-v1",
+            "status": "INSUFFICIENT_CLUSTERS",
+            "unique_cluster_count": unique_cluster_count,
+            "minimum_independent_clusters": int(minimum_independent_clusters),
+            "block_clusters": int(dependence_block_clusters),
+        }
+        return report
     selection_rate = float(np.mean(labels))
     weights = selection_rate / selected_scores
     selected_outcomes = scored_outcomes[selected_mask]
@@ -247,5 +314,36 @@ def analyze_operator_selection(
     report["ipsw_selected_mean_r"] = float(np.sum(weights * selected_outcomes) / weight_sum)
     report["ipsw_scored_eligible_mean_r"] = float(np.mean(scored_outcomes))
     report["ipsw_scored_selected_mean_r"] = float(np.mean(selected_outcomes))
+
+    full_weights = np.zeros(len(labels), dtype=float)
+    full_weights[selected_mask] = weights
+    try:
+        dependence = cluster_moving_block_bootstrap(
+            scored_outcomes,
+            selected=labels,
+            weights=full_weights,
+            cluster_ids=scored_clusters,
+            observed_at=[ordered[index].observed_at for index in scored_indexes],
+            block_clusters=dependence_block_clusters,
+            replicates=bootstrap_replicates,
+            confidence_level=confidence_level,
+        )
+    except ValueError as exc:
+        report["status"] = "INVALID_CLUSTER_DEPENDENCE_EVIDENCE"
+        report["dependence_aware_inference"] = {
+            "schema": "signal-cluster-moving-block-bootstrap-v1",
+            "status": "INVALID",
+            "reason": str(exc),
+            "unique_cluster_count": unique_cluster_count,
+        }
+        return report
+    dependence["minimum_independent_clusters"] = int(minimum_independent_clusters)
+    cluster_counts = list(dependence.pop("cluster_row_counts").values())
+    dependence["cluster_size_summary"] = {
+        "minimum": int(min(cluster_counts)),
+        "median": float(np.median(cluster_counts)),
+        "maximum": int(max(cluster_counts)),
+    }
+    report["dependence_aware_inference"] = dependence
     report["status"] = "READY"
     return report

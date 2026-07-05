@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.19.0 — 2026-07-05
+
+- Добавлен единый dependence-aware research layer: Bartlett/Newey–West HAC для среднего и детерминированный moving-block bootstrap для среднего return и non-annualized Sharpe.
+- Deflated Sharpe в experiment-family report использует HAC-implied effective observation count вместо номинального числа зависимых почасовых строк.
+- Block length experiment report автоматически не может быть короче заявленного trading horizon; слишком малое число независимых блоков даёт `BLOCKED_INSUFFICIENT_DEPENDENCE_EVIDENCE`.
+- Статус `READY` теперь дополнительно требует положительных нижних confidence bounds HAC mean, block-bootstrap mean и block-bootstrap Sharpe; это research governance, а не auto-activation.
+- Chronological propensity scoring больше не разделяет plan versions одного signal между training и OOS block; перекрывающиеся signal windows исключаются из training cutoff.
+- Operator-selection report использует signal-cluster moving-block bootstrap для интервалов all-eligible, selected-only, IPSW mean и selected-subset bias; недостаток независимых signal clusters блокирует corrected result.
+- Добавлены шесть fail-closed `RESEARCH_*`/dependence settings, девять regression tests и синхронизированная эксплуатационная документация.
+- Миграция БД и переобучение market model не требуются; advisory-only и `automatic_model_action=none` сохранены.
+
 ## 1.18.0 — 2026-07-05
 
 - Добавлен append-only `research.experiment_events` ledger: каждая валидированная research backtest-оценка записывает `STARTED` и терминальное `SUCCEEDED/FAILED` событие с неизменяемой конфигурацией, canonical SHA-256 и hash chain.

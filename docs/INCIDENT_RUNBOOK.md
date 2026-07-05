@@ -1,5 +1,21 @@
 # Incident Runbook
 
+## Symptom: `BLOCKED_INSUFFICIENT_DEPENDENCE_EVIDENCE`
+
+Compare period count, declared horizon, requested/effective block length and independent-block count. Do not shorten the block only because the selected strategy then passes. Extend the common final-test grid or start a new properly declared family. Confirm all alternatives remain aligned.
+
+## Symptom: experiment is `REJECTED` only after 1.19.0
+
+Inspect HAC effective observations and lower confidence bounds for mean and Sharpe. Serial dependence can make nominal evidence materially smaller. Preserve the rejection; do not revert to nominal `n`, IID bootstrap or a more favourable random seed.
+
+## Symptom: selection report is `INSUFFICIENT_CLUSTER_EVIDENCE`
+
+Count unique OOS-scored `signal_id` clusters, not plan versions. Recalculated versions of one signal do not create independent evidence. Continue prospective accumulation and verify that signal IDs and timestamps are intact.
+
+## Symptom: `INVALID_CLUSTER_DEPENDENCE_EVIDENCE`
+
+Check non-finite outcomes/weights, selected/unselected presence, cluster timestamps, block length and bootstrap valid-replicate count. Do not fall back to row-level intervals or silently drop problematic clusters.
+
 ## Symptom: experiment report is `BLOCKED_INCOMPLETE_LEDGER`
 
 Inspect `research.experiment_events` for open `STARTED` trials, unresolved `FAILED` configurations and missing successful configuration hashes. Do not delete an unfavourable/failed attempt. Confirm the process failure, configuration hash and family, then use an explicit audited recovery procedure to append the correct terminal status. Re-running the same configuration may resolve a failed configuration for analysis, but the failed attempt remains disclosed.

@@ -1,5 +1,17 @@
 # Architecture
 
+## Dependence-aware research inference 1.19.0
+
+Experiment-family analysis now separates model-search multiplicity from time-series dependence:
+
+1. CSCV/PBO still compares all disclosed variants on one aligned hourly grid.
+2. The selected return path receives Bartlett/Newey–West long-run variance; its implied effective observation count replaces nominal `n` in DSR inference.
+3. Moving-block bootstrap resamples overlapping contiguous return blocks and publishes percentile intervals for mean return and non-annualized Sharpe.
+4. The effective block length is at least the declared trading horizon. Fewer than the configured independent blocks yields a blocked report.
+5. `READY` additionally requires positive lower HAC mean, block-bootstrap mean and block-bootstrap Sharpe bounds. This changes only research classification; active-model lifecycle is untouched.
+
+Operator-selection inference uses `signal_id` as the dependence cluster. Every plan version of one signal is assigned to the same propensity OOS block, and clusters whose observation interval overlaps the test start are purged from training. A chronological moving-block bootstrap resamples whole signal clusters and reports uncertainty for eligible mean, selected mean, IPSW mean and selected-subset bias. The bootstrap conditions on previously fitted OOS propensities and remains descriptive, not causal.
+
 ## Research experiment-selection flow 1.18.0
 
 1. Backtest validates the immutable model artifact and constructs the exact final-test dataset before experiment registration.
@@ -13,7 +25,7 @@
 
 Data flow: validated artifact + final-test cohort → STARTED event → aligned hourly returns → terminal event → verified family matrix → PBO/DSR governance report.
 
-Boundary: this is prospective research governance. It does not recreate pre-1.18 experiments, correct serial dependence with HAC/bootstrap inference, alter the active model or become evidence of live profitability.
+Boundary: this is prospective research governance. It does not recreate pre-1.18 experiments, formally preregister a family, alter the active model or become evidence of live profitability. Dependence-aware inference is added by release 1.19.0.
 
 ## Production drift flow 1.17.0
 

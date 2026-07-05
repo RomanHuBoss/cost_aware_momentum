@@ -1,5 +1,14 @@
 # Model Card
 
+## Dependence-aware research evidence 1.19.0
+
+The market model and artifact schema are unchanged. Research uncertainty is strengthened around two external evaluation layers:
+
+- experiment selection: Newey–West long-run variance reduces DSR effective observations when hourly returns are serially dependent; moving-block bootstrap provides mean/Sharpe intervals and requires enough horizon-sized blocks;
+- operator selection: propensity train/OOS separation occurs at signal-cluster level, and confidence intervals resample chronological blocks of complete signals rather than treating plan versions as independent.
+
+A `READY` experiment family now requires positive lower dependence-aware bounds in addition to PBO and DSR thresholds. Operator IPSW remains diagnostic because exposure, unmeasured operator state and actual exchange fills are not observed. Neither report mutates the active model or proves profitability.
+
 ## Experiment overfitting governance 1.18.0
 
 The active market model is unchanged. Release 1.18.0 governs research selection around backtests: all variants in one declared family are prospectively logged before their results, successful variants expose an aligned hourly return path, and incomplete disclosure blocks PBO/DSR evaluation.
@@ -122,4 +131,4 @@ Auto-activation требует:
 
 ## Known limitations
 
-Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют historical receipt-time reconstruction, point-in-time funding forecasts, orderbook-depth/cross-asset model features, historical funding-interval/risk-tier reconstruction, exact liquidation engine, HAC/bootstrap correction for experiment returns, multivariate drift tests, adaptive control limits и automatic drift rollback. Результаты не являются доказательством прибыльности.
+Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют historical receipt-time reconstruction, point-in-time funding forecasts, orderbook-depth/cross-asset model features, historical funding-interval/risk-tier reconstruction, exact liquidation engine, studentized/nested bootstrap with propensity refit, multivariate drift tests, adaptive control limits и automatic drift rollback. Результаты не являются доказательством прибыльности.

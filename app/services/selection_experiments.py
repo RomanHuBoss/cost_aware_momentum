@@ -164,6 +164,10 @@ async def selection_bias_report(
     minimum_total: int = 60,
     minimum_selected: int = 15,
     minimum_unselected: int = 15,
+    dependence_block_clusters: int = 5,
+    minimum_independent_clusters: int = 30,
+    bootstrap_replicates: int = 500,
+    confidence_level: float = 0.95,
 ) -> dict:
     if since.tzinfo is None or since.utcoffset() is None:
         raise ValueError("Selection report since must be timezone-aware")
@@ -198,6 +202,7 @@ async def selection_bias_report(
         observations.append(
             SelectionObservation(
                 plan_id=str(ledger.plan_id),
+                cluster_id=str(ledger.signal_id),
                 observed_at=ledger.observed_at,
                 decision_action=action,
                 counterfactual_r=float(outcome.counterfactual_r),
@@ -206,7 +211,7 @@ async def selection_bias_report(
         )
     if integrity_errors:
         analysis = {
-            "schema": "operator-selection-ipsw-report-v1",
+            "schema": "operator-selection-ipsw-clustered-report-v2",
             "status": "LEDGER_INTEGRITY_ERROR",
             "ipsw_selected_mean_r": None,
             "causal_effect_claimed": False,
@@ -218,6 +223,10 @@ async def selection_bias_report(
             minimum_total=minimum_total,
             minimum_selected=minimum_selected,
             minimum_unselected=minimum_unselected,
+            dependence_block_clusters=dependence_block_clusters,
+            minimum_independent_clusters=minimum_independent_clusters,
+            bootstrap_replicates=bootstrap_replicates,
+            confidence_level=confidence_level,
         )
     analysis["window_start"] = since.astimezone(UTC).isoformat()
     analysis["ledger"] = {
@@ -233,5 +242,6 @@ async def selection_bias_report(
         "Plan creation is the opportunity unit; UI exposure is not yet directly observed.",
         "Counterfactual plan outcomes are estimates, not exchange-confirmed fills.",
         "IPSW is descriptive selection diagnostics and not a causal treatment-effect estimate.",
+        "Confidence intervals use chronological signal-cluster moving blocks and condition on fitted OOS propensities.",
     ]
     return analysis

@@ -9,10 +9,12 @@ from typing import Any
 
 import numpy as np
 
+from app.research.dependence import time_series_dependence_report
+
 EULER_MASCHERONI = 0.5772156649015329
 PBO_SCHEMA_VERSION = "cscv-pbo-contiguous-segments-v1"
-DSR_SCHEMA_VERSION = "deflated-sharpe-bailey-lopez-de-prado-v1"
-EXPERIMENT_REPORT_SCHEMA_VERSION = "experiment-selection-governance-v1"
+DSR_SCHEMA_VERSION = "deflated-sharpe-bailey-lopez-de-prado-hac-effective-n-v2"
+EXPERIMENT_REPORT_SCHEMA_VERSION = "experiment-selection-dependence-governance-v2"
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class ExperimentFamilyEvidence:
     successful_trials: tuple[ExperimentTrialEvidence, ...]
     failed_configuration_hashes: tuple[str, ...]
     open_trial_ids: tuple[str, ...]
+    declared_horizons: tuple[int, ...] = ()
 
 
 def _return_vector(values: Any, *, minimum_length: int = 2) -> np.ndarray:
@@ -112,6 +115,7 @@ def deflated_sharpe_ratio(
     *,
     trial_sharpes: Any,
     effective_trials: float,
+    effective_observations: float | None = None,
 ) -> dict[str, float | str | int]:
     returns = _return_vector(selected_returns, minimum_length=3)
     sharpes = _finite_vector(trial_sharpes, minimum_length=2, name="trial_sharpes")
@@ -120,6 +124,9 @@ def deflated_sharpe_ratio(
         raise ValueError("effective_trials must be finite, at least two, and not exceed trial count")
 
     selected_sharpe = nonannualized_sharpe(returns)
+    n_observations = float(len(returns) if effective_observations is None else effective_observations)
+    if not math.isfinite(n_observations) or not 2.0 <= n_observations <= len(returns):
+        raise ValueError("effective_observations must be finite, at least two, and not exceed observations")
     sharpe_variance = float(np.var(sharpes, ddof=1))
     if not math.isfinite(sharpe_variance) or sharpe_variance < 0:
         raise ValueError("Trial Sharpe variance must be finite and non-negative")
@@ -142,12 +149,18 @@ def deflated_sharpe_ratio(
     )
     if not math.isfinite(variance_term) or variance_term <= 0:
         raise ValueError("Deflated Sharpe variance term must be finite and positive")
-    z_value = (selected_sharpe - benchmark) * math.sqrt(len(returns) - 1) / math.sqrt(variance_term)
+    z_value = (selected_sharpe - benchmark) * math.sqrt(n_observations - 1.0) / math.sqrt(variance_term)
     probability = normal.cdf(z_value)
     return {
         "schema": DSR_SCHEMA_VERSION,
         "status": "READY",
         "observations": int(len(returns)),
+        "effective_observations": n_observations,
+        "observation_adjustment_schema": (
+            "newey-west-long-run-variance-effective-n-v1"
+            if effective_observations is not None
+            else "nominal-observation-count-v1"
+        ),
         "trial_count": int(len(sharpes)),
         "effective_trials": n_eff,
         "selected_sharpe": float(selected_sharpe),
@@ -236,6 +249,10 @@ def analyze_experiment_family(
     minimum_periods: int = 60,
     maximum_pbo: float = 0.20,
     minimum_dsr_probability: float = 0.95,
+    dependence_block_periods: int = 8,
+    minimum_independent_blocks: int = 6,
+    bootstrap_replicates: int = 500,
+    confidence_level: float = 0.95,
 ) -> dict[str, Any]:
     if not evidence.experiment_family:
         raise ValueError("experiment_family cannot be empty")
@@ -245,6 +262,9 @@ def analyze_experiment_family(
         raise ValueError("Experiment governance probabilities must be between zero and one")
 
     attempted = tuple(dict.fromkeys(evidence.attempted_configuration_hashes))
+    horizons = tuple(sorted(set(int(item) for item in evidence.declared_horizons)))
+    if any(item <= 0 for item in horizons):
+        raise ValueError("Experiment horizons must be positive")
     if any(len(item) != 64 for item in attempted):
         raise ValueError("Attempted configuration hashes must contain 64 characters")
     for trial in evidence.successful_trials:
@@ -263,9 +283,11 @@ def analyze_experiment_family(
         "duplicate_success_count": len(evidence.successful_trials) - len(unique_success),
         "failed_configuration_count": len(set(evidence.failed_configuration_hashes)),
         "open_trial_count": len(set(evidence.open_trial_ids)),
+        "declared_horizons": list(horizons),
         "missing_success_configuration_hashes": missing,
         "pbo": None,
         "deflated_sharpe": None,
+        "dependence_aware_inference": None,
         "selected_configuration_hash": None,
         "thresholds": {
             "maximum_pbo": float(maximum_pbo),
@@ -273,12 +295,19 @@ def analyze_experiment_family(
             "minimum_trials": int(minimum_trials),
             "minimum_periods": int(minimum_periods),
             "segments": int(segments),
+            "dependence_block_periods": int(dependence_block_periods),
+            "minimum_independent_blocks": int(minimum_independent_blocks),
+            "bootstrap_replicates": int(bootstrap_replicates),
+            "confidence_level": float(confidence_level),
         },
         "automatic_model_action": "none",
         "profitability_claimed": False,
     }
     if evidence.open_trial_ids or evidence.failed_configuration_hashes or missing:
         report["status"] = "BLOCKED_INCOMPLETE_LEDGER"
+        return report
+    if len(horizons) > 1:
+        report["status"] = "BLOCKED_INCOMPATIBLE_HORIZONS"
         return report
     if len(unique_success) < minimum_trials:
         report["status"] = "BLOCKED_INSUFFICIENT_TRIALS"
@@ -303,10 +332,40 @@ def analyze_experiment_family(
             report["independence"] = independence
             return report
         pbo = combinatorial_pbo(matrix, segments=segments)
+        effective_block_periods = max(
+            int(dependence_block_periods),
+            int(horizons[0]) if horizons else 1,
+        )
+        dependence = time_series_dependence_report(
+            matrix[:, selected_index],
+            block_length=effective_block_periods,
+            minimum_independent_blocks=minimum_independent_blocks,
+            replicates=bootstrap_replicates,
+            confidence_level=confidence_level,
+        )
+        dependence["requested_block_periods"] = int(dependence_block_periods)
+        dependence["horizon_floor_periods"] = int(horizons[0]) if horizons else None
+        if dependence["status"] != "READY":
+            report.update(
+                {
+                    "status": "BLOCKED_INSUFFICIENT_DEPENDENCE_EVIDENCE",
+                    "selected_configuration_hash": trials[selected_index].configuration_hash,
+                    "selected_trial_id": trials[selected_index].trial_id,
+                    "period_count": int(matrix.shape[0]),
+                    "period_start": reference_timestamps[0].isoformat(),
+                    "period_end": reference_timestamps[-1].isoformat(),
+                    "pbo": pbo,
+                    "dependence_aware_inference": dependence,
+                }
+            )
+            return report
         dsr = deflated_sharpe_ratio(
             matrix[:, selected_index],
             trial_sharpes=sharpes,
             effective_trials=float(independence["effective_trials"]),
+            effective_observations=float(
+                dependence["hac_mean"]["effective_observations"]
+            ),
         )
     except ValueError as exc:
         report["status"] = "BLOCKED_INVALID_RETURN_EVIDENCE"
@@ -322,8 +381,13 @@ def analyze_experiment_family(
             "period_end": reference_timestamps[-1].isoformat(),
             "pbo": pbo,
             "deflated_sharpe": dsr,
+            "dependence_aware_inference": dependence,
         }
     )
-    passed = pbo["pbo"] <= maximum_pbo and dsr["probability"] >= minimum_dsr_probability
+    passed = (
+        pbo["pbo"] <= maximum_pbo
+        and dsr["probability"] >= minimum_dsr_probability
+        and bool(dependence["dependence_supported"])
+    )
     report["status"] = "READY" if passed else "REJECTED"
     return report

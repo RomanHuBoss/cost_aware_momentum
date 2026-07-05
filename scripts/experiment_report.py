@@ -36,6 +36,26 @@ async def run(args: argparse.Namespace) -> None:
                     if args.minimum_dsr_probability is not None
                     else settings.experiment_min_dsr_probability
                 ),
+                dependence_block_periods=(
+                    args.dependence_block_periods
+                    if args.dependence_block_periods is not None
+                    else settings.experiment_dependence_block_periods
+                ),
+                minimum_independent_blocks=(
+                    args.minimum_independent_blocks
+                    if args.minimum_independent_blocks is not None
+                    else settings.experiment_min_independent_blocks
+                ),
+                bootstrap_replicates=(
+                    args.bootstrap_replicates
+                    if args.bootstrap_replicates is not None
+                    else settings.research_bootstrap_replicates
+                ),
+                confidence_level=(
+                    args.confidence_level
+                    if args.confidence_level is not None
+                    else settings.research_confidence_level
+                ),
             )
         output = Path(args.output or "reports/experiment-selection.json")
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -55,6 +75,10 @@ def main() -> None:
     parser.add_argument("--minimum-periods", type=int)
     parser.add_argument("--maximum-pbo", type=float)
     parser.add_argument("--minimum-dsr-probability", type=float)
+    parser.add_argument("--dependence-block-periods", type=int)
+    parser.add_argument("--minimum-independent-blocks", type=int)
+    parser.add_argument("--bootstrap-replicates", type=int)
+    parser.add_argument("--confidence-level", type=float)
     parser.add_argument("--output")
     run_with_compatible_event_loop(run(parser.parse_args()))
 

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.asyncio_compat import run_with_compatible_event_loop
+from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.services.selection_experiments import selection_bias_report
 
@@ -14,8 +15,16 @@ async def build_report(days: int) -> dict:
     if days <= 0:
         raise ValueError("days must be positive")
     since = datetime.now(UTC) - timedelta(days=days)
+    settings = get_settings()
     async with SessionFactory() as session:
-        return await selection_bias_report(session, since=since)
+        return await selection_bias_report(
+            session,
+            since=since,
+            dependence_block_clusters=settings.selection_dependence_block_clusters,
+            minimum_independent_clusters=settings.selection_min_independent_clusters,
+            bootstrap_replicates=settings.research_bootstrap_replicates,
+            confidence_level=settings.research_confidence_level,
+        )
 
 
 async def async_main(args: argparse.Namespace) -> None:

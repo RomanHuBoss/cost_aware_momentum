@@ -214,6 +214,7 @@ async def load_experiment_family_evidence(
     open_trials: list[str] = []
     failed_hashes: list[str] = []
     successful_hashes: set[str] = set()
+    declared_horizons: list[int] = []
     failed_attempts = 0
     repeated_attempts = 0
     for trial_id, events in grouped.items():
@@ -224,6 +225,15 @@ async def load_experiment_family_evidence(
             raise ValueError(f"Experiment trial {trial_id} has a broken event sequence")
         start = events[0]
         attempted.append(start.configuration_hash)
+        raw_horizon = start.configuration.get("horizon")
+        if raw_horizon is not None:
+            try:
+                horizon = int(raw_horizon)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Experiment trial {trial_id} has invalid horizon") from exc
+            if horizon <= 0:
+                raise ValueError(f"Experiment trial {trial_id} has invalid horizon")
+            declared_horizons.append(horizon)
         if len(events) == 1:
             open_trials.append(str(trial_id))
             continue
@@ -252,6 +262,7 @@ async def load_experiment_family_evidence(
         successful_trials=tuple(successes),
         failed_configuration_hashes=unresolved_failed,
         open_trial_ids=tuple(open_trials),
+        declared_horizons=tuple(declared_horizons),
     )
     counts = {
         "event_count": len(rows),
@@ -271,6 +282,10 @@ async def experiment_governance_report(
     minimum_periods: int,
     maximum_pbo: float,
     minimum_dsr_probability: float,
+    dependence_block_periods: int,
+    minimum_independent_blocks: int,
+    bootstrap_replicates: int,
+    confidence_level: float,
 ) -> dict[str, Any]:
     evidence, counts = await load_experiment_family_evidence(
         session,
@@ -283,6 +298,10 @@ async def experiment_governance_report(
         minimum_periods=minimum_periods,
         maximum_pbo=maximum_pbo,
         minimum_dsr_probability=minimum_dsr_probability,
+        dependence_block_periods=dependence_block_periods,
+        minimum_independent_blocks=minimum_independent_blocks,
+        bootstrap_replicates=bootstrap_replicates,
+        confidence_level=confidence_level,
     )
     report["ledger"] = {
         "schema": EXPERIMENT_EVENT_SCHEMA_VERSION,

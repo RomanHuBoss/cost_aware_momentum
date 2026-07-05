@@ -1,5 +1,22 @@
 # Configuration
 
+## Release 1.19.0 — dependence-aware research inference
+
+```env
+RESEARCH_BOOTSTRAP_REPLICATES=1000
+RESEARCH_CONFIDENCE_LEVEL=0.95
+EXPERIMENT_DEPENDENCE_BLOCK_PERIODS=8
+EXPERIMENT_MIN_INDEPENDENT_BLOCKS=6
+SELECTION_DEPENDENCE_BLOCK_CLUSTERS=5
+SELECTION_MIN_INDEPENDENT_CLUSTERS=30
+```
+
+`RESEARCH_BOOTSTRAP_REPLICATES` must be at least 100 and `RESEARCH_CONFIDENCE_LEVEL` must be in `(0.5, 1)`. Experiment block periods and selection cluster-block length must be at least two. The minimum selection cluster count must cover at least two complete cluster blocks.
+
+Experiment analysis uses `max(EXPERIMENT_DEPENDENCE_BLOCK_PERIODS, declared horizon)`. If the aligned return path cannot provide `EXPERIMENT_MIN_INDEPENDENT_BLOCKS`, the family report is blocked. Operator-selection inference requires at least `SELECTION_MIN_INDEPENDENT_CLUSTERS` among chronologically OOS-scored signals. These settings control reports only and never alter model fitting, signal publication, risk, execution plans or activation.
+
+No migration and no model retraining are required. Expected Alembic head remains `0012_experiment_selection`.
+
 ## Release 1.18.0 — experiment-selection governance
 
 ```env

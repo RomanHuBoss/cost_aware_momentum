@@ -18,6 +18,7 @@ from app.services.selection_experiments import selection_bias_report
 async def build_report(hours: int, selection_days: int = 90) -> dict:
     since = datetime.now(UTC) - timedelta(hours=hours)
     selection_since = datetime.now(UTC) - timedelta(days=selection_days)
+    settings = get_settings()
     async with SessionFactory() as session:
         signal_rows = (
             await session.execute(
@@ -50,8 +51,15 @@ async def build_report(hours: int, selection_days: int = 90) -> dict:
                 ).where(ManualTrade.entry_time >= since)
             )
         ).one()
-        selection_report = await selection_bias_report(session, since=selection_since)
-        drift_report = await build_production_drift_report(session, get_settings())
+        selection_report = await selection_bias_report(
+            session,
+            since=selection_since,
+            dependence_block_clusters=settings.selection_dependence_block_clusters,
+            minimum_independent_clusters=settings.selection_min_independent_clusters,
+            bootstrap_replicates=settings.research_bootstrap_replicates,
+            confidence_level=settings.research_confidence_level,
+        )
+        drift_report = await build_production_drift_report(session, settings)
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "window_hours": hours,

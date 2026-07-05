@@ -1,5 +1,29 @@
 # Traceability
 
+## Work package: dependence-aware experiment and operator-selection inference
+
+| Acceptance criterion | Research implementation | Tests |
+|---|---|---|
+| Serially dependent hourly returns do not use nominal `n` in DSR | `app/research/dependence.py::newey_west_mean_inference`; `deflated_sharpe_ratio(effective_observations=...)` | independent Bartlett-formula and family regression tests |
+| Selected experiment uncertainty preserves contiguous time dependence | `moving_block_bootstrap_inference`, `time_series_dependence_report` | deterministic block-bootstrap test |
+| Experiment block cannot be shorter than trading horizon | family `declared_horizons` plus effective block floor | horizon-floor and insufficient-block test |
+| Insufficient independent blocks fail closed | `BLOCKED_INSUFFICIENT_DEPENDENCE_EVIDENCE` | family blocking regression |
+| One signal cannot enter propensity train and OOS through different plan versions | cluster-atomic `_chronological_propensity_scores` with overlap purge | cluster-split regression |
+| Operator intervals preserve within-signal and local temporal dependence | `cluster_moving_block_bootstrap` on `signal_id` | deterministic cluster bootstrap and report tests |
+| Too few OOS signal clusters blocks corrected inference | `INSUFFICIENT_CLUSTER_EVIDENCE` | insufficient-cluster regression |
+| Service maps immutable ledger signal ID to dependence cluster | `selection_bias_report` | service capture regression |
+| Invalid settings fail closed | `app/config.py` validation | settings regression |
+
+## Schema changes 1.19.0
+
+- HAC mean: `newey-west-bartlett-mean-v1`.
+- Time bootstrap: `moving-block-bootstrap-percentile-v1`.
+- Dependence report: `time-series-dependence-aware-inference-v1`.
+- Operator report: `operator-selection-ipsw-clustered-report-v2`.
+- Experiment report: `experiment-selection-dependence-governance-v2`.
+- DSR: `deflated-sharpe-bailey-lopez-de-prado-hac-effective-n-v2`.
+- Database head unchanged: `0012_experiment_selection`.
+
 ## Work package: experiment-selection ledger, PBO and Deflated Sharpe
 
 | Acceptance criterion | Research implementation | Tests |
@@ -20,8 +44,8 @@
 - Database head: `0012_experiment_selection`.
 - Event ledger: `append-only-research-experiment-events-v1`.
 - PBO: `cscv-pbo-contiguous-segments-v1`.
-- DSR: `deflated-sharpe-bailey-lopez-de-prado-v1`.
-- Family report: `experiment-selection-governance-v1`.
+- DSR at release 1.18.0: `deflated-sharpe-bailey-lopez-de-prado-v1` (superseded by 1.19.0 dependence adjustment).
+- Family report at release 1.18.0: `experiment-selection-governance-v1` (superseded by v2).
 - Evidence is prospective from 1.18.0; legacy attempts are not reconstructed.
 
 ## Work package: production drift monitoring
@@ -88,7 +112,7 @@
 - Database head: `0011_selection_experiment`.
 - Ledger schema: `selection-experiment-ledger-v1`.
 - Feature schema: `operator-selection-predecision-v1`.
-- Analysis schema: `operator-selection-ipsw-report-v1`.
+- Analysis schema at release 1.15.0: `operator-selection-ipsw-report-v1` (superseded by clustered v2).
 - Evidence is prospective from 1.15.0; legacy plan opportunities are not backfilled.
 
 ## Work package: point-in-time orderbook execution evidence

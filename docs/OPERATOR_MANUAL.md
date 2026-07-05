@@ -1,5 +1,24 @@
 # Operator Manual
 
+## Upgrade to 1.19.0
+
+1. Stop research/reporting processes and back up PostgreSQL.
+2. Update source files. No migration is required; expected head remains `0012_experiment_selection`.
+3. Copy/review the six dependence settings from `.env.example`.
+4. Restart normal processes. Market-model retraining is not required.
+5. Re-run `selection-report` and `experiment-report` only when enough prospective evidence exists.
+6. Treat `BLOCKED_INSUFFICIENT_DEPENDENCE_EVIDENCE` or `INSUFFICIENT_CLUSTER_EVIDENCE` as insufficient independent information, not as an invitation to shorten blocks after seeing outcomes.
+7. For experiment families, set the requested block period to a defensible dependence horizon; the application automatically floors it at the declared trading horizon.
+8. Confirm every report retains `automatic_model_action=none` and does not claim profitability or causal operator skill.
+
+### Interpreting new intervals
+
+- HAC mean interval: asymptotic uncertainty using Bartlett-weighted serial covariance.
+- Moving-block experiment intervals: contiguous return blocks for mean and Sharpe.
+- Signal-cluster intervals: complete signal clusters, preserving repeated plan versions and local chronological dependence.
+
+The operator bootstrap conditions on fitted OOS propensities. It is not a fully nested bootstrap and should not be read as causal inference.
+
 ## Upgrade to 1.18.0
 
 1. Stop API, worker and trainer; back up PostgreSQL.
