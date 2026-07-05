@@ -141,6 +141,7 @@ class Settings(BaseSettings):
     experiment_min_independent_blocks: int = 6
     selection_dependence_block_clusters: int = 5
     selection_min_independent_clusters: int = 30
+    selection_min_exposure_coverage: float = 0.80
 
     # Background model lifecycle. The trainer creates immutable candidates in a
     # separate process so CPU-heavy fitting never blocks API or inference work.
@@ -377,6 +378,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SELECTION_MIN_INDEPENDENT_CLUSTERS must cover at least two cluster blocks"
             )
+        if not 0 <= self.selection_min_exposure_coverage <= 1:
+            raise ValueError("SELECTION_MIN_EXPOSURE_COVERAGE must be in [0, 1]")
         if self.max_account_snapshot_age_seconds < 30:
             raise ValueError("MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS must be at least 30")
         if self.initial_backfill_bars < self.universe_min_history_bars:

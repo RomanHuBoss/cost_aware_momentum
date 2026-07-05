@@ -19,6 +19,7 @@ from app.services.selection_experiments import (
     selection_bias_report,
     verify_selection_ledger_integrity,
 )
+from app.services.ui_exposures import build_selection_exposure_row
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -193,24 +194,40 @@ def test_selection_analysis_rejects_outcome_leakage_in_features() -> None:
 
 
 class _RowsResult:
-    def __init__(self, rows: list[tuple[object, object, object]]) -> None:
+    def __init__(self, rows: list[tuple[object, object, object, object]]) -> None:
         self._rows = rows
 
-    def all(self) -> list[tuple[object, object, object]]:
+    def all(self) -> list[tuple[object, object, object, object]]:
         return self._rows
 
 
 class _RowsSession:
-    def __init__(self, rows: list[tuple[object, object, object]]) -> None:
+    def __init__(self, rows: list[tuple[object, object, object, object]]) -> None:
         self.rows = rows
 
     async def execute(self, _statement: object) -> _RowsResult:
         return _RowsResult(self.rows)
 
 
+def _exposure_for(ledger: SelectionExperimentLedger, index: int = 0):
+    exposed_at = ledger.observed_at + timedelta(seconds=2)
+    return build_selection_exposure_row(
+        ledger=ledger,
+        operator_id="local-operator",
+        exposed_at=exposed_at,
+        received_at=exposed_at + timedelta(milliseconds=200),
+        viewport_ratio=Decimal("0.75"),
+        dwell_ms=1200,
+        surface="RECOMMENDATION_TILE",
+        client_event_id=uuid4(),
+        page_instance_id=uuid4(),
+        release_version="1.21.0",
+    )
+
+
 @pytest.mark.asyncio
 async def test_selection_report_counts_accept_reject_and_no_decision() -> None:
-    rows: list[tuple[object, object, object]] = []
+    rows: list[tuple[object, object, object, object]] = []
     actions = ["ACCEPT", "REJECT", None]
     for index, action in enumerate(actions):
         signal = _signal()
@@ -224,7 +241,7 @@ async def test_selection_report_counts_accept_reject_and_no_decision() -> None:
         )
         decision = SimpleNamespace(action=action) if action is not None else None
         outcome = SimpleNamespace(valuation_status="VALUED", counterfactual_r=Decimal(str(index - 1)))
-        rows.append((ledger, decision, outcome))
+        rows.append((ledger, _exposure_for(ledger, index), decision, outcome))
 
     report = await selection_bias_report(
         _RowsSession(rows),
@@ -237,7 +254,7 @@ async def test_selection_report_counts_accept_reject_and_no_decision() -> None:
     assert report["decision_counts"] == {"ACCEPT": 1, "NO_DECISION": 1, "REJECT": 1}
     assert report["ledger"]["eligible_count"] == 3
     assert report["ledger"]["eligible_valued_count"] == 3
-    assert report["ledger"]["operator_exposure_observed"] is False
+    assert report["ledger"]["operator_exposure_observed"] is True
 
 
 @pytest.mark.asyncio
@@ -254,7 +271,7 @@ async def test_selection_report_fails_closed_on_ledger_tampering() -> None:
     outcome = SimpleNamespace(valuation_status="VALUED", counterfactual_r=Decimal("1"))
 
     report = await selection_bias_report(
-        _RowsSession([(ledger, None, outcome)]),
+        _RowsSession([(ledger, _exposure_for(ledger), None, outcome)]),
         since=BASE - timedelta(hours=1),
         minimum_total=1,
         minimum_selected=0,

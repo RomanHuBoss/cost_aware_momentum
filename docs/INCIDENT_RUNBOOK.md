@@ -1,5 +1,15 @@
 # Incident Runbook
 
+## `LOW_EXPOSURE_COVERAGE` or decisions without exposure
+
+1. Confirm migration head `0014_ui_exposure_ledger` and that the API and static frontend come from the same 1.21.0 release.
+2. Open browser developer tools and verify successful `POST /api/v1/recommendations/exposures` responses after a tile remains visible for one second.
+3. Check operator login and CSRF cookies. Exposure requests intentionally fail when the session is missing or cross-site protections reject the call.
+4. Confirm the tab is visible and cards actually cross the 50% viewport threshold; background tabs are not counted.
+5. Query `advisory.selection_exposure_ledger` only for diagnosis. Do not insert, update or backfill exposure rows manually.
+6. Treat `decision_without_exposure_count` as an instrumentation or API-workflow anomaly. Do not reinterpret it as a valid unselected opportunity.
+7. Do not lower `SELECTION_MIN_EXPOSURE_COVERAGE` merely to publish an IPSW estimate. Correct the data path and accumulate new prospective evidence.
+
 ## Symptom: backtest says family is not preregistered
 
 Do not bypass the check or reuse an unrelated family. Generate an unevaluated template, complete it, apply migration `0013_experiment_preregistration`, validate and register before the first trial. Existing pre-1.20 events cannot be retroactively converted into preregistered evidence.

@@ -1,5 +1,17 @@
 # Operator Manual
 
+## Upgrade and exposure workflow 1.21.0
+
+1. Stop API/report processes and back up PostgreSQL.
+2. Update sources and run `python manage.py migrate`; expected head is `0014_ui_exposure_ledger`.
+3. Add or verify `SELECTION_MIN_EXPOSURE_COVERAGE=0.80`.
+4. Restart the local API and open the normal first-party web terminal. No browser extension is required.
+5. Leave the recommendation page visible while reviewing cards. A card is recorded only after at least 50% visibility for one second.
+6. After evidence accumulates, run `python manage.py selection-report -- --days 90` and inspect `eligible_created_count`, `eligible_exposed_count`, `exposure_coverage_rate` and `decision_without_exposure_count`.
+7. Do not lower the coverage threshold to force `READY`. Investigate browser authentication, CSRF, JavaScript errors, hidden tabs and reverse proxies first.
+
+Переобучение market model is not required.
+
 ## Upgrade and preregistration workflow 1.20.0
 
 1. Stop research/report processes and back up PostgreSQL.

@@ -7,9 +7,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response
 from sqlalchemy import desc, func, select
+from sqlalchemy.dialects.postgresql import insert
 
+from app import __version__
 from app.api.deps import MutatingOperatorDep, SessionDep, SettingsDep
-from app.api.schemas import DecisionRequest
+from app.api.schemas import DecisionRequest, RecommendationExposureBatchRequest
 from app.api.serializers import counterfactual_outcome_dict, detail_dict, tile_dict
 from app.db.models import (
     AuditEvent,
@@ -18,6 +20,8 @@ from app.db.models import (
     MarketSignal,
     OperatorDecision,
     PlanOutcome,
+    SelectionExperimentLedger,
+    SelectionExposureLedger,
     ServiceHeartbeat,
     SignalOutcome,
     TickerSnapshot,
@@ -43,6 +47,12 @@ from app.services.execution import (
     validate_execution_plan_for_acceptance,
 )
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
+from app.services.selection_experiments import verify_selection_ledger_integrity
+from app.services.ui_exposures import (
+    build_selection_exposure_row,
+    exposure_insert_values,
+    verify_selection_exposure_integrity,
+)
 
 router = APIRouter(prefix="/api/v1/recommendations", tags=["recommendations"])
 
@@ -217,6 +227,97 @@ async def list_recommendations(
         "query_limit": limit,
         "latest_per_symbol": latest_per_symbol,
         "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@router.post("/exposures")
+async def record_recommendation_exposures(
+    payload: RecommendationExposureBatchRequest,
+    session: SessionDep,
+    operator: MutatingOperatorDep,
+) -> dict:
+    """Persist the first verified UI exposure for each plan.
+
+    Exposure is prospective research evidence only. It never changes plan status,
+    model lifecycle, risk limits, or exchange state.
+    """
+
+    received_at = datetime.now(UTC)
+    created = 0
+    duplicates = 0
+    recorded: list[dict] = []
+    for event in payload.exposures:
+        ledger = (
+            await session.execute(
+                select(SelectionExperimentLedger).where(
+                    SelectionExperimentLedger.plan_id == event.plan_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ledger is None:
+            raise HTTPException(status_code=409, detail="Selection opportunity does not exist")
+        if not verify_selection_ledger_integrity(ledger):
+            raise HTTPException(status_code=409, detail="Selection opportunity integrity failure")
+        if int(ledger.plan_version) != int(event.plan_version):
+            raise HTTPException(status_code=409, detail="Exposure plan version mismatch")
+
+        try:
+            row = build_selection_exposure_row(
+                ledger=ledger,
+                operator_id=operator,
+                exposed_at=event.observed_at,
+                received_at=received_at,
+                viewport_ratio=event.viewport_ratio,
+                dwell_ms=event.dwell_ms,
+                surface=event.surface,
+                client_event_id=event.client_event_id,
+                page_instance_id=event.page_instance_id,
+                release_version=__version__,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        statement = (
+            insert(SelectionExposureLedger)
+            .values(**exposure_insert_values(row))
+            .on_conflict_do_nothing()
+            .returning(SelectionExposureLedger.id)
+        )
+        inserted_id = (await session.execute(statement)).scalar_one_or_none()
+        if inserted_id is None:
+            existing = (
+                await session.execute(
+                    select(SelectionExposureLedger).where(
+                        SelectionExposureLedger.plan_id == event.plan_id
+                    )
+                )
+            ).scalar_one_or_none()
+            event_owner = (
+                await session.execute(
+                    select(SelectionExposureLedger).where(
+                        SelectionExposureLedger.client_event_id == event.client_event_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None and verify_selection_exposure_integrity(existing):
+                duplicates += 1
+                recorded.append({"plan_id": str(event.plan_id), "status": "ALREADY_RECORDED"})
+                continue
+            if event_owner is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Client exposure event is already bound to another plan",
+                )
+            raise HTTPException(status_code=409, detail="Exposure evidence conflict")
+        else:
+            created += 1
+            recorded.append({"plan_id": str(event.plan_id), "status": "RECORDED"})
+    await session.commit()
+    return {
+        "ok": True,
+        "created": created,
+        "duplicates": duplicates,
+        "recorded": recorded,
+        "automatic_model_action": "none",
     }
 
 

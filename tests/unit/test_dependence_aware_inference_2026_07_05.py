@@ -28,6 +28,7 @@ from app.research.selection_bias import (
 )
 from app.services import selection_experiments
 from app.services.selection_experiments import build_selection_ledger_row, selection_bias_report
+from app.services.ui_exposures import build_selection_exposure_row
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -313,15 +314,15 @@ def test_cluster_bootstrap_rejects_cluster_fragmentation_and_is_reproducible() -
 
 
 class _RowsResult:
-    def __init__(self, rows: list[tuple[object, object, object]]) -> None:
+    def __init__(self, rows: list[tuple[object, object, object, object]]) -> None:
         self._rows = rows
 
-    def all(self) -> list[tuple[object, object, object]]:
+    def all(self) -> list[tuple[object, object, object, object]]:
         return self._rows
 
 
 class _RowsSession:
-    def __init__(self, rows: list[tuple[object, object, object]]) -> None:
+    def __init__(self, rows: list[tuple[object, object, object, object]]) -> None:
         self.rows = rows
 
     async def execute(self, _statement: object) -> _RowsResult:
@@ -367,7 +368,20 @@ async def test_selection_service_uses_signal_id_as_dependence_cluster(monkeypatc
         signal=signal,
         plan=plan,
         observed_at=BASE,
-        release_version="1.18.0",
+        release_version="1.21.0",
+    )
+    exposed_at = BASE + timedelta(seconds=2)
+    exposure = build_selection_exposure_row(
+        ledger=ledger,
+        operator_id="local-operator",
+        exposed_at=exposed_at,
+        received_at=exposed_at + timedelta(milliseconds=200),
+        viewport_ratio=Decimal("0.75"),
+        dwell_ms=1200,
+        surface="RECOMMENDATION_TILE",
+        client_event_id=uuid4(),
+        page_instance_id=uuid4(),
+        release_version="1.21.0",
     )
     outcome = SimpleNamespace(valuation_status="VALUED", counterfactual_r=Decimal("0.1"))
     captured: dict[str, object] = {}
@@ -375,7 +389,7 @@ async def test_selection_service_uses_signal_id_as_dependence_cluster(monkeypatc
     def fake_analysis(observations: list[SelectionObservation], **_kwargs: object) -> dict[str, object]:
         captured["observations"] = observations
         return {
-            "schema": "operator-selection-ipsw-clustered-report-v2",
+            "schema": "operator-selection-ipsw-exposure-clustered-report-v3",
             "status": "INSUFFICIENT_CLUSTER_EVIDENCE",
             "ipsw_selected_mean_r": None,
             "causal_effect_claimed": False,
@@ -383,7 +397,7 @@ async def test_selection_service_uses_signal_id_as_dependence_cluster(monkeypatc
 
     monkeypatch.setattr(selection_experiments, "analyze_operator_selection", fake_analysis)
     await selection_bias_report(
-        _RowsSession([(ledger, None, outcome)]),
+        _RowsSession([(ledger, exposure, None, outcome)]),
         since=BASE - timedelta(hours=1),
         minimum_total=1,
         minimum_selected=0,

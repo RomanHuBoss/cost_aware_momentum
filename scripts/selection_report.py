@@ -22,6 +22,7 @@ async def build_report(days: int) -> dict:
             since=since,
             dependence_block_clusters=settings.selection_dependence_block_clusters,
             minimum_independent_clusters=settings.selection_min_independent_clusters,
+            minimum_exposure_coverage=settings.selection_min_exposure_coverage,
             bootstrap_replicates=settings.research_bootstrap_replicates,
             confidence_level=settings.research_confidence_level,
         )

@@ -34,6 +34,28 @@ class CapitalProfilePatch(BaseModel):
     margin_reserve_rate: Decimal | None = Field(default=None, ge=0, lt=Decimal("1"))
 
 
+class RecommendationExposureRequest(BaseModel):
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    client_event_id: UUID
+    page_instance_id: UUID
+    observed_at: datetime
+    viewport_ratio: Decimal = Field(ge=Decimal("0.50"), le=Decimal("1"))
+    dwell_ms: int = Field(ge=1000, le=600_000)
+    surface: Literal["RECOMMENDATION_TILE"] = "RECOMMENDATION_TILE"
+
+    @field_validator("observed_at")
+    @classmethod
+    def observed_at_must_be_timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("observed_at must include a timezone")
+        return value
+
+
+class RecommendationExposureBatchRequest(BaseModel):
+    exposures: list[RecommendationExposureRequest] = Field(min_length=1, max_length=100)
+
+
 class DecisionRequest(BaseModel):
     plan_id: UUID | None = None
     reason_code: str | None = Field(default=None, max_length=80)

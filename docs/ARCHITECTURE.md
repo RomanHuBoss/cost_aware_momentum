@@ -1,5 +1,18 @@
 # Architecture
 
+## Verified recommendation UI exposure 1.21.0
+
+1. Every execution-plan version still creates an immutable ex-ante `selection_experiment_ledger` row in the plan transaction.
+2. The browser renders recommendation tiles with exact `plan_id` and `plan_version` metadata.
+3. `IntersectionObserver` starts a dwell timer only when at least 50% of the tile is visible and `document.visibilityState` is `visible`.
+4. After one second, the authenticated browser sends a CSRF-protected batch event containing a random client event ID, ephemeral page instance ID, UTC observation time, viewport ratio and dwell time.
+5. `POST /api/v1/recommendations/exposures` verifies the immutable opportunity, version and time bounds, then inserts the first exposure with PostgreSQL `ON CONFLICT DO NOTHING` idempotency.
+6. `advisory.selection_exposure_ledger` is append-only: canonical SHA-256 covers all evidence fields and a PostgreSQL trigger rejects UPDATE/DELETE.
+7. Selection analysis uses exposure time, not plan creation time, and excludes unexposed opportunities from the propensity cohort. Coverage below the configured floor returns `LOW_EXPOSURE_COVERAGE`.
+8. Exposure is research evidence only. It never marks a plan accepted/viewed, changes risk, mutates the model or calls Bybit order endpoints.
+
+Data flow: plan creation → ex-ante opportunity → visible tile dwell → authenticated immutable first exposure → decision/outcome join → exposure-conditioned propensity/IPSW report.
+
 ## Formal experiment-family preregistration 1.20.0
 
 1. `backtest --prepare-preregistration` builds the exact final-test cohort fingerprint and complete current configuration, writes a draft JSON, then exits before `STARTED`, prediction or policy evaluation.

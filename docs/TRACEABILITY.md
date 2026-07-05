@@ -1,5 +1,27 @@
 # Traceability
 
+## Work package: prospective recommendation UI exposure ledger
+
+| Acceptance criterion | Production/research implementation | Tests |
+|---|---|---|
+| A created plan is not assumed to have been seen | `SelectionExposureLedger`; exposure-conditioned `selection_bias_report` | exposed-only cohort and low-coverage regressions |
+| Exposure requires meaningful visible dwell | `IntersectionObserver`, active document, ≥50% ratio and ≥1000 ms dwell | frontend source and evidence validation tests |
+| Exposure is bound to immutable plan opportunity/version | `POST /api/v1/recommendations/exposures`, opportunity integrity and version checks | endpoint/static and row-construction tests |
+| Retries do not create duplicate impressions | unique `plan_id`/`client_event_id`, PostgreSQL `ON CONFLICT DO NOTHING` | model/migration/idempotency contract tests |
+| Evidence is tamper-evident and append-only | canonical SHA-256; migration `0014` UPDATE/DELETE trigger | hash mutation and migration-source tests |
+| Propensity ordering uses actual display time | selection service maps `exposed_at` to observation time | exposed cohort service regression |
+| Low instrumentation coverage fails closed | `SELECTION_MIN_EXPOSURE_COVERAGE`, `LOW_EXPOSURE_COVERAGE` | coverage threshold test |
+| Legacy rollout does not create false missing exposure | prospective release boundary with legacy-exposed inclusion | rollout regression |
+| Decisions without verified exposure are diagnosed | `decision_without_exposure_count` and no propensity inclusion | decision anomaly test |
+| Exposure does not mutate plan/model/risk state | dedicated evidence insert endpoint only | endpoint source/full suite/advisory-only scan |
+
+## Schema changes 1.21.0
+
+- Database head: `0014_ui_exposure_ledger`.
+- Exposure schema: `recommendation-ui-visible-dwell-v1`.
+- Operator report: `operator-selection-ipsw-exposure-clustered-report-v3`.
+- Evidence is prospective from instrumented release 1.21.0; unexposed legacy opportunities are not treated as missed impressions.
+
 ## Work package: formal experiment-family preregistration
 
 | Acceptance criterion | Implementation | Tests |
@@ -41,7 +63,7 @@
 - HAC mean: `newey-west-bartlett-mean-v1`.
 - Time bootstrap: `moving-block-bootstrap-percentile-v1`.
 - Dependence report: `time-series-dependence-aware-inference-v1`.
-- Operator report: `operator-selection-ipsw-clustered-report-v2`.
+- Operator report at release 1.19.0: `operator-selection-ipsw-clustered-report-v2` (superseded by exposure-conditioned v3).
 - Experiment report: `experiment-selection-dependence-governance-v2`.
 - DSR: `deflated-sharpe-bailey-lopez-de-prado-hac-effective-n-v2`.
 - Database head unchanged: `0012_experiment_selection`.
@@ -134,7 +156,7 @@
 - Database head: `0011_selection_experiment`.
 - Ledger schema: `selection-experiment-ledger-v1`.
 - Feature schema: `operator-selection-predecision-v1`.
-- Analysis schema at release 1.15.0: `operator-selection-ipsw-report-v1` (superseded by clustered v2).
+- Analysis schema at release 1.15.0: `operator-selection-ipsw-report-v1` (superseded by clustered v2 and exposure-conditioned v3).
 - Evidence is prospective from 1.15.0; legacy plan opportunities are not backfilled.
 
 ## Work package: point-in-time orderbook execution evidence

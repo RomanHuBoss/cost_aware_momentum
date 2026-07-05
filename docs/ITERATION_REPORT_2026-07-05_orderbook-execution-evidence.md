@@ -1,9 +1,9 @@
 # Iteration Report — point-in-time orderbook execution evidence
 
-Date: 2026-07-05  
-Input: `cost_aware_momentum-1.13.0-intrahorizon-mark-mtm-liquidation(1).zip`  
-Input SHA-256: `57f990f4af40c9ea61d36652139e33f7babe1b7280f4dc94680ab6da3c0dc1da`  
-Input version: 1.13.0  
+Date: 2026-07-05
+Input: `cost_aware_momentum-1.13.0-intrahorizon-mark-mtm-liquidation(1).zip`
+Input SHA-256: `57f990f4af40c9ea61d36652139e33f7babe1b7280f4dc94680ab6da3c0dc1da`
+Input version: 1.13.0
 Output version: 1.14.0
 
 ## 1. Goal and acceptance criteria

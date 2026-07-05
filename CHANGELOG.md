@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.21.0 — 2026-07-05
+
+- Added immutable prospective `advisory.selection_exposure_ledger` evidence for the first verified UI display of each execution-plan version.
+- Recommendation tiles are recorded only after at least 50% viewport visibility for at least one second while the document is visible.
+- Added authenticated, CSRF-protected, idempotent batch ingestion with plan-version, timestamp, client-event and SHA-256 integrity checks.
+- Operator-selection diagnostics now use only genuinely exposed opportunities and use exposure time as the chronological observation time.
+- Added exposure-coverage accounting, explicit decisions-without-exposure diagnostics and fail-closed `LOW_EXPOSURE_COVERAGE` status.
+- Legacy pre-1.21 opportunities do not create false missing-exposure counts; genuinely exposed legacy plans remain observable.
+- Added migration `0014_ui_exposure_ledger`, configuration `SELECTION_MIN_EXPOSURE_COVERAGE` and 14 focused regression tests.
+- Advisory-only, model artifacts, inference, risk semantics and active-model lifecycle are unchanged.
+
 ## 1.20.0 — 2026-07-05
 
 - Added immutable formal preregistration for every new research experiment family before its first `STARTED` event.

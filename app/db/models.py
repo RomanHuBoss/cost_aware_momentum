@@ -417,6 +417,53 @@ class SelectionExperimentLedger(Base, UUIDPrimaryKeyMixin):
     release_version: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
+class SelectionExposureLedger(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "selection_exposure_ledger"
+    __table_args__ = (
+        UniqueConstraint("plan_id", name="uq_selection_exposure_plan"),
+        UniqueConstraint("client_event_id", name="uq_selection_exposure_client_event"),
+        CheckConstraint("plan_version > 0", name="selection_exposure_plan_version_positive"),
+        CheckConstraint(
+            "viewport_ratio >= 0.5 AND viewport_ratio <= 1",
+            name="selection_exposure_viewport_ratio",
+        ),
+        CheckConstraint(
+            "dwell_ms >= 1000 AND dwell_ms <= 600000",
+            name="selection_exposure_dwell_ms",
+        ),
+        CheckConstraint(
+            "surface = 'RECOMMENDATION_TILE'",
+            name="selection_exposure_surface",
+        ),
+        CheckConstraint("length(evidence_hash) = 64", name="selection_exposure_hash_length"),
+        Index("ix_selection_exposure_exposed", "exposed_at"),
+        Index("ix_selection_exposure_operator", "operator_id", "exposed_at"),
+        {"schema": "advisory"},
+    )
+
+    plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.execution_plans.id"), nullable=False, index=True
+    )
+    signal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.market_signals.id"), nullable=False, index=True
+    )
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.capital_profiles.id"), nullable=False, index=True
+    )
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    exposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    operator_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    surface: Mapped[str] = mapped_column(String(40), nullable=False)
+    viewport_ratio: Mapped[Decimal] = mapped_column(RATE, nullable=False)
+    dwell_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    client_event_id: Mapped[UUID] = mapped_column(nullable=False)
+    page_instance_id: Mapped[UUID] = mapped_column(nullable=False)
+    exposure_schema: Mapped[str] = mapped_column(String(80), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    release_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
 class OperatorDecision(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "operator_decisions"
     __table_args__ = (UniqueConstraint("plan_id", name="uq_decision_plan"), {"schema": "advisory"})

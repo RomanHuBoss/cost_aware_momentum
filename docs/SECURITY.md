@@ -1,5 +1,15 @@
 # Security
 
+## UI exposure integrity boundary 1.21.0
+
+- Exposure ingestion requires an authenticated operator and the existing CSRF protection; anonymous impressions are rejected.
+- The server never trusts plan identity or version from the browser without matching the immutable selection opportunity.
+- Client timestamps must be timezone-aware, close to server receipt time and no earlier than the plan opportunity beyond limited clock skew.
+- Each plan has at most one exposure row and each client event ID is unique. Retries are idempotent.
+- Canonical SHA-256 detects application-level tampering; PostgreSQL rejects UPDATE and DELETE through an immutable trigger.
+- `page_instance_id` is random and ephemeral. No cross-site identifier, browsing history or external telemetry service is introduced.
+- Exposure recording has no exchange permissions and cannot mutate plan status, model lifecycle or risk settings.
+
 ## Experiment preregistration integrity boundary 1.20.0
 
 - `research.experiment_family_registrations` is insert-once: a PostgreSQL trigger rejects UPDATE and DELETE.

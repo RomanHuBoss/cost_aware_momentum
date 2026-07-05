@@ -12,6 +12,13 @@ const state = {
   universeStatus: null,
   systemStatus: null,
   trainerPollTimer: null,
+  pageInstanceId: window.crypto?.randomUUID?.() || `page-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  exposureObserver: null,
+  exposureCandidates: new Map(),
+  exposureTimers: new Map(),
+  exposedPlanIds: new Set(),
+  pendingExposures: [],
+  exposureFlushTimer: null,
 };
 
 const trainerPhaseLabels = {
@@ -478,7 +485,7 @@ function tileHtml(item, section) {
   const direction = item.direction === 'NO_TRADE' ? 'NO TRADE' : item.direction;
   const cls = tileClass(item, section);
   const warning = item.primary_warning ? `<div class="warning">⚠ ${escapeHtml(item.primary_warning)}</div>` : '';
-  return `<article class="tile ${cls}" data-signal-id="${item.signal_id}" tabindex="0" role="button" aria-label="Открыть ${escapeHtml(item.symbol)} ${direction}">
+  return `<article class="tile ${cls}" data-signal-id="${item.signal_id}" data-plan-id="${item.plan_id}" data-plan-version="${item.plan_version}" tabindex="0" role="button" aria-label="Открыть ${escapeHtml(item.symbol)} ${direction}">
     <div class="tile-header"><span class="symbol">${escapeHtml(item.symbol)}</span><span class="direction">${direction}</span></div>
     <div class="tile-status"><span class="status-chip ${item.executability_status === 'ACTIONABLE' ? 'actionable' : item.executability_status.startsWith('BLOCKED') ? 'blocked' : ''}">${escapeHtml(statusLabel(item.executability_status))}</span><span class="status-chip">${escapeHtml(entryLabel(item.entry_state))}</span><span>${escapeHtml(timeLeft(item.seconds_to_expiry))}</span></div>
     <div class="level-grid">
@@ -537,13 +544,96 @@ function renderRecommendations() {
   bindHelpEvents();
 }
 
+function cancelExposureDwell(planId) {
+  const pending = state.exposureTimers.get(planId);
+  if (pending) clearTimeout(pending.timer);
+  state.exposureTimers.delete(planId);
+}
+
+function startExposureDwell(planId) {
+  const candidate = state.exposureCandidates.get(planId);
+  if (!candidate || candidate.ratio < 0.5 || document.visibilityState !== 'visible') return;
+  if (state.exposedPlanIds.has(planId) || state.exposureTimers.has(planId)) return;
+  const startedAt = Date.now();
+  const timer = setTimeout(() => {
+    const current = state.exposureCandidates.get(planId);
+    state.exposureTimers.delete(planId);
+    if (!current || current.ratio < 0.5 || document.visibilityState !== 'visible') return;
+    const dwellMs = Date.now() - startedAt;
+    state.exposedPlanIds.add(planId);
+    state.pendingExposures.push({
+      plan_id: planId,
+      plan_version: Number(current.element.dataset.planVersion),
+      client_event_id: window.crypto?.randomUUID?.() || uid('exposure'),
+      page_instance_id: state.pageInstanceId,
+      observed_at: new Date().toISOString(),
+      viewport_ratio: Math.min(1, Math.max(0.5, current.ratio)),
+      dwell_ms: Math.min(600000, Math.max(1000, dwellMs)),
+      surface: 'RECOMMENDATION_TILE',
+    });
+    scheduleExposureFlush();
+  }, 1000);
+  state.exposureTimers.set(planId, { timer, startedAt });
+}
+
+async function flushRecommendationExposures() {
+  state.exposureFlushTimer = null;
+  if (state.pendingExposures.length === 0) return;
+  const batch = state.pendingExposures.splice(0, 100);
+  try {
+    await api('/api/v1/recommendations/exposures', {
+      method: 'POST',
+      body: JSON.stringify({ exposures: batch }),
+      keepalive: true,
+    });
+  } catch (error) {
+    console.warn('Recommendation exposure evidence was not recorded', error);
+    batch.forEach(item => {
+      state.exposedPlanIds.delete(item.plan_id);
+      startExposureDwell(item.plan_id);
+    });
+  }
+  if (state.pendingExposures.length > 0) scheduleExposureFlush();
+}
+
+function scheduleExposureFlush() {
+  if (state.exposureFlushTimer) return;
+  state.exposureFlushTimer = setTimeout(flushRecommendationExposures, 200);
+}
+
+function bindExposureObserver() {
+  if (state.exposureObserver) state.exposureObserver.disconnect();
+  state.exposureTimers.forEach(value => clearTimeout(value.timer));
+  state.exposureTimers.clear();
+  state.exposureCandidates.clear();
+  state.exposureObserver = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      const planId = entry.target.dataset.planId;
+      if (!planId) return;
+      state.exposureCandidates.set(planId, { element: entry.target, ratio: entry.intersectionRatio });
+      if (entry.isIntersecting && entry.intersectionRatio >= 0.5) startExposureDwell(planId);
+      else cancelExposureDwell(planId);
+    });
+  }, { threshold: [0, 0.5, 0.75, 1] });
+  $$('.tile[data-plan-id]').forEach(tile => state.exposureObserver.observe(tile));
+}
+
 function bindTileEvents() {
   $$('.tile').forEach(tile => {
     const open = () => openDetail(tile.dataset.signalId);
     tile.addEventListener('click', event => { if (!event.target.closest('.help-icon')) open(); });
     tile.addEventListener('keydown', event => { if (['Enter', ' '].includes(event.key)) { event.preventDefault(); open(); } });
   });
+  bindExposureObserver();
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') {
+    [...state.exposureTimers.keys()].forEach(cancelExposureDwell);
+    return;
+  }
+  state.exposureCandidates.forEach((_candidate, planId) => startExposureDwell(planId));
+});
 
 async function openDetail(signalId) {
   try {

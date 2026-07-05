@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -14,6 +14,7 @@ from app.db.models import (
     OperatorDecision,
     PlanOutcome,
     SelectionExperimentLedger,
+    SelectionExposureLedger,
 )
 from app.research.selection_bias import (
     SELECTION_FEATURE_NAMES,
@@ -21,9 +22,29 @@ from app.research.selection_bias import (
     SelectionObservation,
     analyze_operator_selection,
 )
+from app.services.ui_exposures import (
+    UI_EXPOSURE_SCHEMA,
+    verify_selection_exposure_integrity,
+)
 
 ELIGIBLE_PLAN_STATUSES = frozenset({"ACTIONABLE", "LIMITED"})
 SELECTION_LEDGER_SCHEMA = "selection-experiment-ledger-v1"
+UI_EXPOSURE_PROSPECTIVE_RELEASE = (1, 21, 0)
+
+
+def _release_tuple(value: str) -> tuple[int, int, int] | None:
+    try:
+        parts = tuple(int(part) for part in value.split(".")[:3])
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if len(parts) != 3 or any(part < 0 for part in parts):
+        return None
+    return parts
+
+
+def _is_ui_exposure_instrumented_release(value: str) -> bool:
+    parsed = _release_tuple(value)
+    return parsed is not None and parsed >= UI_EXPOSURE_PROSPECTIVE_RELEASE
 
 
 def _finite_float(value: Any, name: str) -> float:
@@ -164,6 +185,7 @@ async def selection_bias_report(
     minimum_total: int = 60,
     minimum_selected: int = 15,
     minimum_unselected: int = 15,
+    minimum_exposure_coverage: Decimal | float = Decimal("0.80"),
     dependence_block_clusters: int = 5,
     minimum_independent_clusters: int = 30,
     bootstrap_replicates: int = 500,
@@ -171,9 +193,21 @@ async def selection_bias_report(
 ) -> dict:
     if since.tzinfo is None or since.utcoffset() is None:
         raise ValueError("Selection report since must be timezone-aware")
+    coverage_floor = _finite_float(minimum_exposure_coverage, "minimum_exposure_coverage")
+    if not 0 <= coverage_floor <= 1:
+        raise ValueError("minimum_exposure_coverage must be in [0, 1]")
     rows = (
         await session.execute(
-            select(SelectionExperimentLedger, OperatorDecision, PlanOutcome)
+            select(
+                SelectionExperimentLedger,
+                SelectionExposureLedger,
+                OperatorDecision,
+                PlanOutcome,
+            )
+            .outerjoin(
+                SelectionExposureLedger,
+                SelectionExposureLedger.plan_id == SelectionExperimentLedger.plan_id,
+            )
             .outerjoin(OperatorDecision, OperatorDecision.plan_id == SelectionExperimentLedger.plan_id)
             .outerjoin(PlanOutcome, PlanOutcome.plan_id == SelectionExperimentLedger.plan_id)
             .where(SelectionExperimentLedger.observed_at >= since)
@@ -182,10 +216,16 @@ async def selection_bias_report(
     ).all()
     observations: list[SelectionObservation] = []
     integrity_errors: list[str] = []
-    eligible_count = 0
+    exposure_integrity_errors: list[str] = []
+    eligible_created_count = 0
+    eligible_exposed_count = 0
+    eligible_unexposed_count = 0
+    exposure_row_count = 0
+    decision_without_exposure_count = 0
     pending_outcome_count = 0
+    legacy_pre_exposure_count = 0
     ineligible_status_counts: dict[str, int] = {}
-    for ledger, decision, outcome in rows:
+    for ledger, exposure, decision, outcome in rows:
         if not verify_selection_ledger_integrity(ledger):
             integrity_errors.append(str(ledger.plan_id))
             continue
@@ -194,7 +234,30 @@ async def selection_bias_report(
                 ineligible_status_counts.get(ledger.eligibility_status, 0) + 1
             )
             continue
-        eligible_count += 1
+        instrumented_opportunity = exposure is not None or _is_ui_exposure_instrumented_release(
+            ledger.release_version
+        )
+        if not instrumented_opportunity:
+            legacy_pre_exposure_count += 1
+            continue
+        eligible_created_count += 1
+        if exposure is None:
+            eligible_unexposed_count += 1
+            if decision is not None:
+                decision_without_exposure_count += 1
+            continue
+        exposure_row_count += 1
+        exposure_matches_opportunity = (
+            exposure.plan_id == ledger.plan_id
+            and exposure.signal_id == ledger.signal_id
+            and exposure.profile_id == ledger.profile_id
+            and int(exposure.plan_version) == int(ledger.plan_version)
+            and exposure.exposed_at >= ledger.observed_at - timedelta(seconds=5)
+        )
+        if not exposure_matches_opportunity or not verify_selection_exposure_integrity(exposure):
+            exposure_integrity_errors.append(str(ledger.plan_id))
+            continue
+        eligible_exposed_count += 1
         if outcome is None or outcome.valuation_status != "VALUED" or outcome.counterfactual_r is None:
             pending_outcome_count += 1
             continue
@@ -203,19 +266,30 @@ async def selection_bias_report(
             SelectionObservation(
                 plan_id=str(ledger.plan_id),
                 cluster_id=str(ledger.signal_id),
-                observed_at=ledger.observed_at,
+                observed_at=exposure.exposed_at,
                 decision_action=action,
                 counterfactual_r=float(outcome.counterfactual_r),
                 features=ledger.features,
             )
         )
+    exposure_coverage_rate = (
+        eligible_exposed_count / eligible_created_count if eligible_created_count else None
+    )
     if integrity_errors:
         analysis = {
-            "schema": "operator-selection-ipsw-clustered-report-v2",
+            "schema": "operator-selection-ipsw-exposure-clustered-report-v3",
             "status": "LEDGER_INTEGRITY_ERROR",
             "ipsw_selected_mean_r": None,
             "causal_effect_claimed": False,
             "integrity_error_plan_ids": integrity_errors,
+        }
+    elif exposure_integrity_errors:
+        analysis = {
+            "schema": "operator-selection-ipsw-exposure-clustered-report-v3",
+            "status": "EXPOSURE_LEDGER_INTEGRITY_ERROR",
+            "ipsw_selected_mean_r": None,
+            "causal_effect_claimed": False,
+            "exposure_integrity_error_plan_ids": exposure_integrity_errors,
         }
     else:
         analysis = analyze_operator_selection(
@@ -228,20 +302,35 @@ async def selection_bias_report(
             bootstrap_replicates=bootstrap_replicates,
             confidence_level=confidence_level,
         )
+        if exposure_coverage_rate is not None and exposure_coverage_rate < coverage_floor:
+            analysis["status"] = "LOW_EXPOSURE_COVERAGE"
+            analysis["ipsw_selected_mean_r"] = None
+            analysis["dependence_aware_inference"] = None
     analysis["window_start"] = since.astimezone(UTC).isoformat()
     analysis["ledger"] = {
         "row_count": len(rows),
-        "eligible_count": eligible_count,
+        "eligible_count": eligible_exposed_count,
+        "eligible_created_count": eligible_created_count,
+        "eligible_exposed_count": eligible_exposed_count,
+        "eligible_unexposed_count": eligible_unexposed_count,
+        "exposure_row_count": exposure_row_count,
+        "exposure_coverage_rate": exposure_coverage_rate,
+        "minimum_exposure_coverage": coverage_floor,
+        "decision_without_exposure_count": decision_without_exposure_count,
         "eligible_valued_count": len(observations),
         "pending_or_unvalued_outcome_count": pending_outcome_count,
+        "legacy_pre_exposure_count": legacy_pre_exposure_count,
         "ineligible_status_counts": dict(sorted(ineligible_status_counts.items())),
-        "prospective_since_release": "1.15.0",
-        "operator_exposure_observed": False,
+        "prospective_selection_since_release": "1.15.0",
+        "prospective_ui_exposure_since_release": "1.21.0",
+        "operator_exposure_observed": True,
+        "exposure_schema": UI_EXPOSURE_SCHEMA,
     }
     analysis["limitations"] = [
-        "Plan creation is the opportunity unit; UI exposure is not yet directly observed.",
+        "UI exposure is recorded by the authenticated first-party browser after visible dwell; it is not eye tracking or proof of operator attention.",
         "Counterfactual plan outcomes are estimates, not exchange-confirmed fills.",
         "IPSW is descriptive selection diagnostics and not a causal treatment-effect estimate.",
         "Confidence intervals use chronological signal-cluster moving blocks and condition on fitted OOS propensities.",
     ]
     return analysis
+

@@ -14,7 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from app.research.dependence import cluster_moving_block_bootstrap
 
 SELECTION_FEATURE_SCHEMA = "operator-selection-predecision-v1"
-SELECTION_REPORT_SCHEMA = "operator-selection-ipsw-clustered-report-v2"
+SELECTION_REPORT_SCHEMA = "operator-selection-ipsw-exposure-clustered-report-v3"
 SELECTION_FEATURE_NAMES = (
     "p_tp",
     "p_sl",

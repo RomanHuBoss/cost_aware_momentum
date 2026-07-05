@@ -1,5 +1,11 @@
 # Model Card
 
+## Operator-exposure evidence 1.21.0
+
+The market model and active artifact are unchanged. Release 1.21.0 changes only prospective human-selection diagnostics. A plan enters the operator-selection denominator only after the first-party UI verifies that at least half of its recommendation tile remained visible in an active document for at least one second.
+
+The event is not eye tracking and does not prove attention, comprehension or causal operator skill. It removes the stronger false assumption that every generated plan was available to the operator. Low exposure coverage, decisions without exposure or corrupted evidence block corrected reporting; they do not activate, deactivate or roll back a model.
+
 ## Formal research preregistration 1.20.0
 
 The market model, feature schema and active artifact are unchanged. Release 1.20.0 strengthens only external research governance. Before any trial result exists, a family must commit to a substantive hypothesis, exact final-test cohort fingerprint and horizon, complete fixed/enumerated configuration space, nonannualized Sharpe as the primary selection metric, PBO/DSR/dependence policy, stopping rule and exclusions.
@@ -14,7 +20,7 @@ The market model and artifact schema are unchanged. Research uncertainty is stre
 - experiment selection: Newey–West long-run variance reduces DSR effective observations when hourly returns are serially dependent; moving-block bootstrap provides mean/Sharpe intervals and requires enough horizon-sized blocks;
 - operator selection: propensity train/OOS separation occurs at signal-cluster level, and confidence intervals resample chronological blocks of complete signals rather than treating plan versions as independent.
 
-A `READY` experiment family now requires positive lower dependence-aware bounds in addition to PBO and DSR thresholds. Operator IPSW remains diagnostic because exposure, unmeasured operator state and actual exchange fills are not observed. Neither report mutates the active model or proves profitability.
+A `READY` experiment family now requires positive lower dependence-aware bounds in addition to PBO and DSR thresholds. Operator IPSW remains diagnostic because UI exposure is observed only as visible dwell, while attention, comprehension, unmeasured operator state and actual exchange fills are not observed. Neither report mutates the active model or proves profitability.
 
 ## Experiment overfitting governance 1.18.0
 

@@ -1,5 +1,17 @@
 # Configuration
 
+## Release 1.21.0 — UI exposure coverage
+
+Migration `0014_ui_exposure_ledger` is required. Add or confirm:
+
+```env
+SELECTION_MIN_EXPOSURE_COVERAGE=0.80
+```
+
+The value must be in `[0, 1]`. It is the minimum fraction of instrumented eligible opportunities with verified UI exposure required before an IPSW corrected estimate may be published. Lowering it does not create evidence; it only changes the report classification. Tile evidence itself uses fixed code-level safety bounds: at least 50% visibility, at least 1000 ms dwell, active document visibility, maximum 15-minute delivery age and maximum 5-second future clock skew.
+
+No model artifact, feature schema, inference setting or risk parameter changes in this release.
+
 ## Release 1.20.0 — immutable experiment preregistration
 
 No new `.env` variable is added. Migration `0013_experiment_preregistration` is required. Existing `EXPERIMENT_*` and `RESEARCH_*` values are used only to populate a new preregistration template. Once a family is registered, its report policy comes from the immutable JSON specification; command-line overrides are accepted only when they exactly match that specification.
