@@ -2,11 +2,11 @@
 
 ## Task
 
-Direction-conditional multiclass probability model для hypothetical LONG и SHORT scenarios. Classes: `TP`, `SL`, `TIMEOUT`. `NO TRADE` определяется downstream policy.
+Direction-conditional multiclass probability model для hypothetical LONG и SHORT scenarios. Classes: `TP`, `SL`, `TIMEOUT`. `NO TRADE` определяется downstream policy. Intrahorizon liquidation не является новым ML-классом и не переписывает обучающий target.
 
 ## Features
 
-Текущая schema содержит десять OHLCV-derived features и direction code. OI, basis, funding, cross-asset context и liquidity state в model features не входят.
+Текущая schema содержит десять OHLCV-derived features и direction code. OI, basis, funding, cross-asset context, mark-price path и liquidity state в model features не входят. Mark-price history используется только для realized OOS margin evidence после формирования ex-ante сценариев.
 
 ## Temporal protocol, schema v4
 
@@ -41,6 +41,22 @@ Actual future rates используются только как realized OOS co
 
 Artifact сохраняет `historical_funding_schema=bybit-settlement-timestamp-replay-v1` и summary settlement coverage. Runtime и promotion gate требуют этот contract fail-closed.
 
+## Intrahorizon mark-to-market, schema v1
+
+Release 1.13.0 требует полную hourly mark-price OHLC timeline от entry bar до modeled last-price exit. Для LONG и SHORT отдельно рассчитываются:
+
+- maximum adverse excursion;
+- maximum favorable excursion;
+- minimum isolated equity rate;
+- proxy liquidation flag, bar и open/intrabar marker;
+- effective realized exit/PnL и funding settlements до этого выхода.
+
+Схема: `intrahorizon_margin_schema=bybit-mark-price-hourly-isolated-margin-proxy-v1`. Research leverage берётся из `DEFAULT_LEVERAGE`; reserve равен 10% initial margin и является частью immutable contract. Если mark path неполна или assumptions не совпадают, candidate/runtime блокируются fail-closed.
+
+Future mark path не участвует в model fit, class probabilities, direction selection, RR, expected EV или actionability. После ex-ante выбора она может только ухудшить/сократить realized evidence. Target `TP / SL / TIMEOUT` сохраняется для стабильности задачи модели.
+
+Это conservative hourly isolated-margin proxy, а не точная биржевая ликвидация. Нет historical MMR/risk tiers, sub-hour path ordering, liquidation fee, bankruptcy price, cross/portfolio margin, ADL или exact exchange fill mechanics.
+
 ## Promotion
 
 Auto-activation требует:
@@ -50,8 +66,10 @@ Auto-activation требует:
 - положительный skill относительно class-prior baseline минимум в двух из трёх folds;
 - положительный policy realized mean R минимум в двух из трёх folds;
 - отдельные absolute final-holdout calibration/skill/economic gates;
-- independent horizon phases, positive lower confidence bound и compatible incumbent comparison.
+- independent horizon phases, positive lower confidence bound и compatible incumbent comparison;
+- complete historical-funding и intrahorizon-margin evidence;
+- одинаковые research leverage/reserve assumptions у candidate, runtime и incumbent comparison.
 
 ## Known limitations
 
-Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Нет historical bid/ask/depth, operator latency, path-dependent fill model, point-in-time funding forecasts, historical interval-change reconstruction, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.
+Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Нет historical bid/ask/depth, operator latency, path-dependent fill model, point-in-time funding forecasts, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.

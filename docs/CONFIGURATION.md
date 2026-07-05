@@ -1,5 +1,13 @@
 # Configuration
 
+## Intrahorizon mark-price margin replay
+
+Release 1.13.0 не добавляет новую `.env` переменную. Progressive mark-price backfill использует существующие `HISTORY_BACKFILL_*` параметры и сохраняет candles с `price_type=mark`. Training требует непрерывную hourly mark timeline на всём label path; гэп исключает LONG/SHORT cohort fail-closed.
+
+Research leverage берётся из существующего `DEFAULT_LEVERAGE` (default `3`). Изменение `DEFAULT_LEVERAGE` меняет intrahorizon margin evidence и требует retraining. Fixed reserve `10%` initial margin не является tuning knob в `.env`: его изменение требует новой schema и model-governance review. Candidate и incumbent с разными leverage/reserve assumptions не сравниваются как совместимые.
+
+Модуль не восстанавливает точные исторические MMR/risk tiers или cross margin. Поэтому `DEFAULT_LEVERAGE` здесь задаёт сценарий research isolated-margin proxy, а не обещание точного liquidation price биржи.
+
 ## Historical funding replay
 
 Release 1.12.0 не добавляет новую `.env` переменную. Progressive funding backfill использует существующие `HISTORY_BACKFILL_ENABLED`, `HISTORY_BACKFILL_TARGET_DAYS`, `HISTORY_BACKFILL_INTERVAL_SECONDS`, `HISTORY_BACKFILL_SYMBOLS_PER_CYCLE`, `HISTORY_BACKFILL_PAGES_PER_SYMBOL` и `HISTORY_BACKFILL_PAGE_SIZE`. Для funding endpoint effective page size ограничивается 200.

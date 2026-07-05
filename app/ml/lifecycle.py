@@ -29,6 +29,10 @@ from app.ml.data_profile import (
     profile_training_frame,
 )
 from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
+from app.ml.mtm import (
+    DEFAULT_EQUITY_RESERVE_FRACTION,
+    INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+)
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
@@ -91,6 +95,7 @@ class ModelCandidate:
 @dataclass(frozen=True)
 class TrainingMarketData:
     candles: pd.DataFrame
+    mark_candles: pd.DataFrame
     funding: pd.DataFrame
     funding_interval_minutes: dict[str, int]
 
@@ -106,6 +111,9 @@ def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
         horizon_hours=settings.default_horizon_hours,
         bootstrap_samples=settings.auto_train_policy_bootstrap_samples,
         confidence_level=settings.auto_train_policy_confidence_level,
+        research_leverage=settings.default_leverage,
+        liquidation_equity_reserve_fraction=DEFAULT_EQUITY_RESERVE_FRACTION,
+        require_intrahorizon_margin=True,
     )
 
 
@@ -130,19 +138,16 @@ async def _select_training_symbols(
     if selected_symbols or max_symbols <= 0:
         return selected_symbols
 
-    ranked_tickers = (
-        select(
-            TickerSnapshot.symbol.label("symbol"),
-            TickerSnapshot.turnover_24h.label("turnover_24h"),
-            func.row_number()
-            .over(
-                partition_by=TickerSnapshot.symbol,
-                order_by=TickerSnapshot.source_time.desc(),
-            )
-            .label("row_number"),
+    ranked_tickers = select(
+        TickerSnapshot.symbol.label("symbol"),
+        TickerSnapshot.turnover_24h.label("turnover_24h"),
+        func.row_number()
+        .over(
+            partition_by=TickerSnapshot.symbol,
+            order_by=TickerSnapshot.source_time.desc(),
         )
-        .subquery()
-    )
+        .label("row_number"),
+    ).subquery()
     selected_symbols = list(
         (
             await session.execute(
@@ -210,9 +215,7 @@ async def load_training_data_profile(
             )
         label_cutoff = latest - timedelta(hours=horizon)
         lookback_cutoff = (
-            latest - timedelta(days=lookback_days)
-            if lookback_days and lookback_days > 0
-            else None
+            latest - timedelta(days=lookback_days) if lookback_days and lookback_days > 0 else None
         )
         filters = [
             Candle.interval == interval,
@@ -240,15 +243,10 @@ async def load_training_data_profile(
         ).all()
         if selected_symbols:
             grouped_by_symbol = {str(row[0]): row for row in grouped}
-            grouped = [
-                grouped_by_symbol.get(symbol, (symbol, 0, None, None))
-                for symbol in selected_symbols
-            ]
+            grouped = [grouped_by_symbol.get(symbol, (symbol, 0, None, None)) for symbol in selected_symbols]
         unique_timestamps = int(
             (
-                await session.execute(
-                    select(func.count(func.distinct(Candle.open_time))).where(*filters)
-                )
+                await session.execute(select(func.count(func.distinct(Candle.open_time))).where(*filters))
             ).scalar_one()
             or 0
         )
@@ -286,9 +284,20 @@ async def load_training_market_data(
             query = query.where(Candle.symbol.in_(selected_symbols))
         if cutoff is not None:
             query = query.where(Candle.open_time >= cutoff)
-        candle_rows = (
-            await session.execute(query.order_by(Candle.open_time, Candle.symbol))
-        ).scalars().all()
+        candle_rows = (await session.execute(query.order_by(Candle.open_time, Candle.symbol))).scalars().all()
+
+        mark_query = select(Candle).where(
+            Candle.interval == interval,
+            Candle.price_type == "mark",
+            Candle.confirmed.is_(True),
+        )
+        if selected_symbols:
+            mark_query = mark_query.where(Candle.symbol.in_(selected_symbols))
+        if cutoff is not None:
+            mark_query = mark_query.where(Candle.open_time >= cutoff)
+        mark_rows = (
+            (await session.execute(mark_query.order_by(Candle.open_time, Candle.symbol))).scalars().all()
+        )
 
         spec_query = select(InstrumentSpecHistory).order_by(
             InstrumentSpecHistory.symbol,
@@ -317,10 +326,10 @@ async def load_training_market_data(
             if selected_symbols:
                 funding_query = funding_query.where(FundingRate.symbol.in_(selected_symbols))
             funding_rows = (
-                await session.execute(
-                    funding_query.order_by(FundingRate.funding_time, FundingRate.symbol)
-                )
-            ).scalars().all()
+                (await session.execute(funding_query.order_by(FundingRate.funding_time, FundingRate.symbol)))
+                .scalars()
+                .all()
+            )
 
     candles = pd.DataFrame(
         [
@@ -338,6 +347,20 @@ async def load_training_market_data(
             for row in candle_rows
         ]
     )
+    mark_candles = pd.DataFrame(
+        [
+            {
+                "symbol": row.symbol,
+                "open_time": row.open_time,
+                "close_time": row.close_time,
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+            }
+            for row in mark_rows
+        ]
+    )
     funding = pd.DataFrame(
         [
             {
@@ -351,6 +374,7 @@ async def load_training_market_data(
     )
     return TrainingMarketData(
         candles=candles,
+        mark_candles=mark_candles,
         funding=funding,
         funding_interval_minutes=funding_intervals,
     )
@@ -402,19 +426,13 @@ def evaluate_walk_forward_validation(
     """
 
     if final_split.test_meta is None or final_split.test_meta.empty:
-        raise ValueError(
-            "Final holdout metadata is required for walk-forward validation"
-        )
-    final_holdout_times = pd.to_datetime(
-        final_split.test_meta["decision_time"], utc=True, errors="coerce"
-    )
+        raise ValueError("Final holdout metadata is required for walk-forward validation")
+    final_holdout_times = pd.to_datetime(final_split.test_meta["decision_time"], utc=True, errors="coerce")
     if final_holdout_times.isna().any():
         raise ValueError("Final holdout contains invalid decision_time values")
     final_holdout_start = final_holdout_times.min()
 
-    label_end_times = pd.to_datetime(
-        dataset["label_end_time"], utc=True, errors="coerce"
-    )
+    label_end_times = pd.to_datetime(dataset["label_end_time"], utc=True, errors="coerce")
     if label_end_times.isna().any():
         raise ValueError("Dataset contains invalid label_end_time values")
     development = dataset[label_end_times < final_holdout_start].copy()
@@ -427,9 +445,7 @@ def evaluate_walk_forward_validation(
     fold_results: list[dict[str, Any]] = []
     for fold_index, fold_split in enumerate(fold_splits, start=1):
         if fold_split.train_meta is None or fold_split.cal_meta is None:
-            raise RuntimeError(
-                "Walk-forward split did not expose train/calibration metadata"
-            )
+            raise RuntimeError("Walk-forward split did not expose train/calibration metadata")
         fold_model = TemporalCalibratedBarrierModel(model_type).fit(
             fold_split.x_train,
             fold_split.y_train,
@@ -447,12 +463,8 @@ def evaluate_walk_forward_validation(
                     horizon_hours=horizon,
                 )
             )
-        train_times = pd.to_datetime(
-            fold_split.train_meta["decision_time"], utc=True, errors="raise"
-        )
-        cal_times = pd.to_datetime(
-            fold_split.cal_meta["decision_time"], utc=True, errors="raise"
-        )
+        train_times = pd.to_datetime(fold_split.train_meta["decision_time"], utc=True, errors="raise")
+        cal_times = pd.to_datetime(fold_split.cal_meta["decision_time"], utc=True, errors="raise")
         fold_results.append(
             json_compatible(
                 {
@@ -475,9 +487,7 @@ def evaluate_walk_forward_validation(
     log_losses = [float(item["log_loss"]) for item in fold_results]
     briers = [float(item["multiclass_brier"]) for item in fold_results]
     policy_means = [
-        float(value)
-        for item in fold_results
-        if (value := item.get("policy_realized_mean_r")) is not None
+        float(value) for item in fold_results if (value := item.get("policy_realized_mean_r")) is not None
     ]
     positive_skill_folds = sum(value > 0.0 for value in skills)
     positive_policy_folds = sum(value > 0.0 for value in policy_means)
@@ -487,39 +497,23 @@ def evaluate_walk_forward_validation(
             "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
             "walk_forward_folds_requested": int(folds),
             "walk_forward_folds_completed": completed,
-            "walk_forward_final_holdout_start_time": (
-                final_holdout_start.isoformat()
-            ),
+            "walk_forward_final_holdout_start_time": (final_holdout_start.isoformat()),
             "walk_forward_log_loss_mean": float(sum(log_losses) / completed),
             "walk_forward_log_loss_max": float(max(log_losses)),
-            "walk_forward_multiclass_brier_mean": float(
-                sum(briers) / completed
-            ),
+            "walk_forward_multiclass_brier_mean": float(sum(briers) / completed),
             "walk_forward_multiclass_brier_max": float(max(briers)),
-            "walk_forward_log_loss_skill_mean": float(
-                sum(skills) / completed
-            ),
+            "walk_forward_log_loss_skill_mean": float(sum(skills) / completed),
             "walk_forward_log_loss_skill_min": float(min(skills)),
             "walk_forward_positive_skill_folds": int(positive_skill_folds),
-            "walk_forward_positive_skill_fraction": float(
-                positive_skill_folds / completed
-            ),
-            "walk_forward_policy_positive_mean_r_folds": int(
-                positive_policy_folds
-            ),
+            "walk_forward_positive_skill_fraction": float(positive_skill_folds / completed),
+            "walk_forward_policy_positive_mean_r_folds": int(positive_policy_folds),
             "walk_forward_policy_positive_mean_r_fraction": (
-                float(positive_policy_folds / completed)
-                if policy_config is not None
-                else None
+                float(positive_policy_folds / completed) if policy_config is not None else None
             ),
             "walk_forward_policy_realized_mean_r_mean": (
-                float(sum(policy_means) / len(policy_means))
-                if policy_means
-                else None
+                float(sum(policy_means) / len(policy_means)) if policy_means else None
             ),
-            "walk_forward_policy_realized_mean_r_min": (
-                float(min(policy_means)) if policy_means else None
-            ),
+            "walk_forward_policy_realized_mean_r_min": (float(min(policy_means)) if policy_means else None),
             "walk_forward_fold_results": fold_results,
         }
     )
@@ -528,6 +522,7 @@ def evaluate_walk_forward_validation(
 def build_model_candidate(
     candles: pd.DataFrame,
     *,
+    mark_candles: pd.DataFrame | None = None,
     horizon: int,
     model_type: str,
     model_dir: Path,
@@ -552,6 +547,14 @@ def build_model_candidate(
         funding_history=funding_history,
         funding_interval_minutes=funding_interval_minutes,
         require_funding_timeline=True,
+        mark_candles=mark_candles,
+        require_mark_timeline=True,
+        liquidation_leverage=(policy_config.research_leverage if policy_config is not None else 3),
+        liquidation_equity_reserve_fraction=(
+            policy_config.liquidation_equity_reserve_fraction
+            if policy_config is not None
+            else DEFAULT_EQUITY_RESERVE_FRACTION
+        ),
     )
     if dataset.empty:
         raise RuntimeError("No direction-specific barrier labels could be built from PostgreSQL candles")
@@ -571,20 +574,15 @@ def build_model_candidate(
     metrics["temporal_split_schema"] = TEMPORAL_SPLIT_SCHEMA_VERSION
     metrics["feature_schema_version"] = MODEL_FEATURE_SCHEMA_VERSION
     metrics["label_path_schema_version"] = LABEL_PATH_SCHEMA_VERSION
-    metrics["entry_execution_model"] = json_compatible(
-        dataset.attrs.get("entry_execution_model") or {}
-    )
+    metrics["entry_execution_model"] = json_compatible(dataset.attrs.get("entry_execution_model") or {})
     metrics["historical_funding_timeline"] = json_compatible(
         dataset.attrs.get("historical_funding_timeline") or {}
     )
-    metrics["hourly_continuity"] = json_compatible(
-        dataset.attrs.get("hourly_continuity") or {}
-    )
+    metrics["intrahorizon_margin_path"] = json_compatible(dataset.attrs.get("intrahorizon_margin_path") or {})
+    metrics["hourly_continuity"] = json_compatible(dataset.attrs.get("hourly_continuity") or {})
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
-        metrics.update(
-            evaluate_policy_model(model, split, policy_config, horizon_hours=horizon)
-        )
+        metrics.update(evaluate_policy_model(model, split, policy_config, horizon_hours=horizon))
     metrics.update(
         evaluate_walk_forward_validation(
             dataset,
@@ -628,6 +626,14 @@ def build_model_candidate(
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
+                and policy_config is not None
+                and runtime.research_leverage == policy_config.research_leverage
+                and math.isclose(
+                    runtime.liquidation_equity_reserve_fraction,
+                    policy_config.liquidation_equity_reserve_fraction,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
             ):
                 incumbent_metrics = {
                     "comparison_skipped": "incumbent_execution_geometry_mismatch",
@@ -637,6 +643,18 @@ def build_model_candidate(
                     "incumbent_stop_atr_multiplier": runtime.stop_atr_multiplier,
                     "incumbent_tp_atr_multiplier": runtime.tp_atr_multiplier,
                     "incumbent_entry_spread_bps": runtime.entry_spread_bps,
+                    "candidate_research_leverage": (
+                        policy_config.research_leverage if policy_config is not None else None
+                    ),
+                    "incumbent_research_leverage": runtime.research_leverage,
+                    "candidate_liquidation_equity_reserve_fraction": (
+                        policy_config.liquidation_equity_reserve_fraction
+                        if policy_config is not None
+                        else None
+                    ),
+                    "incumbent_liquidation_equity_reserve_fraction": (
+                        runtime.liquidation_equity_reserve_fraction
+                    ),
                 }
             else:
                 incumbent_metrics = evaluate_model(runtime.bundle["model"], split)
@@ -656,9 +674,7 @@ def build_model_candidate(
             }
 
     created_at = datetime.now(UTC)
-    generated_version = version or (
-        f"barrier-{model_type}-h{horizon}-{created_at:%Y%m%dT%H%M%SZ}"
-    )
+    generated_version = version or (f"barrier-{model_type}-h{horizon}-{created_at:%Y%m%dT%H%M%SZ}")
     target = (output or model_dir / f"{generated_version}.joblib").expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -685,6 +701,14 @@ def build_model_candidate(
         "entry_execution_model": metrics["entry_execution_model"],
         "historical_funding_schema": HISTORICAL_FUNDING_SCHEMA_VERSION,
         "historical_funding_timeline": metrics["historical_funding_timeline"],
+        "intrahorizon_margin_schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+        "intrahorizon_margin_path": metrics["intrahorizon_margin_path"],
+        "research_leverage": (policy_config.research_leverage if policy_config is not None else 3),
+        "liquidation_equity_reserve_fraction": (
+            policy_config.liquidation_equity_reserve_fraction
+            if policy_config is not None
+            else DEFAULT_EQUITY_RESERVE_FRACTION
+        ),
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
@@ -763,9 +787,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     holdout_span_value, holdout_span_check = required_metric("holdout_span_hours")
     log_loss_value, log_loss_check = required_metric("log_loss")
     class_prior_log_loss_value, _ = required_metric("class_prior_log_loss")
-    log_loss_skill_value, log_loss_skill_check = required_metric(
-        "log_loss_skill_vs_prior"
-    )
+    log_loss_skill_value, log_loss_skill_check = required_metric("log_loss_skill_vs_prior")
     brier_value, brier_check = required_metric("multiclass_brier")
     ece_pairs = [
         required_metric("ece_tp"),
@@ -773,21 +795,19 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         required_metric("ece_timeout"),
     ]
     ece_values = [value for value, _ in ece_pairs]
-    max_ece = max(value for value in ece_values if value is not None) if all(
-        value is not None for value in ece_values
-    ) else None
+    max_ece = (
+        max(value for value in ece_values if value is not None)
+        if all(value is not None for value in ece_values)
+        else None
+    )
     max_ece_check = max(check for _, check in ece_pairs)
 
     entry_execution_model = metrics.get("entry_execution_model")
     entry_execution_schema = (
-        entry_execution_model.get("schema")
-        if isinstance(entry_execution_model, dict)
-        else None
+        entry_execution_model.get("schema") if isinstance(entry_execution_model, dict) else None
     )
     entry_spread_bps = finite_or_none(
-        entry_execution_model.get("entry_spread_bps")
-        if isinstance(entry_execution_model, dict)
-        else None
+        entry_execution_model.get("entry_spread_bps") if isinstance(entry_execution_model, dict) else None
     )
     if entry_execution_schema != ENTRY_EXECUTION_MODEL_SCHEMA:
         reasons.append("invalid_entry_execution_model_schema")
@@ -802,11 +822,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("entry_spread_bps_mismatch")
 
     funding_timeline = metrics.get("historical_funding_timeline")
-    funding_schema = (
-        funding_timeline.get("schema")
-        if isinstance(funding_timeline, dict)
-        else None
-    )
+    funding_schema = funding_timeline.get("schema") if isinstance(funding_timeline, dict) else None
     funding_symbols = finite_or_none(
         funding_timeline.get("symbols") if isinstance(funding_timeline, dict) else None
     )
@@ -817,11 +833,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("invalid_historical_funding_schema")
     if funding_symbols is None or funding_symbols < 1 or not funding_symbols.is_integer():
         reasons.append("missing_historical_funding_symbols")
-    if (
-        funding_settlements is None
-        or funding_settlements < 1
-        or not funding_settlements.is_integer()
-    ):
+    if funding_settlements is None or funding_settlements < 1 or not funding_settlements.is_integer():
         reasons.append("missing_historical_funding_settlements")
     if metrics.get("historical_funding_schema") != HISTORICAL_FUNDING_SCHEMA_VERSION:
         reasons.append("policy_historical_funding_schema_mismatch")
@@ -831,6 +843,56 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("policy_expected_funding_lookahead_risk")
     if metrics.get("policy_realized_funding_source") != HISTORICAL_FUNDING_SCHEMA_VERSION:
         reasons.append("policy_realized_funding_source_mismatch")
+
+    margin_path = metrics.get("intrahorizon_margin_path")
+    margin_schema = margin_path.get("schema") if isinstance(margin_path, dict) else None
+    margin_status = margin_path.get("status") if isinstance(margin_path, dict) else None
+    margin_leverage = finite_or_none(
+        margin_path.get("research_leverage") if isinstance(margin_path, dict) else None
+    )
+    margin_reserve = finite_or_none(
+        margin_path.get("equity_reserve_fraction") if isinstance(margin_path, dict) else None
+    )
+    if margin_schema != INTRAHORIZON_MARGIN_SCHEMA_VERSION:
+        reasons.append("invalid_intrahorizon_margin_schema")
+    if margin_status != "complete":
+        reasons.append("intrahorizon_margin_path_incomplete")
+    if (
+        margin_leverage is None
+        or not margin_leverage.is_integer()
+        or int(margin_leverage) != settings.default_leverage
+    ):
+        reasons.append("intrahorizon_research_leverage_mismatch")
+    if margin_reserve is None or not math.isclose(
+        margin_reserve,
+        DEFAULT_EQUITY_RESERVE_FRACTION,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        reasons.append("intrahorizon_liquidation_reserve_mismatch")
+    if metrics.get("policy_intrahorizon_margin_schema") != INTRAHORIZON_MARGIN_SCHEMA_VERSION:
+        reasons.append("policy_intrahorizon_margin_schema_mismatch")
+    if metrics.get("policy_intrahorizon_margin_complete") is not True:
+        reasons.append("policy_intrahorizon_margin_incomplete")
+    policy_research_leverage = finite_or_none(metrics.get("policy_research_leverage"))
+    if (
+        policy_research_leverage is None
+        or not policy_research_leverage.is_integer()
+        or int(policy_research_leverage) != settings.default_leverage
+    ):
+        reasons.append("policy_research_leverage_mismatch")
+    policy_reserve = finite_or_none(metrics.get("policy_liquidation_equity_reserve_fraction"))
+    if policy_reserve is None or not math.isclose(
+        policy_reserve,
+        DEFAULT_EQUITY_RESERVE_FRACTION,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        reasons.append("policy_liquidation_reserve_mismatch")
+    policy_liquidation_events = nonnegative_int_metric("policy_liquidation_events")
+    policy_liquidation_rate = finite_or_none(metrics.get("policy_liquidation_rate"))
+    if policy_liquidation_rate is None or not 0.0 <= policy_liquidation_rate <= 1.0:
+        reasons.append("missing_or_invalid_policy_liquidation_rate")
 
     walk_forward_schema = metrics.get("walk_forward_schema")
     walk_forward_requested = finite_or_none(metrics.get("walk_forward_folds_requested"))
@@ -949,9 +1011,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
                 valid_distribution = False
                 break
             distribution_values.append(value)
-    if valid_distribution and not math.isclose(
-        sum(distribution_values), 1.0, rel_tol=1e-7, abs_tol=1e-9
-    ):
+    if valid_distribution and not math.isclose(sum(distribution_values), 1.0, rel_tol=1e-7, abs_tol=1e-9):
         valid_distribution = False
     if not valid_distribution:
         reasons.append("invalid_holdout_class_distribution")
@@ -960,10 +1020,23 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         min_class_fraction = min(distribution_values)
     policy_candidates = nonnegative_int_metric("policy_candidates")
     policy_trades = nonnegative_int_metric("policy_trades")
+    if policy_liquidation_events > policy_trades:
+        reasons.append("policy_liquidation_events_exceed_trades")
+    if (
+        policy_liquidation_rate is not None
+        and policy_trades > 0
+        and not math.isclose(
+            policy_liquidation_rate,
+            policy_liquidation_events / policy_trades,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        )
+    ):
+        reasons.append("inconsistent_policy_liquidation_rate")
+    if policy_trades == 0 and policy_liquidation_rate not in (None, 0.0):
+        reasons.append("nonzero_policy_liquidation_rate_without_trades")
     policy_trade_rate = finite_or_none(metrics.get("policy_trade_rate"))
-    valid_policy_trade_rate = (
-        policy_trade_rate is not None and 0.0 <= policy_trade_rate <= 1.0
-    )
+    valid_policy_trade_rate = policy_trade_rate is not None and 0.0 <= policy_trade_rate <= 1.0
     if policy_trade_rate is None:
         reasons.append("missing_or_non_finite_policy_trade_rate")
     elif not valid_policy_trade_rate:
@@ -971,9 +1044,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     if policy_trades > policy_candidates:
         reasons.append("policy_trades_exceed_candidates")
     if valid_policy_trade_rate:
-        expected_policy_trade_rate = (
-            policy_trades / policy_candidates if policy_candidates else 0.0
-        )
+        expected_policy_trade_rate = policy_trades / policy_candidates if policy_candidates else 0.0
         if not math.isclose(
             policy_trade_rate,
             expected_policy_trade_rate,
@@ -984,34 +1055,23 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
     policy_cohorts = nonnegative_int_metric("policy_cohorts")
     policy_independent_cohorts = nonnegative_int_metric("policy_independent_cohorts")
     policy_horizon_phase_count = nonnegative_int_metric("policy_horizon_phase_count")
-    policy_horizon_phase_expected = nonnegative_int_metric(
-        "policy_horizon_phase_expected"
-    )
+    policy_horizon_phase_expected = nonnegative_int_metric("policy_horizon_phase_expected")
     policy_independent_mean_r = finite_or_none(metrics.get("policy_independent_mean_r"))
     policy_mean_r_lcb = finite_or_none(metrics.get("policy_mean_r_lcb"))
-    policy_confidence_level = finite_or_none(
-        metrics.get("policy_mean_r_confidence_level")
-    )
-    policy_bootstrap_samples = nonnegative_int_metric(
-        "policy_mean_r_bootstrap_samples"
-    )
-    policy_bootstrap_block_length = nonnegative_int_metric(
-        "policy_mean_r_bootstrap_block_length"
-    )
+    policy_confidence_level = finite_or_none(metrics.get("policy_mean_r_confidence_level"))
+    policy_bootstrap_samples = nonnegative_int_metric("policy_mean_r_bootstrap_samples")
+    policy_bootstrap_block_length = nonnegative_int_metric("policy_mean_r_bootstrap_block_length")
     if metrics.get("policy_mean_r_uncertainty_schema") != POLICY_UNCERTAINTY_SCHEMA:
         reasons.append("invalid_policy_mean_r_uncertainty_schema")
     if policy_independent_cohorts > 0 and policy_independent_mean_r is None:
         reasons.append("missing_or_non_finite_policy_independent_mean_r")
     if policy_independent_cohorts > 1 and policy_mean_r_lcb is None:
         reasons.append("missing_or_non_finite_policy_mean_r_lcb")
-    if (
-        policy_confidence_level is None
-        or not math.isclose(
-            policy_confidence_level,
-            settings.auto_train_policy_confidence_level,
-            rel_tol=0.0,
-            abs_tol=1e-12,
-        )
+    if policy_confidence_level is None or not math.isclose(
+        policy_confidence_level,
+        settings.auto_train_policy_confidence_level,
+        rel_tol=0.0,
+        abs_tol=1e-12,
     ):
         reasons.append("policy_mean_r_confidence_level_mismatch")
     if policy_bootstrap_samples != settings.auto_train_policy_bootstrap_samples:
@@ -1054,17 +1114,9 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("invalid_policy_metric_schema")
     policy_horizon = finite_or_none(metrics.get("policy_horizon_hours"))
     policy_sleeves = finite_or_none(metrics.get("policy_capital_sleeves"))
-    if (
-        policy_horizon is None
-        or not policy_horizon.is_integer()
-        or int(policy_horizon) != candidate.horizon
-    ):
+    if policy_horizon is None or not policy_horizon.is_integer() or int(policy_horizon) != candidate.horizon:
         reasons.append("policy_horizon_mismatch")
-    if (
-        policy_sleeves is None
-        or not policy_sleeves.is_integer()
-        or int(policy_sleeves) != candidate.horizon
-    ):
+    if policy_sleeves is None or not policy_sleeves.is_integer() or int(policy_sleeves) != candidate.horizon:
         reasons.append("policy_capital_sleeves_mismatch")
     if policy_horizon_phase_expected != candidate.horizon:
         reasons.append("policy_horizon_phase_expected_mismatch")
@@ -1099,19 +1151,13 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("holdout_class_fraction_below_minimum")
     if policy_trades < settings.auto_train_min_policy_trades:
         reasons.append("policy_trade_count_below_minimum")
-    if (
-        not valid_policy_trade_rate
-        or policy_trade_rate < settings.auto_train_min_policy_trade_rate
-    ):
+    if not valid_policy_trade_rate or policy_trade_rate < settings.auto_train_min_policy_trade_rate:
         reasons.append("policy_trade_rate_below_minimum")
     if policy_independent_cohorts < settings.auto_train_min_policy_cohorts:
         reasons.append("policy_independent_cohort_count_below_minimum")
     if policy_mean_r_check < settings.auto_train_min_policy_realized_mean_r:
         reasons.append("policy_realized_mean_r_below_minimum")
-    if (
-        policy_mean_r_lcb is None
-        or policy_mean_r_lcb <= settings.auto_train_min_policy_mean_r_lcb
-    ):
+    if policy_mean_r_lcb is None or policy_mean_r_lcb <= settings.auto_train_min_policy_mean_r_lcb:
         reasons.append("policy_mean_r_lcb_not_above_minimum")
     if policy_profit_factor_check < settings.auto_train_min_policy_profit_factor:
         reasons.append("policy_profit_factor_below_minimum")
@@ -1222,9 +1268,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
                 log_loss_delta_check <= -settings.auto_train_min_metric_improvement
                 or brier_delta_check <= -settings.auto_train_min_metric_improvement
             )
-            policy_improved = (
-                policy_mean_r_delta_check >= settings.auto_train_min_policy_improvement_r
-            )
+            policy_improved = policy_mean_r_delta_check >= settings.auto_train_min_policy_improvement_r
             improved = ml_improved or policy_improved
             if log_loss_delta_check > settings.auto_train_max_log_loss_regression:
                 reasons.append("log_loss_regressed_vs_incumbent")
@@ -1257,7 +1301,6 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
                 "improved": improved,
             }
 
-
     result = {
         "passed": not reasons,
         "reasons": reasons,
@@ -1266,6 +1309,15 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "expected_entry_execution_model_schema": ENTRY_EXECUTION_MODEL_SCHEMA,
             "entry_spread_bps": entry_spread_bps,
             "configured_entry_spread_bps": settings.model_entry_spread_bps,
+            "intrahorizon_margin_schema": margin_schema,
+            "expected_intrahorizon_margin_schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+            "intrahorizon_margin_status": margin_status,
+            "research_leverage": margin_leverage,
+            "configured_research_leverage": settings.default_leverage,
+            "liquidation_equity_reserve_fraction": margin_reserve,
+            "configured_liquidation_equity_reserve_fraction": (DEFAULT_EQUITY_RESERVE_FRACTION),
+            "policy_liquidation_events": policy_liquidation_events,
+            "policy_liquidation_rate": policy_liquidation_rate,
             "walk_forward_schema": walk_forward_schema,
             "expected_walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
             "walk_forward_folds_requested": walk_forward_requested,
@@ -1310,9 +1362,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "policy_mean_r_confidence_level": policy_confidence_level,
             "policy_mean_r_bootstrap_samples": policy_bootstrap_samples,
             "policy_mean_r_bootstrap_block_length": policy_bootstrap_block_length,
-            "policy_mean_r_uncertainty_schema": metrics.get(
-                "policy_mean_r_uncertainty_schema"
-            ),
+            "policy_mean_r_uncertainty_schema": metrics.get("policy_mean_r_uncertainty_schema"),
             "policy_profit_factor": policy_profit_factor,
             "policy_profit_factor_unbounded": valid_unbounded_profit_factor,
             "policy_gross_gain_r": policy_gross_gain_r,
@@ -1454,8 +1504,7 @@ def _validate_candidate_artifact_for_activation(
     )
     if runtime.horizon_hours != expected_horizon_hours:
         raise RuntimeError(
-            f"Model horizon {runtime.horizon_hours} does not match "
-            f"expected horizon {expected_horizon_hours}"
+            f"Model horizon {runtime.horizon_hours} does not match expected horizon {expected_horizon_hours}"
         )
     return runtime.metadata()
 
@@ -1515,9 +1564,7 @@ async def register_and_activate_model_candidate(
         payload: dict[str, object] = {
             "version": registry.version,
             "model_type": registry.model_type,
-            "previous_version": (
-                previous.version if previous and previous.id != registry.id else None
-            ),
+            "previous_version": (previous.version if previous and previous.id != registry.id else None),
             "expected_previous_version": expected_previous_version,
             "runtime": runtime_metadata,
         }

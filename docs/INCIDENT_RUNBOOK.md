@@ -1,5 +1,25 @@
 # Incident Runbook
 
+## Симптом: active artifact не загружается после 1.13.0
+
+Вероятная причина: artifact создан до `bybit-mark-price-hourly-isolated-margin-proxy-v1`, metadata отсутствует/повреждена либо leverage/reserve не совпадает. Не редактируйте joblib вручную. Сохраните artifact для аудита, завершите mark-price backfill, подтвердите `DEFAULT_LEVERAGE`, переобучите candidate и активируйте только artifact с корректным SHA-256 и complete margin-path schema.
+
+## Симптом: training исключает много cohort из-за mark timeline
+
+Проверьте `history_backfill.mark_price_history`: symbol, earliest/newest timestamp, exact hourly continuity, `price_type=mark`, confirmed status и OHLC validity. Нельзя подставлять last-price candles вместо mark candles или интерполировать missing bars без отдельной audited policy.
+
+## Симптом: `invalid_intrahorizon_margin_schema` / `intrahorizon_margin_path_incomplete`
+
+Candidate не содержит обязательное evidence либо оно повреждено. Повторите backfill/training. Не отключайте runtime/gate validation и не понижайте reason severity.
+
+## Симптом: `intrahorizon_research_leverage_mismatch` или reserve mismatch
+
+Candidate создан при других margin assumptions. Верните соответствующий `DEFAULT_LEVERAGE` либо переобучите candidate. Сравнивать candidate и incumbent с разной margin geometry запрещено.
+
+## Симптом: liquidation rate резко вырос
+
+Сначала проверьте mark data quality, leverage, funding timing и отсутствие duplicate/gap. Затем исследуйте режим рынка. Не называйте proxy событие точной исторической ликвидацией: hourly OHLC и fixed reserve дают консервативную, но неполную геометрию.
+
 ## Симптом: active artifact не загружается после 1.12.0
 
 Вероятная причина: artifact создан до `bybit-settlement-timestamp-replay-v1` либо timeline metadata отсутствует/повреждена. Не редактируйте joblib вручную. Сохраните artifact для аудита, завершите funding backfill, переобучите candidate и активируйте только artifact с корректным SHA-256 и funding schema.

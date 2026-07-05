@@ -24,6 +24,11 @@ from app.ml.funding import (
     funding_return_rate_for_direction,
 )
 from app.ml.labels import triple_barrier_outcome
+from app.ml.mtm import (
+    DEFAULT_EQUITY_RESERVE_FRACTION,
+    INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+    simulate_intrahorizon_margin_path,
+)
 
 OUTCOME_CLASSES = np.array(["TP", "SL", "TIMEOUT"])
 MODEL_FEATURE_NAMES = [*FEATURE_NAMES, "scenario_direction"]
@@ -37,7 +42,7 @@ TEMPORAL_SPLIT_SCHEMA_VERSION = "final-holdout-plus-expanding-walk-forward-v4"
 WALK_FORWARD_SCHEMA_VERSION = "expanding-train-rolling-calibration-purged-v1"
 DEFAULT_WALK_FORWARD_FOLDS = 3
 MIN_WALK_FORWARD_POSITIVE_FRACTION = 2.0 / 3.0
-POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14"
+POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15"
 POLICY_UNCERTAINTY_SCHEMA = "all-horizon-phases-circular-moving-block-v2"
 HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
@@ -162,12 +167,8 @@ class TemporalCalibratedBarrierModel:
                     "Training window must contain at least "
                     f"{MIN_TIMEOUT_SAMPLES_PER_DIRECTION} TIMEOUT rows for {direction}"
                 )
-            if (selected < -1.0 - tolerance).any() or (
-                selected > upper_bound + tolerance
-            ).any():
-                raise ValueError(
-                    "TIMEOUT return R lies outside the configured barrier support"
-                )
+            if (selected < -1.0 - tolerance).any() or (selected > upper_bound + tolerance).any():
+                raise ValueError("TIMEOUT return R lies outside the configured barrier support")
             estimates[direction] = float(np.median(selected))
             counts[direction] = int(len(selected))
         self.timeout_return_r_by_direction = estimates
@@ -238,6 +239,9 @@ class PolicyEvaluationConfig:
     horizon_hours: int | None = None
     bootstrap_samples: int = 2000
     confidence_level: float = 0.95
+    research_leverage: int = 3
+    liquidation_equity_reserve_fraction: float = DEFAULT_EQUITY_RESERVE_FRACTION
+    require_intrahorizon_margin: bool = False
 
 
 def timeout_return_r_targets(meta: pd.DataFrame) -> np.ndarray:
@@ -306,15 +310,12 @@ def minimum_hourly_history_timestamps_for_quality_gate(
         calibration_timestamps = calibration_index - train_index - 2 * horizon
         test_timestamps = labeled_timestamps - calibration_index - horizon
         development_timestamps = calibration_index
-        walk_forward_block = development_timestamps // (
-            DEFAULT_WALK_FORWARD_FOLDS + 3
+        walk_forward_block = development_timestamps // (DEFAULT_WALK_FORWARD_FOLDS + 3)
+        walk_forward_initial_train = (
+            development_timestamps - (DEFAULT_WALK_FORWARD_FOLDS + 1) * walk_forward_block
         )
-        walk_forward_initial_train = development_timestamps - (
-            DEFAULT_WALK_FORWARD_FOLDS + 1
-        ) * walk_forward_block
-        walk_forward_ready = (
-            walk_forward_block >= 45 + 2 * horizon
-            and walk_forward_initial_train >= max(90, 45 + horizon)
+        walk_forward_ready = walk_forward_block >= 45 + 2 * horizon and walk_forward_initial_train >= max(
+            90, 45 + horizon
         )
         if (
             train_timestamps >= 45
@@ -336,6 +337,10 @@ def make_barrier_dataset(
     funding_history: pd.DataFrame | None = None,
     funding_interval_minutes: dict[str, int] | None = None,
     require_funding_timeline: bool = False,
+    mark_candles: pd.DataFrame | None = None,
+    require_mark_timeline: bool = False,
+    liquidation_leverage: int = 3,
+    liquidation_equity_reserve_fraction: float = DEFAULT_EQUITY_RESERVE_FRACTION,
 ) -> pd.DataFrame:
     """Build point-in-time LONG/SHORT scenarios from strict hourly windows.
 
@@ -372,6 +377,46 @@ def make_barrier_dataset(
         )
     elif require_funding_timeline:
         raise ValueError("Historical funding timeline is required for research training")
+
+    if (
+        isinstance(liquidation_leverage, bool)
+        or not isinstance(liquidation_leverage, (int, np.integer))
+        or liquidation_leverage <= 0
+    ):
+        raise ValueError("liquidation_leverage must be a positive integer")
+    liquidation_leverage = int(liquidation_leverage)
+    reserve_fraction = float(liquidation_equity_reserve_fraction)
+    if not np.isfinite(reserve_fraction) or not 0.0 <= reserve_fraction < 1.0:
+        raise ValueError("liquidation_equity_reserve_fraction must be finite and in [0, 1)")
+
+    mark_groups: dict[str, pd.DataFrame] = {}
+    if mark_candles is not None:
+        required_mark_columns = {"symbol", "open_time", "close_time", "open", "high", "low", "close"}
+        missing_mark_columns = sorted(required_mark_columns - set(mark_candles.columns))
+        if missing_mark_columns:
+            raise ValueError(f"Historical mark candles are missing columns: {missing_mark_columns}")
+        mark_frame = mark_candles.loc[:, sorted(required_mark_columns)].copy()
+        mark_frame["symbol"] = mark_frame["symbol"].astype(str).str.strip().str.upper()
+        mark_frame["open_time"] = pd.to_datetime(mark_frame["open_time"], utc=True, errors="coerce")
+        mark_frame["close_time"] = pd.to_datetime(mark_frame["close_time"], utc=True, errors="coerce")
+        if mark_frame[["open_time", "close_time"]].isna().any().any():
+            raise ValueError("Historical mark candles contain invalid timestamps")
+        if mark_frame.duplicated(["symbol", "open_time"], keep=False).any():
+            raise ValueError("Historical mark candles contain duplicate symbol/open_time rows")
+        for column in ("open", "high", "low", "close"):
+            mark_frame[column] = pd.to_numeric(mark_frame[column], errors="coerce")
+        if (
+            mark_frame[["open", "high", "low", "close"]].isna().any().any()
+            or not np.isfinite(mark_frame[["open", "high", "low", "close"]].to_numpy(float)).all()
+        ):
+            raise ValueError("Historical mark candle prices must be finite")
+        mark_groups = {
+            str(symbol): group.sort_values("open_time").set_index("open_time", drop=False)
+            for symbol, group in mark_frame.groupby("symbol", sort=False)
+        }
+    elif require_mark_timeline:
+        raise ValueError("Historical mark-price timeline is required for margin-path research")
+
     frame = build_feature_frame(candles).sort_values(["symbol", "open_time"]).reset_index(drop=True)
     rows: list[dict] = []
     diagnostics: dict[str, int | str] = {
@@ -385,6 +430,8 @@ def make_barrier_dataset(
         "skipped_invalid_label_bar_timestamps": 0,
         "skipped_incomplete_direction_pair_timestamps": 0,
         "skipped_incomplete_funding_timeline_timestamps": 0,
+        "skipped_incomplete_mark_timeline_timestamps": 0,
+        "liquidation_path_timestamps": 0,
     }
     hourly = pd.Timedelta(1, unit="h")
 
@@ -425,13 +472,37 @@ def make_barrier_dataset(
             actual_times = pd.DatetimeIndex(future["open_time"])
             actual_close_times = pd.DatetimeIndex(future["close_time"])
             expected_close_times = expected_times + hourly
-            if not actual_times.equals(expected_times) or not actual_close_times.equals(
-                expected_close_times
-            ):
+            if not actual_times.equals(expected_times) or not actual_close_times.equals(expected_close_times):
                 diagnostics["skipped_label_gap_timestamps"] += 1
                 continue
             if not future[MARKET_BAR_VALID_COLUMN].all():
                 diagnostics["skipped_invalid_label_bar_timestamps"] += 1
+                continue
+
+            mark_future: pd.DataFrame | None = None
+            if mark_groups:
+                mark_group = mark_groups.get(str(symbol).strip().upper())
+                if mark_group is None or not set(expected_times).issubset(mark_group.index):
+                    diagnostics["skipped_incomplete_mark_timeline_timestamps"] += 1
+                    continue
+                mark_future = mark_group.loc[
+                    expected_times,
+                    [
+                        "open_time",
+                        "close_time",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                    ],
+                ].copy()
+                if not pd.DatetimeIndex(mark_future["open_time"]).equals(
+                    expected_times
+                ) or not pd.DatetimeIndex(mark_future["close_time"]).equals(expected_close_times):
+                    diagnostics["skipped_incomplete_mark_timeline_timestamps"] += 1
+                    continue
+            elif require_mark_timeline:
+                diagnostics["skipped_incomplete_mark_timeline_timestamps"] += 1
                 continue
 
             values = [current.get(name) for name in FEATURE_NAMES]
@@ -494,6 +565,7 @@ def make_barrier_dataset(
                 exit_offset_hours = int(result.exit_index) + (0 if result.exit_at_open else 1)
                 exit_time = decision_time + pd.Timedelta(exit_offset_hours, unit="h")
                 funding_values: dict[str, float | int | bool] = {}
+                realized_funding = None
                 if funding_timeline is not None:
                     try:
                         horizon_funding = funding_timeline.aggregate(
@@ -511,6 +583,116 @@ def make_barrier_dataset(
                         "historical_funding_horizon_settlements": horizon_funding.settlements,
                         "historical_funding_realized_rate": realized_funding.cumulative_rate,
                         "historical_funding_realized_settlements": realized_funding.settlements,
+                    }
+
+                margin_values: dict[str, float | int | bool | pd.Timestamp | None] = {}
+                if mark_future is not None:
+                    adverse_funding_at_open: list[float] = []
+                    adverse_funding_at_close: list[float] = []
+                    running_adverse_funding = 0.0
+                    if funding_timeline is not None:
+                        try:
+                            for mark_row in mark_future.iloc[: result.exit_index + 1].itertuples(index=False):
+                                open_funding = funding_timeline.aggregate(
+                                    symbol,
+                                    start_time=decision_time,
+                                    end_time=mark_row.open_time,
+                                )
+                                close_funding = funding_timeline.aggregate(
+                                    symbol,
+                                    start_time=decision_time,
+                                    end_time=mark_row.close_time,
+                                )
+                                signed_open_funding = (
+                                    -open_funding.cumulative_rate
+                                    if direction == "LONG"
+                                    else open_funding.cumulative_rate
+                                )
+                                signed_close_funding = (
+                                    -close_funding.cumulative_rate
+                                    if direction == "LONG"
+                                    else close_funding.cumulative_rate
+                                )
+                                open_adverse = min(running_adverse_funding, signed_open_funding, 0.0)
+                                close_adverse = min(open_adverse, signed_close_funding, 0.0)
+                                adverse_funding_at_open.append(open_adverse)
+                                adverse_funding_at_close.append(close_adverse)
+                                running_adverse_funding = close_adverse
+                        except ValueError:
+                            direction_rows = []
+                            break
+                    else:
+                        adverse_funding_at_open = [0.0] * (result.exit_index + 1)
+                        adverse_funding_at_close = [0.0] * (result.exit_index + 1)
+
+                    margin_path = simulate_intrahorizon_margin_path(
+                        mark_future[["open", "high", "low", "close"]],
+                        direction=direction,
+                        entry_price=entry,
+                        exit_index=result.exit_index,
+                        exit_at_open=bool(result.exit_at_open),
+                        leverage=liquidation_leverage,
+                        equity_reserve_fraction=reserve_fraction,
+                        cumulative_adverse_funding_return_at_open_by_bar=(adverse_funding_at_open),
+                        cumulative_adverse_funding_return_at_close_by_bar=(adverse_funding_at_close),
+                    )
+                    effective_exit_index = (
+                        int(margin_path.liquidation_index)
+                        if margin_path.liquidated and margin_path.liquidation_index is not None
+                        else int(result.exit_index)
+                    )
+                    effective_exit_at_open = (
+                        bool(margin_path.liquidation_at_open)
+                        if margin_path.liquidated
+                        else bool(result.exit_at_open)
+                    )
+                    effective_exit_offset = (
+                        int(margin_path.liquidation_exit_offset_hours)
+                        if margin_path.liquidated and margin_path.liquidation_exit_offset_hours is not None
+                        else exit_offset_hours
+                    )
+                    effective_exit_time = decision_time + pd.Timedelta(effective_exit_offset, unit="h")
+                    effective_realized_return = (
+                        float(margin_path.liquidation_gross_return_rate)
+                        if margin_path.liquidated and margin_path.liquidation_gross_return_rate is not None
+                        else float(realized_return)
+                    )
+                    effective_funding_rate = (
+                        realized_funding.cumulative_rate if realized_funding is not None else 0.0
+                    )
+                    effective_funding_settlements = (
+                        realized_funding.settlements if realized_funding is not None else 0
+                    )
+                    if margin_path.liquidated and funding_timeline is not None:
+                        try:
+                            liquidation_funding = funding_timeline.aggregate(
+                                symbol,
+                                start_time=decision_time,
+                                end_time=effective_exit_time,
+                            )
+                        except ValueError:
+                            direction_rows = []
+                            break
+                        effective_funding_rate = liquidation_funding.cumulative_rate
+                        effective_funding_settlements = liquidation_funding.settlements
+                    margin_values = {
+                        "intrahorizon_margin_path_complete": True,
+                        "intrahorizon_margin_schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+                        "research_leverage": liquidation_leverage,
+                        "liquidation_equity_reserve_fraction": reserve_fraction,
+                        "mark_max_adverse_excursion_rate": margin_path.maximum_adverse_excursion_rate,
+                        "mark_max_favorable_excursion_rate": margin_path.maximum_favorable_excursion_rate,
+                        "mark_minimum_equity_rate": margin_path.minimum_equity_rate,
+                        "mark_liquidated": bool(margin_path.liquidated),
+                        "mark_liquidation_index": margin_path.liquidation_index,
+                        "mark_liquidation_at_open": bool(margin_path.liquidation_at_open),
+                        "mark_liquidation_gross_return_rate": margin_path.liquidation_gross_return_rate,
+                        "margin_path_exit_index": effective_exit_index,
+                        "margin_path_exit_at_open": effective_exit_at_open,
+                        "margin_path_exit_time": effective_exit_time,
+                        "margin_path_realized_gross_return": effective_realized_return,
+                        "historical_funding_margin_path_rate": effective_funding_rate,
+                        "historical_funding_margin_path_settlements": effective_funding_settlements,
                     }
                 row = {name: float(current[name]) for name in FEATURE_NAMES}
                 row.update(
@@ -536,6 +718,7 @@ def make_barrier_dataset(
                         "barrier_upside_rate": float(abs(take_profit - entry) / entry),
                         "barrier_downside_rate": float(abs(entry - stop) / entry),
                         **funding_values,
+                        **margin_values,
                     }
                 )
                 direction_rows.append(row)
@@ -546,6 +729,8 @@ def make_barrier_dataset(
                 diagnostics["skipped_incomplete_direction_pair_timestamps"] += 1
                 if funding_timeline is not None:
                     diagnostics["skipped_incomplete_funding_timeline_timestamps"] += 1
+            if len(direction_rows) == 2 and mark_future is not None:
+                diagnostics["liquidation_path_timestamps"] += 1
 
     dataset = pd.DataFrame.from_records(rows)
     dataset.attrs["hourly_continuity"] = diagnostics
@@ -559,6 +744,16 @@ def make_barrier_dataset(
             "status": "not_provided",
         }
     )
+    dataset.attrs["intrahorizon_margin_path"] = {
+        "schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION if mark_candles is not None else None,
+        "required": bool(require_mark_timeline),
+        "status": "complete" if mark_candles is not None else "not_provided",
+        "mark_price_source": "bybit_hourly_mark_price_ohlc",
+        "research_leverage": liquidation_leverage,
+        "equity_reserve_fraction": reserve_fraction,
+        "same_bar_ordering": "liquidation_before_unordered_last_price_exit",
+        "liquidation_loss": "full_initial_margin",
+    }
     dataset.attrs["entry_execution_model"] = {
         "schema": ENTRY_EXECUTION_MODEL_SCHEMA,
         "entry_spread_bps": parsed_entry_spread_bps,
@@ -582,9 +777,7 @@ def validate_directional_scenario_pairs(frame: pd.DataFrame, *, context: str) ->
         return
 
     invalid_groups = 0
-    for directions in frame.groupby(
-        ["decision_time", "symbol"], dropna=False, sort=False
-    )["direction"]:
+    for directions in frame.groupby(["decision_time", "symbol"], dropna=False, sort=False)["direction"]:
         values = [str(value) for value in directions[1]]
         if len(values) != 2 or set(values) != {"LONG", "SHORT"}:
             invalid_groups += 1
@@ -620,9 +813,7 @@ def validate_policy_evaluation_metadata(
         raise ValueError(f"{context} metadata is missing columns: {missing_columns}")
 
     result = frame.copy().reset_index(drop=True)
-    result["decision_time"] = pd.to_datetime(
-        result["decision_time"], utc=True, errors="coerce"
-    )
+    result["decision_time"] = pd.to_datetime(result["decision_time"], utc=True, errors="coerce")
     if result["decision_time"].isna().any():
         raise ValueError(f"{context} contains invalid decision_time")
     if (~result["direction"].isin(["LONG", "SHORT"])).any():
@@ -645,9 +836,7 @@ def validate_policy_evaluation_metadata(
         if (exit_index >= horizon_hours).any():
             raise ValueError(f"{context} exit_index must be within the configured label horizon")
     result["exit_index"] = exit_index.astype(int)
-    valid_open_flags = result["exit_at_open"].map(
-        lambda value: isinstance(value, (bool, np.bool_))
-    )
+    valid_open_flags = result["exit_at_open"].map(lambda value: isinstance(value, (bool, np.bool_)))
     if not valid_open_flags.all():
         raise ValueError(f"{context} exit_at_open must contain booleans")
     result["exit_at_open"] = result["exit_at_open"].astype(bool)
@@ -655,9 +844,7 @@ def validate_policy_evaluation_metadata(
     if (target.eq("TIMEOUT") & result["exit_at_open"]).any():
         raise ValueError(f"{context} TIMEOUT cannot exit at bar open")
     exit_offset_hours = result["exit_index"] + (~result["exit_at_open"]).astype(int)
-    result["exit_time"] = result["decision_time"] + pd.to_timedelta(
-        exit_offset_hours, unit="h"
-    )
+    result["exit_time"] = result["decision_time"] + pd.to_timedelta(exit_offset_hours, unit="h")
 
     numeric_columns = [
         "realized_gross_return",
@@ -696,26 +883,19 @@ def validate_policy_evaluation_metadata(
         raise ValueError(f"{context} produced a non-positive exit notional ratio")
 
     if require_barrier_return_consistency:
-        tolerance = 1e-10 + 1e-7 * result[
-            ["barrier_upside_rate", "barrier_downside_rate"]
-        ].max(axis=1)
+        tolerance = 1e-10 + 1e-7 * result[["barrier_upside_rate", "barrier_downside_rate"]].max(axis=1)
         # Generated TP labels execute at the exact modeled barrier. SL may be
         # worse than the barrier because a gap can jump through the stop. TIMEOUT
         # must remain strictly inside both barriers; otherwise its label is false.
         tp_mismatch = target.eq("TP") & (
-            (result["realized_gross_return"] - result["barrier_upside_rate"]).abs()
-            > tolerance
+            (result["realized_gross_return"] - result["barrier_upside_rate"]).abs() > tolerance
         )
         sl_mismatch = target.eq("SL") & (
-            result["realized_gross_return"]
-            > -result["barrier_downside_rate"] + tolerance
+            result["realized_gross_return"] > -result["barrier_downside_rate"] + tolerance
         )
         timeout_mismatch = target.eq("TIMEOUT") & (
             (result["realized_gross_return"] >= result["barrier_upside_rate"] - tolerance)
-            | (
-                result["realized_gross_return"]
-                <= -result["barrier_downside_rate"] + tolerance
-            )
+            | (result["realized_gross_return"] <= -result["barrier_downside_rate"] + tolerance)
         )
         if tp_mismatch.any() or sl_mismatch.any() or timeout_mismatch.any():
             raise ValueError(f"{context} realized outcome is inconsistent with its barrier")
@@ -725,13 +905,9 @@ def validate_policy_evaluation_metadata(
         if label_end.isna().any() or (result["exit_time"] > label_end).any():
             raise ValueError(f"{context} exit_time exceeds label availability")
         if horizon_hours is not None:
-            expected_label_end = result["decision_time"] + pd.to_timedelta(
-                horizon_hours, unit="h"
-            )
+            expected_label_end = result["decision_time"] + pd.to_timedelta(horizon_hours, unit="h")
             if not label_end.equals(expected_label_end):
-                raise ValueError(
-                    f"{context} label_end_time does not match the configured label horizon"
-                )
+                raise ValueError(f"{context} label_end_time does not match the configured label horizon")
         result["label_end_time"] = label_end
     return result
 
@@ -756,12 +932,8 @@ def filter_single_active_trade_per_symbol(
         return trades.copy().reset_index(drop=True), 0
 
     ordered = trades.copy()
-    ordered["decision_time"] = pd.to_datetime(
-        ordered["decision_time"], utc=True, errors="coerce"
-    )
-    ordered["exit_time"] = pd.to_datetime(
-        ordered["exit_time"], utc=True, errors="coerce"
-    )
+    ordered["decision_time"] = pd.to_datetime(ordered["decision_time"], utc=True, errors="coerce")
+    ordered["exit_time"] = pd.to_datetime(ordered["exit_time"], utc=True, errors="coerce")
     if ordered[["decision_time", "exit_time"]].isna().any().any():
         raise ValueError(f"{context} contains invalid overlap timestamps")
     if (ordered["exit_time"] < ordered["decision_time"]).any():
@@ -769,9 +941,7 @@ def filter_single_active_trade_per_symbol(
     if ordered["symbol"].isna().any() or ordered["symbol"].astype(str).str.strip().eq("").any():
         raise ValueError(f"{context} contains an invalid symbol")
 
-    ordered = ordered.sort_values(
-        ["decision_time", "symbol", "exit_time"], kind="mergesort"
-    )
+    ordered = ordered.sort_values(["decision_time", "symbol", "exit_time"], kind="mergesort")
     active_until: dict[str, pd.Timestamp] = {}
     accepted_indexes: list[object] = []
     blocked = 0
@@ -786,9 +956,7 @@ def filter_single_active_trade_per_symbol(
         accepted_indexes.append(index)
         active_until[symbol] = exit_time
 
-    accepted = ordered.loc[accepted_indexes].sort_values(
-        ["decision_time", "symbol"], kind="mergesort"
-    )
+    accepted = ordered.loc[accepted_indexes].sort_values(["decision_time", "symbol"], kind="mergesort")
     return accepted.reset_index(drop=True), blocked
 
 
@@ -814,19 +982,13 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         raise ValueError(f"Chronological split requires columns: {missing_columns}")
 
     frame = frame.copy()
-    frame["decision_time"] = pd.to_datetime(
-        frame["decision_time"], utc=True, errors="coerce"
-    )
-    frame["label_end_time"] = pd.to_datetime(
-        frame["label_end_time"], utc=True, errors="coerce"
-    )
+    frame["decision_time"] = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
+    frame["label_end_time"] = pd.to_datetime(frame["label_end_time"], utc=True, errors="coerce")
     if frame[["decision_time", "label_end_time"]].isna().any().any():
         raise ValueError("Chronological split contains invalid decision_time or label_end_time")
     if (frame["label_end_time"] <= frame["decision_time"]).any():
         raise ValueError("Every label_end_time must be later than its decision_time")
-    valid_open_flags = frame["exit_at_open"].map(
-        lambda value: isinstance(value, (bool, np.bool_))
-    )
+    valid_open_flags = frame["exit_at_open"].map(lambda value: isinstance(value, (bool, np.bool_)))
     if not valid_open_flags.all():
         raise ValueError("Chronological split exit_at_open must contain booleans")
     frame["exit_at_open"] = frame["exit_at_open"].astype(bool)
@@ -845,8 +1007,7 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
 
     train = frame[frame["label_end_time"] < train_boundary]
     cal = frame[
-        (frame["decision_time"] >= train_boundary + embargo)
-        & (frame["label_end_time"] < cal_boundary)
+        (frame["decision_time"] >= train_boundary + embargo) & (frame["label_end_time"] < cal_boundary)
     ]
     test = frame[frame["decision_time"] >= cal_boundary + embargo]
     if min(len(train), len(cal), len(test)) < 90:
@@ -887,14 +1048,10 @@ def _dataset_split_from_frames(
     missing = [
         column
         for column in meta_columns
-        if column not in train.columns
-        or column not in cal.columns
-        or column not in test.columns
+        if column not in train.columns or column not in cal.columns or column not in test.columns
     ]
     if missing:
-        raise ValueError(
-            f"Temporal split metadata is missing columns: {sorted(set(missing))}"
-        )
+        raise ValueError(f"Temporal split metadata is missing columns: {sorted(set(missing))}")
     return DatasetSplit(
         train[MODEL_FEATURE_NAMES].to_numpy(float),
         train["target"].to_numpy(),
@@ -929,9 +1086,7 @@ def expanding_walk_forward_splits(
     folds = int(folds)
     if folds < 2 or folds > 8:
         raise ValueError("walk-forward folds must be between 2 and 8")
-    if isinstance(purge_hours, bool) or not isinstance(
-        purge_hours, (int, np.integer)
-    ):
+    if isinstance(purge_hours, bool) or not isinstance(purge_hours, (int, np.integer)):
         raise TypeError("purge_hours must be an integer number of hours")
     purge_hours = int(purge_hours)
     if purge_hours < 0:
@@ -943,39 +1098,28 @@ def expanding_walk_forward_splits(
         raise ValueError(f"Walk-forward split requires columns: {missing_columns}")
 
     ordered = frame.copy()
-    ordered["decision_time"] = pd.to_datetime(
-        ordered["decision_time"], utc=True, errors="coerce"
-    )
-    ordered["label_end_time"] = pd.to_datetime(
-        ordered["label_end_time"], utc=True, errors="coerce"
-    )
+    ordered["decision_time"] = pd.to_datetime(ordered["decision_time"], utc=True, errors="coerce")
+    ordered["label_end_time"] = pd.to_datetime(ordered["label_end_time"], utc=True, errors="coerce")
     if ordered[["decision_time", "label_end_time"]].isna().any().any():
         raise ValueError("Walk-forward split contains invalid temporal metadata")
     if (ordered["label_end_time"] <= ordered["decision_time"]).any():
         raise ValueError("Walk-forward label_end_time must be later than decision_time")
-    valid_open_flags = ordered["exit_at_open"].map(
-        lambda value: isinstance(value, (bool, np.bool_))
-    )
+    valid_open_flags = ordered["exit_at_open"].map(lambda value: isinstance(value, (bool, np.bool_)))
     if not valid_open_flags.all():
         raise ValueError("Walk-forward exit_at_open must contain booleans")
     ordered["exit_at_open"] = ordered["exit_at_open"].astype(bool)
     validate_directional_scenario_pairs(ordered, context="Walk-forward split")
-    ordered = ordered.sort_values(
-        ["decision_time", "symbol", "direction"], kind="mergesort"
-    ).reset_index(drop=True)
-
-    unique_times = pd.Index(
-        ordered["decision_time"].drop_duplicates().sort_values()
+    ordered = ordered.sort_values(["decision_time", "symbol", "direction"], kind="mergesort").reset_index(
+        drop=True
     )
+
+    unique_times = pd.Index(ordered["decision_time"].drop_duplicates().sort_values())
     n_times = len(unique_times)
     block_size = n_times // (folds + 3)
     initial_train_times = n_times - (folds + 1) * block_size
     minimum_block_times = 45 + 2 * purge_hours
     minimum_initial_train_times = max(90, 45 + purge_hours)
-    if (
-        block_size < minimum_block_times
-        or initial_train_times < minimum_initial_train_times
-    ):
+    if block_size < minimum_block_times or initial_train_times < minimum_initial_train_times:
         raise ValueError(
             "Insufficient history for walk-forward validation after purge: "
             f"each rolling block requires at least {minimum_block_times} timestamps "
@@ -983,9 +1127,7 @@ def expanding_walk_forward_splits(
         )
 
     embargo = pd.Timedelta(purge_hours, unit="h")
-    terminal_boundary = ordered["label_end_time"].max() + pd.Timedelta(
-        nanoseconds=1
-    )
+    terminal_boundary = ordered["label_end_time"].max() + pd.Timedelta(nanoseconds=1)
     results: list[DatasetSplit] = []
     previous_test_end: pd.Timestamp | None = None
     for fold_index in range(folds):
@@ -995,9 +1137,7 @@ def expanding_walk_forward_splits(
         train_boundary = pd.Timestamp(unique_times[train_boundary_index])
         test_boundary = pd.Timestamp(unique_times[test_boundary_index])
         test_end_boundary = (
-            pd.Timestamp(unique_times[test_end_index])
-            if test_end_index < n_times
-            else terminal_boundary
+            pd.Timestamp(unique_times[test_end_index]) if test_end_index < n_times else terminal_boundary
         )
 
         train = ordered[ordered["label_end_time"] < train_boundary]
@@ -1010,17 +1150,11 @@ def expanding_walk_forward_splits(
             & (ordered["label_end_time"] < test_end_boundary)
         ]
         if min(len(train), len(cal), len(test)) < 90:
-            raise ValueError(
-                f"Walk-forward fold {fold_index + 1} produced an undersized window"
-            )
+            raise ValueError(f"Walk-forward fold {fold_index + 1} produced an undersized window")
         if train["label_end_time"].max() >= cal["decision_time"].min():
-            raise AssertionError(
-                "Walk-forward train labels overlap calibration features"
-            )
+            raise AssertionError("Walk-forward train labels overlap calibration features")
         if cal["label_end_time"].max() >= test["decision_time"].min():
-            raise AssertionError(
-                "Walk-forward calibration labels overlap test features"
-            )
+            raise AssertionError("Walk-forward calibration labels overlap test features")
         current_test_start = pd.Timestamp(test["decision_time"].min())
         current_test_end = pd.Timestamp(test["decision_time"].max())
         if previous_test_end is not None and current_test_start <= previous_test_end:
@@ -1074,9 +1208,7 @@ def validate_outcome_probability_matrix(
     return values, {label: labels.index(label) for label in required}
 
 
-def _ordered_multiclass_log_loss(
-    y_true: np.ndarray, probabilities: np.ndarray, classes: np.ndarray
-) -> float:
+def _ordered_multiclass_log_loss(y_true: np.ndarray, probabilities: np.ndarray, classes: np.ndarray) -> float:
     """Calculate multiclass log loss without reordering declared probability columns."""
 
     targets = np.asarray(y_true, dtype=str)
@@ -1095,6 +1227,7 @@ def _ordered_multiclass_log_loss(
     true_probabilities = values[np.arange(len(targets)), true_indexes]
     epsilon = np.finfo(float).eps
     return float(-np.mean(np.log(np.clip(true_probabilities, epsilon, 1.0))))
+
 
 def _class_prior_probabilities(y_train: np.ndarray, classes: np.ndarray, rows: int) -> np.ndarray:
     labels = np.asarray(classes, dtype=str)
@@ -1147,9 +1280,7 @@ def _horizon_separated_phase_series(
     observations inside each phase are at least H hours apart.
     """
 
-    if isinstance(horizon_hours, bool) or not isinstance(
-        horizon_hours, (int, np.integer)
-    ):
+    if isinstance(horizon_hours, bool) or not isinstance(horizon_hours, (int, np.integer)):
         raise TypeError("horizon_hours must be an integer")
     if int(horizon_hours) <= 0:
         raise ValueError("horizon_hours must be positive")
@@ -1243,12 +1374,10 @@ def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -
     if set(timeout_estimates) == {"LONG", "SHORT"}:
         metrics["timeout_return_schema_version"] = TIMEOUT_RETURN_SCHEMA_VERSION
         metrics["timeout_return_r_by_direction"] = {
-            direction: float(timeout_estimates[direction])
-            for direction in ("LONG", "SHORT")
+            direction: float(timeout_estimates[direction]) for direction in ("LONG", "SHORT")
         }
         metrics["timeout_return_samples_by_direction"] = {
-            direction: int(timeout_counts.get(direction, 0))
-            for direction in ("LONG", "SHORT")
+            direction: int(timeout_counts.get(direction, 0)) for direction in ("LONG", "SHORT")
         }
 
     base_probability_loader = getattr(model, "_base_probabilities", None)
@@ -1309,8 +1438,7 @@ def historical_funding_components(
             raise ValueError(f"{context} {column} must contain non-negative integers")
         meta[column] = values.astype(int)
     if (
-        meta["historical_funding_realized_settlements"]
-        > meta["historical_funding_horizon_settlements"]
+        meta["historical_funding_realized_settlements"] > meta["historical_funding_horizon_settlements"]
     ).any():
         raise ValueError(f"{context} realized funding settlements exceed the horizon")
 
@@ -1323,6 +1451,155 @@ def historical_funding_components(
     recognized_horizon = np.minimum(horizon_signed, 0.0)
     adverse_horizon = np.maximum(-recognized_horizon, 0.0)
     return recognized_horizon, adverse_horizon, realized_signed, HISTORICAL_FUNDING_SCHEMA_VERSION
+
+
+def apply_intrahorizon_margin_path(
+    meta: pd.DataFrame,
+    *,
+    context: str,
+    require: bool,
+    expected_leverage: int,
+    expected_equity_reserve_fraction: float,
+) -> tuple[pd.DataFrame, str | None]:
+    """Validate and apply realized-only mark-price liquidation evidence.
+
+    Future mark paths never participate in direction ranking or expected EV. This
+    helper only replaces realized exit time, gross return and settlement window
+    after the ex-ante policy inputs have already been constructed.
+    """
+
+    required = {
+        "intrahorizon_margin_path_complete",
+        "intrahorizon_margin_schema",
+        "research_leverage",
+        "liquidation_equity_reserve_fraction",
+        "mark_max_adverse_excursion_rate",
+        "mark_max_favorable_excursion_rate",
+        "mark_minimum_equity_rate",
+        "mark_liquidated",
+        "margin_path_exit_index",
+        "margin_path_exit_at_open",
+        "margin_path_exit_time",
+        "margin_path_realized_gross_return",
+        "historical_funding_margin_path_rate",
+        "historical_funding_margin_path_settlements",
+    }
+    missing = sorted(required - set(meta.columns))
+    result = meta.copy()
+    if missing:
+        if require:
+            raise ValueError(f"{context} metadata is missing intrahorizon margin columns: {missing}")
+        result["effective_realized_gross_return"] = result["realized_gross_return"]
+        result["mark_liquidated"] = False
+        return result, None
+
+    if not result["intrahorizon_margin_path_complete"].map(bool).all():
+        raise ValueError(f"{context} contains an incomplete intrahorizon margin path")
+    schemas = set(result["intrahorizon_margin_schema"].astype(str))
+    if schemas != {INTRAHORIZON_MARGIN_SCHEMA_VERSION}:
+        raise ValueError(f"{context} contains an incompatible intrahorizon margin schema")
+
+    leverage_values = pd.to_numeric(result["research_leverage"], errors="coerce")
+    if (
+        leverage_values.isna().any()
+        or not np.isfinite(leverage_values.to_numpy(float)).all()
+        or (leverage_values <= 0).any()
+        or not np.allclose(leverage_values, np.floor(leverage_values))
+        or not (leverage_values.astype(int) == int(expected_leverage)).all()
+    ):
+        raise ValueError(f"{context} research leverage does not match policy configuration")
+    reserve_values = pd.to_numeric(result["liquidation_equity_reserve_fraction"], errors="coerce")
+    if (
+        reserve_values.isna().any()
+        or not np.isfinite(reserve_values.to_numpy(float)).all()
+        or not np.allclose(
+            reserve_values.to_numpy(float),
+            float(expected_equity_reserve_fraction),
+            rtol=0.0,
+            atol=1e-12,
+        )
+    ):
+        raise ValueError(f"{context} liquidation reserve does not match policy configuration")
+
+    for column in (
+        "mark_max_adverse_excursion_rate",
+        "mark_max_favorable_excursion_rate",
+        "mark_minimum_equity_rate",
+        "margin_path_realized_gross_return",
+        "historical_funding_margin_path_rate",
+    ):
+        values = pd.to_numeric(result[column], errors="coerce")
+        if values.isna().any() or not np.isfinite(values.to_numpy(float)).all():
+            raise ValueError(f"{context} {column} must be finite")
+        result[column] = values.astype(float)
+    if (result[["mark_max_adverse_excursion_rate", "mark_max_favorable_excursion_rate"]] < 0).any().any():
+        raise ValueError(f"{context} mark-price excursions must be non-negative")
+
+    valid_liquidated = result["mark_liquidated"].map(lambda value: isinstance(value, (bool, np.bool_)))
+    valid_open = result["margin_path_exit_at_open"].map(lambda value: isinstance(value, (bool, np.bool_)))
+    if not valid_liquidated.all() or not valid_open.all():
+        raise ValueError(f"{context} margin path flags must be booleans")
+    result["mark_liquidated"] = result["mark_liquidated"].astype(bool)
+    result["margin_path_exit_at_open"] = result["margin_path_exit_at_open"].astype(bool)
+
+    effective_index = pd.to_numeric(result["margin_path_exit_index"], errors="coerce")
+    if (
+        effective_index.isna().any()
+        or not np.isfinite(effective_index.to_numpy(float)).all()
+        or (effective_index < 0).any()
+        or not np.allclose(effective_index, np.floor(effective_index))
+        or (effective_index.astype(int) > result["exit_index"]).any()
+    ):
+        raise ValueError(f"{context} margin path exit index is invalid")
+    effective_index = effective_index.astype(int)
+    effective_time = pd.to_datetime(result["margin_path_exit_time"], utc=True, errors="coerce")
+    expected_time = result["decision_time"] + pd.to_timedelta(
+        effective_index + (~result["margin_path_exit_at_open"]).astype(int), unit="h"
+    )
+    if effective_time.isna().any() or not effective_time.equals(expected_time):
+        raise ValueError(f"{context} margin path exit time is inconsistent")
+    if (effective_time > result["exit_time"]).any():
+        raise ValueError(f"{context} margin path exit occurs after the label exit")
+
+    settlement_counts = pd.to_numeric(result["historical_funding_margin_path_settlements"], errors="coerce")
+    if (
+        settlement_counts.isna().any()
+        or not np.isfinite(settlement_counts.to_numpy(float)).all()
+        or (settlement_counts < 0).any()
+        or not np.allclose(settlement_counts, np.floor(settlement_counts))
+    ):
+        raise ValueError(f"{context} margin path settlements must be non-negative integers")
+    settlement_counts = settlement_counts.astype(int)
+    if (
+        "historical_funding_horizon_settlements" in result.columns
+        and (settlement_counts > result["historical_funding_horizon_settlements"]).any()
+    ):
+        raise ValueError(f"{context} margin path settlements exceed the horizon")
+
+    expected_liquidation_return = -1.0 / int(expected_leverage)
+    liquidated = result["mark_liquidated"]
+    if not np.allclose(
+        result.loc[liquidated, "margin_path_realized_gross_return"],
+        expected_liquidation_return,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError(f"{context} liquidation loss does not equal full initial margin")
+    if not np.allclose(
+        result.loc[~liquidated, "margin_path_realized_gross_return"],
+        result.loc[~liquidated, "realized_gross_return"],
+        rtol=1e-10,
+        atol=1e-12,
+    ):
+        raise ValueError(f"{context} non-liquidated realized return was rewritten")
+    if not effective_time.loc[~liquidated].equals(result.loc[~liquidated, "exit_time"]):
+        raise ValueError(f"{context} non-liquidated exit time was rewritten")
+
+    result["effective_realized_gross_return"] = result["margin_path_realized_gross_return"]
+    result["exit_time"] = effective_time
+    result["historical_funding_realized_rate"] = result["historical_funding_margin_path_rate"]
+    result["historical_funding_realized_settlements"] = settlement_counts
+    return result, INTRAHORIZON_MARGIN_SCHEMA_VERSION
 
 
 def evaluate_policy_model(
@@ -1374,6 +1651,7 @@ def evaluate_policy_model(
         "min_net_rr": config.min_net_rr,
         "min_net_ev_r": config.min_net_ev_r,
         "timeout_return_rate": config.timeout_return_rate,
+        "liquidation_equity_reserve_fraction": config.liquidation_equity_reserve_fraction,
     }
     for name, value in config_values.items():
         if not np.isfinite(float(value)):
@@ -1382,15 +1660,23 @@ def evaluate_policy_model(
         if float(config_values[name]) < 0:
             raise ValueError(f"{name} must be non-negative")
     if (
+        isinstance(config.research_leverage, bool)
+        or not isinstance(config.research_leverage, (int, np.integer))
+        or config.research_leverage <= 0
+    ):
+        raise ValueError("research_leverage must be a positive integer")
+    if not 0.0 <= float(config.liquidation_equity_reserve_fraction) < 1.0:
+        raise ValueError("liquidation_equity_reserve_fraction must be in [0, 1)")
+    if not isinstance(config.require_intrahorizon_margin, bool):
+        raise ValueError("require_intrahorizon_margin must be boolean")
+
+    if (
         isinstance(config.bootstrap_samples, bool)
         or not isinstance(config.bootstrap_samples, (int, np.integer))
         or config.bootstrap_samples < 500
     ):
         raise ValueError("bootstrap_samples must be an integer of at least 500")
-    if (
-        not np.isfinite(config.confidence_level)
-        or not 0.80 <= config.confidence_level < 1.0
-    ):
+    if not np.isfinite(config.confidence_level) or not 0.80 <= config.confidence_level < 1.0:
         raise ValueError("confidence_level must be in [0.80, 1.0)")
 
     probabilities, class_to_index = validate_outcome_probability_matrix(
@@ -1407,6 +1693,14 @@ def evaluate_policy_model(
     for label in OUTCOME_CLASSES:
         meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
 
+    meta, intrahorizon_margin_schema = apply_intrahorizon_margin_path(
+        meta,
+        context="Policy evaluation",
+        require=config.require_intrahorizon_margin,
+        expected_leverage=int(config.research_leverage),
+        expected_equity_reserve_fraction=float(config.liquidation_equity_reserve_fraction),
+    )
+
     timeout_predictor = getattr(model, "predict_timeout_return_r", None)
     if callable(timeout_predictor):
         timeout_return_r = np.asarray(timeout_predictor(split.x_test), dtype=float)
@@ -1420,9 +1714,7 @@ def evaluate_policy_model(
             support_upper.to_numpy(float),
         )
         meta["timeout_return_r"] = bounded_timeout_return_r
-        meta["timeout_gross_return_rate"] = (
-            bounded_timeout_return_r * meta["barrier_downside_rate"]
-        )
+        meta["timeout_gross_return_rate"] = bounded_timeout_return_r * meta["barrier_downside_rate"]
         timeout_return_source = TIMEOUT_RETURN_SCHEMA_VERSION
     else:
         meta["timeout_return_r"] = np.where(
@@ -1447,12 +1739,8 @@ def evaluate_policy_model(
     # snapshots exist.
     recognized_funding = np.zeros(len(meta), dtype=float)
     adverse_funding = np.zeros(len(meta), dtype=float)
-    meta["historical_funding_horizon_recognized_rate"] = (
-        historical_horizon_recognized_funding
-    )
-    meta["historical_funding_horizon_adverse_rate"] = (
-        historical_horizon_adverse_funding
-    )
+    meta["historical_funding_horizon_recognized_rate"] = historical_horizon_recognized_funding
+    meta["historical_funding_horizon_adverse_rate"] = historical_horizon_adverse_funding
     is_long = meta["direction"].eq("LONG")
     tp_exit_ratio = np.where(
         is_long,
@@ -1471,8 +1759,8 @@ def evaluate_policy_model(
     )
     realized_exit_ratio = np.where(
         is_long,
-        1.0 + meta["realized_gross_return"],
-        1.0 - meta["realized_gross_return"],
+        1.0 + meta["effective_realized_gross_return"],
+        1.0 - meta["effective_realized_gross_return"],
     )
     if (
         (tp_exit_ratio <= 0).any()
@@ -1485,10 +1773,7 @@ def evaluate_policy_model(
     sl_fee_rate = fee_rate_per_leg * (1.0 + sl_exit_ratio)
     timeout_fee_rate = fee_rate_per_leg * (1.0 + timeout_exit_ratio)
     meta["net_upside_rate"] = (
-        meta["barrier_upside_rate"]
-        - tp_fee_rate
-        - config.slippage_rate
-        + recognized_funding
+        meta["barrier_upside_rate"] - tp_fee_rate - config.slippage_rate + recognized_funding
     )
     meta["stress_downside_rate"] = (
         meta["barrier_downside_rate"]
@@ -1498,17 +1783,14 @@ def evaluate_policy_model(
         + adverse_funding
     )
     meta["timeout_net_rate"] = (
-        meta["timeout_gross_return_rate"]
-        - timeout_fee_rate
-        - config.slippage_rate
-        + recognized_funding
+        meta["timeout_gross_return_rate"] - timeout_fee_rate - config.slippage_rate + recognized_funding
     )
     meta["realized_fee_rate"] = fee_rate_per_leg * (1.0 + realized_exit_ratio)
     target = meta["target"].astype(str)
     embedded_stop_gap = np.where(
         target.eq("SL"),
         np.maximum(
-            -meta["realized_gross_return"] - meta["barrier_downside_rate"],
+            -meta["effective_realized_gross_return"] - meta["barrier_downside_rate"],
             0.0,
         ),
         0.0,
@@ -1521,7 +1803,7 @@ def evaluate_policy_model(
     # The reserve is a sizing/stress allowance, not a cash flow.  Any actual
     # gap through the stop is already present in realized_gross_return.
     meta["realized_net_rate"] = (
-        meta["realized_gross_return"]
+        meta["effective_realized_gross_return"]
         - meta["realized_fee_rate"]
         - config.slippage_rate
         + realized_funding
@@ -1569,6 +1851,16 @@ def evaluate_policy_model(
         "policy_funding_timeline_complete": historical_funding_schema is not None,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": historical_funding_schema,
+        "policy_intrahorizon_margin_schema": intrahorizon_margin_schema,
+        "policy_intrahorizon_margin_complete": intrahorizon_margin_schema is not None,
+        "policy_research_leverage": int(config.research_leverage),
+        "policy_liquidation_equity_reserve_fraction": float(config.liquidation_equity_reserve_fraction),
+        "policy_liquidation_events": 0,
+        "policy_liquidation_rate": 0.0,
+        "policy_mark_max_adverse_excursion_mean": None,
+        "policy_mark_max_adverse_excursion_max": None,
+        "policy_mark_max_favorable_excursion_mean": None,
+        "policy_mark_minimum_equity_rate_min": None,
         "policy_timeout_return_schema": timeout_return_source,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
@@ -1604,15 +1896,15 @@ def evaluate_policy_model(
     outcome = trades["target"].astype(str)
     if (~outcome.isin(OUTCOME_CLASSES)).any():
         raise ValueError("Policy evaluation target contains an unsupported outcome")
+    liquidation_events = int(trades["mark_liquidated"].sum()) if intrahorizon_margin_schema else 0
+    liquidation_rate = float(liquidation_events / len(trades)) if len(trades) else 0.0
     trades["realized_r"] = np.where(
         trades["stress_downside_rate"] > 0,
         trades["realized_net_rate"] / trades["stress_downside_rate"],
         0.0,
     )
     cohort_size = trades.groupby("decision_time")["realized_r"].transform("size")
-    trades["realized_r_contribution"] = (
-        trades["realized_r"] / cohort_size / resolved_horizon
-    )
+    trades["realized_r_contribution"] = trades["realized_r"] / cohort_size / resolved_horizon
     cohort_metrics = trades.groupby("decision_time", sort=True).agg(
         realized_mean_r=("realized_r", "mean"),
         expected_mean_ev_r=("expected_ev_r", "mean"),
@@ -1622,9 +1914,7 @@ def evaluate_policy_model(
         horizon_hours=resolved_horizon,
     )
     phase_count = len(horizon_phases)
-    independent_cohort_count = (
-        min(len(values) for values in horizon_phases.values()) if horizon_phases else 0
-    )
+    independent_cohort_count = min(len(values) for values in horizon_phases.values()) if horizon_phases else 0
     phase_means: list[float] = []
     phase_lower_bounds: list[float] = []
     phase_block_lengths: list[int] = []
@@ -1646,9 +1936,7 @@ def evaluate_policy_model(
         bootstrap_block_length = int(max(phase_block_lengths))
     else:
         independent_mean_r = (
-            float(min(values.mean() for values in horizon_phases.values()))
-            if horizon_phases
-            else None
+            float(min(values.mean() for values in horizon_phases.values())) if horizon_phases else None
         )
         policy_mean_r_lcb = None
         bootstrap_block_length = 0
@@ -1668,6 +1956,12 @@ def evaluate_policy_model(
         "policy_funding_timeline_complete": historical_funding_schema is not None,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": historical_funding_schema,
+        "policy_intrahorizon_margin_schema": intrahorizon_margin_schema,
+        "policy_intrahorizon_margin_complete": intrahorizon_margin_schema is not None,
+        "policy_research_leverage": int(config.research_leverage),
+        "policy_liquidation_equity_reserve_fraction": float(config.liquidation_equity_reserve_fraction),
+        "policy_liquidation_events": liquidation_events,
+        "policy_liquidation_rate": liquidation_rate,
         "policy_timeout_return_schema": timeout_return_source,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
@@ -1698,4 +1992,16 @@ def evaluate_policy_model(
         "policy_gross_loss_r": losses,
         "policy_max_drawdown_r": float(drawdown.max()) if len(drawdown) else 0.0,
         "policy_event_periods": int(len(exit_r)),
+        "policy_mark_max_adverse_excursion_mean": (
+            float(trades["mark_max_adverse_excursion_rate"].mean()) if intrahorizon_margin_schema else None
+        ),
+        "policy_mark_max_adverse_excursion_max": (
+            float(trades["mark_max_adverse_excursion_rate"].max()) if intrahorizon_margin_schema else None
+        ),
+        "policy_mark_max_favorable_excursion_mean": (
+            float(trades["mark_max_favorable_excursion_rate"].mean()) if intrahorizon_margin_schema else None
+        ),
+        "policy_mark_minimum_equity_rate_min": (
+            float(trades["mark_minimum_equity_rate"].min()) if intrahorizon_margin_schema else None
+        ),
     }

@@ -38,6 +38,16 @@ def _candidate(tmp_path: Path, *, lower_bound: float) -> ModelCandidate:
             "start_time": "2024-01-01T00:00:00+00:00",
             "end_time": "2025-12-31T00:00:00+00:00",
         },
+        "intrahorizon_margin_path": {
+            "schema": "bybit-mark-price-hourly-isolated-margin-proxy-v1",
+            "required": True,
+            "status": "complete",
+            "mark_price_source": "bybit_hourly_mark_price_ohlc",
+            "research_leverage": 3,
+            "equity_reserve_fraction": 0.10,
+            "same_bar_ordering": "liquidation_before_unordered_last_price_exit",
+            "liquidation_loss": "full_initial_margin",
+        },
         "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
         "walk_forward_folds_requested": 3,
         "walk_forward_folds_completed": 3,
@@ -76,10 +86,16 @@ def _candidate(tmp_path: Path, *, lower_bound: float) -> ModelCandidate:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14",
+        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v1",
+        "policy_intrahorizon_margin_schema": "bybit-mark-price-hourly-isolated-margin-proxy-v1",
+        "policy_intrahorizon_margin_complete": True,
+        "policy_research_leverage": 3,
+        "policy_liquidation_equity_reserve_fraction": 0.10,
+        "policy_liquidation_events": 4,
+        "policy_liquidation_rate": 0.05,
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,
@@ -185,9 +201,7 @@ def test_policy_bootstrap_rejects_non_finite_or_too_short_series() -> None:
     with pytest.raises(ValueError, match="At least two finite"):
         _policy_mean_r_bootstrap(np.asarray([0.1]), samples=2_000, confidence_level=0.95)
     with pytest.raises(ValueError, match="At least two finite"):
-        _policy_mean_r_bootstrap(
-            np.asarray([0.1, np.nan]), samples=2_000, confidence_level=0.95
-        )
+        _policy_mean_r_bootstrap(np.asarray([0.1, np.nan]), samples=2_000, confidence_level=0.95)
 
 
 def test_quality_gate_rejects_incomplete_horizon_phase_evidence(tmp_path: Path) -> None:

@@ -534,7 +534,10 @@ async def symbols_needing_history_backfill(
     interval: str,
     target_days: int,
     limit: int,
+    price_type: str = "last",
 ) -> list[dict[str, object]]:
+    if price_type not in {"last", "mark", "index"}:
+        raise ValueError("price_type must be last, mark, or index")
     symbol_list = list(dict.fromkeys(symbols))
     if not symbol_list:
         return []
@@ -557,7 +560,7 @@ async def symbols_needing_history_backfill(
             .where(
                 Candle.symbol.in_(symbol_list),
                 Candle.interval == interval,
-                Candle.price_type == "last",
+                Candle.price_type == price_type,
                 Candle.confirmed.is_(True),
             )
             .group_by(Candle.symbol)
@@ -606,8 +609,12 @@ async def sync_candle_history(
     target_days: int,
     page_size: int,
     max_pages_per_symbol: int,
+    price_type: str = "last",
 ) -> dict[str, object]:
-    """Progressively extend last-price candle history backwards without blocking startup."""
+    """Progressively extend one explicit candle price type backwards."""
+
+    if price_type not in {"last", "mark", "index"}:
+        raise ValueError("price_type must be last, mark, or index")
 
     now = datetime.now(UTC)
     default_target_start = now - timedelta(days=target_days)
@@ -639,7 +646,7 @@ async def sync_candle_history(
                     interval=interval,
                     limit=page_size,
                     end_ms=end_ms,
-                    price_type="last",
+                    price_type=price_type,
                 )
                 if not rows:
                     exhausted = True
@@ -647,7 +654,7 @@ async def sync_candle_history(
                 values = _candle_values(
                     symbol=symbol,
                     interval=interval,
-                    price_type="last",
+                    price_type=price_type,
                     rows=rows,
                     now=datetime.now(UTC),
                     interval_minutes=interval_minutes,
@@ -675,6 +682,7 @@ async def sync_candle_history(
         progress.append(
             {
                 "symbol": symbol,
+                "price_type": price_type,
                 "rows_received": symbol_rows,
                 "oldest_seen": oldest_seen.isoformat() if oldest_seen else None,
                 "target_start": target_start.isoformat(),
@@ -684,6 +692,7 @@ async def sync_candle_history(
         )
 
     return {
+        "price_type": price_type,
         "symbols_processed": symbols_processed,
         "rows_received": rows_received,
         "completed_symbols": completed_symbols,

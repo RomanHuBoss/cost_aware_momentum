@@ -11,6 +11,10 @@ import numpy as np
 
 from app.ml.features import FEATURE_NAMES
 from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
+from app.ml.mtm import (
+    DEFAULT_EQUITY_RESERVE_FRACTION,
+    INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+)
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
@@ -55,6 +59,8 @@ class ModelRuntime:
         self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
         self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
         self.entry_spread_bps = 0.0
+        self.research_leverage = 3
+        self.liquidation_equity_reserve_fraction = DEFAULT_EQUITY_RESERVE_FRACTION
 
     @property
     def is_baseline(self) -> bool:
@@ -73,6 +79,8 @@ class ModelRuntime:
             "stop_atr_multiplier": self.stop_atr_multiplier,
             "tp_atr_multiplier": self.tp_atr_multiplier,
             "entry_spread_bps": self.entry_spread_bps,
+            "research_leverage": self.research_leverage,
+            "liquidation_equity_reserve_fraction": (self.liquidation_equity_reserve_fraction),
             "feature_schema_version": (
                 self.bundle.get("feature_schema_version") if self.bundle is not None else None
             ),
@@ -88,10 +96,11 @@ class ModelRuntime:
             "historical_funding_schema": (
                 self.bundle.get("historical_funding_schema") if self.bundle is not None else None
             ),
+            "intrahorizon_margin_schema": (
+                self.bundle.get("intrahorizon_margin_schema") if self.bundle is not None else None
+            ),
             "timeout_return_schema_version": (
-                self.bundle.get("timeout_return_schema_version")
-                if self.bundle is not None
-                else None
+                self.bundle.get("timeout_return_schema_version") if self.bundle is not None else None
             ),
         }
 
@@ -110,6 +119,8 @@ class ModelRuntime:
         self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
         self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
         self.entry_spread_bps = 0.0
+        self.research_leverage = 3
+        self.liquidation_equity_reserve_fraction = DEFAULT_EQUITY_RESERVE_FRACTION
         self.version = "baseline-momentum-v1"
         self.calibration_version = "uncalibrated-baseline-v1"
 
@@ -119,9 +130,7 @@ class ModelRuntime:
             raw = self.artifact_path.read_bytes()
             digest = hashlib.sha256(raw).hexdigest()
             if expected_sha256 and digest.lower() != expected_sha256.lower():
-                raise RuntimeError(
-                    f"Active model SHA256 mismatch: expected {expected_sha256}, got {digest}"
-                )
+                raise RuntimeError(f"Active model SHA256 mismatch: expected {expected_sha256}, got {digest}")
             bundle = joblib.load(self.artifact_path)
             if not isinstance(bundle, dict) or "model" not in bundle:
                 raise ValueError("Invalid model bundle")
@@ -210,18 +219,14 @@ class ModelRuntime:
                     f"expected {ENTRY_EXECUTION_MODEL_SCHEMA}, "
                     f"got {entry_execution_model.get('schema') or 'missing'}"
                 )
-            nested_entry_spread_bps = self._artifact_nonnegative(
-                entry_execution_model, "entry_spread_bps"
-            )
+            nested_entry_spread_bps = self._artifact_nonnegative(entry_execution_model, "entry_spread_bps")
             if not math.isclose(
                 nested_entry_spread_bps,
                 entry_spread_bps,
                 rel_tol=0.0,
                 abs_tol=1e-12,
             ):
-                raise ValueError(
-                    "Model artifact entry_spread_bps conflicts with entry execution metadata"
-                )
+                raise ValueError("Model artifact entry_spread_bps conflicts with entry execution metadata")
             raw_horizon = bundle.get("horizon_hours")
             if isinstance(raw_horizon, bool):
                 raise ValueError("Model artifact horizon_hours must be a positive integer")
@@ -230,12 +235,60 @@ class ModelRuntime:
                 if float(raw_horizon) != float(horizon_hours) or horizon_hours <= 0:
                     raise ValueError
             except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(
-                    "Model artifact horizon_hours must be a positive integer"
-                ) from exc
+                raise ValueError("Model artifact horizon_hours must be a positive integer") from exc
             calibration_version = str(bundle.get("calibration_version") or "").strip()
             if not calibration_version:
                 raise ValueError("Model artifact calibration_version is required")
+            intrahorizon_margin_path = bundle.get("intrahorizon_margin_path")
+            if not isinstance(intrahorizon_margin_path, dict):
+                raise ValueError("Model artifact intrahorizon margin path is required")
+            nested_margin_schema = str(intrahorizon_margin_path.get("schema") or "")
+            if nested_margin_schema != INTRAHORIZON_MARGIN_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model artifact intrahorizon margin path schema mismatch: "
+                    f"expected {INTRAHORIZON_MARGIN_SCHEMA_VERSION}, "
+                    f"got {nested_margin_schema or 'missing'}"
+                )
+            declared_margin_schema = str(bundle.get("intrahorizon_margin_schema") or "")
+            if declared_margin_schema and declared_margin_schema != nested_margin_schema:
+                raise ValueError("Model artifact intrahorizon margin schema conflicts with path metadata")
+            if intrahorizon_margin_path.get("status") != "complete":
+                raise ValueError("Model artifact intrahorizon margin path is incomplete")
+            raw_research_leverage = bundle.get(
+                "research_leverage", intrahorizon_margin_path.get("research_leverage")
+            )
+            if isinstance(raw_research_leverage, bool):
+                raise ValueError("Model artifact research_leverage must be a positive integer")
+            try:
+                research_leverage = int(raw_research_leverage)
+                if float(raw_research_leverage) != float(research_leverage) or research_leverage <= 0:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Model artifact research_leverage must be a positive integer") from exc
+            raw_reserve_fraction = bundle.get(
+                "liquidation_equity_reserve_fraction",
+                intrahorizon_margin_path.get("equity_reserve_fraction"),
+            )
+            if isinstance(raw_reserve_fraction, bool):
+                raise ValueError("Model artifact liquidation_equity_reserve_fraction must be finite")
+            try:
+                reserve_fraction = float(raw_reserve_fraction)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Model artifact liquidation_equity_reserve_fraction must be finite") from exc
+            if not math.isfinite(reserve_fraction) or not 0.0 <= reserve_fraction < 1.0:
+                raise ValueError("Model artifact liquidation_equity_reserve_fraction must be in [0, 1)")
+            nested_leverage = intrahorizon_margin_path.get("research_leverage")
+            nested_reserve = intrahorizon_margin_path.get("equity_reserve_fraction")
+            if nested_leverage != research_leverage:
+                raise ValueError("Model artifact research leverage conflicts with margin path metadata")
+            try:
+                nested_reserve_value = float(nested_reserve)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Model artifact margin path reserve fraction is invalid") from exc
+            if not math.isfinite(nested_reserve_value) or not math.isclose(
+                nested_reserve_value, reserve_fraction, rel_tol=0.0, abs_tol=1e-12
+            ):
+                raise ValueError("Model artifact reserve fraction conflicts with margin path metadata")
             self.bundle = bundle
             self.sha256 = digest
             self.version = version
@@ -245,6 +298,8 @@ class ModelRuntime:
             self.stop_atr_multiplier = stop_atr_multiplier
             self.tp_atr_multiplier = tp_atr_multiplier
             self.entry_spread_bps = entry_spread_bps
+            self.research_leverage = research_leverage
+            self.liquidation_equity_reserve_fraction = reserve_fraction
             self.source = source
             return
         if not self.allow_baseline:
@@ -272,9 +327,7 @@ class ModelRuntime:
         try:
             value = float(raw_value)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(
-                f"Model artifact {key} must be non-negative and finite"
-            ) from exc
+            raise ValueError(f"Model artifact {key} must be non-negative and finite") from exc
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"Model artifact {key} must be non-negative and finite")
         return value
@@ -307,16 +360,8 @@ class ModelRuntime:
     ) -> float:
         # Compatibility score only. Exact direction selection is performed later by
         # the cost-aware policy, but this score must still use the artifact geometry.
-        timeout_utility = (
-            -0.20
-            if timeout_return_r is None
-            else timeout_return_r * self.stop_atr_multiplier
-        )
-        return (
-            p_tp * self.tp_atr_multiplier
-            - p_sl * self.stop_atr_multiplier
-            + p_timeout * timeout_utility
-        )
+        timeout_utility = -0.20 if timeout_return_r is None else timeout_return_r * self.stop_atr_multiplier
+        return p_tp * self.tp_atr_multiplier - p_sl * self.stop_atr_multiplier + p_timeout * timeout_utility
 
     def _predict_artifact_scenarios(self, features: dict[str, float]) -> tuple[Prediction, Prediction]:
         if self.bundle is None:

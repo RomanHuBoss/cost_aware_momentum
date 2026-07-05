@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.13.0 — 2026-07-05
+
+### Added
+
+- Progressive read-only backfill of hourly Bybit mark-price candles using the existing candle table and explicit `price_type=mark`.
+- Realized-only intrahorizon mark-to-market replay with directional MAE/MFE, minimum equity and conservative isolated-margin liquidation evidence.
+- Exact hourly mark-timeline completeness checks and immutable `intrahorizon_margin_schema=bybit-mark-price-hourly-isolated-margin-proxy-v1`.
+- Nine regression tests covering LONG/SHORT MTM, same-bar liquidation precedence, exit-at-open, funding timing, missing mark bars, look-ahead isolation and backfill typing.
+
+### Changed
+
+- Training and backtest now require a complete hourly mark-price path through each modeled last-price exit.
+- Future mark prices can only rewrite realized exit/PnL evidence; direction, RR, EV and actionability remain ex-ante and unchanged.
+- Candidate/incumbent comparison and runtime validation require compatible leverage and liquidation-reserve assumptions.
+- Policy metric schema is `decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15`.
+
+### Compatibility
+
+- No database migration and no new `.env` variable. `DEFAULT_LEVERAGE` becomes part of the research artifact contract.
+- Artifact 1.12.0 lacks the mandatory intrahorizon margin contract and must be retrained after mark-price history reaches complete coverage.
+- The implementation is a conservative hourly isolated-margin proxy, not an exact Bybit liquidation engine.
+
 ## 1.12.0 — 2026-07-05
 
 ### Added

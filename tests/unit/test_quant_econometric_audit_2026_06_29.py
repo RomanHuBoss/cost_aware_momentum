@@ -432,7 +432,13 @@ async def test_reconciliation_sums_multiple_manual_trades_for_same_position() ->
         )
     )
 
-    assert await execution.reconciliation_issues(session, profile=SimpleNamespace(id="profile-1", mode="bybit_read_only", source_account_id="account-1")) == []
+    assert (
+        await execution.reconciliation_issues(
+            session,
+            profile=SimpleNamespace(id="profile-1", mode="bybit_read_only", source_account_id="account-1"),
+        )
+        == []
+    )
 
 
 async def test_reconciliation_flags_journal_position_missing_on_exchange() -> None:
@@ -442,22 +448,23 @@ async def test_reconciliation_flags_journal_position_missing_on_exchange() -> No
             side_effect=[
                 _ScalarResult(SimpleNamespace(source_time=timestamp)),
                 _ScalarResult([]),
-                _ScalarResult(
-                    [SimpleNamespace(symbol="BTCUSDT", direction="LONG", remaining_qty=D("1"))]
-                ),
+                _ScalarResult([SimpleNamespace(symbol="BTCUSDT", direction="LONG", remaining_qty=D("1"))]),
             ]
         )
     )
 
-    issues = await execution.reconciliation_issues(session, profile=SimpleNamespace(id="profile-1", mode="bybit_read_only", source_account_id="account-1"))
+    issues = await execution.reconciliation_issues(
+        session,
+        profile=SimpleNamespace(id="profile-1", mode="bybit_read_only", source_account_id="account-1"),
+    )
     assert any("BTCUSDT" in issue and "журнал" in issue.lower() for issue in issues)
 
 
 def test_future_ticker_is_not_fresh() -> None:
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    assert execution.ticker_snapshot_is_fresh(
-        now + timedelta(seconds=1), now=now, max_age_seconds=120
-    ) is False
+    assert (
+        execution.ticker_snapshot_is_fresh(now + timedelta(seconds=1), now=now, max_age_seconds=120) is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -472,9 +479,10 @@ def test_adverse_entry_drift_is_detected(
     reference: Decimal,
     executable: Decimal,
 ) -> None:
-    assert execution.entry_price_is_adverse(
-        direction=direction, reference=reference, executable=executable
-    ) is True
+    assert (
+        execution.entry_price_is_adverse(direction=direction, reference=reference, executable=executable)
+        is True
+    )
 
 
 async def test_latest_spec_excludes_future_dated_rows() -> None:
@@ -569,11 +577,21 @@ def _artifact_bundle(**overrides: object) -> dict[str, object]:
         "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
         "historical_funding_schema": "bybit-settlement-timestamp-replay-v1",
         "historical_funding_timeline": {
-        "schema": "bybit-settlement-timestamp-replay-v1",
-        "symbols": 1,
-        "settlements": 10,
-        "start_time": "2024-01-01T00:00:00+00:00",
-        "end_time": "2025-12-31T00:00:00+00:00",
+            "schema": "bybit-settlement-timestamp-replay-v1",
+            "symbols": 1,
+            "settlements": 10,
+            "start_time": "2024-01-01T00:00:00+00:00",
+            "end_time": "2025-12-31T00:00:00+00:00",
+        },
+        "intrahorizon_margin_path": {
+            "schema": "bybit-mark-price-hourly-isolated-margin-proxy-v1",
+            "required": True,
+            "status": "complete",
+            "mark_price_source": "bybit_hourly_mark_price_ohlc",
+            "research_leverage": 3,
+            "equity_reserve_fraction": 0.10,
+            "same_bar_ordering": "liquidation_before_unordered_last_price_exit",
+            "liquidation_loss": "full_initial_margin",
         },
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "horizon_hours": 8,

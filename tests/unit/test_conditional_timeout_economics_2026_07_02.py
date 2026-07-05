@@ -119,11 +119,11 @@ def test_runtime_rejects_artifact_without_timeout_return_schema(tmp_path: Path) 
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
             "historical_funding_schema": "bybit-settlement-timestamp-replay-v1",
             "historical_funding_timeline": {
-            "schema": "bybit-settlement-timestamp-replay-v1",
-            "symbols": 1,
-            "settlements": 10,
-            "start_time": "2024-01-01T00:00:00+00:00",
-            "end_time": "2025-12-31T00:00:00+00:00",
+                "schema": "bybit-settlement-timestamp-replay-v1",
+                "symbols": 1,
+                "settlements": 10,
+                "start_time": "2024-01-01T00:00:00+00:00",
+                "end_time": "2025-12-31T00:00:00+00:00",
             },
             "horizon_hours": 8,
             "stop_atr_multiplier": 1.15,
@@ -167,11 +167,21 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
             "historical_funding_schema": "bybit-settlement-timestamp-replay-v1",
             "historical_funding_timeline": {
-            "schema": "bybit-settlement-timestamp-replay-v1",
-            "symbols": 1,
-            "settlements": 10,
-            "start_time": "2024-01-01T00:00:00+00:00",
-            "end_time": "2025-12-31T00:00:00+00:00",
+                "schema": "bybit-settlement-timestamp-replay-v1",
+                "symbols": 1,
+                "settlements": 10,
+                "start_time": "2024-01-01T00:00:00+00:00",
+                "end_time": "2025-12-31T00:00:00+00:00",
+            },
+            "intrahorizon_margin_path": {
+                "schema": "bybit-mark-price-hourly-isolated-margin-proxy-v1",
+                "required": True,
+                "status": "complete",
+                "mark_price_source": "bybit_hourly_mark_price_ohlc",
+                "research_leverage": 3,
+                "equity_reserve_fraction": 0.10,
+                "same_bar_ordering": "liquidation_before_unordered_last_price_exit",
+                "liquidation_loss": "full_initial_margin",
             },
             "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,
@@ -183,9 +193,7 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
 
     runtime = ModelRuntime(path, allow_baseline=False)
     runtime.load()
-    long_scenario, short_scenario = runtime.predict_scenarios(
-        {name: 0.0 for name in FEATURE_NAMES}
-    )
+    long_scenario, short_scenario = runtime.predict_scenarios({name: 0.0 for name in FEATURE_NAMES})
 
     assert long_scenario.timeout_return_r == pytest.approx(0.40)
     assert short_scenario.timeout_return_r == pytest.approx(-0.60)
@@ -277,16 +285,12 @@ def test_execution_reuses_the_signal_timeout_assumption_and_fails_closed() -> No
     from app.services.execution import signal_timeout_return_rate
 
     signal = SimpleNamespace(
-        feature_snapshot={
-            "economics_assumptions": {"timeout_gross_return_rate": "-0.013"}
-        }
+        feature_snapshot={"economics_assumptions": {"timeout_gross_return_rate": "-0.013"}}
     )
     assert signal_timeout_return_rate(signal, fallback=D("-0.002")) == D("-0.013")
 
     invalid_signal = SimpleNamespace(
-        feature_snapshot={
-            "economics_assumptions": {"timeout_gross_return_rate": "NaN"}
-        }
+        feature_snapshot={"economics_assumptions": {"timeout_gross_return_rate": "NaN"}}
     )
     with pytest.raises(ValueError, match="finite"):
         signal_timeout_return_rate(invalid_signal, fallback=D("-0.002"))

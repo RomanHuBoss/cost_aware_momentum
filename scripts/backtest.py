@@ -16,6 +16,7 @@ from app.db.models import BacktestRun
 from app.ml.lifecycle import load_training_market_data
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
+    apply_intrahorizon_margin_path,
     chronological_split,
     evaluate_model,
     filter_single_active_trade_per_symbol,
@@ -144,6 +145,9 @@ def policy_backtest(
     minimum_net_rr: float = 0.0,
     minimum_net_ev_r: float | None = None,
     minimum_predicted_edge: float | None = None,
+    research_leverage: int = 3,
+    liquidation_equity_reserve_fraction: float = 0.10,
+    require_intrahorizon_margin: bool = False,
 ) -> dict:
     """Evaluate the deployed cost-aware direction policy without overlap leverage.
 
@@ -183,6 +187,13 @@ def policy_backtest(
         horizon_hours=horizon_hours,
         require_barrier_return_consistency=True,
     )
+    meta, intrahorizon_margin_schema = apply_intrahorizon_margin_path(
+        meta,
+        context="Backtest",
+        require=require_intrahorizon_margin,
+        expected_leverage=research_leverage,
+        expected_equity_reserve_fraction=liquidation_equity_reserve_fraction,
+    )
 
     meta["p_tp"] = probabilities[:, indexes["TP"]]
     meta["p_sl"] = probabilities[:, indexes["SL"]]
@@ -201,9 +212,7 @@ def policy_backtest(
             support_upper.to_numpy(float),
         )
         meta["timeout_return_r"] = bounded_timeout_return_r
-        meta["timeout_gross_return_rate"] = (
-            bounded_timeout_return_r * meta["barrier_downside_rate"]
-        )
+        meta["timeout_gross_return_rate"] = bounded_timeout_return_r * meta["barrier_downside_rate"]
         timeout_return_source = "artifact_training_direction_median_r"
     else:
         meta["timeout_return_r"] = np.where(
@@ -249,8 +258,8 @@ def policy_backtest(
     )
     realized_exit_ratio = np.where(
         is_long,
-        1.0 + meta["realized_gross_return"],
-        1.0 - meta["realized_gross_return"],
+        1.0 + meta["effective_realized_gross_return"],
+        1.0 - meta["effective_realized_gross_return"],
     )
     if (
         (tp_exit_ratio <= 0).any()
@@ -272,7 +281,7 @@ def policy_backtest(
     meta["embedded_stop_gap_rate"] = np.where(
         target_is_sl,
         np.maximum(
-            -meta["realized_gross_return"] - meta["barrier_downside_rate"],
+            -meta["effective_realized_gross_return"] - meta["barrier_downside_rate"],
             0.0,
         ),
         0.0,
@@ -282,25 +291,16 @@ def policy_backtest(
         np.maximum(gap_rate - meta["embedded_stop_gap_rate"], 0.0),
         0.0,
     )
-    meta["net_upside_rate"] = (
-        meta["barrier_upside_rate"] - tp_fee_rate - slippage_rate + recognized_funding
-    )
+    meta["net_upside_rate"] = meta["barrier_upside_rate"] - tp_fee_rate - slippage_rate + recognized_funding
     meta["stress_downside_rate"] = (
-        meta["barrier_downside_rate"]
-        + sl_fee_rate
-        + slippage_rate
-        + gap_rate
-        + adverse_funding
+        meta["barrier_downside_rate"] + sl_fee_rate + slippage_rate + gap_rate + adverse_funding
     )
     meta["timeout_net_rate"] = (
-        meta["timeout_gross_return_rate"]
-        - timeout_fee_rate
-        - slippage_rate
-        + recognized_funding
+        meta["timeout_gross_return_rate"] - timeout_fee_rate - slippage_rate + recognized_funding
     )
-    meta["sl_net_rate"] = -(
-        meta["barrier_downside_rate"] + sl_fee_rate + slippage_rate + gap_rate
-    ) + recognized_funding
+    meta["sl_net_rate"] = (
+        -(meta["barrier_downside_rate"] + sl_fee_rate + slippage_rate + gap_rate) + recognized_funding
+    )
     meta["net_rr"] = np.where(
         meta["stress_downside_rate"] > 0,
         np.maximum(meta["net_upside_rate"], 0.0) / meta["stress_downside_rate"],
@@ -328,11 +328,9 @@ def policy_backtest(
         .sort_values(["decision_time", "symbol"])
         .reset_index(drop=True)
     )
-    chosen["traded"] = (chosen["net_rr"] >= minimum_net_rr) & (
-        chosen["expected_ev_r"] >= minimum_net_ev_r
-    )
+    chosen["traded"] = (chosen["net_rr"] >= minimum_net_rr) & (chosen["expected_ev_r"] >= minimum_net_ev_r)
     chosen["net_return"] = (
-        chosen["realized_gross_return"]
+        chosen["effective_realized_gross_return"]
         - chosen["realized_fee_rate"]
         - slippage_rate
         + chosen["funding_return_rate"]
@@ -369,7 +367,7 @@ def policy_backtest(
             0.0,
         )
         stressed_rows["stressed_net_return"] = (
-            stressed_rows["realized_gross_return"]
+            stressed_rows["effective_realized_gross_return"]
             - stressed_rows["realized_fee_rate"] * multiplier
             - slippage_rate * multiplier
             + np.where(
@@ -413,6 +411,31 @@ def policy_backtest(
         "funding_rate_override": funding_rate,
         "historical_funding_schema": historical_funding_schema,
         "historical_funding_timeline_complete": historical_funding_schema is not None,
+        "intrahorizon_margin_schema": intrahorizon_margin_schema,
+        "intrahorizon_margin_complete": intrahorizon_margin_schema is not None,
+        "research_leverage": int(research_leverage),
+        "liquidation_equity_reserve_fraction": float(liquidation_equity_reserve_fraction),
+        "liquidation_events": (
+            int(traded["mark_liquidated"].sum()) if intrahorizon_margin_schema and len(traded) else 0
+        ),
+        "liquidation_rate": (
+            float(traded["mark_liquidated"].mean()) if intrahorizon_margin_schema and len(traded) else 0.0
+        ),
+        "mark_max_adverse_excursion_mean": (
+            float(traded["mark_max_adverse_excursion_rate"].mean())
+            if intrahorizon_margin_schema and len(traded)
+            else None
+        ),
+        "mark_max_favorable_excursion_mean": (
+            float(traded["mark_max_favorable_excursion_rate"].mean())
+            if intrahorizon_margin_schema and len(traded)
+            else None
+        ),
+        "mark_minimum_equity_rate_min": (
+            float(traded["mark_minimum_equity_rate"].min())
+            if intrahorizon_margin_schema and len(traded)
+            else None
+        ),
         "timeout_return_rate": (
             timeout_return_rate if timeout_return_source != "artifact_training_direction_median_r" else None
         ),
@@ -426,9 +449,10 @@ def policy_backtest(
         "warning": (
             "Barrier-policy research backtest with conservative hourly ambiguity and "
             "non-overlapping horizon capital sleeves and the live one-active-plan-per-symbol "
-            "constraint. Equity is realized at modeled candle "
-            "exit times; intrahorizon mark-to-market, historical orderbook impact, partial "
-            "fills and operator latency are not modeled. This is not evidence of profitability."
+            "constraint. Realized paths include hourly Bybit mark-price OHLC under a "
+            "conservative isolated-margin proxy; exact historical risk tiers, sub-hour mark "
+            "paths, cross/portfolio margin, orderbook impact, partial fills and operator "
+            "latency are not modeled. This is not evidence of profitability."
         ),
     }
 
@@ -465,6 +489,10 @@ async def run(args) -> None:
         funding_history=market_data.funding,
         funding_interval_minutes=market_data.funding_interval_minutes,
         require_funding_timeline=True,
+        mark_candles=market_data.mark_candles,
+        require_mark_timeline=True,
+        liquidation_leverage=runtime.research_leverage,
+        liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
     )
     split = chronological_split(dataset, purge_rows=horizon)
     round_trip_cost_bps = (
@@ -472,13 +500,9 @@ async def run(args) -> None:
         if args.round_trip_cost_bps is not None
         else settings.fee_rate_taker * 2 * 10000
     )
-    slippage_bps = (
-        args.slippage_bps if args.slippage_bps is not None else settings.base_slippage_bps
-    )
+    slippage_bps = args.slippage_bps if args.slippage_bps is not None else settings.base_slippage_bps
     stop_gap_reserve_bps = (
-        args.stop_gap_reserve_bps
-        if args.stop_gap_reserve_bps is not None
-        else settings.stop_gap_reserve_bps
+        args.stop_gap_reserve_bps if args.stop_gap_reserve_bps is not None else settings.stop_gap_reserve_bps
     )
     timeout_return_rate = (
         args.timeout_return_rate
@@ -492,9 +516,7 @@ async def run(args) -> None:
         args.minimum_net_ev_r
         if args.minimum_net_ev_r is not None
         else (
-            args.minimum_predicted_edge
-            if args.minimum_predicted_edge is not None
-            else settings.min_net_ev_r
+            args.minimum_predicted_edge if args.minimum_predicted_edge is not None else settings.min_net_ev_r
         )
     )
 
@@ -512,6 +534,9 @@ async def run(args) -> None:
         minimum_net_rr=minimum_net_rr,
         minimum_net_ev_r=minimum_net_ev_r,
         horizon_hours=horizon,
+        research_leverage=runtime.research_leverage,
+        liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
+        require_intrahorizon_margin=True,
     )
     metrics = {
         "prediction": prediction_metrics,
@@ -534,6 +559,9 @@ async def run(args) -> None:
                     "label_path_schema_version": bundle.get("label_path_schema_version"),
                     "entry_spread_bps": runtime.entry_spread_bps,
                     "temporal_split_schema": bundle.get("temporal_split_schema"),
+                    "intrahorizon_margin_schema": bundle.get("intrahorizon_margin_schema"),
+                    "research_leverage": runtime.research_leverage,
+                    "liquidation_equity_reserve_fraction": (runtime.liquidation_equity_reserve_fraction),
                     "horizon": horizon,
                     "round_trip_cost_bps": round_trip_cost_bps,
                     "slippage_bps": slippage_bps,
@@ -541,9 +569,7 @@ async def run(args) -> None:
                     "funding_rate": args.funding_rate,
                     "timeout_return_rate": timeout_return_rate,
                     "timeout_return_source": trade_metrics["timeout_return_source"],
-                    "timeout_return_schema_version": bundle.get(
-                        "timeout_return_schema_version"
-                    ),
+                    "timeout_return_schema_version": bundle.get("timeout_return_schema_version"),
                     "minimum_net_rr": minimum_net_rr,
                     "minimum_net_ev_r": minimum_net_ev_r,
                     "purge_hours": horizon,

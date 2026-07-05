@@ -67,7 +67,10 @@ def test_policy_evaluation_blocks_same_symbol_overlap_like_live_acceptance() -> 
         ),
         horizon_hours=2,
     )
-    assert metrics["policy_metric_schema"] == "decision-open-directional-spread-entry-funding-timeline-exit-time-cohort-v14"
+    assert (
+        metrics["policy_metric_schema"]
+        == "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15"
+    )
     assert metrics["policy_capital_sleeves"] == 2
     assert metrics["policy_trades"] == 1
     assert metrics["policy_overlap_blocked_trades"] == 1
@@ -100,21 +103,35 @@ def test_fractional_leverage_is_not_silently_truncated() -> None:
 
 def test_outcome_rejects_non_hourly_bar_in_hourly_evaluator() -> None:
     start = datetime(2026, 1, 1, tzinfo=UTC)
-    bar = OutcomeBar(1, start, start + timedelta(minutes=30), Decimal("100"), Decimal("101"), Decimal("99"), Decimal("100"))
+    bar = OutcomeBar(
+        1, start, start + timedelta(minutes=30), Decimal("100"), Decimal("101"), Decimal("99"), Decimal("100")
+    )
     with pytest.raises(ValueError, match="duration"):
         evaluate_barrier_outcome(
-            [bar], direction="LONG", entry=Decimal("100"), stop=Decimal("90"),
-            take_profit=Decimal("110"), window_start=start, horizon_end=start + timedelta(minutes=30)
+            [bar],
+            direction="LONG",
+            entry=Decimal("100"),
+            stop=Decimal("90"),
+            take_profit=Decimal("110"),
+            window_start=start,
+            horizon_end=start + timedelta(minutes=30),
         )
 
 
 def test_outcome_rejects_close_outside_high_low_range() -> None:
     start = datetime(2026, 1, 1, tzinfo=UTC)
-    bar = OutcomeBar(1, start, start + timedelta(hours=1), Decimal("100"), Decimal("101"), Decimal("99"), Decimal("102"))
+    bar = OutcomeBar(
+        1, start, start + timedelta(hours=1), Decimal("100"), Decimal("101"), Decimal("99"), Decimal("102")
+    )
     with pytest.raises(ValueError, match="OHLC"):
         evaluate_barrier_outcome(
-            [bar], direction="LONG", entry=Decimal("100"), stop=Decimal("90"),
-            take_profit=Decimal("110"), window_start=start, horizon_end=start + timedelta(hours=1)
+            [bar],
+            direction="LONG",
+            entry=Decimal("100"),
+            stop=Decimal("90"),
+            take_profit=Decimal("110"),
+            window_start=start,
+            horizon_end=start + timedelta(hours=1),
         )
 
 

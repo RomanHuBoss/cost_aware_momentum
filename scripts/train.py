@@ -33,9 +33,7 @@ async def active_model() -> ModelRegistry | None:
 async def run(args: argparse.Namespace) -> None:
     settings = get_settings()
     if args.horizon not in settings.horizons_hours:
-        raise ValueError(
-            f"Horizon {args.horizon} is not listed in HORIZONS_HOURS={settings.horizons_hours}"
-        )
+        raise ValueError(f"Horizon {args.horizon} is not listed in HORIZONS_HOURS={settings.horizons_hours}")
 
     incumbent_model = await active_model()
     symbols = settings.symbols if settings.universe_mode == "static" else None
@@ -46,6 +44,7 @@ async def run(args: argparse.Namespace) -> None:
     )
     candidate = build_model_candidate(
         market_data.candles,
+        mark_candles=market_data.mark_candles,
         horizon=args.horizon,
         model_type=args.model_type,
         model_dir=settings.model_dir,

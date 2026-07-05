@@ -42,9 +42,7 @@ settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-BOOTSTRAP_TRIGGER_REASONS = frozenset(
-    {"bootstrap_training", "bootstrap_recovery", "operator_recovery"}
-)
+BOOTSTRAP_TRIGGER_REASONS = frozenset({"bootstrap_training", "bootstrap_recovery", "operator_recovery"})
 TRAINER_CONTROL_POLL_SECONDS = 2.0
 
 
@@ -209,9 +207,7 @@ class BackgroundTrainer:
                 "timestamps": profile.unique_timestamps,
                 "required_timestamps": minimum_bootstrap,
                 "required_holdout_rows": settings.auto_train_min_holdout_rows,
-                "required_holdout_span_hours": (
-                    settings.auto_train_min_holdout_span_hours
-                ),
+                "required_holdout_span_hours": (settings.auto_train_min_holdout_span_hours),
                 "horizon_hours": settings.default_horizon_hours,
                 "training_data_profile": profile.to_dict(),
             }
@@ -305,9 +301,7 @@ class BackgroundTrainer:
             trigger = {
                 "reason": "scheduled_retraining",
                 "active_version": active.version,
-                "active_training_end": active.training_end.isoformat()
-                if active.training_end
-                else None,
+                "active_training_end": active.training_end.isoformat() if active.training_end else None,
                 "new_timestamps": new_timestamps,
                 "required_new_timestamps": settings.auto_train_min_new_timestamps,
                 "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
@@ -319,9 +313,7 @@ class BackgroundTrainer:
             return False, {
                 "reason": "not_enough_new_or_changed_training_data",
                 "active_version": active.version,
-                "active_training_end": active.training_end.isoformat()
-                if active.training_end
-                else None,
+                "active_training_end": active.training_end.isoformat() if active.training_end else None,
                 "new_timestamps": new_timestamps,
                 "required_new_timestamps": settings.auto_train_min_new_timestamps,
                 "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
@@ -380,9 +372,7 @@ class BackgroundTrainer:
             ):
                 previous_trigger = _job_trigger(latest.details)
                 previous_profile = TrainingDataProfile.from_mapping(
-                    previous_trigger.get("training_data_profile")
-                    if previous_trigger is not None
-                    else None
+                    previous_trigger.get("training_data_profile") if previous_trigger is not None else None
                 )
                 if previous_profile is not None:
                     retry_comparison = compare_training_profiles(
@@ -391,9 +381,7 @@ class BackgroundTrainer:
                         minimum_new_rows=settings.auto_train_min_new_rows,
                         minimum_growth_ratio=settings.auto_train_min_dataset_growth_ratio,
                         minimum_new_symbols=settings.auto_train_min_new_symbols,
-                        minimum_universe_change_ratio=(
-                            settings.auto_train_min_universe_change_ratio
-                        ),
+                        minimum_universe_change_ratio=(settings.auto_train_min_universe_change_ratio),
                     )
                     retry_new_timestamps = 0
                     if previous_profile.end_time and label_cutoff:
@@ -409,9 +397,7 @@ class BackgroundTrainer:
                             "pending_trigger": trigger,
                             "last_started_at": latest.started_at.isoformat(),
                             "new_timestamps": retry_new_timestamps,
-                            "required_new_timestamps": (
-                                settings.auto_train_min_new_timestamps
-                            ),
+                            "required_new_timestamps": (settings.auto_train_min_new_timestamps),
                             "dataset_change": retry_comparison,
                             "previous_training_data_profile": previous_profile.to_dict(),
                             "training_data_profile": profile.to_dict(),
@@ -460,9 +446,7 @@ class BackgroundTrainer:
     ) -> bool:
         async with SessionFactory() as session, session.begin():
             job = (
-                await session.execute(
-                    select(JobRun).where(JobRun.id == job_id).with_for_update()
-                )
+                await session.execute(select(JobRun).where(JobRun.id == job_id).with_for_update())
             ).scalar_one()
             details = dict(job.details or {})
             if job.status != "RUNNING" or details.get("claim_token") != claim_token:
@@ -685,6 +669,7 @@ class BackgroundTrainer:
                     candidate = await asyncio.to_thread(
                         build_model_candidate,
                         market_data.candles,
+                        mark_candles=market_data.mark_candles,
                         horizon=settings.default_horizon_hours,
                         model_type=settings.auto_train_model_type,
                         model_dir=settings.model_dir,
@@ -817,9 +802,7 @@ class BackgroundTrainer:
                 {
                     "phase": "INITIAL_DELAY",
                     "healthy": True,
-                    "next_check_at": (
-                        datetime.now(UTC) + timedelta(seconds=initial_delay)
-                    ).isoformat(),
+                    "next_check_at": (datetime.now(UTC) + timedelta(seconds=initial_delay)).isoformat(),
                 }
             )
 
@@ -830,8 +813,7 @@ class BackgroundTrainer:
                     await self.process_control_request(control_request)
                     next_regular_at = loop.time() + settings.auto_train_check_seconds
                     self.state["next_check_at"] = (
-                        datetime.now(UTC)
-                        + timedelta(seconds=settings.auto_train_check_seconds)
+                        datetime.now(UTC) + timedelta(seconds=settings.auto_train_check_seconds)
                     ).isoformat()
                     continue
 
@@ -863,9 +845,7 @@ class BackgroundTrainer:
                     datetime.now(UTC) + timedelta(seconds=settings.auto_train_check_seconds)
                 ).isoformat()
                 with suppress(TimeoutError):
-                    await asyncio.wait_for(
-                        self.stop_event.wait(), timeout=TRAINER_CONTROL_POLL_SECONDS
-                    )
+                    await asyncio.wait_for(self.stop_event.wait(), timeout=TRAINER_CONTROL_POLL_SECONDS)
 
     async def run(self) -> None:
         if not settings.auto_train_enabled:

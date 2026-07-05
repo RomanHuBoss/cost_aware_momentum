@@ -1,5 +1,21 @@
 # Operator Manual
 
+## Upgrade to 1.13.0
+
+1. Сохраните backup PostgreSQL, model registry и active artifact.
+2. Обновите исходники; Alembic migration и новые `.env` переменные не требуются.
+3. Запустите worker и дождитесь progressive `history_backfill`, включая отдельный `mark_price_history` для всех training symbols.
+4. Не обходите gaps: training требует точные consecutive hourly mark candles до каждого modeled exit.
+5. Проверьте `DEFAULT_LEVERAGE`; это значение становится частью research artifact contract. Его изменение требует нового candidate.
+6. Переобучите candidate. Artifact 1.12.0 не содержит обязательный intrahorizon-margin contract и должен быть отклонён runtime fail-closed.
+7. Проверьте metadata: margin schema/status, mark source, research leverage, reserve, liquidation count/rate, MAE/MFE и minimum equity.
+8. При `intrahorizon_*` gate reason не редактируйте joblib и не снижайте severity. Исправьте coverage/assumptions и переобучите.
+9. После gates выполните новый paper/shadow период. Метрики 1.12.0 без mark-MTM напрямую несопоставимы с 1.13.0.
+
+## Интерпретация liquidation evidence
+
+`mark_liquidated=true` означает срабатывание консервативного hourly isolated-margin proxy. Это не подтверждение точного historical liquidation event на Bybit. Proxy намеренно ставит ambiguous same-bar mark liquidation раньше более позднего last-price TP/SL и не знает sub-hour order, historical risk tier/MMR, liquidation fee или cross/portfolio margin. Используйте его как fail-closed стресс для realized evidence, а не как точную цену ликвидации.
+
 ## Upgrade to 1.12.0
 
 1. Сохраните backup PostgreSQL, model registry и active artifact.

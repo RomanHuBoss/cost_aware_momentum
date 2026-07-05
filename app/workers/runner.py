@@ -401,6 +401,15 @@ class Worker:
                 interval=settings.candle_interval,
                 target_days=settings.history_backfill_target_days,
                 limit=settings.history_backfill_symbols_per_cycle,
+                price_type="last",
+            )
+            mark_candidates = await symbols_needing_history_backfill(
+                session,
+                self.active_symbols,
+                interval=settings.candle_interval,
+                target_days=settings.history_backfill_target_days,
+                limit=settings.history_backfill_symbols_per_cycle,
+                price_type="mark",
             )
             funding_candidates = await symbols_needing_funding_history_backfill(
                 session,
@@ -408,13 +417,14 @@ class Worker:
                 target_days=settings.history_backfill_target_days,
                 limit=settings.history_backfill_symbols_per_cycle,
             )
-            if not candle_candidates and not funding_candidates:
+            if not candle_candidates and not mark_candidates and not funding_candidates:
                 return {
                     "enabled": True,
                     "status": "COMPLETE",
                     "symbols_processed": 0,
                     "rows_received": 0,
                     "candle_history": {"symbols_processed": 0, "rows_received": 0},
+                    "mark_price_history": {"symbols_processed": 0, "rows_received": 0},
                     "funding_history": {"symbols_processed": 0, "rows_received": 0},
                     "target_days": settings.history_backfill_target_days,
                 }
@@ -427,8 +437,23 @@ class Worker:
                     target_days=settings.history_backfill_target_days,
                     page_size=settings.history_backfill_page_size,
                     max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+                    price_type="last",
                 )
                 if candle_candidates
+                else {"symbols_processed": 0, "rows_received": 0, "progress": []}
+            )
+            mark_result = (
+                await sync_candle_history(
+                    session,
+                    self.client,
+                    mark_candidates,
+                    interval=settings.candle_interval,
+                    target_days=settings.history_backfill_target_days,
+                    page_size=settings.history_backfill_page_size,
+                    max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+                    price_type="mark",
+                )
+                if mark_candidates
                 else {"symbols_processed": 0, "rows_received": 0, "progress": []}
             )
             funding_result = (
@@ -448,10 +473,13 @@ class Worker:
                 "status": "RUNNING",
                 "target_days": settings.history_backfill_target_days,
                 "symbols_processed": int(candle_result["symbols_processed"])
+                + int(mark_result["symbols_processed"])
                 + int(funding_result["symbols_processed"]),
                 "rows_received": int(candle_result["rows_received"])
+                + int(mark_result["rows_received"])
                 + int(funding_result["rows_received"]),
                 "candle_history": candle_result,
+                "mark_price_history": mark_result,
                 "funding_history": funding_result,
             }
 

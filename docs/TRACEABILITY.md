@@ -1,5 +1,25 @@
 # Traceability
 
+## Work package: intrahorizon mark-to-market and liquidation proxy
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Hourly mark-price history is progressively backfilled with explicit type | `app/services/market_data.py::symbols_needing_history_backfill`, `sync_candle_history`; `app/workers/runner.py::history_backfill_job` | `test_progressive_history_backfill_persists_explicit_mark_price_type` |
+| Label requires exact mark bars through modeled exit | `app/ml/training.py::make_barrier_dataset` | `test_barrier_dataset_attaches_exact_hourly_mark_path_and_liquidation`, `test_barrier_dataset_fails_closed_for_missing_mark_bar` |
+| LONG/SHORT MTM signs are directionally correct | `app/ml/mtm.py::_directional_return`, `simulate_intrahorizon_margin_path` | LONG liquidation and SHORT excursion tests |
+| Exit at bar open excludes later intrabar extremes | `simulate_intrahorizon_margin_path` | `test_exit_at_open_does_not_use_post_exit_intrabar_mark_extreme` |
+| Actual adverse funding uses settlement timing in margin path | `make_barrier_dataset`, `simulate_intrahorizon_margin_path` | `test_adverse_funding_is_applied_before_conservative_intrabar_liquidation_check` |
+| Invalid/nonfinite/misaligned path fails closed | same | `test_margin_path_rejects_nonfinite_or_misaligned_inputs` |
+| Future mark path cannot affect ex-ante direction/EV | `app/ml/training.py::apply_intrahorizon_margin_path`, `evaluate_policy_model`; `scripts/backtest.py` | `test_future_mark_liquidation_cannot_change_ex_ante_direction_selection` |
+| Runtime and gate require exact margin schema/assumptions | `app/ml/runtime.py`, `app/ml/lifecycle.py::evaluate_quality_gate` | artifact/runtime fixtures plus full suite |
+| Candidate/incumbent comparison requires compatible leverage/reserve | `app/ml/lifecycle.py::build_model_candidate` | lifecycle compatibility regressions/full suite |
+
+## Schema changes 1.13.0
+
+- Intrahorizon margin: `bybit-mark-price-hourly-isolated-margin-proxy-v1`.
+- Policy metrics: `decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v15`.
+- Research source: exact confirmed hourly `price_type=mark`; future mark path is realized-only.
+
 ## Work package: historical funding settlement replay
 
 | Acceptance criterion | Production implementation | Tests |

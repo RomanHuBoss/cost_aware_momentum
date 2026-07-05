@@ -26,7 +26,6 @@ class ArtifactStubModel:
         return np.zeros(len(values), dtype=float)
 
 
-
 def test_postgresql_is_mandatory() -> None:
     with pytest.raises(ValueError):
         Settings(database_url="sqlite:///bad.db")
@@ -123,11 +122,21 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
             "historical_funding_schema": "bybit-settlement-timestamp-replay-v1",
             "historical_funding_timeline": {
-            "schema": "bybit-settlement-timestamp-replay-v1",
-            "symbols": 1,
-            "settlements": 10,
-            "start_time": "2024-01-01T00:00:00+00:00",
-            "end_time": "2025-12-31T00:00:00+00:00",
+                "schema": "bybit-settlement-timestamp-replay-v1",
+                "symbols": 1,
+                "settlements": 10,
+                "start_time": "2024-01-01T00:00:00+00:00",
+                "end_time": "2025-12-31T00:00:00+00:00",
+            },
+            "intrahorizon_margin_path": {
+                "schema": "bybit-mark-price-hourly-isolated-margin-proxy-v1",
+                "required": True,
+                "status": "complete",
+                "mark_price_source": "bybit_hourly_mark_price_ohlc",
+                "research_leverage": 3,
+                "equity_reserve_fraction": 0.10,
+                "same_bar_ordering": "liquidation_before_unordered_last_price_exit",
+                "liquidation_loss": "full_initial_margin",
             },
             "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,
@@ -186,11 +195,21 @@ def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) 
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
             "historical_funding_schema": "bybit-settlement-timestamp-replay-v1",
             "historical_funding_timeline": {
-            "schema": "bybit-settlement-timestamp-replay-v1",
-            "symbols": 1,
-            "settlements": 10,
-            "start_time": "2024-01-01T00:00:00+00:00",
-            "end_time": "2025-12-31T00:00:00+00:00",
+                "schema": "bybit-settlement-timestamp-replay-v1",
+                "symbols": 1,
+                "settlements": 10,
+                "start_time": "2024-01-01T00:00:00+00:00",
+                "end_time": "2025-12-31T00:00:00+00:00",
+            },
+            "intrahorizon_margin_path": {
+                "schema": "bybit-mark-price-hourly-isolated-margin-proxy-v1",
+                "required": True,
+                "status": "complete",
+                "mark_price_source": "bybit_hourly_mark_price_ohlc",
+                "research_leverage": 3,
+                "equity_reserve_fraction": 0.10,
+                "same_bar_ordering": "liquidation_before_unordered_last_price_exit",
+                "liquidation_loss": "full_initial_margin",
             },
             "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,
