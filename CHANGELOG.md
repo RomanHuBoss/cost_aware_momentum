@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.11.0 — 2026-07-05
+
+### Добавлено
+
+- Трёхфолдовый expanding walk-forward внутри development period с целыми decision timestamps, label-end purge и horizon embargo.
+- Независимое переобучение и sigmoid calibration модели в каждом fold; final holdout не используется в walk-forward оценке.
+- Fold-level evidence в immutable artifact: временные границы, row counts, log loss, prior skill, multiclass Brier и policy metrics.
+- Fail-closed auto-activation gates для количества/порядка folds, временного перекрытия, худшего fold и устойчивости положительного ML skill и policy mean R.
+
+### Изменено
+
+- Temporal schema обновлена до `final-holdout-plus-expanding-walk-forward-v4`.
+- Runtime требует `walk_forward_schema=expanding-train-rolling-calibration-purged-v1`.
+- Минимальный объём истории теперь рассчитывается с учётом purged walk-forward windows; при текущих defaults требование остаётся 1206 hourly timestamps.
+
+### Совместимость
+
+- Миграция БД и новые `.env` переменные не требуются.
+- Artifact 1.10.0 не содержит обязательную walk-forward schema и должен быть переобучен.
+- Реализация не является PBO, nested cross-validation или доказательством прибыльности.
+
 ## 1.10.0 — 2026-07-05
 
 ### Исправлено

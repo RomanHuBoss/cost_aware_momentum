@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.10.0: training labels и research backtest используют direction-specific entry proxy: LONG получает adverse half-spread выше следующего hourly open, SHORT — ниже. Artifact/runtime/auto-activation fail-closed проверяют единую execution-семантику и не сравнивают candidate с несовместимым incumbent.
+> Версия 1.11.0: candidate дополнительно проходит трёхфолдовый purged expanding walk-forward внутри development period; каждый fold заново обучает и калибрует модель, а отдельный final holdout остаётся нетронутым. Auto-activation блокируется при временной нестабильности качества или policy economics.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -13,7 +13,7 @@
 - Direction-conditional модель исходов `TP / SL / TIMEOUT`; `NO TRADE` остаётся решением policy layer.
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
-- Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов holdout; число символов не заменяет временную глубину.
+- Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов final holdout; число символов не заменяет временную глубину. До final holdout candidate обязан пройти три последовательных purged expanding walk-forward folds с независимым переобучением и калибровкой.
 - Экономический promotion gate использует не только point mean R, но и 95% one-sided lower confidence bound. Для горизонта `H` часов отдельно оцениваются все `H` неперекрывающихся часовых фаз; gate использует худшую фазовую LCB и требует полного покрытия фаз. Default требует `LCB > 0`.
 - До запуска bootstrap trainer вычисляет необходимую часовую историю из feature warm-up, horizon, temporal split и holdout gates. При defaults требуется не менее 1206 уникальных часовых timestamps; это необходимое, но не достаточное условие при гэпах/невалидных свечах.
 - Кандидат обязан иметь строго положительный `log_loss_skill_vs_prior`; модель хуже простого class-prior прогноза не может быть auto-activated даже при прохождении абсолютного `log_loss` лимита.
@@ -93,7 +93,7 @@ python manage.py release-check  проверить release tree и SHA256SUMS
 
 `manage.py configure` создаёт локальный `.env`. Реальные credentials не должны попадать в архив или систему контроля версий. Шаблон переменных находится в `.env.example`.
 
-`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Артефакты со старой frictionless-open схемой версия 1.10.0 отклоняет fail-closed.
+`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Артефакты со старой frictionless-open схемой отклоняются fail-closed. Версия 1.11.0 также требует новую temporal/walk-forward schema, поэтому artifact 1.10.0 необходимо переобучить.
 
 Поддерживаются оба формата списков:
 
@@ -205,6 +205,6 @@ python manage.py test --require-integration
 - Нет автоматического исполнения ордеров.
 - Ручные fills остаются источником фактической информации об исполнении.
 - Historical labels используют stress proxy, а не архивные bid/ask и order-book depth. Operator latency, VWAP impact, no-fill и partial-fill пока не моделируются.
-- Research validation остаётся одним purged chronological train/calibration/holdout split; rolling/expanding walk-forward, PBO/Deflated Sharpe и production drift monitor не реализованы.
+- Research validation использует трёхфолдовый purged expanding walk-forward внутри development period и отдельный final holdout. Nested model selection, PBO/Deflated Sharpe и production drift monitor пока не реализованы.
 - Intrahorizon mark-to-market и path-dependent liquidation simulation не реализованы; присутствует только pre-trade liquidation-distance guard.
 - Техническая корректность расчётов и тестов не означает наличия статистически устойчивого торгового преимущества.

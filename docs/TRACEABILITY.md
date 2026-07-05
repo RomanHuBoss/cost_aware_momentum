@@ -1,5 +1,24 @@
 # Traceability
 
+## Work package: purged expanding walk-forward validation
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Final holdout исключён из development folds | `app/ml/lifecycle.py::evaluate_walk_forward_validation` | `test_walk_forward_validation_refits_models_before_final_holdout` |
+| Три последовательных expanding folds | `app/ml/training.py::expanding_walk_forward_splits` | `test_expanding_walk_forward_is_purged_ordered_and_expanding` |
+| Label overlap purged, horizon embargo соблюдён | same | same test |
+| Каждый fold заново обучает и калибрует model | `evaluate_walk_forward_validation` | actual logistic refit test |
+| Недостаточная история блокируется | splitter и `minimum_hourly_history_timestamps_for_quality_gate` | two minimum-history tests |
+| Fold evidence сохраняется в candidate metrics/artifact | `build_model_candidate` | lifecycle/artifact fixtures and full suite |
+| Runtime требует новую semantic schema | `app/ml/runtime.py::ModelRuntime.load` | incompatible training semantics parameterization |
+| Gate блокирует временно нестабильный candidate | `app/ml/lifecycle.py::evaluate_quality_gate` | `test_quality_gate_rejects_walk_forward_temporal_instability` |
+| Gate блокирует overlapping/tampered folds | same | `test_quality_gate_rejects_overlapping_walk_forward_test_windows` |
+
+## Schema changes 1.11.0
+
+- Temporal split: `final-holdout-plus-expanding-walk-forward-v4`.
+- Walk-forward: `expanding-train-rolling-calibration-purged-v1`.
+
 ## Work package: execution-entry alignment
 
 | Acceptance criterion | Production implementation | Tests |

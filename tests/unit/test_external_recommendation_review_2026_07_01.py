@@ -86,6 +86,7 @@ def test_artifact_rejects_boolean_barrier_multiplier(tmp_path: Path) -> None:
                 "entry_spread_bps": 18.0,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+            "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
             "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": True,

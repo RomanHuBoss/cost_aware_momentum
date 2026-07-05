@@ -59,6 +59,44 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
             "schema": "directional-half-spread-on-next-hour-open-v1",
             "entry_spread_bps": 18.0,
         },
+        "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
+        "walk_forward_folds_requested": 3,
+        "walk_forward_folds_completed": 3,
+        "walk_forward_fold_results": [
+            {
+                "fold": 1,
+                "test_rows": 120,
+                "test_start_time": "2025-01-01T00:00:00+00:00",
+                "test_end_time": "2025-01-07T23:00:00+00:00",
+                "log_loss": 0.90,
+                "class_prior_log_loss": 1.05,
+                "log_loss_skill_vs_prior": 0.15,
+                "multiclass_brier": 0.55,
+                "policy_realized_mean_r": 0.03,
+            },
+            {
+                "fold": 2,
+                "test_rows": 120,
+                "test_start_time": "2025-01-08T00:00:00+00:00",
+                "test_end_time": "2025-01-14T23:00:00+00:00",
+                "log_loss": 0.92,
+                "class_prior_log_loss": 1.06,
+                "log_loss_skill_vs_prior": 0.14,
+                "multiclass_brier": 0.57,
+                "policy_realized_mean_r": 0.02,
+            },
+            {
+                "fold": 3,
+                "test_rows": 120,
+                "test_start_time": "2025-01-15T00:00:00+00:00",
+                "test_end_time": "2025-01-21T23:00:00+00:00",
+                "log_loss": 0.94,
+                "class_prior_log_loss": 1.07,
+                "log_loss_skill_vs_prior": 0.13,
+                "multiclass_brier": 0.59,
+                "policy_realized_mean_r": 0.01,
+            },
+        ],
         "policy_metric_schema": "decision-open-directional-spread-entry-exit-time-cohort-v13",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
@@ -247,3 +285,52 @@ def test_quality_gate_rejects_legacy_policy_metric_schema(tmp_path: Path) -> Non
     assert "invalid_policy_metric_schema" in result["reasons"]
     assert "policy_horizon_mismatch" in result["reasons"]
     assert "policy_capital_sleeves_mismatch" in result["reasons"]
+
+
+def test_quality_gate_rejects_walk_forward_temporal_instability(tmp_path: Path) -> None:
+    metrics = _metrics()
+    folds = metrics["walk_forward_fold_results"]
+    folds[1].update(
+        {
+            "log_loss": 1.10,
+            "class_prior_log_loss": 1.05,
+            "log_loss_skill_vs_prior": -0.05,
+            "policy_realized_mean_r": -0.02,
+        }
+    )
+    folds[2].update(
+        {
+            "log_loss": 1.12,
+            "class_prior_log_loss": 1.06,
+            "log_loss_skill_vs_prior": -0.06,
+            "policy_realized_mean_r": -0.01,
+        }
+    )
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics=metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is False
+    assert "walk_forward_skill_stability_below_minimum" in result["reasons"]
+    assert "walk_forward_policy_stability_below_minimum" in result["reasons"]
+    assert result["absolute"]["walk_forward_positive_skill_folds"] == 1
+    assert result["absolute"]["walk_forward_positive_policy_folds"] == 1
+
+
+def test_quality_gate_rejects_overlapping_walk_forward_test_windows(
+    tmp_path: Path,
+) -> None:
+    metrics = _metrics()
+    metrics["walk_forward_fold_results"][1]["test_start_time"] = (
+        "2025-01-07T12:00:00+00:00"
+    )
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics=metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is False
+    assert "invalid_walk_forward_evidence" in result["reasons"]

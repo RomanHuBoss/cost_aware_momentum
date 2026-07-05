@@ -28,7 +28,10 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
 ENTRY_EXECUTION_MODEL_SCHEMA = "directional-half-spread-on-next-hour-open-v1"
-TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
+TEMPORAL_SPLIT_SCHEMA_VERSION = "final-holdout-plus-expanding-walk-forward-v4"
+WALK_FORWARD_SCHEMA_VERSION = "expanding-train-rolling-calibration-purged-v1"
+DEFAULT_WALK_FORWARD_FOLDS = 3
+MIN_WALK_FORWARD_POSITIVE_FRACTION = 2.0 / 3.0
 POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-exit-time-cohort-v13"
 POLICY_UNCERTAINTY_SCHEMA = "all-horizon-phases-circular-moving-block-v2"
 HOUR_NS = 3_600_000_000_000
@@ -262,9 +265,10 @@ def minimum_hourly_history_timestamps_for_quality_gate(
 ) -> int:
     """Return the theoretical minimum raw hourly timestamps for the split/gate.
 
-    The calculation mirrors :func:`chronological_split` for one continuously
-    sampled symbol. Each decision timestamp emits the required LONG/SHORT pair,
-    the final 15% window starts after the horizon-sized embargo, and feature/label
+    The calculation mirrors the final :func:`chronological_split` and the
+    required expanding walk-forward development folds for one continuously sampled
+    symbol. Each decision timestamp emits the required LONG/SHORT pair, all
+    calibration/test boundaries are purged by the horizon, and feature/label
     construction consumes the 24-hour feature warm-up plus the future horizon.
 
     This is a necessary precondition, not a promise that gapped or invalid market
@@ -296,10 +300,22 @@ def minimum_hourly_history_timestamps_for_quality_gate(
         train_timestamps = train_index - horizon
         calibration_timestamps = calibration_index - train_index - 2 * horizon
         test_timestamps = labeled_timestamps - calibration_index - horizon
+        development_timestamps = calibration_index
+        walk_forward_block = development_timestamps // (
+            DEFAULT_WALK_FORWARD_FOLDS + 3
+        )
+        walk_forward_initial_train = development_timestamps - (
+            DEFAULT_WALK_FORWARD_FOLDS + 1
+        ) * walk_forward_block
+        walk_forward_ready = (
+            walk_forward_block >= 45 + 2 * horizon
+            and walk_forward_initial_train >= max(90, 45 + horizon)
+        )
         if (
             train_timestamps >= 45
             and calibration_timestamps >= 45
             and test_timestamps >= required_test_timestamps
+            and walk_forward_ready
         ):
             return labeled_timestamps + FEATURE_LOOKBACK_HOURS + horizon
         labeled_timestamps += 1
@@ -794,6 +810,14 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
     if cal["label_end_time"].max() >= test["decision_time"].min():
         raise AssertionError("Calibration labels overlap final-holdout features")
 
+    return _dataset_split_from_frames(train, cal, test)
+
+
+def _dataset_split_from_frames(
+    train: pd.DataFrame,
+    cal: pd.DataFrame,
+    test: pd.DataFrame,
+) -> DatasetSplit:
     meta_columns = [
         "decision_time",
         "open_time",
@@ -810,6 +834,17 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
     ]
     if "entry_price" in test.columns:
         meta_columns.insert(5, "entry_price")
+    missing = [
+        column
+        for column in meta_columns
+        if column not in train.columns
+        or column not in cal.columns
+        or column not in test.columns
+    ]
+    if missing:
+        raise ValueError(
+            f"Temporal split metadata is missing columns: {sorted(set(missing))}"
+        )
     return DatasetSplit(
         train[MODEL_FEATURE_NAMES].to_numpy(float),
         train["target"].to_numpy(),
@@ -821,6 +856,128 @@ def chronological_split(frame: pd.DataFrame, purge_rows: int = 12) -> DatasetSpl
         train[meta_columns].reset_index(drop=True),
         cal[meta_columns].reset_index(drop=True),
     )
+
+
+def expanding_walk_forward_splits(
+    frame: pd.DataFrame,
+    *,
+    folds: int = DEFAULT_WALK_FORWARD_FOLDS,
+    purge_hours: int = 12,
+) -> list[DatasetSplit]:
+    """Build purged expanding-train/rolling-calibration walk-forward folds.
+
+    The final untouched holdout is constructed separately by
+    :func:`chronological_split`. This function is intended for the development
+    region that ends strictly before that final holdout. Each successive fold
+    expands the training window by the prior test block, rolls calibration
+    forward, and evaluates on a later non-overlapping test block. Boundaries are
+    whole decision timestamps and all label-end overlap is purged.
+    """
+
+    if isinstance(folds, bool) or not isinstance(folds, (int, np.integer)):
+        raise TypeError("walk-forward folds must be an integer")
+    folds = int(folds)
+    if folds < 2 or folds > 8:
+        raise ValueError("walk-forward folds must be between 2 and 8")
+    if isinstance(purge_hours, bool) or not isinstance(
+        purge_hours, (int, np.integer)
+    ):
+        raise TypeError("purge_hours must be an integer number of hours")
+    purge_hours = int(purge_hours)
+    if purge_hours < 0:
+        raise ValueError("purge_hours must be non-negative")
+
+    required_columns = {"decision_time", "label_end_time", "exit_at_open"}
+    missing_columns = sorted(required_columns - set(frame.columns))
+    if missing_columns:
+        raise ValueError(f"Walk-forward split requires columns: {missing_columns}")
+
+    ordered = frame.copy()
+    ordered["decision_time"] = pd.to_datetime(
+        ordered["decision_time"], utc=True, errors="coerce"
+    )
+    ordered["label_end_time"] = pd.to_datetime(
+        ordered["label_end_time"], utc=True, errors="coerce"
+    )
+    if ordered[["decision_time", "label_end_time"]].isna().any().any():
+        raise ValueError("Walk-forward split contains invalid temporal metadata")
+    if (ordered["label_end_time"] <= ordered["decision_time"]).any():
+        raise ValueError("Walk-forward label_end_time must be later than decision_time")
+    valid_open_flags = ordered["exit_at_open"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+    )
+    if not valid_open_flags.all():
+        raise ValueError("Walk-forward exit_at_open must contain booleans")
+    ordered["exit_at_open"] = ordered["exit_at_open"].astype(bool)
+    validate_directional_scenario_pairs(ordered, context="Walk-forward split")
+    ordered = ordered.sort_values(
+        ["decision_time", "symbol", "direction"], kind="mergesort"
+    ).reset_index(drop=True)
+
+    unique_times = pd.Index(
+        ordered["decision_time"].drop_duplicates().sort_values()
+    )
+    n_times = len(unique_times)
+    block_size = n_times // (folds + 3)
+    initial_train_times = n_times - (folds + 1) * block_size
+    minimum_block_times = 45 + 2 * purge_hours
+    minimum_initial_train_times = max(90, 45 + purge_hours)
+    if (
+        block_size < minimum_block_times
+        or initial_train_times < minimum_initial_train_times
+    ):
+        raise ValueError(
+            "Insufficient history for walk-forward validation after purge: "
+            f"each rolling block requires at least {minimum_block_times} timestamps "
+            f"and the initial training region at least {minimum_initial_train_times}"
+        )
+
+    embargo = pd.Timedelta(purge_hours, unit="h")
+    terminal_boundary = ordered["label_end_time"].max() + pd.Timedelta(
+        nanoseconds=1
+    )
+    results: list[DatasetSplit] = []
+    previous_test_end: pd.Timestamp | None = None
+    for fold_index in range(folds):
+        train_boundary_index = initial_train_times + fold_index * block_size
+        test_boundary_index = train_boundary_index + block_size
+        test_end_index = test_boundary_index + block_size
+        train_boundary = pd.Timestamp(unique_times[train_boundary_index])
+        test_boundary = pd.Timestamp(unique_times[test_boundary_index])
+        test_end_boundary = (
+            pd.Timestamp(unique_times[test_end_index])
+            if test_end_index < n_times
+            else terminal_boundary
+        )
+
+        train = ordered[ordered["label_end_time"] < train_boundary]
+        cal = ordered[
+            (ordered["decision_time"] >= train_boundary + embargo)
+            & (ordered["label_end_time"] < test_boundary)
+        ]
+        test = ordered[
+            (ordered["decision_time"] >= test_boundary + embargo)
+            & (ordered["label_end_time"] < test_end_boundary)
+        ]
+        if min(len(train), len(cal), len(test)) < 90:
+            raise ValueError(
+                f"Walk-forward fold {fold_index + 1} produced an undersized window"
+            )
+        if train["label_end_time"].max() >= cal["decision_time"].min():
+            raise AssertionError(
+                "Walk-forward train labels overlap calibration features"
+            )
+        if cal["label_end_time"].max() >= test["decision_time"].min():
+            raise AssertionError(
+                "Walk-forward calibration labels overlap test features"
+            )
+        current_test_start = pd.Timestamp(test["decision_time"].min())
+        current_test_end = pd.Timestamp(test["decision_time"].max())
+        if previous_test_end is not None and current_test_start <= previous_test_end:
+            raise AssertionError("Walk-forward test windows overlap")
+        previous_test_end = current_test_end
+        results.append(_dataset_split_from_frames(train, cal, test))
+    return results
 
 
 def _expected_calibration_error(y_true: np.ndarray, probabilities: np.ndarray, bins: int = 10) -> float:

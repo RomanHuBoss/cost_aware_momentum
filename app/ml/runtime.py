@@ -20,6 +20,7 @@ from app.ml.training import (
     OUTCOME_CLASSES,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
     TIMEOUT_RETURN_SCHEMA_VERSION,
+    WALK_FORWARD_SCHEMA_VERSION,
 )
 from app.risk.math import validate_probability_simplex
 
@@ -79,6 +80,9 @@ class ModelRuntime:
             ),
             "temporal_split_schema": (
                 self.bundle.get("temporal_split_schema") if self.bundle is not None else None
+            ),
+            "walk_forward_schema": (
+                self.bundle.get("walk_forward_schema") if self.bundle is not None else None
             ),
             "timeout_return_schema_version": (
                 self.bundle.get("timeout_return_schema_version")
@@ -146,6 +150,13 @@ class ModelRuntime:
                     "Model temporal split schema mismatch: "
                     f"expected {TEMPORAL_SPLIT_SCHEMA_VERSION}, "
                     f"got {temporal_split_schema or 'missing'}"
+                )
+            walk_forward_schema = str(bundle.get("walk_forward_schema") or "")
+            if walk_forward_schema != WALK_FORWARD_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model walk-forward schema mismatch: "
+                    f"expected {WALK_FORWARD_SCHEMA_VERSION}, "
+                    f"got {walk_forward_schema or 'missing'}"
                 )
             timeout_return_schema = str(bundle.get("timeout_return_schema_version") or "")
             if timeout_return_schema != TIMEOUT_RETURN_SCHEMA_VERSION:

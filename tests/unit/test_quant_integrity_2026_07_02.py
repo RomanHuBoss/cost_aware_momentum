@@ -23,6 +23,7 @@ from app.ml.training import (
     OUTCOME_CLASSES,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
     TIMEOUT_RETURN_SCHEMA_VERSION,
+    WALK_FORWARD_SCHEMA_VERSION,
 )
 
 
@@ -154,6 +155,7 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
             "entry_spread_bps": 18.0,
         },
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+        "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "horizon_hours": 8,
         "stop_atr_multiplier": 1.15,
@@ -171,6 +173,8 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
         ("label_path_schema_version", "ohlc-open-first-stop-gap-v1", "label path schema"),
         ("temporal_split_schema", None, "temporal split schema"),
         ("temporal_split_schema", "random-split-v0", "temporal split schema"),
+        ("walk_forward_schema", None, "walk-forward schema"),
+        ("walk_forward_schema", "single-split-v0", "walk-forward schema"),
         ("entry_spread_bps", None, "entry_spread_bps"),
         ("entry_spread_bps", -0.1, "entry_spread_bps"),
     ],
@@ -259,6 +263,44 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
             "schema": "directional-half-spread-on-next-hour-open-v1",
             "entry_spread_bps": 18.0,
         },
+        "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
+        "walk_forward_folds_requested": 3,
+        "walk_forward_folds_completed": 3,
+        "walk_forward_fold_results": [
+            {
+                "fold": 1,
+                "test_rows": 120,
+                "test_start_time": "2025-01-01T00:00:00+00:00",
+                "test_end_time": "2025-01-07T23:00:00+00:00",
+                "log_loss": 0.90,
+                "class_prior_log_loss": 1.05,
+                "log_loss_skill_vs_prior": 0.15,
+                "multiclass_brier": 0.55,
+                "policy_realized_mean_r": 0.03,
+            },
+            {
+                "fold": 2,
+                "test_rows": 120,
+                "test_start_time": "2025-01-08T00:00:00+00:00",
+                "test_end_time": "2025-01-14T23:00:00+00:00",
+                "log_loss": 0.92,
+                "class_prior_log_loss": 1.06,
+                "log_loss_skill_vs_prior": 0.14,
+                "multiclass_brier": 0.57,
+                "policy_realized_mean_r": 0.02,
+            },
+            {
+                "fold": 3,
+                "test_rows": 120,
+                "test_start_time": "2025-01-15T00:00:00+00:00",
+                "test_end_time": "2025-01-21T23:00:00+00:00",
+                "log_loss": 0.94,
+                "class_prior_log_loss": 1.07,
+                "log_loss_skill_vs_prior": 0.13,
+                "multiclass_brier": 0.59,
+                "policy_realized_mean_r": 0.01,
+            },
+        ],
         "policy_metric_schema": "decision-open-directional-spread-entry-exit-time-cohort-v13",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
@@ -359,6 +401,16 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
     monkeypatch.setattr(lifecycle, "chronological_split", lambda *_args, **_kwargs: split)
     monkeypatch.setattr(lifecycle, "TemporalCalibratedBarrierModel", _TrainableArtifactModel)
     monkeypatch.setattr(lifecycle, "evaluate_model", lambda *_args, **_kwargs: {"rows": 1})
+    monkeypatch.setattr(
+        lifecycle,
+        "evaluate_walk_forward_validation",
+        lambda *_args, **_kwargs: {
+            "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
+            "walk_forward_folds_requested": 3,
+            "walk_forward_folds_completed": 3,
+            "walk_forward_fold_results": [],
+        },
+    )
     monkeypatch.setattr(
         lifecycle,
         "profile_training_frame",

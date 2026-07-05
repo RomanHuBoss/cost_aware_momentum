@@ -26,19 +26,23 @@ from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
+    DEFAULT_WALK_FORWARD_FOLDS,
     ENTRY_EXECUTION_MODEL_SCHEMA,
     LABEL_PATH_SCHEMA_VERSION,
+    MIN_WALK_FORWARD_POSITIVE_FRACTION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     POLICY_METRIC_SCHEMA,
     POLICY_UNCERTAINTY_SCHEMA,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
     TIMEOUT_RETURN_SCHEMA_VERSION,
+    WALK_FORWARD_SCHEMA_VERSION,
     PolicyEvaluationConfig,
     TemporalCalibratedBarrierModel,
     chronological_split,
     evaluate_model,
     evaluate_policy_model,
+    expanding_walk_forward_splits,
     make_barrier_dataset,
     timeout_return_r_targets,
 )
@@ -300,6 +304,146 @@ def incumbent_from_registry(model: ModelRegistry | None) -> IncumbentSnapshot | 
     )
 
 
+def evaluate_walk_forward_validation(
+    dataset: pd.DataFrame,
+    final_split,
+    *,
+    horizon: int,
+    model_type: str,
+    policy_config: PolicyEvaluationConfig | None,
+    folds: int = DEFAULT_WALK_FORWARD_FOLDS,
+) -> dict[str, Any]:
+    """Train fresh models across purged expanding walk-forward folds.
+
+    The development region ends before the final untouched holdout. Models are
+    refit and recalibrated independently in every fold, so the result measures
+    temporal stability rather than repeatedly scoring one model on several slices.
+    """
+
+    if final_split.test_meta is None or final_split.test_meta.empty:
+        raise ValueError(
+            "Final holdout metadata is required for walk-forward validation"
+        )
+    final_holdout_times = pd.to_datetime(
+        final_split.test_meta["decision_time"], utc=True, errors="coerce"
+    )
+    if final_holdout_times.isna().any():
+        raise ValueError("Final holdout contains invalid decision_time values")
+    final_holdout_start = final_holdout_times.min()
+
+    label_end_times = pd.to_datetime(
+        dataset["label_end_time"], utc=True, errors="coerce"
+    )
+    if label_end_times.isna().any():
+        raise ValueError("Dataset contains invalid label_end_time values")
+    development = dataset[label_end_times < final_holdout_start].copy()
+    fold_splits = expanding_walk_forward_splits(
+        development,
+        folds=folds,
+        purge_hours=horizon,
+    )
+
+    fold_results: list[dict[str, Any]] = []
+    for fold_index, fold_split in enumerate(fold_splits, start=1):
+        if fold_split.train_meta is None or fold_split.cal_meta is None:
+            raise RuntimeError(
+                "Walk-forward split did not expose train/calibration metadata"
+            )
+        fold_model = TemporalCalibratedBarrierModel(model_type).fit(
+            fold_split.x_train,
+            fold_split.y_train,
+            fold_split.x_cal,
+            fold_split.y_cal,
+            timeout_return_r_train=timeout_return_r_targets(fold_split.train_meta),
+        )
+        fold_metrics = evaluate_model(fold_model, fold_split)
+        if policy_config is not None:
+            fold_metrics.update(
+                evaluate_policy_model(
+                    fold_model,
+                    fold_split,
+                    policy_config,
+                    horizon_hours=horizon,
+                )
+            )
+        train_times = pd.to_datetime(
+            fold_split.train_meta["decision_time"], utc=True, errors="raise"
+        )
+        cal_times = pd.to_datetime(
+            fold_split.cal_meta["decision_time"], utc=True, errors="raise"
+        )
+        fold_results.append(
+            json_compatible(
+                {
+                    "fold": fold_index,
+                    "train_rows": int(len(fold_split.y_train)),
+                    "calibration_rows": int(len(fold_split.y_cal)),
+                    "test_rows": int(len(fold_split.y_test)),
+                    "train_start_time": train_times.min().isoformat(),
+                    "train_end_time": train_times.max().isoformat(),
+                    "calibration_start_time": cal_times.min().isoformat(),
+                    "calibration_end_time": cal_times.max().isoformat(),
+                    "test_start_time": fold_metrics["holdout_start_time"],
+                    "test_end_time": fold_metrics["holdout_end_time"],
+                    **fold_metrics,
+                }
+            )
+        )
+
+    skills = [float(item["log_loss_skill_vs_prior"]) for item in fold_results]
+    log_losses = [float(item["log_loss"]) for item in fold_results]
+    briers = [float(item["multiclass_brier"]) for item in fold_results]
+    policy_means = [
+        float(value)
+        for item in fold_results
+        if (value := item.get("policy_realized_mean_r")) is not None
+    ]
+    positive_skill_folds = sum(value > 0.0 for value in skills)
+    positive_policy_folds = sum(value > 0.0 for value in policy_means)
+    completed = len(fold_results)
+    return json_compatible(
+        {
+            "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
+            "walk_forward_folds_requested": int(folds),
+            "walk_forward_folds_completed": completed,
+            "walk_forward_final_holdout_start_time": (
+                final_holdout_start.isoformat()
+            ),
+            "walk_forward_log_loss_mean": float(sum(log_losses) / completed),
+            "walk_forward_log_loss_max": float(max(log_losses)),
+            "walk_forward_multiclass_brier_mean": float(
+                sum(briers) / completed
+            ),
+            "walk_forward_multiclass_brier_max": float(max(briers)),
+            "walk_forward_log_loss_skill_mean": float(
+                sum(skills) / completed
+            ),
+            "walk_forward_log_loss_skill_min": float(min(skills)),
+            "walk_forward_positive_skill_folds": int(positive_skill_folds),
+            "walk_forward_positive_skill_fraction": float(
+                positive_skill_folds / completed
+            ),
+            "walk_forward_policy_positive_mean_r_folds": int(
+                positive_policy_folds
+            ),
+            "walk_forward_policy_positive_mean_r_fraction": (
+                float(positive_policy_folds / completed)
+                if policy_config is not None
+                else None
+            ),
+            "walk_forward_policy_realized_mean_r_mean": (
+                float(sum(policy_means) / len(policy_means))
+                if policy_means
+                else None
+            ),
+            "walk_forward_policy_realized_mean_r_min": (
+                float(min(policy_means)) if policy_means else None
+            ),
+            "walk_forward_fold_results": fold_results,
+        }
+    )
+
+
 def build_model_candidate(
     candles: pd.DataFrame,
     *,
@@ -352,6 +496,15 @@ def build_model_candidate(
         metrics.update(
             evaluate_policy_model(model, split, policy_config, horizon_hours=horizon)
         )
+    metrics.update(
+        evaluate_walk_forward_validation(
+            dataset,
+            split,
+            horizon=horizon,
+            model_type=model_type,
+            policy_config=policy_config,
+        )
+    )
 
     incumbent_metrics: dict[str, Any] | None = None
     if incumbent and incumbent.is_artifact_model:
@@ -442,6 +595,7 @@ def build_model_candidate(
         "entry_spread_bps": float(entry_spread_bps),
         "entry_execution_model": metrics["entry_execution_model"],
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
+        "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "label_data_end": label_data_end.isoformat(),
         "horizon_hours": horizon,
@@ -555,6 +709,112 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         abs_tol=1e-12,
     ):
         reasons.append("entry_spread_bps_mismatch")
+
+    walk_forward_schema = metrics.get("walk_forward_schema")
+    walk_forward_requested = finite_or_none(metrics.get("walk_forward_folds_requested"))
+    walk_forward_completed = finite_or_none(metrics.get("walk_forward_folds_completed"))
+    walk_forward_results = metrics.get("walk_forward_fold_results")
+    walk_forward_positive_skill_folds = 0
+    walk_forward_positive_policy_folds = 0
+    walk_forward_skill_fraction = 0.0
+    walk_forward_policy_fraction = 0.0
+    walk_forward_max_log_loss: float | None = None
+    walk_forward_max_brier: float | None = None
+    valid_walk_forward = True
+    if walk_forward_schema != WALK_FORWARD_SCHEMA_VERSION:
+        reasons.append("invalid_walk_forward_schema")
+        valid_walk_forward = False
+    if (
+        walk_forward_requested is None
+        or not walk_forward_requested.is_integer()
+        or int(walk_forward_requested) != DEFAULT_WALK_FORWARD_FOLDS
+    ):
+        reasons.append("invalid_walk_forward_fold_count")
+        valid_walk_forward = False
+    if (
+        walk_forward_completed is None
+        or not walk_forward_completed.is_integer()
+        or int(walk_forward_completed) != DEFAULT_WALK_FORWARD_FOLDS
+    ):
+        reasons.append("incomplete_walk_forward_validation")
+        valid_walk_forward = False
+    if not isinstance(walk_forward_results, list) or len(walk_forward_results) != DEFAULT_WALK_FORWARD_FOLDS:
+        reasons.append("invalid_walk_forward_fold_results")
+        valid_walk_forward = False
+        walk_forward_results = []
+
+    prior_test_end: pd.Timestamp | None = None
+    fold_log_losses: list[float] = []
+    fold_briers: list[float] = []
+    for expected_fold, fold_result in enumerate(walk_forward_results, start=1):
+        if not isinstance(fold_result, dict):
+            valid_walk_forward = False
+            continue
+        fold_number = finite_or_none(fold_result.get("fold"))
+        fold_rows = finite_or_none(fold_result.get("test_rows"))
+        fold_log_loss = finite_or_none(fold_result.get("log_loss"))
+        fold_prior_log_loss = finite_or_none(fold_result.get("class_prior_log_loss"))
+        fold_skill = finite_or_none(fold_result.get("log_loss_skill_vs_prior"))
+        fold_brier = finite_or_none(fold_result.get("multiclass_brier"))
+        fold_policy_mean = finite_or_none(fold_result.get("policy_realized_mean_r"))
+        try:
+            fold_test_start = pd.Timestamp(fold_result.get("test_start_time"))
+            fold_test_end = pd.Timestamp(fold_result.get("test_end_time"))
+            temporal_valid = (
+                fold_test_start.tzinfo is not None
+                and fold_test_end.tzinfo is not None
+                and fold_test_start <= fold_test_end
+                and (prior_test_end is None or fold_test_start > prior_test_end)
+            )
+        except (TypeError, ValueError):
+            temporal_valid = False
+            fold_test_end = prior_test_end
+        if not temporal_valid:
+            valid_walk_forward = False
+        else:
+            prior_test_end = fold_test_end
+        if (
+            fold_number is None
+            or not fold_number.is_integer()
+            or int(fold_number) != expected_fold
+            or fold_rows is None
+            or not fold_rows.is_integer()
+            or fold_rows < 90
+            or fold_log_loss is None
+            or fold_prior_log_loss is None
+            or fold_skill is None
+            or fold_brier is None
+            or fold_policy_mean is None
+        ):
+            valid_walk_forward = False
+            continue
+        if not math.isclose(
+            fold_prior_log_loss - fold_log_loss,
+            fold_skill,
+            rel_tol=1e-7,
+            abs_tol=1e-9,
+        ):
+            valid_walk_forward = False
+        fold_log_losses.append(fold_log_loss)
+        fold_briers.append(fold_brier)
+        walk_forward_positive_skill_folds += int(fold_skill > 0.0)
+        walk_forward_positive_policy_folds += int(fold_policy_mean > 0.0)
+
+    if not valid_walk_forward:
+        reasons.append("invalid_walk_forward_evidence")
+    if len(fold_log_losses) == DEFAULT_WALK_FORWARD_FOLDS:
+        walk_forward_max_log_loss = max(fold_log_losses)
+        walk_forward_max_brier = max(fold_briers)
+        walk_forward_skill_fraction = walk_forward_positive_skill_folds / DEFAULT_WALK_FORWARD_FOLDS
+        walk_forward_policy_fraction = walk_forward_positive_policy_folds / DEFAULT_WALK_FORWARD_FOLDS
+        if walk_forward_max_log_loss > settings.auto_train_max_log_loss:
+            reasons.append("walk_forward_log_loss_above_limit")
+        if walk_forward_max_brier > settings.auto_train_max_multiclass_brier:
+            reasons.append("walk_forward_multiclass_brier_above_limit")
+        if walk_forward_skill_fraction < MIN_WALK_FORWARD_POSITIVE_FRACTION:
+            reasons.append("walk_forward_skill_stability_below_minimum")
+        if walk_forward_policy_fraction < MIN_WALK_FORWARD_POSITIVE_FRACTION:
+            reasons.append("walk_forward_policy_stability_below_minimum")
 
     class_distribution = metrics.get("class_distribution")
     required_classes = {"TP", "SL", "TIMEOUT"}
@@ -884,6 +1144,17 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "expected_entry_execution_model_schema": ENTRY_EXECUTION_MODEL_SCHEMA,
             "entry_spread_bps": entry_spread_bps,
             "configured_entry_spread_bps": settings.model_entry_spread_bps,
+            "walk_forward_schema": walk_forward_schema,
+            "expected_walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
+            "walk_forward_folds_requested": walk_forward_requested,
+            "walk_forward_folds_completed": walk_forward_completed,
+            "walk_forward_positive_skill_folds": walk_forward_positive_skill_folds,
+            "walk_forward_positive_skill_fraction": walk_forward_skill_fraction,
+            "walk_forward_positive_policy_folds": walk_forward_positive_policy_folds,
+            "walk_forward_positive_policy_fraction": walk_forward_policy_fraction,
+            "walk_forward_minimum_positive_fraction": MIN_WALK_FORWARD_POSITIVE_FRACTION,
+            "walk_forward_max_log_loss": walk_forward_max_log_loss,
+            "walk_forward_max_multiclass_brier": walk_forward_max_brier,
             "holdout_rows": rows,
             "min_holdout_rows": settings.auto_train_min_holdout_rows,
             "holdout_span_hours": holdout_span_value,

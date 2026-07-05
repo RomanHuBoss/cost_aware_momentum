@@ -1,5 +1,17 @@
 # Configuration
 
+## Walk-forward validation
+
+Release 1.11.0 не добавляет новую `.env` переменную. Safety protocol зафиксирован в code/artifact contract:
+
+- 3 expanding folds;
+- fresh training and calibration per fold;
+- purge/embargo равен model horizon;
+- минимум 90 LONG/SHORT rows в каждом fold test;
+- positive ML skill и positive policy mean R минимум в 2 из 3 folds.
+
+Значения намеренно не являются операторским tuning knob: изменение числа folds или stability threshold требует новой schema, тестов и model governance review.
+
 ## MODEL_ENTRY_SPREAD_BPS
 
 `MODEL_ENTRY_SPREAD_BPS` — конечное неотрицательное число, представляющее полный historical bid/ask spread stress в basis points.

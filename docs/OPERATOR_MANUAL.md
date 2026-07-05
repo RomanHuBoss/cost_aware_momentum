@@ -1,20 +1,19 @@
 # Operator Manual
 
-## Upgrade to 1.10.0
+## Upgrade to 1.11.0
 
-1. Сохраните backup PostgreSQL и текущего model registry/artifact.
-2. Обновите исходники. Alembic migration не требуется.
-3. Добавьте в `.env` или подтвердите:
+1. Сохраните backup PostgreSQL, model registry и active artifact.
+2. Обновите исходники. Alembic migration и новые `.env` переменные не требуются.
+3. Запустите `python manage.py doctor` в настроенном локальном окружении.
+4. Переобучите candidate: artifact 1.10.0 не содержит обязательную walk-forward schema и должен быть отклонён runtime fail-closed.
+5. Проверьте diagnostics каждого fold: временные границы, rows, skill vs prior, Brier и policy mean R.
+6. Не ослабляйте gate при `walk_forward_*` reason code. Сначала увеличьте историческое покрытие или исследуйте временную нестабильность.
+7. После прохождения gates выполните paper/shadow validation; historical walk-forward не заменяет forward evidence.
 
-```env
-MODEL_ENTRY_SPREAD_BPS=18
-```
+## Требование к истории
 
-4. Запустите `python manage.py doctor` в локальном настроенном окружении.
-5. Переобучите candidate. Старый artifact с прежней label schema не должен загружаться.
-6. Проверьте gate diagnostics. Не активируйте candidate с mismatch execution metadata.
-7. Выполните paper/shadow validation до любого ручного использования рекомендаций.
+При default horizon и quality settings trainer по-прежнему требует минимум 1206 уникальных hourly timestamps. Это теоретический минимум для непрерывной истории. Гэпы, invalid bars, class collapse или недостаточные TIMEOUT observations могут потребовать больше данных и должны блокировать обучение.
 
-## Интерпретация
+## Entry spread interpretation
 
-`18` означает полный 18 bps spread stress, то есть 9 bps adverse offset от next-hour open для каждой стороны. Это не оценка конкретного инструмента и не historical orderbook reconstruction. Для консервативного исследования значение должно определяться до OOS evaluation и фиксироваться в experiment record.
+`MODEL_ENTRY_SPREAD_BPS=18` означает полный 18 bps spread stress, то есть 9 bps adverse offset от next-hour open для каждой стороны. Это не historical orderbook reconstruction. Значение должно быть зафиксировано до OOS evaluation.

@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.10.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.11.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -10,9 +10,9 @@
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Не реализовано | Есть только current orderbook GET; historical depth store/fill simulator отсутствуют. |
 | Historical funding tied to actual settlements in research labels | Частично реализовано | Funding table/live projection существуют; training/backtest policy принимает scalar scenario, не event-by-event historical timeline. |
-| Rolling/expanding walk-forward | Не реализовано | Используется один purged chronological split. |
+| Rolling/expanding walk-forward | Реализовано 1.11.0 | Три purged expanding folds внутри development period, fresh fit/calibration на каждом fold и отдельный final holdout. Не является nested CV/PBO. |
 | Operator-selection bias correction | Частично реализовано | Counterfactual outcome records существуют, causal/IPW/selection model отсутствует. |
 | Intrahorizon MTM and liquidation simulation | Не реализовано | Backtest прямо фиксирует отсутствие MTM; есть только pre-trade approximate liquidation guard. |
 | OI/basis/funding/liquidity/context features | Не реализовано в model | Model использует 10 OHLCV-derived features; OI/funding могут храниться, но не входят в feature schema. |
-| PBO, Deflated Sharpe, full experiment ledger | Частично реализовано | Immutable artifacts/model registry/backtest runs дают часть ledger; PBO/DSR отсутствуют. |
+| PBO, Deflated Sharpe, full experiment ledger | Частично реализовано | Immutable artifacts/model registry/backtest runs и fold evidence дают часть ledger; PBO/DSR отсутствуют. |
 | Production drift monitoring | Не реализовано | Нет PSI/calibration/feature drift service и alert gate. |

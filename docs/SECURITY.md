@@ -5,5 +5,7 @@
 - Bybit integration не содержит create/amend/cancel order methods.
 - PostgreSQL обязателен; SQLite fallback отсутствует.
 - Model artifacts проверяются по SHA-256, version и semantic schemas.
-- Несовместимый execution metadata вызывает fail-closed error, а не fallback на старую модель.
-- Baseline остается diagnostic-only, если явно не изменена опасная конфигурация; production validation не ослаблялась в 1.10.0.
+- Runtime требует согласованные feature, label, execution, temporal и walk-forward schemas.
+- Несовместимый или неполный validation metadata вызывает fail-closed error/gate failure, а не fallback на старую модель.
+- Candidate failure не деактивирует incumbent.
+- Baseline остаётся diagnostic-only; production validation в 1.11.0 усилена, а не ослаблена.
