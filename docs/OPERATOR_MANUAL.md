@@ -1,5 +1,25 @@
 # Operator Manual
 
+## Upgrade to 1.15.0
+
+1. Остановите процессы и сохраните backup PostgreSQL.
+2. Обновите исходники; новые `.env` параметры и retraining ML artifact не требуются.
+3. Выполните `python manage.py migrate`; ожидаемый head — `0011_selection_experiment`.
+4. Запустите `python manage.py doctor` и обычные API/worker/trainer процессы.
+5. Убедитесь, что новые execution plans создают строки в `advisory.selection_experiment_ledger`. Legacy opportunities до 1.15.0 намеренно не backfill-ятся.
+6. После накопления минимум нескольких десятков ACCEPT и непринятых eligible plans выполните `python manage.py selection-report -- --days 90`.
+7. Основной показатель — all-eligible counterfactual mean R. Selected-only mean показывает результат выбранного подмножества; IPSW является диагностикой смещения, а не доказательством того, что ручной выбор добавляет доходность.
+8. При `LEDGER_INTEGRITY_ERROR`, class collapse, poor overlap или low ESS не используйте corrected estimate и не редактируйте ledger вручную.
+
+## Интерпретация decision classes
+
+- `ACCEPT`: оператор принял конкретную plan version.
+- `REJECT`: оператор явно отклонил её.
+- `NO_DECISION`: outcome уже доступен, но terminal operator decision отсутствует.
+- Ineligible plans сохраняются для полноты ledger, но не входят в propensity/IPSW cohort.
+
+Unit наблюдения — созданная plan version. Система пока не доказывает, что оператор действительно видел каждую карточку; автоматические пересчёты могут создавать коррелированные версии одной рекомендации.
+
 ## Upgrade to 1.14.0
 
 1. Остановите API, worker и trainer; сохраните backup PostgreSQL и текущий model registry/artifact.

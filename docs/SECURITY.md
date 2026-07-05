@@ -1,5 +1,14 @@
 # Security
 
+## Selection ledger integrity boundary 1.15.0
+
+- Ledger row создаётся до operator decision в транзакции execution-plan creation.
+- Feature schema содержит только числовые ex-ante поля; action, outcome, counterfactual R и realized P&L запрещены.
+- Canonical SHA-256 включает identifiers, timestamp, eligibility, schema, features и release version. Несовпадение блокирует analysis.
+- Report не изменяет execution plan, decision, outcome или model artifact и не вызывает Bybit mutation endpoints.
+- Raw comments/operator identifiers не входят в propensity features.
+- IPSW не публикуется при слабом overlap или effective sample size; fail-open fallback отсутствует.
+
 ## Execution evidence boundary 1.14.0
 
 - Orderbook endpoint остаётся public GET; create/amend/cancel order methods не добавлены.

@@ -70,6 +70,12 @@ Release 1.14.0 не добавляет orderbook features в market model и н�
 
 Схема evidence: `bybit-rest-depth-vwap-fill-v1`. Это prospective execution-quality evidence, не historical training feature и не подтверждение реального fill. RPI liquidity, queue position, order type, network/decision latency distribution и OMS partial-fill lifecycle отсутствуют.
 
+## Operator-selection diagnostics 1.15.0
+
+Selection model не является market model и не влияет на signal probabilities, direction, RR, EV, sizing или activation. Это отдельный retrospective reporting model, обучаемый только на ранее созданных plan opportunities и только для оценки различий между accepted subset и всеми eligible plans. Outcome не входит в propensity features. Все propensity predictions для оцениваемого блока строятся на более ранних наблюдениях.
+
+Поскольку counterfactual outcomes доступны и для непринятых plans, primary benchmark — прямое среднее всех eligible valued opportunities. IPSW accepted-only estimate служит проверяемой диагностикой selection bias. Отчёт не доказывает causal operator skill, actual fill profitability или отсутствие unmeasured confounding.
+
 ## Promotion
 
 Auto-activation требует:

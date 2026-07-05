@@ -1,5 +1,26 @@
 # Traceability
 
+## Work package: prospective operator-selection experiment ledger
+
+| Acceptance criterion | Production/research implementation | Tests |
+|---|---|---|
+| Every plan version creates one experiment opportunity in the same transaction | `app/services/execution.py::create_execution_plan`, `SelectionExperimentLedger`, migration `0011` | `test_execution_plan_records_ex_ante_selection_experiment`, schema tests |
+| Features are fixed before operator action and exclude outcome fields | `app/services/selection_experiments.py::_selection_feature_snapshot` | `test_selection_ledger_is_predecision_and_tamper_evident`, leakage test |
+| Canonical SHA-256 detects modified ledger payload | `verify_selection_ledger_integrity` | tamper tests and report integrity test |
+| ACCEPT, REJECT and absent decision are represented | `selection_bias_report` | `test_selection_report_counts_accept_reject_and_no_decision` |
+| Propensity predictions are chronological out-of-sample | `app/research/selection_bias.py::_chronological_propensity_scores` | synthetic IPSW regression |
+| Accepted-only bias is compared with observed all-eligible outcomes | `analyze_operator_selection` | `test_ipsw_reduces_selected_subset_bias_against_observed_eligible_benchmark` |
+| Class collapse, poor overlap, low ESS and corruption do not emit a corrected estimate | same | class-collapse and integrity regressions |
+| Operator report is explicit about non-causal interpretation | `scripts/selection_report.py`, `scripts/daily_report.py` | report contract tests/full suite |
+
+## Schema changes 1.15.0
+
+- Database head: `0011_selection_experiment`.
+- Ledger schema: `selection-experiment-ledger-v1`.
+- Feature schema: `operator-selection-predecision-v1`.
+- Analysis schema: `operator-selection-ipsw-report-v1`.
+- Evidence is prospective from 1.15.0; legacy plan opportunities are not backfilled.
+
 ## Work package: point-in-time orderbook execution evidence
 
 | Acceptance criterion | Production implementation | Tests |

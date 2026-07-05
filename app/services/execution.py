@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import __version__
 from app.config import Settings
 from app.db.locks import acquire_advisory_xact_lock
 from app.db.models import (
@@ -46,6 +47,7 @@ from app.risk.policy import (
     validate_capital_profile_policy,
 )
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.selection_experiments import build_selection_ledger_row
 
 IMMUTABLE_PLAN_STATUSES = frozenset({"ACCEPTED", "ENTERED", "PARTIAL", "CLOSED"})
 LIQUIDITY_TURNOVER_FRACTION = Decimal("0.0001")
@@ -1265,6 +1267,13 @@ async def create_execution_plan(
     )
     session.add(plan)
     await session.flush()
+    selection_ledger = build_selection_ledger_row(
+        signal=signal,
+        plan=plan,
+        observed_at=now,
+        release_version=__version__,
+    )
+    session.add(selection_ledger)
     await append_audit_event(
         session,
         event_type="EXECUTION_PLAN_CREATED",
@@ -1280,6 +1289,13 @@ async def create_execution_plan(
             "risk_budget": str(plan.risk_budget),
             "actual_stress_loss": str(plan.actual_stress_loss),
             "notional": str(plan.notional),
+            "selection_experiment": {
+                "schema": selection_ledger.ledger_schema,
+                "eligible": selection_ledger.eligible,
+                "eligibility_status": selection_ledger.eligibility_status,
+                "feature_schema": selection_ledger.feature_schema,
+                "feature_hash": selection_ledger.feature_hash,
+            },
         },
     )
     await publish_outbox(

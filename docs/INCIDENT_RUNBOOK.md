@@ -1,5 +1,17 @@
 # Incident Runbook
 
+## Симптом: selection report возвращает `LEDGER_INTEGRITY_ERROR`
+
+Не редактируйте JSONB или hash вручную. Сохраните plan IDs из отчёта, проверьте audit chain, миграцию `0011_selection_experiment`, версию приложения и несанкционированные DB updates. Повреждённые строки исключать молча нельзя.
+
+## Симптом: `CLASS_COLLAPSE` / `INSUFFICIENT_SAMPLE`
+
+Это означает слишком мало ACCEPT или непринятых eligible plans. Не снижайте thresholds только ради IPSW. Используйте all-eligible и selected/unselected descriptive counts, продолжайте prospective paper/shadow накопление.
+
+## Симптом: `POOR_OVERLAP` / `LOW_EFFECTIVE_SAMPLE_SIZE`
+
+Оператор выбирает область признаков, почти не представленную среди непринятых планов, либо веса концентрируются на нескольких наблюдениях. Corrected mean намеренно отсутствует. Исследуйте правила отбора, дубли plan versions и стабильность eligibility; не интерпретируйте selected-only mean как policy edge.
+
 ## Симптом: все планы стали `BLOCKED_STALE_DATA` после 1.14.0
 
 Проверьте, что migration head равен `0010_orderbook_exec_evidence`, worker выполняет `market_sync`, а `orderbooks.failed` не растёт. Сравните exchange `source_time`, local `received_at` и `MAX_ORDERBOOK_AGE_SECONDS`. Не увеличивайте stale threshold только ради появления планов; сначала устраните сетевую задержку, API errors, неверное системное время или слишком длинный market cycle.

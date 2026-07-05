@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.14.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.15.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -11,7 +11,7 @@
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.12.0 для realized costs | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]` и fail-closed при гэпах. Будущая фактическая ставка не участвует в ex-ante selection. Исторические forecast snapshots и point-in-time изменения interval пока отсутствуют. |
 | Rolling/expanding walk-forward | Реализовано 1.11.0 | Три purged expanding folds внутри development period, fresh fit/calibration на каждом fold и отдельный final holdout. Не является nested CV/PBO. |
-| Operator-selection bias correction | Частично реализовано | Counterfactual outcome records существуют, causal/IPW/selection model отсутствует. |
+| Operator-selection bias correction | Частично реализовано 1.15.0 | Для каждой новой plan version сохраняется immutable ex-ante ledger; отчёт включает ACCEPT/REJECT/NO_DECISION, observed all-eligible benchmark и chronological OOS propensity/IPSW diagnostics с overlap/ESS gates. Это prospective plan-version selection correction, а не causal treatment model: UI exposure, latent operator state, cluster-robust inference и pre-1.15 opportunities отсутствуют. |
 | Intrahorizon MTM and liquidation simulation | Частично реализовано 1.13.0 | Training/backtest требуют exact hourly Bybit mark-price path, рассчитывают directional MAE/MFE/minimum equity и conservative isolated-margin liquidation proxy с actual funding timing; future mark path влияет только на realized evidence. Не реализованы sub-hour ordering, historical MMR/risk tiers, liquidation fees, cross/portfolio margin, ADL и точная exchange fill/liquidation mechanics. |
 | OI/basis/funding/liquidity/context features | Не реализовано в model | Model использует 10 OHLCV-derived features; OI/funding могут храниться, но не входят в feature schema. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано | Immutable artifacts/model registry/backtest runs и fold evidence дают часть ledger; PBO/DSR отсутствуют. |

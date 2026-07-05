@@ -386,6 +386,37 @@ class PlanOutcome(Base, UUIDPrimaryKeyMixin):
     resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SelectionExperimentLedger(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "selection_experiment_ledger"
+    __table_args__ = (
+        UniqueConstraint("plan_id", name="uq_selection_experiment_plan"),
+        CheckConstraint("plan_version > 0", name="selection_experiment_plan_version_positive"),
+        CheckConstraint("length(feature_hash) = 64", name="selection_experiment_hash_length"),
+        Index("ix_selection_experiment_observed", "observed_at"),
+        Index("ix_selection_experiment_eligible", "eligible", "observed_at"),
+        {"schema": "advisory"},
+    )
+
+    plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.execution_plans.id"), nullable=False, index=True
+    )
+    signal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.market_signals.id"), nullable=False, index=True
+    )
+    profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("advisory.capital_profiles.id"), nullable=False, index=True
+    )
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    eligibility_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    ledger_schema: Mapped[str] = mapped_column(String(80), nullable=False)
+    feature_schema: Mapped[str] = mapped_column(String(80), nullable=False)
+    features: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    feature_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    release_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
 class OperatorDecision(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "operator_decisions"
     __table_args__ = (UniqueConstraint("plan_id", name="uq_decision_plan"), {"schema": "advisory"})

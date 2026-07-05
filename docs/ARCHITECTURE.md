@@ -1,5 +1,18 @@
 # Architecture
 
+## Operator-selection evidence flow 1.15.0
+
+1. `create_execution_plan()` completes all market, capital, liquidity and risk calculations.
+2. Before any operator action, the same transaction inserts one `selection_experiment_ledger` row keyed by `plan_id`.
+3. The row stores eligibility, immutable identifiers, a fixed numeric pre-decision feature vector and canonical SHA-256. It never stores decision or outcome.
+4. Existing `operator_decisions` records ACCEPT/REJECT; absence of a terminal decision becomes `NO_DECISION` only at report time.
+5. Existing `plan_outcomes` supplies counterfactual R for all valued plan versions, including unselected opportunities.
+6. Reporting verifies every row hash, uses all eligible valued plans as the primary benchmark and fits propensity models only on earlier observations.
+7. Stabilized IPSW is emitted only with two classes, temporal OOS scores, overlap and adequate effective sample size.
+8. The estimator is descriptive selection diagnostics. It does not infer a causal benefit of accepting a plan and does not replace exchange-confirmed fill P&L.
+
+Data flow: plan calculation → immutable ex-ante ledger → operator decision/no-decision → counterfactual outcome → chronological propensity diagnostics → JSON report.
+
 ## Границы
 
 Система advisory-only. Bybit client выполняет public/read-only GET operations; order placement, amend и cancel отсутствуют. PostgreSQL является единственным state store. API/UI, inference worker и trainer запускаются отдельными процессами.

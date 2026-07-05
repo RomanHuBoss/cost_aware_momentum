@@ -1,5 +1,18 @@
 # Configuration
 
+## Release 1.15.0 — selection experiment reporting
+
+Новых `.env` параметров нет. После migration `0011_selection_experiment` каждая новая plan version автоматически создаёт prospective ledger row.
+
+Команды:
+
+```bash
+python manage.py selection-report -- --days 90
+python manage.py report -- --hours 24 --selection-days 90
+```
+
+Минимальные sample/overlap/ESS thresholds зафиксированы в analysis contract и не должны снижаться ради получения числового результата. До накопления данных отчёт честно возвращает `INSUFFICIENT_SAMPLE`, `CLASS_COLLAPSE`, `NO_OUT_OF_SAMPLE_SCORES`, `POOR_OVERLAP` или `LOW_EFFECTIVE_SAMPLE_SIZE`.
+
 ## Release 1.14.0 — execution depth policy
 
 | Variable | Default | Contract |

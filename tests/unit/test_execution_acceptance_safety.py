@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -233,6 +233,7 @@ async def _build_plan_for_safety_case(
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         net_rr=D("1.5"),
         net_ev_r=D("0.1"),
+        gross_edge_rate=D("0.02"),
         p_tp=0.60,
         p_sl=0.25,
         p_timeout=0.15,
@@ -940,3 +941,31 @@ async def test_execution_plan_blocks_missing_liquidity_snapshot(
 
     assert plan.status == "BLOCKED_DATA"
     assert any("ликвидност" in warning.lower() for warning in plan.warnings)
+
+
+async def test_execution_plan_records_ex_ante_selection_experiment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = SimpleNamespace(
+        ledger_schema="selection-experiment-ledger-v1",
+        eligible=True,
+        eligibility_status="ACTIONABLE",
+        feature_schema="operator-selection-predecision-v1",
+        feature_hash="a" * 64,
+    )
+    builder = Mock(return_value=sentinel)
+    monkeypatch.setattr(execution, "build_selection_ledger_row", builder)
+
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+    )
+
+    builder.assert_called_once()
+    kwargs = builder.call_args.kwargs
+    assert kwargs["plan"] is plan
+    assert kwargs["signal"].id == plan.signal_id
+    assert kwargs["release_version"] == execution.__version__
+    assert kwargs["observed_at"].tzinfo is not None

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.15.0 — 2026-07-05
+
+- Added immutable prospective `advisory.selection_experiment_ledger` rows for every execution-plan version.
+- Persisted a fixed pre-decision feature schema and tamper-evident SHA-256 without operator action or outcome leakage.
+- Added chronological expanding out-of-sample logistic propensity diagnostics and stabilized inverse-probability-of-selection weighting.
+- Reports now compare accepted-only, rejected/no-decision and all eligible counterfactual outcomes; class collapse, poor overlap, weak effective sample size and ledger corruption fail closed.
+- Added `cam-selection-report`, `manage.py selection-report` and selection diagnostics to the daily report.
+- Added migration `0011_selection_experiment`, eight regression tests and synchronized compliance, architecture, operator and QA documentation.
+
 ## 1.14.0 — 2026-07-05
 
 - Added persisted point-in-time Bybit orderbook snapshots with exchange/source and local receipt timestamps.
