@@ -1,5 +1,15 @@
 # Architecture
 
+## Candidate/live attrition flow 1.24.0
+
+1. Background trainer persists candidate version, quality-gate decision/reasons and activation outcome in `JobRun.details`.
+2. Hourly and universe-catch-up inference persist one terminal record for every selected symbol: `SKIPPED`, `PUBLISHED` or `EXISTING_CURRENT_HOUR`.
+3. Every initial execution plan stores immutable-at-creation attrition evidence in `sizing_snapshot.attrition`: schema, terminal stage, primary reason, contributing reasons and limiting cap.
+4. `app/services/attrition.py` validates job denominators, duplicate/conflicting records and gate consistency, then deduplicates retries by `symbol × event_time`.
+5. `scripts/attrition_report.py` writes `reports/candidate_live_attrition.json`; daily report embeds the same evidence. Legacy, failed or incomplete instrumentation gives `BLOCKED`.
+
+The report is diagnostic only. It does not lower policy/risk gates, mutate model lifecycle, infer profitability or place orders. Evidence is prospective from 1.24.0; pre-release `JobRun` payloads are not reconstructed.
+
 ## Point-in-time funding interval replay 1.22.0
 
 1. Instrument sync appends `reference.instrument_spec_history` only when the spec fingerprint changes, including `funding_interval_minutes` and `valid_from`.

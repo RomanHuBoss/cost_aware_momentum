@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.23.0: production calibration drift использует только исходы сигналов, чей полный trading horizon уже завершён. Ранние TP/SL незрелых сигналов исключаются, отсутствие outcome у зрелого сигнала блокирует calibration evidence, а отчёт раскрывает maturity coverage. Миграция, новые `.env`-параметры и переобучение artifact не требуются.
+> Версия 1.24.0: добавлен prospective fail-closed attrition report для всей цепочки candidate → hourly signal → execution plan. Каждый symbol/hour получает одно terminal outcome, повторные catch-up попытки дедуплицируются, каждый initial plan сохраняет стабильный machine-readable primary cause, а training gate/activation outcomes агрегируются без изменения модели, порогов или риска. Миграция, новые `.env`-параметры и переобучение artifact не требуются.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -15,6 +15,7 @@
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
 - Production drift monitoring сравнивает только активную model version с её immutable final-holdout reference: feature/probability PSI, coverage/missingness, maturity-corrected selected-direction calibration и actionability density. Ранние barrier outcomes до полного horizon не входят в calibration; unresolved mature outcomes блокируют evidence. `CRITICAL/BLOCKED` деградирует operational heartbeat; automatic model action намеренно отсутствует.
+- Candidate/live attrition diagnostics prospectively фиксируют ровно один terminal outcome для каждого `symbol × event_time`, точную причину каждого initial execution plan и quality-gate/activation outcome каждого background training attempt. Повторные hourly/catch-up попытки дедуплицируются; неполная, legacy или конфликтующая evidence блокирует отчёт.
 - Research experiment-selection governance prospectively учитывает все backtest-конфигурации одной family, включая failed/open attempts; по выровненным почасовым return paths считает CSCV/PBO, HAC-adjusted Deflated Sharpe и moving-block confidence intervals. Неполный ledger или недостаток независимых временных блоков даёт `BLOCKED`, а не оптимистичную оценку.
 - Formal experiment-family preregistration фиксирует гипотезу, точный cohort fingerprint/horizon, полный search space, primary metric, thresholds, stopping budget/deadline и допустимые exclusion criteria до первого `STARTED`. Trial вне контракта не вычисляется.
 - Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов final holdout; число символов не заменяет временную глубину. До final holdout candidate обязан пройти три последовательных purged expanding walk-forward folds с независимым переобучением и калибровкой.
@@ -91,9 +92,10 @@ python manage.py test           запустить тесты
 python manage.py lint           выполнить Ruff
 python manage.py backup         создать PostgreSQL backup
 python manage.py restore-check  проверить backup восстановлением
-python manage.py report         сформировать ежедневный отчёт, включая selection diagnostics
+python manage.py report         сформировать ежедневный отчёт, включая selection, drift и attrition diagnostics
 python manage.py selection-report  сформировать 90-дневный отчёт смещения отбора
 python manage.py drift-report    сформировать отчёт production drift
+python manage.py attrition-report -- --hours 168  сформировать candidate/live attrition report
 python manage.py experiment-preregister  проверить/зарегистрировать experiment family
 python manage.py experiment-report -- --family <name>  оценить preregistered disclosure, PBO и DSR
 python manage.py release-check  проверить release tree и SHA256SUMS
@@ -130,7 +132,7 @@ python manage.py experiment-preregister -- \
 
 `manage.py configure` создаёт локальный `.env`. Реальные credentials не должны попадать в архив или систему контроля версий. Шаблон переменных находится в `.env.example`.
 
-`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.21.0 требует migration `0014_ui_exposure_ledger` и добавляет `SELECTION_MIN_EXPOSURE_COVERAGE=0.80`. Release 1.22.0 не добавляет migration или `.env`, но меняет model artifact contracts: после upgrade завершите instrument/funding history sync и переобучите candidate. Release 1.23.0 также не добавляет migration/`.env` и не меняет artifact contract; после обновления перезапустите worker и сформируйте новый drift report. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
+`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.21.0 требует migration `0014_ui_exposure_ledger` и добавляет `SELECTION_MIN_EXPOSURE_COVERAGE=0.80`. Release 1.22.0 не добавляет migration или `.env`, но меняет model artifact contracts: после upgrade завершите instrument/funding history sync и переобучите candidate. Release 1.23.0 также не добавляет migration/`.env` и не меняет artifact contract; после обновления перезапустите worker и сформируйте новый drift report. Release 1.24.0 не меняет schema/artifact/config: перезапустите worker и trainer, чтобы новые `JobRun.details` начали накапливать terminal attrition evidence. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
 
 `EXPERIMENT_*` и `RESEARCH_*` задают defaults для нового preregistration template; зарегистрированная family использует только immutable значения specification. `SELECTION_DEPENDENCE_*` задают signal-cluster block geometry, а `SELECTION_MIN_EXPOSURE_COVERAGE` — минимальную долю instrumented eligible opportunities с подтверждённым UI exposure. Эти параметры не входят в live inference, не изменяют risk limits и не запускают auto-activation. Текущий migration head — `0014_ui_exposure_ledger`; переобучение active model не требуется.
 
@@ -197,6 +199,9 @@ Market outcome `TP / SL / TIMEOUT` вычисляется по пути от `si
 `python manage.py selection-report -- --days 90` создаёт `reports/operator_selection_bias.json`. Начиная с 1.21.0 denominator включает только eligible plan versions с verified first UI exposure; exposure time используется для chronological propensity ordering. Отчёт раскрывает created/exposed/unexposed counts, exposure coverage и решения без exposure. При coverage ниже `SELECTION_MIN_EXPOSURE_COVERAGE`, повреждении ledger, class collapse, слабом overlap/ESS или недостатке независимых signal clusters corrected estimate блокируется. UI event доказывает отображение карточки, но не направление взгляда, понимание рекомендации или отсутствие latent operator state.
 
 `python manage.py drift-report` создаёт `reports/production_drift.json`. Reference берётся из final holdout активного artifact; calibration baseline использует тот же selected-direction cohort, что и production outcomes. Для calibration учитываются только сигналы с `event_time + horizon_hours <= report.generated_at`; ранние TP/SL незрелых сигналов исключаются, а любой unresolved mature signal даёт `incomplete_mature_outcome_coverage` и `BLOCKED`. Поле `outcome_coverage` раскрывает mature/resolved/unresolved counts и долю покрытия. PSI рассчитывается по фиксированным holdout-бинам. Failed inference jobs, недостаточная coverage/missingness или малая выборка также дают `BLOCKED`; `CRITICAL` и `BLOCKED` отображаются как `DEGRADED` в worker heartbeat. Поле `automatic_model_action` всегда равно `none`.
+
+`python manage.py attrition-report -- --hours 168` создаёт `reports/candidate_live_attrition.json`. Отчёт объединяет background training attempts и hourly/catch-up inference за одно UTC-окно. Для live opportunities он дедуплицирует повторные попытки по `symbol × event_time`, показывает terminal skip reason либо наличие сигнала и отдельно считает восстановленные retries. Для каждого initial plan агрегируются status, terminal stage, primary и contributing reason codes; для training — failed attempts, quality-gate failures, activation и activation skips. Report получает `BLOCKED`, если instrumented inference отсутствует, в окне есть legacy/failed jobs, нарушены denominators, дублируются terminal outcomes или quality-gate evidence внутренне противоречива. Старые `JobRun` не реконструируются. Daily report включает тот же раздел `candidate_live_attrition`.
+
 
 
 ## Временная семантика ML

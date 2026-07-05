@@ -37,6 +37,7 @@ from app.risk.math import (
     positive_finite_decimal,
     projected_funding_rate,
 )
+from app.services.attrition import INFERENCE_ATTRITION_SCHEMA
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import create_execution_plan, validated_bid_ask
 
@@ -497,7 +498,7 @@ async def publish_hourly_signals(
     profiles = (await session.execute(select(CapitalProfile))).scalars().all()
 
     await expire_old_signals(session)
-    selected_symbols = list(symbols if symbols is not None else settings.symbols)
+    selected_symbols = list(dict.fromkeys(symbols if symbols is not None else settings.symbols))
 
     def count(reason: str, amount: int = 1) -> None:
         if diagnostics is None:
@@ -505,6 +506,29 @@ async def publish_hourly_signals(
         skip_counts = diagnostics.setdefault("skip_counts", {})
         assert isinstance(skip_counts, dict)
         skip_counts[reason] = int(skip_counts.get(reason, 0)) + amount
+
+    def record_symbol_outcome(
+        symbol: str,
+        *,
+        terminal_state: str,
+        reason_code: str,
+        signal_id: str | None = None,
+    ) -> None:
+        if diagnostics is None:
+            return
+        if terminal_state == "SKIPPED":
+            count(reason_code)
+        outcomes = diagnostics.setdefault("symbol_outcomes", [])
+        assert isinstance(outcomes, list)
+        outcomes.append(
+            {
+                "symbol": symbol,
+                "event_time": event_time.isoformat(),
+                "terminal_state": terminal_state,
+                "reason_code": reason_code,
+                "signal_id": signal_id,
+            }
+        )
 
     if diagnostics is not None:
         diagnostics.update(
@@ -517,18 +541,21 @@ async def publish_hourly_signals(
                 "existing_current_hour": 0,
                 "published": 0,
                 "plan_status_counts": {},
+                "attrition_schema": INFERENCE_ATTRITION_SCHEMA,
+                "symbol_outcomes": [],
+                "plan_outcomes": [],
             }
         )
 
     for symbol in selected_symbols:
         ticker = await _latest_ticker(session, symbol)
         if ticker is None:
-            count("missing_ticker")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="missing_ticker")
             logger.warning("Skipping symbol without ticker", extra={"symbol": symbol})
             continue
         ticker_age = (now - ticker.source_time).total_seconds()
         if ticker_age < 0 or ticker_age > settings.max_ticker_age_seconds:
-            count("stale_ticker")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="stale_ticker")
             logger.warning(
                 "Skipping symbol with stale ticker",
                 extra={"symbol": symbol, "ticker_age_seconds": ticker_age},
@@ -536,7 +563,7 @@ async def publish_hourly_signals(
             continue
         spec = await _latest_spec(session, symbol, available_cutoff=now)
         if spec is None:
-            count("missing_instrument_spec")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="missing_instrument_spec")
             logger.warning("Skipping symbol without point-in-time instrument spec", extra={"symbol": symbol})
             continue
         frame = await _candles_frame(
@@ -547,7 +574,7 @@ async def publish_hourly_signals(
             limit=max(100, settings.initial_backfill_bars),
         )
         if len(frame) < settings.universe_min_history_bars:
-            count("insufficient_candle_history")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="insufficient_candle_history")
             logger.warning(
                 "Skipping symbol with insufficient candle history",
                 extra={"symbol": symbol, "bars": len(frame)},
@@ -556,7 +583,7 @@ async def publish_hourly_signals(
         snapshot = latest_feature_snapshot(frame)
         missing_flags = [flag for flag in snapshot.quality_flags if flag.startswith("MISSING_")]
         if not snapshot.values or missing_flags:
-            count("incomplete_feature_vector")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="incomplete_feature_vector")
             logger.warning(
                 "Skipping symbol with incomplete or non-contiguous feature vector",
                 extra={"symbol": symbol, "quality_flags": list(snapshot.quality_flags)},
@@ -580,7 +607,7 @@ async def publish_hourly_signals(
                 reason = "stale_candle_cutoff"
             else:
                 reason = "missing_decision_candle"
-            count(reason)
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code=reason)
             logger.warning(
                 "Skipping symbol without the exact decision candle",
                 extra={
@@ -607,7 +634,7 @@ async def publish_hourly_signals(
                     )
                 )
             except ValueError as exc:
-                count("incomplete_market_context")
+                record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="incomplete_market_context")
                 logger.warning(
                     "Skipping symbol with incomplete point-in-time market context",
                     extra={"symbol": symbol, "error": str(exc)},
@@ -616,18 +643,18 @@ async def publish_hourly_signals(
 
         spread_bps = _spread_bps(ticker)
         if spread_bps is None:
-            count("missing_executable_bid_ask")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="missing_executable_bid_ask")
             logger.warning("Skipping symbol without executable bid/ask", extra={"symbol": symbol})
             continue
         if spread_bps > settings.max_spread_bps:
-            count("spread_above_execution_limit")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="spread_above_execution_limit")
             logger.info(
                 "Skipping symbol above executable spread limit",
                 extra={"symbol": symbol, "spread_bps": spread_bps},
             )
             continue
         if ticker.funding_rate is None or ticker.next_funding_time is None:
-            count("missing_funding_snapshot")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="missing_funding_snapshot")
             logger.warning(
                 "Skipping symbol because the funding snapshot is incomplete",
                 extra={"symbol": symbol},
@@ -637,7 +664,7 @@ async def publish_hourly_signals(
             ticker.next_funding_time <= now + timedelta(hours=settings.default_horizon_hours)
             and spec.funding_interval_minutes is None
         ):
-            count("unknown_funding_interval")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="unknown_funding_interval")
             logger.warning(
                 "Skipping symbol because funding settlement is in horizon but interval is unknown",
                 extra={"symbol": symbol},
@@ -650,7 +677,7 @@ async def publish_hourly_signals(
                 "atr_pct_14",
             )
         except ValueError as exc:
-            count("invalid_model_atr")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="invalid_model_atr")
             logger.warning(
                 "Skipping symbol with invalid model ATR feature",
                 extra={"symbol": symbol, "error": str(exc)},
@@ -689,7 +716,7 @@ async def publish_hourly_signals(
                 timeout_return_rate=decimal(getattr(settings, "timeout_gross_return_rate", -0.002)),
             )
         except ValueError as exc:
-            count("invalid_signal_economics")
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="invalid_signal_economics")
             logger.warning(
                 "Skipping symbol with invalid tick-aligned signal economics",
                 extra={"symbol": symbol, "error": str(exc)},
@@ -723,6 +750,12 @@ async def publish_hourly_signals(
                 diagnostics["existing_current_hour"] = int(
                     diagnostics.get("existing_current_hour", 0)
                 ) + 1
+            record_symbol_outcome(
+                symbol,
+                terminal_state="EXISTING_CURRENT_HOUR",
+                reason_code="signal_already_exists",
+                signal_id=str(existing.id),
+            )
             continue
 
         superseded = await supersede_published_signals(
@@ -848,7 +881,31 @@ async def publish_hourly_signals(
                 status_counts = diagnostics.setdefault("plan_status_counts", {})
                 assert isinstance(status_counts, dict)
                 status_counts[plan.status] = int(status_counts.get(plan.status, 0)) + 1
+                plan_outcomes = diagnostics.setdefault("plan_outcomes", [])
+                assert isinstance(plan_outcomes, list)
+                attrition = plan.sizing_snapshot.get("attrition")
+                if not isinstance(attrition, dict):
+                    raise RuntimeError("Execution plan is missing attrition evidence")
+                plan_outcomes.append(
+                    {
+                        "plan_id": str(plan.id),
+                        "signal_id": str(signal.id),
+                        "profile_id": str(profile.id),
+                        "status": plan.status,
+                        "schema": attrition.get("schema"),
+                        "terminal_stage": attrition.get("terminal_stage"),
+                        "primary_reason_code": attrition.get("primary_reason_code"),
+                        "reason_codes": attrition.get("reason_codes"),
+                        "limiting_cap": attrition.get("limiting_cap"),
+                    }
+                )
         published.append(signal)
+        record_symbol_outcome(
+            symbol,
+            terminal_state="PUBLISHED",
+            reason_code="signal_published",
+            signal_id=str(signal.id),
+        )
         if diagnostics is not None:
             diagnostics["published"] = len(published)
 
@@ -859,4 +916,8 @@ async def publish_hourly_signals(
             if isinstance(skip_counts, dict)
             else 0
         )
+        symbol_outcomes = diagnostics.get("symbol_outcomes")
+        if not isinstance(symbol_outcomes, list) or len(symbol_outcomes) != len(selected_symbols):
+            raise RuntimeError("Inference attrition evidence does not cover every selected symbol")
+        diagnostics["symbol_outcome_count"] = len(symbol_outcomes)
     return published

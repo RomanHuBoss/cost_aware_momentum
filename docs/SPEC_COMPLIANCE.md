@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.23.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.24.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -16,7 +16,22 @@
 | OI/basis/funding/liquidity/context features | Частично реализовано 1.22.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age с interval effective at decision time и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.20.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Новая family до первого `STARTED` требует immutable preregistration: hypothesis, exact cohort fingerprint/horizon, exhaustive fixed/search contract, primary metric, thresholds, stopping rule и exclusions. Trial outside contract и post-result policy override блокируются. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding и automatic model-promotion gate отсутствуют. |
 | Production drift monitoring | Частично реализовано 1.23.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют evidence. Failed jobs/insufficient evidence дают `BLOCKED`, critical drift деградирует heartbeat. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
+| Candidate/live recommendation attrition diagnostics | Реализовано 1.24.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или автоматическое изменение gates. |
 
+
+## Work package: candidate/live recommendation attrition diagnostics
+
+Release 1.24.0 добавляет prospective audit trail для ответа на вопрос, где именно теряются candidate и live opportunities:
+
+- каждый selected symbol в hourly/catch-up job получает один terminal outcome с `event_time` и stable reason code;
+- повторные попытки дедуплицируются по `symbol × event_time`, а восстановление после первоначального skip считается отдельно;
+- каждый initial execution plan сохраняет schema, terminal stage, primary/contributing reason codes и limiting cap;
+- background trainer attempts агрегируются как training failed, quality-gate failed, activated или activation skipped;
+- quality-gate reasons группируются по model quality, temporal validation, policy economics, incumbent-relative и evidence integrity;
+- exact denominators, duplicate/conflicting records и gate/activation consistency проверяются fail-closed;
+- CLI и daily report публикуют единый `candidate-live-attrition-report-v1`.
+
+Ограничения: evidence накапливается только после upgrade 1.24.0; report не является causal Shapley/decomposition model, не оценивает упущенную прибыль и не меняет thresholds, active artifact или risk policy. Multi-label contributing reasons нельзя суммировать как независимые потери.
 
 ## Work package: maturity-aware delayed-label drift calibration
 

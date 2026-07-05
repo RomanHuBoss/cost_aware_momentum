@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.24.0 — 2026-07-05
+
+- Added prospective per-symbol terminal outcomes for hourly and catch-up inference with exact `symbol × event_time` retry deduplication.
+- Added stable machine-readable execution-plan attrition evidence with primary/contributing reason codes and terminal stages.
+- Added fail-closed candidate/live attrition aggregation across background training gates, activation outcomes, signals and initial plans.
+- Added `manage.py attrition-report`, `cam-attrition-report`, `reports/candidate_live_attrition.json`, and daily-report integration.
+- Legacy, failed, incomplete, duplicate or internally contradictory evidence blocks the report instead of producing optimistic rates.
+- No database migration, `.env` change, model retraining, threshold change or order-execution capability was added.
+
 ## 1.23.0 — 2026-07-05
 
 - Production calibration drift now uses only signals whose full configured horizon has elapsed.

@@ -11,13 +11,15 @@ from app.asyncio_compat import run_with_compatible_event_loop
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import ExecutionPlan, ManualTrade, MarketSignal, OperatorDecision
+from app.services.attrition import build_candidate_live_attrition_report
 from app.services.drift_monitor import build_production_drift_report
 from app.services.selection_experiments import selection_bias_report
 
 
 async def build_report(hours: int, selection_days: int = 90) -> dict:
-    since = datetime.now(UTC) - timedelta(hours=hours)
-    selection_since = datetime.now(UTC) - timedelta(days=selection_days)
+    now = datetime.now(UTC)
+    since = now - timedelta(hours=hours)
+    selection_since = now - timedelta(days=selection_days)
     settings = get_settings()
     async with SessionFactory() as session:
         signal_rows = (
@@ -60,9 +62,14 @@ async def build_report(hours: int, selection_days: int = 90) -> dict:
             bootstrap_replicates=settings.research_bootstrap_replicates,
             confidence_level=settings.research_confidence_level,
         )
-        drift_report = await build_production_drift_report(session, settings)
+        drift_report = await build_production_drift_report(session, settings, now=now)
+        attrition_report = await build_candidate_live_attrition_report(
+            session,
+            since=since,
+            until=now,
+        )
     return {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": now.isoformat(),
         "window_hours": hours,
         "signals": [{"direction": d, "status": s, "count": c} for d, s, c in signal_rows],
         "execution_plans": [{"status": s, "count": c} for s, c in plan_rows],
@@ -75,6 +82,7 @@ async def build_report(hours: int, selection_days: int = 90) -> dict:
         },
         "operator_selection_bias": selection_report,
         "production_drift": drift_report,
+        "candidate_live_attrition": attrition_report,
     }
 
 

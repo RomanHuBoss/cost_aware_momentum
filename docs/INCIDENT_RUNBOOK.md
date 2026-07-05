@@ -1,5 +1,17 @@
 # Incident Runbook
 
+## Symptom: recommendations are rare or candidates repeatedly fail gates
+
+Run `python manage.py attrition-report -- --hours 168`. First require `status=OK`; otherwise resolve `integrity_errors`, failed jobs or legacy instrumentation before interpreting rates. Use `training.quality_gate_stage_counts` to separate model quality, temporal validation, policy economics, incumbent-relative and evidence-integrity failures. Use `live.signal_opportunities.terminal_skip_reason_counts` for market/data publication attrition and `live.plan_opportunities.reason_counts` for the single primary plan cause. Do not sum `contributing_reason_counts` as independent opportunities. Do not lower gates until the dominant prospective cause is stable across a sufficient window.
+
+## Symptom: attrition report is `BLOCKED`
+
+- `no_instrumented_inference_jobs_in_window`: restart the 1.24.0 worker and wait for an hourly/catch-up job.
+- `legacy_inference_jobs_excluded`: choose a window beginning after the upgrade; legacy payloads are intentionally not reconstructed.
+- `failed_inference_jobs_present`: inspect the corresponding `JobRun` error and rerun only after correcting the root cause.
+- denominator, duplicate or conflict errors: preserve the evidence and investigate instrumentation; do not edit `JobRun.details` to force green.
+- missing/contradictory training gate evidence: inspect trainer output and candidate lifecycle; a failed gate marked activated is a critical integrity incident.
+
 ## Symptom: candidate/runtime reports legacy funding or context schema
 
 Artifacts created before 1.22.0 use the latest funding interval across history and are intentionally incompatible. Preserve the artifact for audit, complete instrument/funding synchronization, retrain and activate only an artifact with `hourly-barrier-market-context-v5`, `hourly-oi-basis-settled-funding-turnover-v2`, `bybit-settlement-timestamp-replay-v2` and `instrument-spec-point-in-time-v1`. Do not edit joblib metadata or weaken runtime validation.

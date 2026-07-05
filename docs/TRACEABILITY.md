@@ -1,5 +1,24 @@
 # Traceability
 
+## Work package: candidate/live recommendation attrition diagnostics
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Every selected symbol receives one terminal outcome | `app/services/signals.py::publish_hourly_signals`, `hourly-inference-terminal-outcomes-v1` | `test_inference_records_one_terminal_outcome_for_every_symbol` |
+| Hourly and catch-up retries are counted once per opportunity | `app/services/attrition.py::build_attrition_report_from_records` dedupe by `symbol × event_time` | retry recovery/report regression |
+| Every initial plan has one stable machine-readable primary cause | `app/services/execution.py`, `sizing_snapshot.attrition`, `execution-plan-attrition-v1` | execution safety and evidence contract tests |
+| Candidate gate and activation losses are visible | training `JobRun.details` aggregation and `quality_gate_reason_stage` | candidate/live report regression |
+| Incomplete/legacy/conflicting evidence fails closed | denominator, duplicate, schema and gate-consistency checks | incomplete terminal evidence regression |
+| Operators can generate one bounded report | `scripts/attrition_report.py`, `manage.py attrition-report`, daily-report integration | command/static and full suite |
+
+## Schema changes 1.24.0
+
+- Hourly inference outcomes: `hourly-inference-terminal-outcomes-v1`.
+- Execution-plan attrition evidence: `execution-plan-attrition-v1`.
+- Aggregate report: `candidate-live-attrition-report-v1`.
+- No database migration, artifact schema or `.env` change.
+- Alembic head remains `0014_ui_exposure_ledger`.
+
 ## Work package: point-in-time funding interval replay
 
 | Acceptance criterion | Production/research implementation | Tests |

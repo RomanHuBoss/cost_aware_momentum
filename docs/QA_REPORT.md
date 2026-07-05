@@ -1,56 +1,62 @@
-# QA Report — 1.23.0
+# QA Report — 1.24.0
 
 Date: 2026-07-05
-Scope: maturity-aware delayed-label correction for production calibration drift.
+Scope: prospective fail-closed candidate/live recommendation attrition diagnostics.
 
 ## Environment
 
-- Input release: `1.22.0`.
-- Input ZIP: `cost_aware_momentum-1.22.0-point-in-time-funding-intervals(1).zip`.
-- Input ZIP SHA-256: `2fe0014423317a3bd005496b584257926050ae1581b12953f648e89166443a4f`.
-- Checks executed in isolated environment `/mnt/data/cam_1210_venv`; no production database was used.
+- Input release: `1.23.0`.
+- Input ZIP: `cost_aware_momentum-1.23.0-maturity-aware-drift-calibration(1).zip`.
+- Input ZIP SHA-256: `249a9f1023741134d4d65d5bb6f6b982b5f6c666aaba5d6ec0511df0cff43a18`.
+- Checks executed in isolated environment `/mnt/data/cam_124_venv`; no production database was used.
 - Python: `3.13.5`; project requirement remains Python `>=3.12`.
-- Input archive inventory: one root, 230 files, 93 production files under `app/scripts/web`, 73 Python test files, 23 documentation files and 14 Alembic migrations. No released cache, `.env`, credential, model artifact or database dump was present.
+- Input archive inventory: one root, 233 files, 93 production files under `app/scripts/web`, 74 test files, 24 documentation files and 14 Alembic migrations. No released cache, `.env`, credential, model artifact or database dump was present.
+
+The host Python environment was not used as the authority because it lacked project dependencies and contained an unrelated Pillow/MoviePy dependency conflict. A fresh isolated environment was used for all authoritative checks.
 
 ## Baseline before changes
 
 | Check | Result |
 |---|---|
-| `python -m pip check` | PASSED — no broken requirements |
+| `python -m pip check` | PASSED — no broken requirements in isolated environment |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED — `586 passed, 4 skipped, 61 warnings` |
+| `python -m pytest -q` | PASSED — `588 passed, 4 skipped, 61 warnings` |
 | `node --check web/js/app.js` | PASSED |
 | `python -m alembic heads` | PASSED — `0014_ui_exposure_ledger` |
 
 The four skipped tests require a separately configured PostgreSQL integration database.
 
-## Confirmed defect and red evidence
+## Confirmed gap and red evidence
 
-`app/services/drift_monitor.py::build_production_drift_report` joined every already-resolved `SignalOutcome` in the monitoring window. TP/SL can resolve before the signal horizon ends, but TIMEOUT cannot exist until full maturity. The resulting calibration cohort was right-censored toward early barrier hits.
+`app/services/signals.py::publish_hourly_signals` previously exposed only aggregate `skip_counts`, `published` and `plan_status_counts`. It did not persist one terminal record per symbol, so repeated hourly/catch-up attempts could not be deduplicated by opportunity. `app/services/execution.py::create_execution_plan` did not persist one stable machine-readable primary attrition cause, and no service combined training quality-gate/activation outcomes with live signal/plan attrition.
 
-The new regression module was run before production changes:
+New tests were executed before production implementation:
 
 ```text
-2 failed
-assert 2 == 1
-AssertionError: assert 'CRITICAL' == 'BLOCKED'
+KeyError: 'attrition_schema'
+ModuleNotFoundError: No module named 'app.services.attrition'
 ```
 
-The first failure proves that an immature early TP was incorrectly included alongside one mature outcome. The second proves that an unresolved mature signal did not fail closed.
+These failures independently demonstrated the absence of per-symbol terminal instrumentation and the aggregate report contract.
 
 ## Post-change focused verification
 
+The two new modules and related execution-plan regressions passed:
+
 ```text
-10 passed
+4 passed
+48 passed
 ```
 
-This includes:
+Coverage includes:
 
-- excluding an early resolved outcome until its full horizon matures;
-- publishing mature/resolved/unresolved/excluded maturity coverage;
-- blocking calibration when a mature signal lacks an outcome;
-- preserving existing PSI, calibration, coverage, heartbeat and directional-probability regressions.
+- exactly one terminal outcome for every selected inference symbol;
+- retry deduplication by `symbol × event_time` and explicit recovery count;
+- machine-readable initial-plan primary/contributing causes;
+- candidate gate/activation aggregation;
+- fail-closed incomplete denominator evidence;
+- preservation of existing execution safety contracts.
 
 ## Post-change full verification
 
@@ -59,31 +65,32 @@ This includes:
 | `python -m pip check` | PASSED — no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED — `588 passed, 4 skipped, 61 warnings` |
+| `python -m pytest -q` | PASSED — `592 passed, 4 skipped, 61 warnings` |
 | `node --check web/js/app.js` | PASSED |
 | `python -m alembic heads` | PASSED — `0014_ui_exposure_ledger` |
 
 ## Release assertions
 
-- Version sources: `app/__init__.py` and `pyproject.toml` both report `1.23.0`.
-- Drift report schema: `production-drift-report-v2`.
-- Outcome maturity cohort: `full-horizon-mature-signal-outcomes-v1`.
-- No migration or `.env` change.
-- No artifact schema or retraining requirement.
+- Version sources: `app/__init__.py` and `pyproject.toml` report `1.24.0`.
+- Inference schema: `hourly-inference-terminal-outcomes-v1`.
+- Plan evidence schema: `execution-plan-attrition-v1`.
+- Aggregate schema: `candidate-live-attrition-report-v1`.
+- No migration, `.env`, model artifact or threshold change.
 - No Bybit order creation/amend/cancel method added.
-- `automatic_model_action` remains `none`.
+- Report is diagnostic only and has no automatic model or policy action.
 
 ## Not run
 
+- `python manage.py doctor`: NOT RUN as an authoritative check because the clean release intentionally contains no project-local `.venv`; equivalent dependency, import, version and migration-head checks passed in the isolated environment.
 - `python manage.py test --require-integration`: NOT RUN because no isolated `TEST_DATABASE_URL` was supplied.
-- Live PostgreSQL outcome-resolution/drift-report smoke test: NOT RUN.
-- Live Bybit calls: NOT RUN; this patch does not change the Bybit client.
-- Profitability or forward-edge validation: NOT RUN and not claimed.
+- Live PostgreSQL attrition-report smoke test: NOT RUN.
+- Live Bybit calls: NOT RUN; the Bybit client was not changed.
+- Forward profitability or causal value-of-lost-opportunity analysis: NOT RUN and not claimed.
 
 ## Release archive verification
 
-- Staged root: `cost_aware_momentum-1.23.0`.
-- 233 files including `SHA256SUMS`; 232 checksum entries.
-- Staged full suite repeated successfully: `588 passed, 4 skipped, 61 warnings`.
-- Cache/build/credential/model/database artifacts are excluded from the release.
-- Final ZIP is verified with `unzip -t`, fresh extraction and checksum validation.
+- Staged root: `cost_aware_momentum-1.24.0`.
+- 238 files including `SHA256SUMS`; 237 checksum entries.
+- Staged full suite repeated successfully: `592 passed, 4 skipped, 61 warnings`.
+- Cache/build/credential/model/database artifacts are excluded.
+- ZIP is tested with `unzip -t`, fresh extraction and `sha256sum -c SHA256SUMS`.

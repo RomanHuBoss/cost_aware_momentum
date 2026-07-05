@@ -334,6 +334,11 @@ async def test_unvalidated_baseline_plan_is_diagnostic_only(
 
     assert plan.status == "NO_TRADE"
     assert any("baseline" in warning.lower() for warning in plan.warnings)
+    assert plan.sizing_snapshot["attrition"]["schema"] == "execution-plan-attrition-v1"
+    assert (
+        plan.sizing_snapshot["attrition"]["primary_reason_code"]
+        == "baseline_actionability_disabled"
+    )
 
 
 async def test_execution_plan_reprices_from_current_executable_quote(
@@ -371,6 +376,7 @@ async def test_execution_plan_uses_full_depth_vwap_and_persists_fill_evidence(
     evidence = plan.sizing_snapshot["execution_quality"]
     assert D("100.1") < entry < D("100.2")
     assert plan.status in {"ACTIONABLE", "LIMITED"}
+    assert plan.sizing_snapshot["attrition"]["terminal_stage"] == "ACTIONABLE"
     assert evidence["fill_status"] == "FULL"
     assert D(evidence["vwap"]) == entry
     assert D(evidence["impact_bps"]) > 0

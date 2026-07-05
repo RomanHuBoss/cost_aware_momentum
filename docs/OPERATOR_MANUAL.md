@@ -1,5 +1,15 @@
 # Operator Manual
 
+## Upgrade to 1.24.0
+
+1. No Alembic migration, `.env` change or model retraining is required.
+2. Restart API, inference worker and trainer so new `JobRun.details` instrumentation is emitted.
+3. Allow a prospective observation window to accumulate, then run `python manage.py attrition-report -- --hours 168`.
+4. Inspect `status`, `integrity_errors`, `live.signal_opportunities`, `live.plan_opportunities` and `training`.
+5. Treat `BLOCKED` as incomplete evidence, not as a zero attrition rate. Narrow the window to post-upgrade jobs or correct failed/contradictory instrumentation.
+
+`reason_counts` is a mutually exclusive primary-cause count. `contributing_reason_counts` is multi-label and therefore must not be summed as a denominator. A recovered catch-up attempt appears once as signal-available and increments `retry_recovered`. The report diagnoses bottlenecks; it does not justify gate relaxation or promise economic edge.
+
 ## Upgrade and model-retraining workflow 1.22.0
 
 1. Stop trainer/backtest/API processes and preserve the current active artifact plus PostgreSQL backup for rollback.

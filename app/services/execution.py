@@ -46,6 +46,7 @@ from app.risk.policy import (
     configured_capital_risk_policy,
     validate_capital_profile_policy,
 )
+from app.services.attrition import execution_plan_attrition_evidence
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.selection_experiments import build_selection_ledger_row
 
@@ -851,6 +852,19 @@ async def create_execution_plan(
     spec = await latest_spec(session, signal.symbol, cutoff=now)
     warnings: list[str] = list(signal.warnings or [])
     status_override: str | None = None
+    status_override_reason: str | None = None
+    attrition_reason_codes: list[str] = []
+
+    def add_attrition_reason(code: str) -> None:
+        if code not in attrition_reason_codes:
+            attrition_reason_codes.append(code)
+
+    def override_status(status: str, reason_code: str) -> None:
+        nonlocal status_override, status_override_reason
+        status_override = status
+        status_override_reason = reason_code
+        add_attrition_reason(reason_code)
+
     profile_policy_error: str | None = None
     try:
         profile_policy = validate_capital_profile_policy(profile, settings=settings)
@@ -858,12 +872,14 @@ async def create_execution_plan(
         profile_policy_error = str(exc)
         profile_policy = configured_capital_risk_policy(settings)
         warnings.append(f"Профиль капитала нарушает глобальную risk policy: {exc}")
+        add_attrition_reason("invalid_capital_profile_policy")
     entry_outside_zone = False
     baseline_policy_blocked = (
         signal_uses_unvalidated_baseline(signal) and not settings.allow_baseline_actionable
     )
     if baseline_policy_blocked:
         warnings.append("Некалиброванный baseline разрешен только для диагностики; исполнение заблокировано")
+        add_attrition_reason("baseline_actionability_disabled")
     orderbook_is_fresh = bool(
         orderbook is not None
         and orderbook_snapshot_is_fresh(
@@ -894,7 +910,7 @@ async def create_execution_plan(
     except ValueError as exc:
         planning_entry = positive_finite_decimal(signal.entry_reference, "signal entry reference")
         entry_source = "signal_reference_for_blocked_diagnostics"
-        status_override = "BLOCKED_DATA"
+        override_status("BLOCKED_DATA", "missing_executable_entry_quote")
         warnings.append(f"Текущая исполнимая котировка недоступна: {exc}")
 
     c_eff, available_margin, verified, capital_snapshot = await effective_capital(
@@ -904,28 +920,28 @@ async def create_execution_plan(
         max_snapshot_age_seconds=settings.max_account_snapshot_age_seconds,
     )
     if profile.mode == "bybit_read_only" and not verified:
-        status_override = "BLOCKED_STALE_DATA"
+        override_status("BLOCKED_STALE_DATA", "stale_or_missing_capital_snapshot")
         warnings.append("Снимок капитала отсутствует, устарел или имеет некорректное время")
     if profile.mode == "bybit_read_only":
         issues = await reconciliation_issues(session, profile=profile)
         if issues:
-            status_override = "BLOCKED_PORTFOLIO"
+            override_status("BLOCKED_PORTFOLIO", "account_reconciliation_issue")
             warnings.extend(issues)
     if ticker is None or not ticker_snapshot_is_fresh(
         ticker.source_time,
         now=now,
         max_age_seconds=settings.max_ticker_age_seconds,
     ):
-        status_override = "BLOCKED_STALE_DATA"
+        override_status("BLOCKED_STALE_DATA", "stale_or_missing_ticker")
         warnings.append("Текущая цена устарела или отсутствует")
     if not orderbook_is_fresh:
-        status_override = "BLOCKED_STALE_DATA"
+        override_status("BLOCKED_STALE_DATA", "stale_or_missing_orderbook")
         warnings.append("Снимок глубины рынка отсутствует, устарел или имеет будущее время")
     if spec is None:
-        status_override = "BLOCKED_DATA"
+        override_status("BLOCKED_DATA", "missing_instrument_spec")
         warnings.append("Спецификация инструмента отсутствует")
     elif not signal_prices_match_tick(signal, tick_size=spec.tick_size):
-        status_override = "BLOCKED_DATA"
+        override_status("BLOCKED_DATA", "signal_tick_alignment_mismatch")
         warnings.append("Уровни сигнала не соответствуют текущему шагу цены инструмента")
 
     if spec is None:
@@ -949,7 +965,7 @@ async def create_execution_plan(
     if ticker is not None:
         if ticker.funding_rate is None or ticker.next_funding_time is None:
             if status_override is None:
-                status_override = "BLOCKED_DATA"
+                override_status("BLOCKED_DATA", "missing_funding_snapshot")
             warnings.append("Снимок funding отсутствует или неполон")
         else:
             try:
@@ -962,7 +978,7 @@ async def create_execution_plan(
                 )
             except ValueError as exc:
                 if status_override is None:
-                    status_override = "BLOCKED_DATA"
+                    override_status("BLOCKED_DATA", "invalid_funding_projection")
                 warnings.append(f"Невозможно пересчитать funding для плана: {exc}")
 
     fee_rate = Decimal(str(signal.fee_rate_round_trip))
@@ -979,7 +995,7 @@ async def create_execution_plan(
             turnover_liquidity_cap = liquidity_notional_cap(ticker.turnover_24h)
         except ValueError as exc:
             if status_override is None:
-                status_override = "BLOCKED_DATA"
+                override_status("BLOCKED_DATA", "invalid_turnover_liquidity_snapshot")
             warnings.append(f"Снимок ликвидности отсутствует или некорректен: {exc}")
 
     depth_liquidity_cap = Decimal("0")
@@ -992,7 +1008,7 @@ async def create_execution_plan(
                 max_impact_bps=max_impact_bps,
             )
         except ValueError as exc:
-            status_override = "BLOCKED_DATA"
+            override_status("BLOCKED_DATA", "invalid_orderbook_depth_snapshot")
             warnings.append(f"Снимок глубины рынка некорректен: {exc}")
     liquidity_candidates = [
         value for value in (turnover_liquidity_cap, depth_liquidity_cap) if value > 0
@@ -1049,11 +1065,11 @@ async def create_execution_plan(
                 max_impact_bps=max_impact_bps,
             )
         except ValueError as exc:
-            status_override = "BLOCKED_DATA"
+            override_status("BLOCKED_DATA", "invalid_orderbook_fill_simulation")
             warnings.append(f"Невозможно оценить исполнение по глубине: {exc}")
             break
         if fill_evidence.status != "FULL" or fill_evidence.vwap is None:
-            status_override = "BLOCKED_LIQUIDITY"
+            override_status("BLOCKED_LIQUIDITY", "insufficient_orderbook_depth")
             warnings.append(
                 "Недостаточная глубина для полного исполнения в допустимом ценовом воздействии"
             )
@@ -1066,11 +1082,12 @@ async def create_execution_plan(
         planning_entry = next_entry
         entry_source = "orderbook_depth_vwap"
     if orderbook_is_fresh and not depth_converged and status_override is None:
-        status_override = "BLOCKED_INVALID_INPUT"
+        override_status("BLOCKED_INVALID_INPUT", "orderbook_vwap_sizing_not_converged")
         warnings.append("Расчёт размера и VWAP по глубине не сошёлся")
 
     if not signal.entry_low <= planning_entry <= signal.entry_high:
         entry_outside_zone = True
+        add_attrition_reason("entry_vwap_outside_signal_zone")
         warnings.append("Текущий VWAP полного исполнения вне зоны входа рекомендации")
     plan_upside_rate: Decimal | None = None
     plan_timeout_net_rate: Decimal | None = None
@@ -1111,29 +1128,58 @@ async def create_execution_plan(
         plan_net_rr = Decimal("0")
         plan_net_ev_r = Decimal("0")
         warnings.append(f"Некорректная геометрия плана: {exc}")
-        status_override = "BLOCKED_INVALID_INPUT"
+        override_status("BLOCKED_INVALID_INPUT", "invalid_plan_economics")
 
+    terminal_reason_code: str
     if signal.status != "PUBLISHED":
         status = "EXPIRED" if signal.status == "EXPIRED" else "SUPERSEDED"
+        terminal_reason_code = f"signal_lifecycle.{status.lower()}"
+        add_attrition_reason(terminal_reason_code)
         warnings.append("Рекомендация больше не является текущей")
     elif signal.expires_at <= now:
         status = "EXPIRED"
+        terminal_reason_code = "signal_lifecycle.expired"
+        add_attrition_reason(terminal_reason_code)
         warnings.append("Срок действия рекомендации истек")
     elif profile_policy_error is not None:
         status = "BLOCKED_INVALID_INPUT"
+        terminal_reason_code = "invalid_capital_profile_policy"
+        add_attrition_reason(terminal_reason_code)
     elif status_override is not None:
         status = status_override
+        terminal_reason_code = status_override_reason or f"status.{status.lower()}"
+        add_attrition_reason(terminal_reason_code)
     elif plan_math.status.startswith("BLOCKED_"):
         status = plan_math.status
-    elif baseline_policy_blocked or entry_outside_zone:
+        terminal_reason_code = f"position_plan.{status.lower()}"
+        add_attrition_reason(terminal_reason_code)
+        if plan_math.limiting_cap:
+            add_attrition_reason(f"limiting_cap.{plan_math.limiting_cap.lower()}")
+    elif baseline_policy_blocked:
         status = "NO_TRADE"
+        terminal_reason_code = "baseline_actionability_disabled"
+        add_attrition_reason(terminal_reason_code)
+    elif entry_outside_zone:
+        status = "NO_TRADE"
+        terminal_reason_code = "entry_vwap_outside_signal_zone"
+        add_attrition_reason(terminal_reason_code)
     elif plan_net_rr < Decimal(str(settings.min_net_rr)) or plan_net_ev_r < Decimal(
         str(settings.min_net_ev_r)
     ):
         status = "NO_TRADE"
+        terminal_reason_code = "net_edge_below_policy"
+        add_attrition_reason(terminal_reason_code)
         warnings.append("Недостаточное преимущество после издержек и risk policy")
     else:
         status = plan_math.status
+        terminal_reason_code = (
+            "position_plan.actionable"
+            if status == "ACTIONABLE"
+            else f"position_plan.limited_{str(plan_math.limiting_cap or 'unknown').lower()}"
+        )
+        add_attrition_reason(terminal_reason_code)
+        if plan_math.limiting_cap:
+            add_attrition_reason(f"limiting_cap.{plan_math.limiting_cap.lower()}")
 
     liquidation_buffer = Decimal("0")
     if status in {"ACTIONABLE", "LIMITED", "NO_TRADE"}:
@@ -1146,10 +1192,23 @@ async def create_execution_plan(
         if liquidation.stop_beyond_estimated_liquidation:
             warnings.append("Стоп находится за оценочной областью ликвидации")
             status = "BLOCKED_LIQUIDATION"
+            terminal_reason_code = "liquidation_buffer_stop_beyond_proxy"
+            add_attrition_reason(terminal_reason_code)
         elif liquidation.narrow_buffer:
             warnings.append("Небольшой оценочный запас до области ликвидации")
             if plan_math.leverage > 3:
                 status = "BLOCKED_LIQUIDATION"
+                terminal_reason_code = "liquidation_buffer_too_narrow"
+                add_attrition_reason(terminal_reason_code)
+
+    ordered_attrition_reasons = [terminal_reason_code] + [
+        code for code in attrition_reason_codes if code != terminal_reason_code
+    ]
+    attrition_evidence = execution_plan_attrition_evidence(
+        status=status,
+        reason_codes=ordered_attrition_reasons,
+        limiting_cap=plan_math.limiting_cap,
+    )
 
     combined_warnings = warnings + [item for item in plan_math.warnings if item not in warnings]
     primary_warning = combined_warnings[0] if combined_warnings else None
@@ -1174,6 +1233,7 @@ async def create_execution_plan(
         primary_warning=primary_warning,
         warnings=combined_warnings,
         sizing_snapshot={
+            "attrition": attrition_evidence,
             "entry_price": str(planning_entry),
             "entry_price_source": entry_source,
             "entry_inside_signal_zone": not entry_outside_zone,

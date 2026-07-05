@@ -1,5 +1,9 @@
 # Configuration
 
+## Release 1.24.0 — candidate/live attrition diagnostics
+
+No new environment variables or database migration are introduced. `python manage.py attrition-report -- --hours 168` controls the UTC lookback only through the CLI argument and writes `reports/candidate_live_attrition.json`. Existing model, policy, risk, drift and activation thresholds are unchanged. Instrumentation is prospective, so choose a post-upgrade window for an `OK` report.
+
 ## Release 1.21.0 — UI exposure coverage
 
 Migration `0014_ui_exposure_ledger` is required. Add or confirm:
