@@ -1,5 +1,13 @@
 # Model Card
 
+## Maturity-aware production calibration drift 1.23.0
+
+Production calibration is evaluated only after a signal's complete configured horizon has elapsed. `SignalOutcome` may be recorded early when TP or SL is touched, while TIMEOUT cannot exist until horizon end; mixing those early exits with not-yet-mature signals right-censors the cohort and can create false calibration degradation. Release 1.23.0 excludes such early outcomes until `event_time + horizon_hours <= report time`.
+
+The report contract is `production-drift-report-v2` with outcome cohort `full-horizon-mature-signal-outcomes-v1`. It publishes mature, resolved, unresolved and excluded-early counts. A mature signal without an outcome, invalid maturity metadata or duplicate outcome evidence blocks calibration fail-closed. Feature/probability PSI and actionability continue to use the full active-version monitoring window.
+
+This is delayed-label correction for monitoring, not a profitability claim or automatic rollback. It does not change training labels, active artifacts, signal generation, policy thresholds or execution plans.
+
 ## Point-in-time funding interval semantics 1.22.0
 
 Release 1.22.0 changes the market-model data contract. Actual settlement replay and `funding_age_fraction` now use `InstrumentSpecHistory.valid_from` to select the interval effective at each historical event or decision. Applying the latest 4-hour interval retroactively to an older 8-hour regime could falsely mark valid history incomplete and distort the context feature; that behavior is removed.

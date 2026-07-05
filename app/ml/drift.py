@@ -8,7 +8,8 @@ from typing import Any
 import numpy as np
 
 PRODUCTION_DRIFT_REFERENCE_SCHEMA = "final-holdout-feature-probability-selected-calibration-reference-v2"
-PRODUCTION_DRIFT_REPORT_SCHEMA = "production-drift-report-v1"
+PRODUCTION_DRIFT_REPORT_SCHEMA = "production-drift-report-v2"
+PRODUCTION_DRIFT_OUTCOME_COHORT_SCHEMA = "full-horizon-mature-signal-outcomes-v1"
 DIRECTIONAL_PREDICTION_SCHEMA = "both-directional-probabilities-v1"
 PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA = "selected-direction-final-holdout-v1"
 PRODUCTION_DRIFT_UNSELECTED_CALIBRATION_COHORT_SCHEMA = "all-direction-final-holdout-v0"

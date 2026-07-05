@@ -52,6 +52,12 @@ These variables classify `experiment-report` output only. They do not affect fea
 
 Migration `0012_experiment_selection` is required. No model retraining and no new exchange permission are required.
 
+## Release 1.23.0 — maturity-aware drift calibration
+
+No migration, new environment variable or threshold change is required. Existing `DRIFT_*` settings remain valid. After updating, restart the worker and regenerate `reports/production_drift.json`; its schema is now `production-drift-report-v2`.
+
+Calibration observations are restricted to full-horizon mature signals (`event_time + horizon_hours <= report time`). Early TP/SL outcomes are disclosed but excluded. If any mature signal lacks its `SignalOutcome`, the report emits `incomplete_mature_outcome_coverage` and blocks calibration rather than evaluating a selected subset. `DRIFT_MIN_OUTCOME_OBSERVATIONS` is applied after this maturity and completeness filter.
+
 ## Release 1.17.0 — production drift monitoring
 
 No database migration is required. Add or review the following settings:
@@ -72,7 +78,7 @@ DRIFT_MAX_ACTIONABILITY_RATE_DELTA=0.20
 
 `DRIFT_WINDOW_HOURS` must be at least 24. Coverage is the fraction of scoped universe opportunities represented by newly published or already-current signals in successful hourly inference jobs. Any failed inference job in the window blocks the report rather than being omitted from the denominator.
 
-PSI thresholds apply independently to every feature and TP/SL/TIMEOUT probability component. Calibration deltas use only resolved outcomes for the production-selected direction and compare with the same selected-direction final-holdout cohort. Until `DRIFT_MIN_OUTCOME_OBSERVATIONS` is reached, calibration is reported as insufficient evidence rather than silently assumed healthy.
+PSI thresholds apply independently to every feature and TP/SL/TIMEOUT probability component. Calibration deltas use only complete, full-horizon mature outcomes for the production-selected direction and compare with the same selected-direction final-holdout cohort. Early resolved outcomes from immature signals are excluded to avoid right-censoring; unresolved mature signals block evidence. Until `DRIFT_MIN_OUTCOME_OBSERVATIONS` is reached after that filter, calibration is reported as insufficient evidence rather than silently assumed healthy.
 
 `DRIFT_MONITOR_ENABLED=false` yields a visible `BLOCKED` report. The monitor never changes the active model. Artifact 1.16.0 lacks the mandatory drift reference; complete retraining and activation of a 1.17.0 candidate are required.
 

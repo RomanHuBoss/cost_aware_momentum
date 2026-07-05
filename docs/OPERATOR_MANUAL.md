@@ -70,6 +70,15 @@ The operator bootstrap conditions on fitted OOS propensities. It is not a fully 
 
 Legacy backtests are intentionally absent. A process killed after `STARTED` may leave an open trial that blocks the family; resolve the operational cause and append an auditable terminal disposition instead of editing or deleting the row.
 
+## Upgrade to 1.23.0
+
+1. Back up PostgreSQL, reports and the active artifact.
+2. Update source files and restart worker/API. Alembic migration is not required; expected head remains `0014_ui_exposure_ledger`.
+3. No `.env` or model retraining change is required.
+4. Run `python manage.py drift-report` and confirm schema `production-drift-report-v2`.
+5. Inspect `outcome_coverage`: `mature_signals`, `resolved_mature_signals`, `unresolved_mature_signals` and `early_resolved_immature_signals_excluded`.
+6. If `incomplete_mature_outcome_coverage` appears, repair outcome resolution/data continuity. Do not delete mature signals or include immature early exits merely to reach the observation threshold.
+
 ## Upgrade to 1.17.0
 
 1. Back up PostgreSQL, model registry and the active artifact.
@@ -86,7 +95,7 @@ Legacy backtests are intentionally absent. A process killed after `STARTED` may 
 - `OK`: minimum evidence exists and configured limits are not crossed.
 - `WARN`: at least one PSI/actionability diagnostic crossed the warning level.
 - `CRITICAL`: material feature/probability/calibration/actionability drift was detected.
-- `BLOCKED`: evidence is insufficient or structurally unreliable, including failed inference jobs, low coverage, excessive missingness or incompatible reference.
+- `BLOCKED`: evidence is insufficient or structurally unreliable, including failed inference jobs, low coverage, excessive missingness, incompatible reference or incomplete full-horizon mature outcome coverage.
 
 `DEGRADED` heartbeat is an operator alert, not an automatic rollback. Preserve the incumbent artifact, investigate data quality and compare paper/shadow performance before any manual model action.
 

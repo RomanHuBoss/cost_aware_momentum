@@ -124,18 +124,21 @@
 | Monitor compares only the active model version | `app/services/drift_monitor.py` model-version query | service/report contract tests and full suite |
 | Coverage and missingness fail closed | `evaluate_production_drift`, inference JobRun accounting | low-coverage/missingness and failed-job tests |
 | Fixed-bin feature and probability PSI | artifact histogram reference and `_population_stability_index` | same-distribution and large-shift tests |
-| Delayed outcomes drive selected-direction calibration drift | `SignalOutcome` join with selected signal probabilities | calibration degradation test |
+| Calibration excludes right-censored early exits | full-horizon maturity partition in `app/services/drift_monitor.py`; only `event_time + horizon_hours <= now` enters calibration | immature early-outcome exclusion regression |
+| Mature outcome evidence is complete and fail-closed | `outcome_coverage`, unresolved/duplicate/invalid maturity blocking | unresolved mature-signal regression |
+| Delayed outcomes drive selected-direction calibration drift | mature `SignalOutcome` join with selected signal probabilities | calibration degradation test |
 | Actionability-density drift is compared with artifact policy thresholds | reference actionability contract and production RR/EV evaluation | same-distribution/threshold tests |
 | Critical or blocked evidence degrades operations without model mutation | worker heartbeat integration, `automatic_model_action=none` | heartbeat and failed-job tests |
 | CLI/daily reports expose complete evidence | `scripts/drift_report.py`, `scripts/daily_report.py` | command/static/full suite |
 
-## Schema changes 1.17.0
+## Schema changes 1.23.0
 
 - Drift reference: `final-holdout-feature-probability-selected-calibration-reference-v2`.
 - Calibration cohort: `selected-direction-final-holdout-v1`.
 - Directional probability snapshot: `both-directional-probabilities-v1`.
-- Drift report: `production-drift-report-v1`.
-- Alembic head unchanged: `0011_selection_experiment`.
+- Drift report: `production-drift-report-v2`.
+- Outcome maturity cohort: `full-horizon-mature-signal-outcomes-v1`.
+- Alembic head unchanged: `0014_ui_exposure_ledger`.
 
 ## Work package: point-in-time market-context features
 
@@ -158,7 +161,7 @@
 - Context schema: `hourly-oi-basis-settled-funding-turnover-v1`.
 - Availability schema: `exchange-event-close-live-receipt-v1`.
 - Ablation schema: `same-split-zeroed-context-v1`.
-- Alembic head unchanged: `0011_selection_experiment`.
+- Alembic head unchanged: `0014_ui_exposure_ledger`.
 
 ## Work package: prospective operator-selection experiment ledger
 

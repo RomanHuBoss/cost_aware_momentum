@@ -1,17 +1,16 @@
-# QA Report — 1.22.0
+# QA Report — 1.23.0
 
 Date: 2026-07-05
-Scope: point-in-time funding-interval history in research settlement replay, market-context features and artifact validation.
+Scope: maturity-aware delayed-label correction for production calibration drift.
 
 ## Environment
 
-- Input release: `1.21.0`.
-- Input ZIP: `cost_aware_momentum-main.zip`.
-- Input ZIP SHA-256: `64c82a5cb35ff75934f13a58f63ede67ef61c295f34ae3fb8fed8e5fe83eb3ce`.
+- Input release: `1.22.0`.
+- Input ZIP: `cost_aware_momentum-1.22.0-point-in-time-funding-intervals(1).zip`.
+- Input ZIP SHA-256: `2fe0014423317a3bd005496b584257926050ae1581b12953f648e89166443a4f`.
 - Checks executed in isolated environment `/mnt/data/cam_1210_venv`; no production database was used.
 - Python: `3.13.5`; project requirement remains Python `>=3.12`.
-
-The global host environment was unsuitable because it lacked project packages (`ruff`, `psycopg`) and contained an unrelated `moviepy`/`pillow` dependency conflict. All authoritative baseline and post-change results below come from the isolated project environment.
+- Input archive inventory: one root, 230 files, 93 production files under `app/scripts/web`, 73 Python test files, 23 documentation files and 14 Alembic migrations. No released cache, `.env`, credential, model artifact or database dump was present.
 
 ## Baseline before changes
 
@@ -20,7 +19,7 @@ The global host environment was unsuitable because it lacked project packages (`
 | `python -m pip check` | PASSED — no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED — `582 passed, 4 skipped, 61 warnings` |
+| `python -m pytest -q` | PASSED — `586 passed, 4 skipped, 61 warnings` |
 | `node --check web/js/app.js` | PASSED |
 | `python -m alembic heads` | PASSED — `0014_ui_exposure_ledger` |
 
@@ -28,48 +27,63 @@ The four skipped tests require a separately configured PostgreSQL integration da
 
 ## Confirmed defect and red evidence
 
-`app/ml/lifecycle.py::load_training_market_data` read all instrument-spec rows but reduced them to one latest interval per symbol. `HistoricalFundingTimeline` and `build_market_context_frame` therefore applied that latest value to every historical timestamp.
+`app/services/drift_monitor.py::build_production_drift_report` joined every already-resolved `SignalOutcome` in the monitoring window. TP/SL can resolve before the signal horizon ends, but TIMEOUT cannot exist until full maturity. The resulting calibration cohort was right-censored toward early barrier hits.
 
-The new regression module was run against untouched 1.21.0 before production changes:
+The new regression module was run before production changes:
 
 ```text
-3 failed
-TypeError: HistoricalFundingTimeline.__init__() got an unexpected keyword argument 'interval_history'
-TypeError: build_market_context_frame() got an unexpected keyword argument 'funding_interval_history'
+2 failed
+assert 2 == 1
+AssertionError: assert 'CRITICAL' == 'BLOCKED'
 ```
 
-The tests encode independent expected behavior: a complete 8-hour to 4-hour settlement transition must remain complete, a missing settlement under the new 4-hour regime must still fail closed, and funding age must equal 0.5 in both a four-hours-old/8-hour regime and a two-hours-old/4-hour regime.
+The first failure proves that an immature early TP was incorrectly included alongside one mature outcome. The second proves that an unresolved mature signal did not fail closed.
 
-## Post-change checks
+## Post-change focused verification
+
+```text
+10 passed
+```
+
+This includes:
+
+- excluding an early resolved outcome until its full horizon matures;
+- publishing mature/resolved/unresolved/excluded maturity coverage;
+- blocking calibration when a mature signal lacks an outcome;
+- preserving existing PSI, calibration, coverage, heartbeat and directional-probability regressions.
+
+## Post-change full verification
 
 | Check | Result |
 |---|---|
 | `python -m pip check` | PASSED — no broken requirements |
-| `python -m compileall -q app scripts tests migrations manage.py` | PASSED |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED — `586 passed, 4 skipped, 61 warnings` |
+| `python -m pytest -q` | PASSED — `588 passed, 4 skipped, 61 warnings` |
 | `node --check web/js/app.js` | PASSED |
 | `python -m alembic heads` | PASSED — `0014_ui_exposure_ledger` |
 
-Focused module: `4 passed`.
+## Release assertions
 
-## Doctor and integration status
+- Version sources: `app/__init__.py` and `pyproject.toml` both report `1.23.0`.
+- Drift report schema: `production-drift-report-v2`.
+- Outcome maturity cohort: `full-horizon-mature-signal-outcomes-v1`.
+- No migration or `.env` change.
+- No artifact schema or retraining requirement.
+- No Bybit order creation/amend/cancel method added.
+- `automatic_model_action` remains `none`.
 
-- `python manage.py doctor`: NOT APPLICABLE to the isolated external environment. It exited with `Виртуальная среда не найдена. Сначала выполните: python manage.py setup` because the release tree intentionally has no project-local `.venv`; equivalent dependency, syntax, static-analysis, unit and Alembic-head checks were executed with `/mnt/data/cam_1210_venv`.
-- `python manage.py test --require-integration`: NOT RUN because no isolated `TEST_DATABASE_URL` was supplied. It was not pointed at a user or production database.
-- PostgreSQL query/migration smoke: NOT RUN. No migration was added; head remains `0014_ui_exposure_ledger`.
-- Live Bybit/API and browser flows: NOT RUN; this work package changes offline research/training semantics and uses existing read-only data.
+## Not run
 
-## Residual warnings
+- `python manage.py test --require-integration`: NOT RUN because no isolated `TEST_DATABASE_URL` was supplied.
+- Live PostgreSQL outcome-resolution/drift-report smoke test: NOT RUN.
+- Live Bybit calls: NOT RUN; this patch does not change the Bybit client.
+- Profitability or forward-edge validation: NOT RUN and not claimed.
 
-The 61 warnings are existing NumPy/joblib/pandas deprecations. The focused new tests introduce no new warning class.
+## Release archive verification
 
-## Release verification
-
-- Clean staged tree: `230` files including `SHA256SUMS`; checksum manifest covers and verifies `229/229` other files.
-- Staged tree passed dependency check, compileall, Ruff, full pytest (`586 passed, 4 skipped`), frontend syntax and Alembic head `0014_ui_exposure_ledger`.
-- Forbidden cache, credential, build, model-artifact and database-dump paths were absent before packaging.
-- Advisory-only Bybit mutation scan, suspicious-secret scan and trailing-whitespace scan: PASSED.
-- Final archive contains one root directory `cost_aware_momentum-1.22.0`, passes `unzip -t`, and a fresh extraction repeats checksum, compileall, Ruff, pytest, frontend and Alembic-head checks.
-- Final ZIP SHA-256 is recorded in the delivery response and is not embedded recursively inside the archive.
-- No profitability or recommendation-frequency claim is made.
+- Staged root: `cost_aware_momentum-1.23.0`.
+- 233 files including `SHA256SUMS`; 232 checksum entries.
+- Staged full suite repeated successfully: `588 passed, 4 skipped, 61 warnings`.
+- Cache/build/credential/model/database artifacts are excluded from the release.
+- Final ZIP is verified with `unzip -t`, fresh extraction and checksum validation.

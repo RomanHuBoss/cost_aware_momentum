@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.22.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.23.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -15,8 +15,22 @@
 | Intrahorizon MTM and liquidation simulation | Частично реализовано 1.13.0 | Training/backtest требуют exact hourly Bybit mark-price path, рассчитывают directional MAE/MFE/minimum equity и conservative isolated-margin liquidation proxy с actual funding timing; future mark path влияет только на realized evidence. Не реализованы sub-hour ordering, historical MMR/risk tiers, liquidation fees, cross/portfolio margin, ADL и точная exchange fill/liquidation mechanics. |
 | OI/basis/funding/liquidity/context features | Частично реализовано 1.22.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age с interval effective at decision time и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.20.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Новая family до первого `STARTED` требует immutable preregistration: hypothesis, exact cohort fingerprint/horizon, exhaustive fixed/search contract, primary metric, thresholds, stopping rule и exclusions. Trial outside contract и post-result policy override блокируются. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding и automatic model-promotion gate отсутствуют. |
-| Production drift monitoring | Частично реализовано 1.17.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Failed jobs/insufficient evidence дают `BLOCKED`, critical drift деградирует heartbeat. Multivariate tests, adaptive control limits, delayed-label correction и automated rollback отсутствуют. |
+| Production drift monitoring | Частично реализовано 1.23.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют evidence. Failed jobs/insufficient evidence дают `BLOCKED`, critical drift деградирует heartbeat. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
 
+
+## Work package: maturity-aware delayed-label drift calibration
+
+Release 1.23.0 устраняет right-censoring production calibration: TP/SL может разрешиться до конца horizon, тогда как TIMEOUT появляется только после полного окна. Реализовано:
+
+- feature/probability PSI и actionability сохраняют полный active-version monitoring window;
+- calibration cohort включает только сигналы с `event_time + horizon_hours <= generated_at`;
+- early resolved outcomes незрелых сигналов исключаются и отдельно считаются;
+- каждый mature signal обязан иметь один outcome, иначе report/calibration получают `BLOCKED`;
+- report schema `production-drift-report-v2` раскрывает `full-horizon-mature-signal-outcomes-v1` coverage;
+- invalid maturity metadata и duplicate outcome evidence блокируются fail-closed;
+- active model, artifact contract, thresholds, training и execution semantics не изменены.
+
+Ограничения: это deterministic maturity filtering, а не survival model или inverse-probability-of-censoring weighting. Monitor не реализует multivariate drift tests, adaptive control limits, automated rollback или автоматическое изменение policy.
 
 ## Work package: point-in-time funding interval replay
 

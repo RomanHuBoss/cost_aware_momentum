@@ -67,18 +67,19 @@ Data flow: validated artifact + final-test cohort → STARTED event → aligned 
 
 Boundary: this is prospective research governance. It does not recreate pre-1.18 experiments or retroactively preregister pre-1.20 families, alter the active model or become evidence of live profitability. Dependence-aware inference is added by release 1.19.0 and formal family preregistration by 1.20.0.
 
-## Production drift flow 1.17.0
+## Production drift flow 1.23.0
 
 1. Candidate training uses the untouched final holdout to create fixed histogram references for the 17 base features and all LONG/SHORT probability vectors.
 2. Policy evaluation selects one direction per symbol/timestamp using the same ex-ante economics as production and stores selected-cohort log-loss/Brier plus actionability density. This avoids comparing production selected outcomes with an all-direction calibration baseline.
 3. The immutable reference is stored in both artifact and model-registry metrics and is checked by quality gate and runtime.
 4. Every published signal stores the common feature vector and both directional probability vectors under `directional_predictions`; the selected signal probabilities remain the calibration observation.
-5. Hourly monitor queries only signals from the active model version and the configured trailing window. It joins only already resolved `SignalOutcome` rows.
-6. Fixed holdout bins are used for feature/probability PSI. Coverage comes from hourly inference JobRun scope and completion counts; failed jobs or invalid accounting block the report.
-7. Reports classify evidence as `OK`, `WARN`, `CRITICAL` or `BLOCKED`. `CRITICAL/BLOCKED` changes worker heartbeat to `DEGRADED`.
-8. The monitor is observational: `automatic_model_action=none`. It does not activate, deactivate, roll back, retrain or weaken any model/policy/risk gate.
+5. Hourly monitor queries only signals from the active model version and the configured trailing window. Feature/probability/actionability diagnostics use the full window, while calibration uses only signals whose `event_time + horizon_hours` is not later than report time.
+6. Early resolved TP/SL outcomes from still-immature signals are excluded from calibration. Every full-horizon mature signal must have exactly one `SignalOutcome`; unresolved or duplicate mature evidence blocks calibration and is disclosed in `outcome_coverage`.
+7. Fixed holdout bins are used for feature/probability PSI. Coverage comes from hourly inference JobRun scope and completion counts; failed jobs or invalid accounting block the report.
+8. Reports classify evidence as `OK`, `WARN`, `CRITICAL` or `BLOCKED`. `CRITICAL/BLOCKED` changes worker heartbeat to `DEGRADED`.
+9. The monitor is observational: `automatic_model_action=none`. It does not activate, deactivate, roll back, retrain or weaken any model/policy/risk gate.
 
-Data flow: final holdout → immutable reference → active-version signals/jobs/outcomes → fixed-bin drift evaluation → JobRun/heartbeat/JSON report.
+Data flow: final holdout → immutable reference → active-version signals/jobs → full-horizon maturity partition → complete mature outcomes → fixed-bin/calibration drift evaluation → JobRun/heartbeat/JSON report.
 
 ## Point-in-time market-context flow 1.16.0
 

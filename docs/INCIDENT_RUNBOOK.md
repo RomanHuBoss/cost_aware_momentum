@@ -78,7 +78,7 @@ Preserve the result as negative research evidence. Review family definition, reg
 
 ## Симптом: production drift status `BLOCKED`
 
-Проверьте `alerts`, число hourly inference jobs, `failed_inference_jobs`, coverage, feature/probability observations и resolved outcomes. `active_artifact_model_required` означает baseline/отсутствие активного artifact; `invalid_production_drift_reference` — legacy или повреждённый artifact; `failed_inference_jobs_in_window` нельзя устранять исключением failed rows из отчёта. Исправьте worker/data flow или переобучите artifact, не переводите monitor в fail-open.
+Проверьте `alerts`, число hourly inference jobs, `failed_inference_jobs`, coverage, feature/probability observations и `outcome_coverage`. `active_artifact_model_required` означает baseline/отсутствие активного artifact; `invalid_production_drift_reference` — legacy или повреждённый artifact; `failed_inference_jobs_in_window` нельзя устранять исключением failed rows из отчёта. `incomplete_mature_outcome_coverage` означает, что хотя бы один сигнал с уже завершённым полным horizon не имеет outcome; запустите outcome resolver и проверьте candle continuity/availability. Исправьте worker/data flow, не исключайте проблемные mature signals и не переводите monitor в fail-open.
 
 ## Симптом: `feature_distribution_drift` / `probability_distribution_drift`
 
@@ -86,7 +86,7 @@ Preserve the result as negative research evidence. Review family definition, reg
 
 ## Симптом: `calibration_drift`
 
-Убедитесь, что накоплено достаточно resolved `SignalOutcome`, outcome resolver работает, а сравнение относится к той же active model version. Calibration baseline и production используют selected direction; смешивание counterfactual LONG/SHORT rows запрещено. Не интерпретируйте задержку outcome как отсутствие drift.
+Убедитесь, что накоплено достаточно **зрелых** resolved `SignalOutcome`, outcome resolver работает, а сравнение относится к той же active model version. Проверьте `outcome_coverage`: ранние TP/SL при ещё незавершённом horizon намеренно исключены; unresolved mature outcome блокирует оценку. Calibration baseline и production используют selected direction; смешивание counterfactual LONG/SHORT rows запрещено. Не понижайте `DRIFT_MIN_OUTCOME_OBSERVATIONS` только из-за естественной задержки label maturity.
 
 ## Симптом: `actionability_density_drift`
 

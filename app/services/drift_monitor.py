@@ -10,6 +10,7 @@ from app.config import Settings
 from app.db.models import JobRun, MarketSignal, ModelRegistry, SignalOutcome
 from app.ml.drift import (
     DIRECTIONAL_PREDICTION_SCHEMA,
+    PRODUCTION_DRIFT_OUTCOME_COHORT_SCHEMA,
     PRODUCTION_DRIFT_REPORT_SCHEMA,
     DriftThresholds,
     evaluate_production_drift,
@@ -49,6 +50,16 @@ def _blocked_report(*, now: datetime, window_start: datetime, alerts: list[str])
         "features": {"observations": 0, "max_psi": None, "by_feature": {}},
         "probabilities": {"observations": 0, "max_psi": None, "by_class": {}},
         "calibration": {"status": "INSUFFICIENT_DATA", "observations": 0},
+        "outcome_coverage": {
+            "schema": PRODUCTION_DRIFT_OUTCOME_COHORT_SCHEMA,
+            "mature_signals": 0,
+            "resolved_mature_signals": 0,
+            "unresolved_mature_signals": 0,
+            "early_resolved_immature_signals_excluded": 0,
+            "invalid_maturity_signals": 0,
+            "rate": None,
+            "status": "INSUFFICIENT_DATA",
+        },
         "actionability": {"status": "INSUFFICIENT_DATA", "observations": 0},
         "automatic_model_action": "none",
     }
@@ -80,6 +91,106 @@ def _directional_probability_rows(signal: MarketSignal) -> list[dict[str, float]
         except (KeyError, TypeError, ValueError, OverflowError):
             return []
     return rows
+
+
+def _mature_signal_ids(
+    signals: list[MarketSignal],
+    *,
+    now: datetime,
+) -> tuple[set[object], set[object], int]:
+    """Partition signals by full-horizon maturity for unbiased outcome calibration."""
+
+    mature: set[object] = set()
+    immature: set[object] = set()
+    invalid = 0
+    for signal in signals:
+        event_time = getattr(signal, "event_time", None)
+        horizon_hours = getattr(signal, "horizon_hours", None)
+        if (
+            not isinstance(event_time, datetime)
+            or event_time.tzinfo is None
+            or isinstance(horizon_hours, bool)
+            or not isinstance(horizon_hours, int)
+            or horizon_hours <= 0
+        ):
+            invalid += 1
+            continue
+        horizon_end = event_time.astimezone(UTC) + timedelta(hours=horizon_hours)
+        target = mature if horizon_end <= now else immature
+        target.add(signal.id)
+    return mature, immature, invalid
+
+
+def _maturity_aware_outcome_rows(
+    signals: list[MarketSignal],
+    outcomes: list[SignalOutcome],
+    *,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, object], list[str]]:
+    """Use only full-horizon mature labels and diagnose censoring/incompleteness."""
+
+    mature_ids, immature_ids, invalid_maturity = _mature_signal_ids(signals, now=now)
+    signal_by_id = {signal.id: signal for signal in signals}
+    seen_outcome_ids: set[object] = set()
+    resolved_mature_ids: set[object] = set()
+    early_resolved_immature = 0
+    duplicate_outcomes = 0
+    rows: list[dict[str, Any]] = []
+    for outcome in outcomes:
+        signal_id = outcome.signal_id
+        if signal_id in seen_outcome_ids:
+            duplicate_outcomes += 1
+            continue
+        seen_outcome_ids.add(signal_id)
+        signal = signal_by_id.get(signal_id)
+        if signal is None:
+            continue
+        if signal_id in immature_ids:
+            early_resolved_immature += 1
+            continue
+        if signal_id not in mature_ids:
+            continue
+        resolved_mature_ids.add(signal_id)
+        rows.append(
+            {
+                "outcome": outcome.outcome,
+                "probabilities": {
+                    "TP": signal.p_tp,
+                    "SL": signal.p_sl,
+                    "TIMEOUT": signal.p_timeout,
+                },
+            }
+        )
+
+    mature_count = len(mature_ids)
+    resolved_count = len(resolved_mature_ids)
+    unresolved_count = mature_count - resolved_count
+    alerts: list[str] = []
+    if invalid_maturity:
+        alerts.append("invalid_signal_maturity_metadata")
+    if duplicate_outcomes:
+        alerts.append("duplicate_signal_outcomes")
+    if unresolved_count:
+        alerts.append("incomplete_mature_outcome_coverage")
+    if alerts:
+        status = "BLOCKED"
+    elif mature_count == 0:
+        status = "INSUFFICIENT_DATA"
+    else:
+        status = "OK"
+    coverage = {
+        "schema": PRODUCTION_DRIFT_OUTCOME_COHORT_SCHEMA,
+        "mature_signals": mature_count,
+        "resolved_mature_signals": resolved_count,
+        "unresolved_mature_signals": unresolved_count,
+        "early_resolved_immature_signals_excluded": early_resolved_immature,
+        "invalid_maturity_signals": invalid_maturity,
+        "rate": (float(resolved_count / mature_count) if mature_count else None),
+        "status": status,
+    }
+    if duplicate_outcomes:
+        coverage["duplicate_outcomes"] = duplicate_outcomes
+    return rows, coverage, alerts
 
 
 async def build_production_drift_report(
@@ -196,9 +307,9 @@ async def build_production_drift_report(
         actionable_flags.append(signal.net_rr >= min_net_rr and signal.net_ev_r >= min_net_ev_r)
         signal_by_id[signal.id] = signal
 
-    outcome_rows: list[dict[str, Any]] = []
+    outcomes: list[SignalOutcome] = []
     if signal_by_id:
-        outcomes = (
+        outcomes = list(
             (
                 await session.execute(
                     select(SignalOutcome).where(SignalOutcome.signal_id.in_(list(signal_by_id)))
@@ -207,20 +318,11 @@ async def build_production_drift_report(
             .scalars()
             .all()
         )
-        for outcome in outcomes:
-            signal = signal_by_id.get(outcome.signal_id)
-            if signal is None:
-                continue
-            outcome_rows.append(
-                {
-                    "outcome": outcome.outcome,
-                    "probabilities": {
-                        "TP": signal.p_tp,
-                        "SL": signal.p_sl,
-                        "TIMEOUT": signal.p_timeout,
-                    },
-                }
-            )
+    outcome_rows, outcome_coverage, outcome_alerts = _maturity_aware_outcome_rows(
+        list(signals),
+        outcomes,
+        now=resolved_now,
+    )
 
     report = evaluate_production_drift(
         reference,
@@ -242,6 +344,19 @@ async def build_production_drift_report(
     if invalid_coverage_jobs:
         report["status"] = "BLOCKED"
         report_alerts.append("invalid_inference_coverage_accounting")
+    if outcome_alerts:
+        report["status"] = "BLOCKED"
+        for alert in outcome_alerts:
+            if alert not in report_alerts:
+                report_alerts.append(alert)
+        calibration = report.get("calibration")
+        if isinstance(calibration, dict):
+            calibration["status"] = "BLOCKED"
+            calibration["maturity_evidence_complete"] = False
+    elif isinstance(report.get("calibration"), dict):
+        report["calibration"]["maturity_evidence_complete"] = (
+            outcome_coverage["status"] == "OK"
+        )
     report.update(
         {
             "generated_at": resolved_now.isoformat(),
@@ -255,6 +370,7 @@ async def build_production_drift_report(
             "failed_inference_jobs": failed_inference_jobs,
             "invalid_coverage_jobs": invalid_coverage_jobs,
             "outcome_observations": len(outcome_rows),
+            "outcome_coverage": outcome_coverage,
             "automatic_model_action": "none",
         }
     )

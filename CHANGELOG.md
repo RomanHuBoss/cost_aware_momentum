@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.23.0 — 2026-07-05
+
+- Production calibration drift now uses only signals whose full configured horizon has elapsed.
+- Early TP/SL outcomes from still-immature signals are excluded instead of right-censoring the cohort against unavailable TIMEOUT labels.
+- Added fail-closed maturity coverage: every mature signal must have exactly one outcome; unresolved, duplicate or invalid maturity evidence blocks calibration.
+- Drift reports now use `production-drift-report-v2` and disclose `full-horizon-mature-signal-outcomes-v1` counts and coverage.
+- Feature/probability PSI and actionability density continue to use the full active-version window; active model, artifacts, policy thresholds and execution semantics are unchanged.
+- No migration or `.env` change. Added two focused red-to-green regressions and synchronized drift/compliance/operator documentation.
+
 ## 1.22.0 — 2026-07-05
 
 - Historical funding replay now selects `funding_interval_minutes` point-in-time from `InstrumentSpecHistory.valid_from` instead of applying the latest interval to the entire training history.
