@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.26.6 — 2026-07-05
+
+### Fixed
+
+- Experiment/backtest capital paths now recognize cumulative hourly mark-price MTM instead of posting the entire trade P&L only at the modeled exit timestamp.
+- Intratrade drawdowns that recover before exit now affect portfolio drawdown, Sharpe, HAC/DSR, PBO and moving-block evidence.
+- Entry fee and conservative slippage are recognized at decision time; historical funding follows the cumulative settlement path; terminal barrier/liquidation return and exit fee reconcile exactly at effective exit.
+- Research metadata now carries a validated, complete hourly MTM path from decision through effective exit. Missing, malformed, non-hourly or non-reconciling paths fail closed before experiment evidence is emitted.
+- Experiment return-path schema was raised to `observed-opportunity-covered-hourly-mark-to-market-capital-return-path-v3`; predecessor exit-realized v2 evidence is rejected.
+
+### Compatibility
+
+- No database migration, public HTTP API change, model feature/artifact schema change, risk-threshold change or `.env` addition.
+- Active artifacts remain runnable. Existing experiment families containing successful v2 trials must rerun preregistered backtests before normal promotion.
+- Backtest configuration binding now identifies `horizon_sleeves_hourly_mark_to_market_single_active_symbol_v3`.
+
+### Verification
+
+- Clean isolated baseline: 618 passed, 4 skipped.
+- Post-change suite: 622 passed, 4 skipped, 62 warnings.
+
 ## 1.26.5 — 2026-07-05
 
 ### Fixed

@@ -8,6 +8,7 @@ from typing import Literal
 import pandas as pd
 
 INTRAHORIZON_MARGIN_SCHEMA_VERSION = "bybit-mark-price-hourly-isolated-margin-proxy-v1"
+INTRAHORIZON_MTM_PATH_SCHEMA_VERSION = "hourly-mark-close-effective-exit-cumulative-return-v1"
 DEFAULT_EQUITY_RESERVE_FRACTION = 0.10
 
 Direction = Literal["LONG", "SHORT"]
@@ -196,3 +197,102 @@ def simulate_intrahorizon_margin_path(
         initial_margin_rate=initial_margin_rate,
         liquidation_equity_reserve_rate=reserve_rate,
     )
+
+
+def build_intrahorizon_mark_to_market_path(
+    mark_bars: pd.DataFrame,
+    *,
+    direction: Direction,
+    entry_price: float,
+    decision_time: pd.Timestamp,
+    exit_time: pd.Timestamp,
+    final_gross_return_rate: float,
+    cumulative_signed_funding_return_at_close_by_bar: Sequence[float] | None = None,
+    final_signed_funding_return_rate: float = 0.0,
+) -> list[dict[str, object]]:
+    """Build a cumulative hourly mark-to-market path through the effective exit.
+
+    Intermediate points use hourly mark closes. The terminal point is replaced by
+    the modeled effective exit (barrier, timeout, gap, or conservative liquidation),
+    so the path reconciles exactly to the realized research outcome.
+    """
+
+    entry = _positive_finite(entry_price, "entry_price")
+    decision = pd.Timestamp(decision_time)
+    effective_exit = pd.Timestamp(exit_time)
+    if decision.tzinfo is None or effective_exit.tzinfo is None:
+        raise ValueError("decision_time and exit_time must be timezone-aware")
+    decision = decision.tz_convert("UTC")
+    effective_exit = effective_exit.tz_convert("UTC")
+    if effective_exit < decision:
+        raise ValueError("exit_time must not precede decision_time")
+    if decision != decision.floor("h") or effective_exit != effective_exit.floor("h"):
+        raise ValueError("mark-to-market path timestamps must be hour-aligned")
+
+    final_gross = float(final_gross_return_rate)
+    final_funding = float(final_signed_funding_return_rate)
+    if not math.isfinite(final_gross) or not math.isfinite(final_funding):
+        raise ValueError("terminal mark-to-market returns must be finite")
+
+    required = {"close_time", "close"}
+    missing = sorted(required - set(mark_bars.columns))
+    if missing:
+        raise ValueError(f"mark-to-market path is missing columns: {missing}")
+    frame = mark_bars.copy().reset_index(drop=True)
+    frame["close_time"] = pd.to_datetime(frame["close_time"], utc=True, errors="coerce")
+    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    if frame["close_time"].isna().any() or frame["close"].isna().any():
+        raise ValueError("mark-to-market path contains invalid close values")
+    if not frame["close_time"].is_monotonic_increasing or frame["close_time"].duplicated().any():
+        raise ValueError("mark-to-market close times must be unique and chronological")
+    if not all(timestamp == timestamp.floor("h") for timestamp in frame["close_time"]):
+        raise ValueError("mark-to-market close times must be hour-aligned")
+    if not all(_positive_finite(value, "close") for value in frame["close"]):
+        raise ValueError("mark-to-market close prices must be positive and finite")
+
+    if cumulative_signed_funding_return_at_close_by_bar is None:
+        funding_values = [0.0] * len(frame)
+    else:
+        if len(cumulative_signed_funding_return_at_close_by_bar) != len(frame):
+            raise ValueError("cumulative funding path length must match mark bars")
+        funding_values = [float(value) for value in cumulative_signed_funding_return_at_close_by_bar]
+        if not all(math.isfinite(value) for value in funding_values):
+            raise ValueError("cumulative funding path must be finite")
+
+    records: list[dict[str, object]] = []
+    if effective_exit > decision:
+        records.append(
+            {
+                "timestamp": decision.isoformat(),
+                "gross_return_rate": 0.0,
+                "funding_return_rate": 0.0,
+            }
+        )
+    for row, funding_return in zip(frame.itertuples(index=False), funding_values, strict=True):
+        close_time = pd.Timestamp(row.close_time)
+        if close_time >= effective_exit:
+            break
+        if close_time <= decision:
+            continue
+        records.append(
+            {
+                "timestamp": close_time.isoformat(),
+                "gross_return_rate": float(_directional_return(direction, float(row.close), entry)),
+                "funding_return_rate": funding_return,
+            }
+        )
+    records.append(
+        {
+            "timestamp": effective_exit.isoformat(),
+            "gross_return_rate": final_gross,
+            "funding_return_rate": final_funding,
+        }
+    )
+
+    timestamps = [pd.Timestamp(item["timestamp"]) for item in records]
+    if len(set(timestamps)) != len(timestamps) or timestamps != sorted(timestamps):
+        raise ValueError("mark-to-market path timestamps must be unique and chronological")
+    expected = list(pd.date_range(decision, effective_exit, freq="h"))
+    if timestamps != expected:
+        raise ValueError("mark-to-market path must cover every observed hourly boundary")
+    return records

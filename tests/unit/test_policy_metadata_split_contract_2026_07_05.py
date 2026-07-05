@@ -4,12 +4,16 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
-from app.ml.mtm import INTRAHORIZON_MARGIN_SCHEMA_VERSION
+from app.ml.mtm import (
+    INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+    INTRAHORIZON_MTM_PATH_SCHEMA_VERSION,
+)
 from app.ml.training import (
     MODEL_FEATURE_NAMES,
     apply_intrahorizon_margin_path,
     chronological_split,
     historical_funding_components,
+    validate_intrahorizon_mark_to_market_path,
     validate_policy_evaluation_metadata,
 )
 
@@ -33,6 +37,9 @@ POLICY_PATH_COLUMNS = {
     "margin_path_realized_gross_return",
     "historical_funding_margin_path_rate",
     "historical_funding_margin_path_settlements",
+    "intrahorizon_mark_to_market_path_complete",
+    "intrahorizon_mark_to_market_schema",
+    "intrahorizon_mark_to_market_path",
 }
 
 
@@ -79,6 +86,22 @@ def _policy_dataset() -> pd.DataFrame:
                     ),
                     "historical_funding_margin_path_rate": 0.0001,
                     "historical_funding_margin_path_settlements": 1,
+                    "intrahorizon_mark_to_market_path_complete": True,
+                    "intrahorizon_mark_to_market_schema": (
+                        INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
+                    ),
+                    "intrahorizon_mark_to_market_path": [
+                        {
+                            "timestamp": (decision_time + timedelta(hours=step)).isoformat(),
+                            "gross_return_rate": (
+                                (0.001 if direction == "LONG" else -0.001) * step / 8
+                            ),
+                            "funding_return_rate": (
+                                (-0.0001 if direction == "LONG" else 0.0001) * step / 8
+                            ),
+                        }
+                        for step in range(9)
+                    ],
                 }
             )
             rows.append(row)
@@ -102,11 +125,17 @@ def test_chronological_split_preserves_policy_path_metadata() -> None:
         expected_leverage=3,
         expected_equity_reserve_fraction=0.10,
     )
+    validated, mtm_schema = validate_intrahorizon_mark_to_market_path(
+        validated,
+        context="Policy evaluation",
+        require=True,
+    )
     _, _, _, funding_schema = historical_funding_components(
         validated,
         context="Policy evaluation",
     )
 
     assert schema == INTRAHORIZON_MARGIN_SCHEMA_VERSION
+    assert mtm_schema == INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
     assert funding_schema is not None
     assert validated["historical_funding_realized_settlements"].eq(1).all()

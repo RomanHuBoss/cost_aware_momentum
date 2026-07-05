@@ -257,3 +257,40 @@ def test_experiment_governance_settings_fail_closed() -> None:
             experiment_pbo_segments=6,
             experiment_min_periods=10,
         )
+
+
+def test_capital_sleeve_evidence_marks_intrahorizon_drawdown_before_profitable_exit() -> None:
+    start = pd.Timestamp("2025-01-01T00:00:00Z")
+    trades = pd.DataFrame(
+        [
+            {
+                "decision_time": start,
+                "exit_time": start + pd.Timedelta(2, unit="h"),
+                "net_return": 0.01,
+                "intrahorizon_net_return_path": [
+                    {"timestamp": start.isoformat(), "return": 0.0},
+                    {
+                        "timestamp": (start + pd.Timedelta(1, unit="h")).isoformat(),
+                        "return": -0.20,
+                    },
+                    {
+                        "timestamp": (start + pd.Timedelta(2, unit="h")).isoformat(),
+                        "return": 0.01,
+                    },
+                ],
+            }
+        ]
+    )
+    grid = pd.date_range(start, start + pd.Timedelta(2, unit="h"), freq="h")
+
+    evidence = _simulate_capital_sleeves_evidence(
+        trades,
+        return_column="net_return",
+        horizon_hours=2,
+        period_grid=grid,
+    )
+
+    values = [row["return"] for row in evidence["period_returns"]]
+    assert values == pytest.approx([0.0, -0.10, 0.105 / 0.90])
+    assert evidence["max_drawdown"] == pytest.approx(-0.10)
+    assert evidence["net_return"] == pytest.approx(0.005)

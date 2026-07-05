@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import BacktestRun
 from app.ml.lifecycle import load_training_market_data
+from app.ml.mtm import INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     apply_intrahorizon_margin_path,
@@ -24,6 +25,7 @@ from app.ml.training import (
     filter_single_active_trade_per_symbol,
     historical_funding_components,
     make_barrier_dataset,
+    validate_intrahorizon_mark_to_market_path,
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
 )
@@ -118,8 +120,9 @@ def _simulate_capital_sleeves_evidence(
     return_column: str,
     horizon_hours: int,
     period_grid: pd.DatetimeIndex | None = None,
+    cumulative_path_column: str | None = "intrahorizon_net_return_path",
 ) -> dict[str, object]:
-    """Compound non-overlapping sleeves and expose an aligned realized return path."""
+    """Compound horizon sleeves over cumulative hourly mark-to-market paths."""
 
     if horizon_hours <= 0:
         raise ValueError("horizon_hours must be positive")
@@ -130,9 +133,16 @@ def _simulate_capital_sleeves_evidence(
             "max_drawdown": 0.0,
             "portfolio_periods": 0,
             "period_returns": [
-                {"timestamp": pd.Timestamp(item).isoformat(), "return": 0.0} for item in timestamps
+                {"timestamp": pd.Timestamp(item).isoformat(), "return": 0.0}
+                for item in timestamps
             ],
         }
+
+    use_cumulative_path = (
+        cumulative_path_column is not None and cumulative_path_column in trades.columns
+    )
+    if use_cumulative_path and trades[cumulative_path_column].isna().any():
+        raise ValueError(f"{cumulative_path_column} contains missing paths")
 
     sleeve_capital = np.full(horizon_hours, 1.0 / horizon_hours, dtype=float)
     previous_decision: dict[int, pd.Timestamp] = {}
@@ -154,21 +164,57 @@ def _simulate_capital_sleeves_evidence(
 
         starting_capital = float(sleeve_capital[slot])
         allocation = starting_capital / len(cohort)
-        for exit_time, trade_return in zip(cohort["exit_time"], returns, strict=True):
-            pnl_events.append((pd.Timestamp(exit_time), allocation * float(trade_return)))
+        for (_, trade), trade_return in zip(cohort.iterrows(), returns, strict=True):
+            exit_time = pd.Timestamp(trade["exit_time"])
+            if not use_cumulative_path:
+                pnl_events.append((exit_time, allocation * float(trade_return)))
+                continue
+
+            raw_path = trade[cumulative_path_column]
+            if not isinstance(raw_path, list) or not raw_path:
+                raise ValueError(f"{cumulative_path_column} must contain non-empty lists")
+            previous_cumulative_return = 0.0
+            path_timestamps: list[pd.Timestamp] = []
+            for item in raw_path:
+                if not isinstance(item, dict) or set(item) != {"timestamp", "return"}:
+                    raise ValueError(f"{cumulative_path_column} record is invalid")
+                timestamp = pd.to_datetime(item["timestamp"], utc=True, errors="coerce")
+                cumulative_return = pd.to_numeric(item["return"], errors="coerce")
+                if pd.isna(timestamp) or pd.isna(cumulative_return):
+                    raise ValueError(f"{cumulative_path_column} record is invalid")
+                point = pd.Timestamp(timestamp)
+                value = float(cumulative_return)
+                if not math.isfinite(value):
+                    raise ValueError(f"{cumulative_path_column} returns must be finite")
+                path_timestamps.append(point)
+                pnl_events.append(
+                    (point, allocation * (value - previous_cumulative_return))
+                )
+                previous_cumulative_return = value
+            if path_timestamps != sorted(set(path_timestamps)):
+                raise ValueError(f"{cumulative_path_column} timestamps must be unique and chronological")
+            if path_timestamps[0] != decision or path_timestamps[-1] != exit_time:
+                raise ValueError(f"{cumulative_path_column} must span decision_time through exit_time")
+            if not math.isclose(
+                previous_cumulative_return,
+                float(trade_return),
+                rel_tol=1e-10,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(f"{cumulative_path_column} does not reconcile to {return_column}")
 
         sleeve_capital[slot] = starting_capital * (1.0 + cohort_return)
         previous_decision[slot] = decision
 
-    event_frame = pd.DataFrame(pnl_events, columns=["exit_time", "pnl"])
-    realized_pnl = event_frame.groupby("exit_time", sort=True)["pnl"].sum()
+    event_frame = pd.DataFrame(pnl_events, columns=["event_time", "pnl"])
+    realized_pnl = event_frame.groupby("event_time", sort=True)["pnl"].sum()
     if period_grid is None:
         grid = pd.DatetimeIndex(realized_pnl.index)
     else:
         grid = pd.DatetimeIndex(period_grid)
         outside = realized_pnl.index.difference(grid)
         if len(outside):
-            raise ValueError("Realized PnL events fall outside the experiment period grid")
+            raise ValueError("Mark-to-market PnL events fall outside the experiment period grid")
 
     current_equity = 1.0
     peaks = [1.0]
@@ -182,7 +228,9 @@ def _simulate_capital_sleeves_evidence(
         current_equity += pnl
         equity_path.append(current_equity)
         peaks.append(max(peaks[-1], current_equity))
-        period_returns.append({"timestamp": pd.Timestamp(timestamp).isoformat(), "return": period_return})
+        period_returns.append(
+            {"timestamp": pd.Timestamp(timestamp).isoformat(), "return": period_return}
+        )
 
     equity = np.asarray(equity_path, dtype=float)
     peak_array = np.asarray(peaks, dtype=float)
@@ -208,6 +256,7 @@ def _simulate_capital_sleeves(
         trades,
         return_column=return_column,
         horizon_hours=horizon_hours,
+        cumulative_path_column=None,
     )
     return (
         float(evidence["net_return"]),
@@ -307,6 +356,11 @@ def policy_backtest(
         require=require_intrahorizon_margin,
         expected_leverage=research_leverage,
         expected_equity_reserve_fraction=liquidation_equity_reserve_fraction,
+    )
+    meta, intrahorizon_mark_to_market_schema = validate_intrahorizon_mark_to_market_path(
+        meta,
+        context="Backtest",
+        require=include_experiment_evidence,
     )
 
     meta["p_tp"] = probabilities[:, indexes["TP"]]
@@ -449,6 +503,31 @@ def policy_backtest(
         - slippage_rate
         + chosen["funding_return_rate"]
     )
+    if intrahorizon_mark_to_market_schema is not None:
+        def cumulative_net_path(row: pd.Series) -> list[dict[str, object]]:
+            effective_exit = pd.Timestamp(row["exit_time"])
+            final_net_return = float(row["net_return"])
+            path: list[dict[str, object]] = []
+            for item in row["intrahorizon_mark_to_market_path"]:
+                timestamp = pd.Timestamp(item["timestamp"])
+                if timestamp == effective_exit:
+                    cumulative_net_return = final_net_return
+                else:
+                    cumulative_net_return = (
+                        float(item["gross_return_rate"])
+                        + float(item["funding_return_rate"])
+                        - fee_rate_per_leg
+                        - slippage_rate
+                    )
+                path.append(
+                    {
+                        "timestamp": timestamp.isoformat(),
+                        "return": cumulative_net_return,
+                    }
+                )
+            return path
+
+        chosen["intrahorizon_net_return_path"] = chosen.apply(cumulative_net_path, axis=1)
     chosen["stress_net_return_with_stop_reserve"] = (
         chosen["net_return"] - chosen["unused_stop_gap_reserve_rate"]
     )
@@ -539,6 +618,10 @@ def policy_backtest(
         "historical_funding_timeline_complete": historical_funding_schema is not None,
         "intrahorizon_margin_schema": intrahorizon_margin_schema,
         "intrahorizon_margin_complete": intrahorizon_margin_schema is not None,
+        "intrahorizon_mark_to_market_schema": intrahorizon_mark_to_market_schema,
+        "intrahorizon_mark_to_market_complete": (
+            intrahorizon_mark_to_market_schema is not None
+        ),
         "research_leverage": int(research_leverage),
         "liquidation_equity_reserve_fraction": float(liquidation_equity_reserve_fraction),
         "liquidation_events": (
@@ -575,7 +658,9 @@ def policy_backtest(
         "warning": (
             "Barrier-policy research backtest with conservative hourly ambiguity and "
             "non-overlapping horizon capital sleeves and the live one-active-plan-per-symbol "
-            "constraint. Realized paths include hourly Bybit mark-price OHLC under a "
+            "constraint. Capital drawdown and experiment returns include cumulative hourly "
+            "mark-close MTM, entry fee/slippage at decision time, terminal exit fees and "
+            "historical funding under a "
             "conservative isolated-margin proxy; exact historical risk tiers, sub-hour mark "
             "paths, cross/portfolio margin, orderbook impact, partial fills and operator "
             "latency are not modeled. This is not evidence of profitability."
@@ -712,7 +797,12 @@ async def run(args) -> None:
             "minimum_net_rr": minimum_net_rr,
             "minimum_net_ev_r": minimum_net_ev_r,
             "policy_source": "cost_aware_ev_r_v1",
-            "portfolio_accounting": "horizon_sleeves_single_active_symbol_v2",
+            "portfolio_accounting": (
+                "horizon_sleeves_hourly_mark_to_market_single_active_symbol_v3"
+            ),
+            "intrahorizon_mark_to_market_schema": (
+                INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
+            ),
         }
         if args.prepare_preregistration:
             template = build_preregistration_template(

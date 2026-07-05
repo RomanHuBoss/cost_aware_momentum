@@ -35,6 +35,8 @@ from app.ml.labels import triple_barrier_outcome
 from app.ml.mtm import (
     DEFAULT_EQUITY_RESERVE_FRACTION,
     INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+    INTRAHORIZON_MTM_PATH_SCHEMA_VERSION,
+    build_intrahorizon_mark_to_market_path,
     simulate_intrahorizon_margin_path,
 )
 
@@ -65,6 +67,11 @@ HISTORICAL_FUNDING_POLICY_METADATA_COLUMNS = (
     "historical_funding_realized_rate",
     "historical_funding_realized_settlements",
 )
+INTRAHORIZON_MTM_POLICY_METADATA_COLUMNS = (
+    "intrahorizon_mark_to_market_path_complete",
+    "intrahorizon_mark_to_market_schema",
+    "intrahorizon_mark_to_market_path",
+)
 INTRAHORIZON_MARGIN_POLICY_METADATA_COLUMNS = (
     "intrahorizon_margin_path_complete",
     "intrahorizon_margin_schema",
@@ -84,6 +91,7 @@ INTRAHORIZON_MARGIN_POLICY_METADATA_COLUMNS = (
 POLICY_PATH_METADATA_COLUMNS = (
     *HISTORICAL_FUNDING_POLICY_METADATA_COLUMNS,
     *INTRAHORIZON_MARGIN_POLICY_METADATA_COLUMNS,
+    *INTRAHORIZON_MTM_POLICY_METADATA_COLUMNS,
 )
 
 
@@ -712,6 +720,7 @@ def make_barrier_dataset(
                 if mark_future is not None:
                     adverse_funding_at_open: list[float] = []
                     adverse_funding_at_close: list[float] = []
+                    signed_funding_at_close: list[float] = []
                     running_adverse_funding = 0.0
                     if funding_timeline is not None:
                         try:
@@ -740,6 +749,7 @@ def make_barrier_dataset(
                                 close_adverse = min(open_adverse, signed_close_funding, 0.0)
                                 adverse_funding_at_open.append(open_adverse)
                                 adverse_funding_at_close.append(close_adverse)
+                                signed_funding_at_close.append(float(signed_close_funding))
                                 running_adverse_funding = close_adverse
                         except ValueError:
                             direction_rows = []
@@ -747,6 +757,7 @@ def make_barrier_dataset(
                     else:
                         adverse_funding_at_open = [0.0] * (result.exit_index + 1)
                         adverse_funding_at_close = [0.0] * (result.exit_index + 1)
+                        signed_funding_at_close = [0.0] * (result.exit_index + 1)
 
                     margin_path = simulate_intrahorizon_margin_path(
                         mark_future[["open", "high", "low", "close"]],
@@ -798,6 +809,23 @@ def make_barrier_dataset(
                             break
                         effective_funding_rate = liquidation_funding.cumulative_rate
                         effective_funding_settlements = liquidation_funding.settlements
+                    effective_signed_funding_rate = (
+                        -float(effective_funding_rate)
+                        if direction == "LONG"
+                        else float(effective_funding_rate)
+                    )
+                    mark_to_market_path = build_intrahorizon_mark_to_market_path(
+                        mark_future.iloc[: result.exit_index + 1][["close_time", "close"]],
+                        direction=direction,
+                        entry_price=entry,
+                        decision_time=decision_time,
+                        exit_time=effective_exit_time,
+                        final_gross_return_rate=effective_realized_return,
+                        cumulative_signed_funding_return_at_close_by_bar=(
+                            signed_funding_at_close
+                        ),
+                        final_signed_funding_return_rate=effective_signed_funding_rate,
+                    )
                     margin_values = {
                         "intrahorizon_margin_path_complete": True,
                         "intrahorizon_margin_schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION,
@@ -816,6 +844,11 @@ def make_barrier_dataset(
                         "margin_path_realized_gross_return": effective_realized_return,
                         "historical_funding_margin_path_rate": effective_funding_rate,
                         "historical_funding_margin_path_settlements": effective_funding_settlements,
+                        "intrahorizon_mark_to_market_path_complete": True,
+                        "intrahorizon_mark_to_market_schema": (
+                            INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
+                        ),
+                        "intrahorizon_mark_to_market_path": mark_to_market_path,
                     }
                 row = {name: float(current[name]) for name in MODEL_BASE_FEATURE_NAMES}
                 row.update(
@@ -870,6 +903,9 @@ def make_barrier_dataset(
     )
     dataset.attrs["intrahorizon_margin_path"] = {
         "schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION if mark_candles is not None else None,
+        "mark_to_market_path_schema": (
+            INTRAHORIZON_MTM_PATH_SCHEMA_VERSION if mark_candles is not None else None
+        ),
         "required": bool(require_mark_timeline),
         "status": "complete" if mark_candles is not None else "not_provided",
         "mark_price_source": "bybit_hourly_mark_price_ohlc",
@@ -1595,6 +1631,106 @@ def historical_funding_components(
     recognized_horizon = np.minimum(horizon_signed, 0.0)
     adverse_horizon = np.maximum(-recognized_horizon, 0.0)
     return recognized_horizon, adverse_horizon, realized_signed, HISTORICAL_FUNDING_SCHEMA_VERSION
+
+
+def validate_intrahorizon_mark_to_market_path(
+    meta: pd.DataFrame,
+    *,
+    context: str,
+    require: bool,
+) -> tuple[pd.DataFrame, str | None]:
+    """Validate cumulative hourly mark/funding evidence through effective exit."""
+
+    required = set(INTRAHORIZON_MTM_POLICY_METADATA_COLUMNS)
+    missing = sorted(required - set(meta.columns))
+    result = meta.copy()
+    if missing:
+        if require:
+            raise ValueError(
+                f"{context} metadata is missing intrahorizon mark-to-market columns: {missing}"
+            )
+        return result, None
+
+    complete = result["intrahorizon_mark_to_market_path_complete"].map(
+        lambda value: isinstance(value, (bool, np.bool_)) and bool(value)
+    )
+    if not complete.all():
+        raise ValueError(f"{context} contains an incomplete intrahorizon mark-to-market path")
+    schemas = set(result["intrahorizon_mark_to_market_schema"].astype(str))
+    if schemas != {INTRAHORIZON_MTM_PATH_SCHEMA_VERSION}:
+        raise ValueError(f"{context} contains an incompatible intrahorizon mark-to-market schema")
+
+    normalized_paths: list[list[dict[str, object]]] = []
+    for row in result.to_dict(orient="records"):
+        raw_path = row["intrahorizon_mark_to_market_path"]
+        if not isinstance(raw_path, list) or not raw_path:
+            raise ValueError(f"{context} intrahorizon mark-to-market path must be a non-empty list")
+
+        records: list[dict[str, object]] = []
+        timestamps: list[pd.Timestamp] = []
+        for item in raw_path:
+            if not isinstance(item, dict) or set(item) != {
+                "timestamp",
+                "gross_return_rate",
+                "funding_return_rate",
+            }:
+                raise ValueError(f"{context} intrahorizon mark-to-market record is invalid")
+            timestamp = pd.to_datetime(item["timestamp"], utc=True, errors="coerce")
+            gross = pd.to_numeric(item["gross_return_rate"], errors="coerce")
+            funding = pd.to_numeric(item["funding_return_rate"], errors="coerce")
+            if pd.isna(timestamp) or pd.isna(gross) or pd.isna(funding):
+                raise ValueError(f"{context} intrahorizon mark-to-market record is invalid")
+            gross_value = float(gross)
+            funding_value = float(funding)
+            if not np.isfinite(gross_value) or not np.isfinite(funding_value):
+                raise ValueError(f"{context} intrahorizon mark-to-market returns must be finite")
+            point = pd.Timestamp(timestamp)
+            if point != point.floor("h"):
+                raise ValueError(f"{context} intrahorizon mark-to-market times must be hour-aligned")
+            timestamps.append(point)
+            records.append(
+                {
+                    "timestamp": point.isoformat(),
+                    "gross_return_rate": gross_value,
+                    "funding_return_rate": funding_value,
+                }
+            )
+
+        decision = pd.Timestamp(row["decision_time"])
+        effective_exit = pd.Timestamp(row["exit_time"])
+        if decision.tzinfo is None or effective_exit.tzinfo is None:
+            raise ValueError(f"{context} decision and exit times must be timezone-aware")
+        decision = decision.tz_convert("UTC")
+        effective_exit = effective_exit.tz_convert("UTC")
+        expected_timestamps = list(pd.date_range(decision, effective_exit, freq="h"))
+        if timestamps != expected_timestamps:
+            raise ValueError(
+                f"{context} intrahorizon mark-to-market path must cover every observed hour"
+            )
+        if effective_exit > decision and (
+            abs(float(records[0]["gross_return_rate"])) > 1e-12
+            or abs(float(records[0]["funding_return_rate"])) > 1e-12
+        ):
+            raise ValueError(f"{context} intrahorizon mark-to-market path must start at zero")
+
+        terminal_gross = float(records[-1]["gross_return_rate"])
+        expected_gross = float(row["effective_realized_gross_return"])
+        if not np.isclose(terminal_gross, expected_gross, rtol=1e-10, atol=1e-12):
+            raise ValueError(f"{context} intrahorizon mark-to-market gross return does not reconcile")
+        raw_funding = float(row.get("historical_funding_realized_rate", 0.0))
+        direction = str(row["direction"])
+        if direction not in {"LONG", "SHORT"}:
+            raise ValueError(f"{context} intrahorizon mark-to-market direction is invalid")
+        expected_funding = -raw_funding if direction == "LONG" else raw_funding
+        terminal_funding = float(records[-1]["funding_return_rate"])
+        if not np.isclose(terminal_funding, expected_funding, rtol=1e-10, atol=1e-12):
+            raise ValueError(
+                f"{context} intrahorizon mark-to-market funding return does not reconcile"
+            )
+        normalized_paths.append(records)
+
+    result["intrahorizon_mark_to_market_path"] = normalized_paths
+    return result, INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
 
 
 def apply_intrahorizon_margin_path(

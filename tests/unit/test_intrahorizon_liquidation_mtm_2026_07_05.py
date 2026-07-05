@@ -5,6 +5,7 @@ import pytest
 
 from app.ml.mtm import (
     INTRAHORIZON_MARGIN_SCHEMA_VERSION,
+    INTRAHORIZON_MTM_PATH_SCHEMA_VERSION,
     simulate_intrahorizon_margin_path,
 )
 
@@ -176,7 +177,19 @@ def test_barrier_dataset_attaches_exact_hourly_mark_path_and_liquidation() -> No
     assert not pair.loc["SHORT", "mark_liquidated"]
     assert pair.loc["LONG", "margin_path_exit_time"] == first_future + pd.Timedelta(hours=1)
     assert pair.loc["LONG", "margin_path_realized_gross_return"] == pytest.approx(-0.20)
+    long_path = pair.loc["LONG", "intrahorizon_mark_to_market_path"]
+    assert pair.loc["LONG", "intrahorizon_mark_to_market_schema"] == (
+        INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
+    )
+    assert [pd.Timestamp(item["timestamp"]) for item in long_path] == [
+        first_future,
+        first_future + pd.Timedelta(hours=1),
+    ]
+    assert long_path[-1]["gross_return_rate"] == pytest.approx(-0.20)
     assert dataset.attrs["intrahorizon_margin_path"]["status"] == "complete"
+    assert dataset.attrs["intrahorizon_margin_path"]["mark_to_market_path_schema"] == (
+        INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
+    )
 
 
 def test_barrier_dataset_fails_closed_for_missing_mark_bar() -> None:
