@@ -55,7 +55,7 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v10",
+        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v11",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_candidates": 1_000,
@@ -63,6 +63,12 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "policy_trade_rate": 0.08,
         "policy_cohorts": 80,
         "policy_independent_cohorts": 80,
+        "policy_independent_mean_r": 0.04,
+        "policy_mean_r_lcb": 0.01,
+        "policy_mean_r_confidence_level": 0.95,
+        "policy_mean_r_bootstrap_samples": 2_000,
+        "policy_mean_r_bootstrap_block_length": 1,
+        "policy_mean_r_uncertainty_schema": "horizon-separated-circular-moving-block-v1",
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
         "policy_max_drawdown_r": 5.0,
@@ -80,7 +86,7 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
 
 def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
     metrics = _metrics()
-    metrics["policy_metric_schema"] = "decision-open-entry-exit-time-cohort-v10"
+    metrics["policy_metric_schema"] = "decision-open-entry-exit-time-cohort-v11"
 
     result = evaluate_quality_gate(
         _candidate(tmp_path, metrics=metrics),

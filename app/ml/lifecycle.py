@@ -30,6 +30,7 @@ from app.ml.training import (
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     POLICY_METRIC_SCHEMA,
+    POLICY_UNCERTAINTY_SCHEMA,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
     TIMEOUT_RETURN_SCHEMA_VERSION,
     PolicyEvaluationConfig,
@@ -84,6 +85,8 @@ def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
         min_net_ev_r=settings.min_net_ev_r,
         timeout_return_rate=settings.timeout_gross_return_rate,
         horizon_hours=settings.default_horizon_hours,
+        bootstrap_samples=settings.auto_train_policy_bootstrap_samples,
+        confidence_level=settings.auto_train_policy_confidence_level,
     )
 
 
@@ -556,6 +559,46 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             reasons.append("inconsistent_policy_trade_rate")
     policy_cohorts = nonnegative_int_metric("policy_cohorts")
     policy_independent_cohorts = nonnegative_int_metric("policy_independent_cohorts")
+    policy_independent_mean_r = finite_or_none(metrics.get("policy_independent_mean_r"))
+    policy_mean_r_lcb = finite_or_none(metrics.get("policy_mean_r_lcb"))
+    policy_confidence_level = finite_or_none(
+        metrics.get("policy_mean_r_confidence_level")
+    )
+    policy_bootstrap_samples = nonnegative_int_metric(
+        "policy_mean_r_bootstrap_samples"
+    )
+    policy_bootstrap_block_length = nonnegative_int_metric(
+        "policy_mean_r_bootstrap_block_length"
+    )
+    if metrics.get("policy_mean_r_uncertainty_schema") != POLICY_UNCERTAINTY_SCHEMA:
+        reasons.append("invalid_policy_mean_r_uncertainty_schema")
+    if policy_independent_cohorts > 0 and policy_independent_mean_r is None:
+        reasons.append("missing_or_non_finite_policy_independent_mean_r")
+    if policy_independent_cohorts > 1 and policy_mean_r_lcb is None:
+        reasons.append("missing_or_non_finite_policy_mean_r_lcb")
+    if (
+        policy_confidence_level is None
+        or not math.isclose(
+            policy_confidence_level,
+            settings.auto_train_policy_confidence_level,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    ):
+        reasons.append("policy_mean_r_confidence_level_mismatch")
+    if policy_bootstrap_samples != settings.auto_train_policy_bootstrap_samples:
+        reasons.append("policy_mean_r_bootstrap_samples_mismatch")
+    if (
+        policy_independent_cohorts > 1
+        and not 1 <= policy_bootstrap_block_length <= policy_independent_cohorts
+    ):
+        reasons.append("invalid_policy_mean_r_bootstrap_block_length")
+    if (
+        policy_mean_r_lcb is not None
+        and policy_independent_mean_r is not None
+        and policy_mean_r_lcb > policy_independent_mean_r + 1e-12
+    ):
+        reasons.append("policy_mean_r_lcb_exceeds_independent_mean")
     policy_mean_r = finite_or_none(metrics.get("policy_realized_mean_r"))
     policy_profit_factor = finite_or_none(metrics.get("policy_profit_factor"))
     policy_profit_factor_unbounded = metrics.get("policy_profit_factor_unbounded") is True
@@ -633,6 +676,11 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("policy_independent_cohort_count_below_minimum")
     if policy_mean_r_check < settings.auto_train_min_policy_realized_mean_r:
         reasons.append("policy_realized_mean_r_below_minimum")
+    if (
+        policy_mean_r_lcb is None
+        or policy_mean_r_lcb <= settings.auto_train_min_policy_mean_r_lcb
+    ):
+        reasons.append("policy_mean_r_lcb_not_above_minimum")
     if policy_profit_factor_check < settings.auto_train_min_policy_profit_factor:
         reasons.append("policy_profit_factor_below_minimum")
     if policy_drawdown_check > settings.auto_train_max_policy_drawdown_r:
@@ -676,6 +724,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             else None
         )
         incumbent_policy_mean_r = finite_or_none(incumbent.get("policy_realized_mean_r"))
+        incumbent_policy_mean_r_lcb = finite_or_none(incumbent.get("policy_mean_r_lcb"))
         incumbent_policy_drawdown = finite_or_none(incumbent.get("policy_max_drawdown_r"))
         incumbent_policy_schema = incumbent.get("policy_metric_schema")
         incumbent_policy_horizon = finite_or_none(incumbent.get("policy_horizon_hours"))
@@ -708,6 +757,10 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         if incumbent_policy_trades is not None and incumbent_policy_trades > 0:
             if incumbent_policy_mean_r is None:
                 invalid_incumbent_fields.append("policy_realized_mean_r")
+            if incumbent_policy_mean_r_lcb is None:
+                invalid_incumbent_fields.append("policy_mean_r_lcb")
+            if incumbent.get("policy_mean_r_uncertainty_schema") != POLICY_UNCERTAINTY_SCHEMA:
+                invalid_incumbent_fields.append("policy_mean_r_uncertainty_schema")
             if incumbent_policy_drawdown is None:
                 invalid_incumbent_fields.append("policy_max_drawdown_r")
         if invalid_incumbent_fields:
@@ -761,6 +814,8 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
                 "multiclass_brier_delta": brier_delta,
                 "candidate_policy_realized_mean_r": policy_mean_r,
                 "incumbent_policy_realized_mean_r": incumbent_policy_mean_r,
+                "candidate_policy_mean_r_lcb": policy_mean_r_lcb,
+                "incumbent_policy_mean_r_lcb": incumbent_policy_mean_r_lcb,
                 "policy_realized_mean_r_delta": policy_mean_r_delta,
                 "candidate_policy_max_drawdown_r": policy_drawdown,
                 "incumbent_policy_max_drawdown_r": incumbent_policy_drawdown,
@@ -800,6 +855,15 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "min_policy_cohorts": settings.auto_train_min_policy_cohorts,
             "policy_realized_mean_r": policy_mean_r,
             "min_policy_realized_mean_r": settings.auto_train_min_policy_realized_mean_r,
+            "policy_independent_mean_r": policy_independent_mean_r,
+            "policy_mean_r_lcb": policy_mean_r_lcb,
+            "min_policy_mean_r_lcb": settings.auto_train_min_policy_mean_r_lcb,
+            "policy_mean_r_confidence_level": policy_confidence_level,
+            "policy_mean_r_bootstrap_samples": policy_bootstrap_samples,
+            "policy_mean_r_bootstrap_block_length": policy_bootstrap_block_length,
+            "policy_mean_r_uncertainty_schema": metrics.get(
+                "policy_mean_r_uncertainty_schema"
+            ),
             "policy_profit_factor": policy_profit_factor,
             "policy_profit_factor_unbounded": valid_unbounded_profit_factor,
             "policy_gross_gain_r": policy_gross_gain_r,

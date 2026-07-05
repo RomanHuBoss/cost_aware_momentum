@@ -28,7 +28,8 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "decision-open-entry-ohlc-path-v2"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v10"
+POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v11"
+POLICY_UNCERTAINTY_SCHEMA = "horizon-separated-circular-moving-block-v1"
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
 MIN_TIMEOUT_SAMPLES_PER_DIRECTION = 5
 
@@ -225,6 +226,8 @@ class PolicyEvaluationConfig:
     min_net_ev_r: float
     timeout_return_rate: float = -0.002
     horizon_hours: int | None = None
+    bootstrap_samples: int = 2000
+    confidence_level: float = 0.95
 
 
 def timeout_return_r_targets(meta: pd.DataFrame) -> np.ndarray:
@@ -875,12 +878,12 @@ def _holdout_time_bounds(test_meta: pd.DataFrame) -> tuple[pd.Timestamp, pd.Time
     return start, end, span_hours
 
 
-def _count_horizon_separated_cohorts(
-    decision_times: pd.Series,
+def _horizon_separated_cohort_series(
+    cohorts: pd.Series,
     *,
     horizon_hours: int,
-) -> int:
-    """Count non-overlapping label windows using a deterministic greedy schedule."""
+) -> pd.Series:
+    """Select non-overlapping label windows using a deterministic greedy schedule."""
 
     if isinstance(horizon_hours, bool) or not isinstance(
         horizon_hours, (int, np.integer)
@@ -888,19 +891,53 @@ def _count_horizon_separated_cohorts(
         raise TypeError("horizon_hours must be an integer")
     if int(horizon_hours) <= 0:
         raise ValueError("horizon_hours must be positive")
-    values = pd.to_datetime(decision_times, utc=True, errors="coerce")
-    if values.isna().any():
-        raise ValueError("Policy cohorts contain invalid decision_time")
-    unique_times = sorted(pd.Timestamp(value) for value in values.unique())
+    if not isinstance(cohorts.index, pd.DatetimeIndex):
+        decision_times = pd.to_datetime(cohorts.index, utc=True, errors="coerce")
+    else:
+        decision_times = pd.to_datetime(cohorts.index, utc=True, errors="coerce")
+    values = pd.to_numeric(cohorts, errors="coerce").to_numpy(float)
+    if decision_times.isna().any() or not np.isfinite(values).all():
+        raise ValueError("Policy cohorts contain invalid decision_time or return")
+    ordered = pd.Series(values, index=decision_times).sort_index(kind="mergesort")
+    if ordered.index.has_duplicates:
+        raise ValueError("Policy cohorts must have unique decision_time values")
+    selected: list[pd.Timestamp] = []
     next_eligible: pd.Timestamp | None = None
-    count = 0
     separation = pd.to_timedelta(int(horizon_hours), unit="h")
-    for decision_time in unique_times:
+    for decision_time in ordered.index:
         if next_eligible is not None and decision_time < next_eligible:
             continue
-        count += 1
-        next_eligible = decision_time + separation
-    return count
+        selected.append(pd.Timestamp(decision_time))
+        next_eligible = pd.Timestamp(decision_time) + separation
+    return ordered.loc[selected]
+
+
+def _policy_mean_r_bootstrap(
+    independent_returns: np.ndarray,
+    *,
+    samples: int,
+    confidence_level: float,
+) -> tuple[float, float, int]:
+    """Return mean and one-sided moving-block bootstrap lower confidence bound."""
+
+    values = np.asarray(independent_returns, dtype=float)
+    if values.ndim != 1 or len(values) < 2 or not np.isfinite(values).all():
+        raise ValueError("At least two finite independent policy returns are required")
+    if isinstance(samples, bool) or not isinstance(samples, (int, np.integer)) or samples < 500:
+        raise ValueError("bootstrap_samples must be an integer of at least 500")
+    if not np.isfinite(confidence_level) or not 0.80 <= confidence_level < 1.0:
+        raise ValueError("confidence_level must be in [0.80, 1.0)")
+
+    block_length = max(1, min(len(values), int(np.ceil(np.sqrt(len(values))))))
+    blocks_per_sample = int(np.ceil(len(values) / block_length))
+    rng = np.random.default_rng(20260704)
+    starts = rng.integers(0, len(values), size=(int(samples), blocks_per_sample))
+    offsets = np.arange(block_length)
+    indexes = (starts[..., None] + offsets) % len(values)
+    resampled = values[indexes.reshape(int(samples), -1)[:, : len(values)]]
+    bootstrap_means = resampled.mean(axis=1)
+    lower_bound = float(np.quantile(bootstrap_means, 1.0 - confidence_level))
+    return float(values.mean()), lower_bound, block_length
 
 
 def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -> dict:
@@ -1022,6 +1059,17 @@ def evaluate_policy_model(
     for name in ("fee_rate_round_trip", "slippage_rate", "stop_gap_reserve_rate", "min_net_rr"):
         if float(config_values[name]) < 0:
             raise ValueError(f"{name} must be non-negative")
+    if (
+        isinstance(config.bootstrap_samples, bool)
+        or not isinstance(config.bootstrap_samples, (int, np.integer))
+        or config.bootstrap_samples < 500
+    ):
+        raise ValueError("bootstrap_samples must be an integer of at least 500")
+    if (
+        not np.isfinite(config.confidence_level)
+        or not 0.80 <= config.confidence_level < 1.0
+    ):
+        raise ValueError("confidence_level must be in [0.80, 1.0)")
 
     probabilities, class_to_index = validate_outcome_probability_matrix(
         model.predict_proba(split.x_test),
@@ -1176,6 +1224,12 @@ def evaluate_policy_model(
         "policy_trades": 0,
         "policy_cohorts": 0,
         "policy_independent_cohorts": 0,
+        "policy_independent_mean_r": None,
+        "policy_mean_r_lcb": None,
+        "policy_mean_r_confidence_level": float(config.confidence_level),
+        "policy_mean_r_bootstrap_samples": int(config.bootstrap_samples),
+        "policy_mean_r_bootstrap_block_length": 0,
+        "policy_mean_r_uncertainty_schema": POLICY_UNCERTAINTY_SCHEMA,
         "policy_trade_rate": 0.0,
         "policy_mean_expected_ev_r": None,
         "policy_realized_mean_r": None,
@@ -1207,6 +1261,23 @@ def evaluate_policy_model(
         realized_mean_r=("realized_r", "mean"),
         expected_mean_ev_r=("expected_ev_r", "mean"),
     )
+    independent_returns = _horizon_separated_cohort_series(
+        cohort_metrics["realized_mean_r"],
+        horizon_hours=resolved_horizon,
+    )
+    independent_mean_r, policy_mean_r_lcb, bootstrap_block_length = (
+        _policy_mean_r_bootstrap(
+            independent_returns.to_numpy(float),
+            samples=config.bootstrap_samples,
+            confidence_level=config.confidence_level,
+        )
+        if len(independent_returns) >= 2
+        else (
+            float(independent_returns.mean()) if len(independent_returns) else None,
+            None,
+            0,
+        )
+    )
     exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
     trade_contributions = trades["realized_r_contribution"]
     gains = float(trade_contributions[trade_contributions > 0].sum())
@@ -1227,9 +1298,13 @@ def evaluate_policy_model(
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": int(len(trades)),
         "policy_cohorts": int(len(cohort_metrics)),
-        "policy_independent_cohorts": _count_horizon_separated_cohorts(
-            trades["decision_time"], horizon_hours=resolved_horizon
-        ),
+        "policy_independent_cohorts": int(len(independent_returns)),
+        "policy_independent_mean_r": independent_mean_r,
+        "policy_mean_r_lcb": policy_mean_r_lcb,
+        "policy_mean_r_confidence_level": float(config.confidence_level),
+        "policy_mean_r_bootstrap_samples": int(config.bootstrap_samples),
+        "policy_mean_r_bootstrap_block_length": int(bootstrap_block_length),
+        "policy_mean_r_uncertainty_schema": POLICY_UNCERTAINTY_SCHEMA,
         "policy_trade_rate": float(len(trades) / len(selected)) if len(selected) else 0.0,
         "policy_mean_expected_ev_r": float(cohort_metrics["expected_mean_ev_r"].mean()),
         "policy_realized_mean_r": float(cohort_metrics["realized_mean_r"].mean()),

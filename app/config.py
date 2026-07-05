@@ -142,6 +142,9 @@ class Settings(BaseSettings):
     auto_train_min_policy_trade_rate: float = 0.01
     auto_train_min_policy_cohorts: int = 20
     auto_train_min_policy_realized_mean_r: float = 0.0
+    auto_train_policy_bootstrap_samples: int = 2000
+    auto_train_policy_confidence_level: float = 0.95
+    auto_train_min_policy_mean_r_lcb: float = 0.0
     auto_train_min_policy_profit_factor: float = 1.0
     auto_train_max_policy_drawdown_r: float = 30.0
     auto_train_max_policy_mean_r_regression: float = 0.02
@@ -359,6 +362,12 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_MIN_POLICY_TRADE_RATE must be in (0, 1]")
         if self.auto_train_min_policy_cohorts < 1:
             raise ValueError("AUTO_TRAIN_MIN_POLICY_COHORTS must be positive")
+        if self.auto_train_policy_bootstrap_samples < 500:
+            raise ValueError("AUTO_TRAIN_POLICY_BOOTSTRAP_SAMPLES must be at least 500")
+        if not 0.80 <= self.auto_train_policy_confidence_level < 1.0:
+            raise ValueError("AUTO_TRAIN_POLICY_CONFIDENCE_LEVEL must be in [0.80, 1.0)")
+        if not math.isfinite(self.auto_train_min_policy_mean_r_lcb):
+            raise ValueError("AUTO_TRAIN_MIN_POLICY_MEAN_R_LCB must be finite")
         if self.auto_train_min_policy_profit_factor < 0:
             raise ValueError("AUTO_TRAIN_MIN_POLICY_PROFIT_FACTOR cannot be negative")
         if self.auto_train_max_policy_drawdown_r <= 0:
@@ -373,6 +382,10 @@ class Settings(BaseSettings):
             if self.auto_train_min_policy_realized_mean_r < 0:
                 raise ValueError(
                     "AUTO_TRAIN_MIN_POLICY_REALIZED_MEAN_R cannot be negative when auto-activation is enabled"
+                )
+            if self.auto_train_min_policy_mean_r_lcb < 0:
+                raise ValueError(
+                    "AUTO_TRAIN_MIN_POLICY_MEAN_R_LCB cannot be negative when auto-activation is enabled"
                 )
             if self.auto_train_min_policy_profit_factor < 1:
                 raise ValueError(

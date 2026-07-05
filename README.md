@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.9.5: auto-activation теперь требует не только минимального числа сделок, но и минимальной доли исполнимых policy-сделок среди всех holdout symbol/timestamp candidates. Разреженная модель больше не может пройти gate на нескольких удачных эпизодах из десятков тысяч наблюдений.
+> Версия 1.9.6: auto-activation теперь требует строго положительную одностороннюю нижнюю доверительную границу среднего policy-return. Она рассчитывается детерминированным circular moving-block bootstrap по horizon-separated временным когортам; положительный point estimate без статистически устойчивого запаса больше не проходит promotion.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -14,6 +14,7 @@
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
 - Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов holdout; число символов не заменяет временную глубину.
+- Экономический promotion gate использует не только point mean R, но и 95% one-sided lower confidence bound по horizon-separated когортам; default требует `LCB > 0`.
 - До запуска bootstrap trainer вычисляет необходимую часовую историю из feature warm-up, horizon, temporal split и holdout gates. При defaults требуется не менее 1206 уникальных часовых timestamps; это необходимое, но не достаточное условие при гэпах/невалидных свечах.
 - Кандидат обязан иметь строго положительный `log_loss_skill_vs_prior`; модель хуже простого class-prior прогноза не может быть auto-activated даже при прохождении абсолютного `log_loss` лимита.
 - После `quality_gate_failed` bootstrap/recovery повторяется только при достаточном числе новых timestamps или материальном изменении training-data profile; operator recovery остаётся явным override.
