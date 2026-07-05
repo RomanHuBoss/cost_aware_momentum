@@ -1,5 +1,15 @@
 # Operator Manual
 
+## Upgrade to 1.16.0
+
+1. Остановите API, worker и trainer; сохраните backup PostgreSQL, model registry и active artifact.
+2. Обновите исходники. Migration отсутствует; ожидаемый Alembic head остаётся `0011_selection_experiment`.
+3. В существующем `.env` установите `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
+4. Запустите worker и проверьте `history_backfill.index_price_history` и `history_backfill.open_interest_history` для всех training symbols. Не подставляйте last price вместо index/mark и не заполняйте OI гэпы нулями.
+5. Дождитесь достаточного покрытия, затем переобучите candidate. Artifact 1.15.0 несовместим с `hourly-barrier-market-context-v4` и должен быть отклонён fail-closed.
+6. Перед activation проверьте artifact metadata: context/availability/ablation schemas, complete/incomplete row counts, final ablation benefit и число non-inferior walk-forward folds.
+7. Проведите новый paper/shadow период. Расширение feature schema не является доказательством прибыльности.
+
 ## Upgrade to 1.15.0
 
 1. Остановите процессы и сохраните backup PostgreSQL.

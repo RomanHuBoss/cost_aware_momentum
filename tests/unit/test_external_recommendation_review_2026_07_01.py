@@ -79,6 +79,14 @@ def test_artifact_rejects_boolean_barrier_multiplier(tmp_path: Path) -> None:
             "calibration_version": "cal-v1",
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+            "market_context_schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "market_context_availability_schema": "exchange-event-close-live-receipt-v1",
+            "market_context": {
+                "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+                "availability_schema": "exchange-event-close-live-receipt-v1",
+                "historical_receipt_time_reconstructed": False,
+            },
+            "market_context_ablation_schema": "same-split-zeroed-context-v1",
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {

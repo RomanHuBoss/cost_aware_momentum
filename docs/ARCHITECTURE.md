@@ -1,5 +1,18 @@
 # Architecture
 
+## Point-in-time market-context flow 1.16.0
+
+1. Worker progressively stores confirmed hourly `last`, `mark` and `index` candles, hourly `OpenInterest` rows and actual funding settlements from public/read-only Bybit endpoints.
+2. Training loads the five source families in one `TrainingMarketData` bundle. Historical joins use exact exchange event/close timestamps; local receipt timestamps cannot be reconstructed for old public history and this limitation is persisted in artifact metadata.
+3. `build_market_context_frame()` creates seven ex-ante features: OI log changes 1h/24h, mark/index basis and 1h basis change, latest already-settled funding rate and normalized age, turnover/OI notional liquidity proxy.
+4. Exact current/lagged OI and exact current/previous basis are required. Funding is backward-only and must lie within the instrument funding interval. Missing, duplicate, non-positive or non-finite input leaves the timestamp incomplete; no zero-fill or forward use is allowed.
+5. `make_barrier_dataset()` attaches context at the decision candle close before LONG/SHORT scenario duplication. Context never uses label path, future funding, future mark path or operator outcome.
+6. Final holdout and each purged expanding walk-forward fold independently refit both the enriched model and a comparator with context columns zeroed on the same timestamps. Gate permits no more than 0.005 final log-loss regression and requires context non-inferiority in at least two of three folds.
+7. Artifact/runtime require exact feature order, context schema, availability schema and ablation schema. Pre-1.16 artifacts fail closed.
+8. Live inference queries only rows with `available_at <= available_cutoff`; incomplete current context skips the symbol rather than falling back to stale/zero values.
+
+Data flow: public market GET → PostgreSQL event/receipt timestamps → strict context join → enriched features → temporal training/ablation → immutable artifact → receipt-filtered live inference.
+
 ## Operator-selection evidence flow 1.15.0
 
 1. `create_execution_plan()` completes all market, capital, liquidity and risk calculations.
@@ -33,8 +46,8 @@ Data flow: plan calculation → immutable ex-ante ledger → operator decision/n
 
 ## Training and validation data flow 1.13.0
 
-1. Confirmed hourly last-price candles, hourly mark-price candles, фактические funding settlements и instrument funding interval загружаются из PostgreSQL одним `TrainingMarketData` bundle (`app/ml/lifecycle.py`).
-2. `build_feature_frame()` строит point-in-time OHLCV features только из доступного прошлого last-price ряда. Future mark prices не входят в features.
+1. Confirmed hourly last/mark/index candles, hourly open interest, фактические funding settlements и instrument funding interval загружаются из PostgreSQL одним `TrainingMarketData` bundle (`app/ml/lifecycle.py`).
+2. `build_feature_frame()` строит десять point-in-time OHLCV features; `build_market_context_frame()` по тому же decision close добавляет семь OI/basis/settled-funding/liquidity features. Future mark path и future funding не входят в features.
 3. `make_barrier_dataset()` формирует direction-specific `TP / SL / TIMEOUT` labels по last-price OHLC с execution spread proxy и привязывает funding aggregates к full horizon и actual modeled exit.
 4. Для каждого label строится точная hourly mark-price timeline до modeled last-price exit. Gap, duplicate, неверная OHLC или несовпадение `open_time/close_time` исключают весь LONG/SHORT cohort fail-closed.
 5. `simulate_intrahorizon_margin_path()` независимо восстанавливает directional mark-to-market, MAE/MFE, minimum equity и conservative isolated-margin liquidation proxy. Funding применяется по фактической границе settlement; выход на open не использует последующие экстремумы bar.
@@ -43,8 +56,8 @@ Data flow: plan calculation → immutable ex-ante ledger → operator decision/n
 8. Development region заканчивается до начала final holdout по `label_end_time`.
 9. `expanding_walk_forward_splits()` строит три последовательных fold: expanding train, rolling calibration и более поздний неперекрывающийся test. Label overlap удаляется, вокруг границ применяется horizon embargo.
 10. В каждом fold создаётся новый `TemporalCalibratedBarrierModel`; preprocessing fit выполняется только на fold train, calibration — только на fold calibration.
-11. Fold-level ML/policy metrics, historical-funding evidence и intrahorizon-margin evidence сохраняются в immutable candidate artifact. Quality gate заново проверяет исходные records, временной порядок и арифметическую согласованность.
-12. Runtime требует feature, label, temporal, walk-forward, funding и margin-path schemas. Candidate/incumbent comparison разрешён только при одинаковых entry/barrier, leverage и liquidation-reserve assumptions.
+11. Fold-level ML/policy metrics, context-ablation evidence, historical-funding evidence и intrahorizon-margin evidence сохраняются в immutable candidate artifact. Quality gate заново проверяет исходные records, временной порядок и арифметическую согласованность.
+12. Runtime требует feature/context/ablation, label, temporal, walk-forward, funding и margin-path schemas. Candidate/incumbent comparison разрешён только при одинаковых entry/barrier, leverage и liquidation-reserve assumptions.
 
 ## Intrahorizon margin boundary
 

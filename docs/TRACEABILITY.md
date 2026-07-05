@@ -1,5 +1,28 @@
 # Traceability
 
+## Work package: point-in-time market-context features
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Exact OI momentum 1h/24h without fill-forward | `app/ml/context.py::build_market_context_frame` | `test_context_features_use_only_exact_or_prior_market_events`, missing-history test |
+| Exact mark/index basis and 1h change | same; index/mark candle backfill | same temporal feature test |
+| Only latest already-settled funding enters features | `_attach_latest_settled_funding` | future-funding value regression |
+| Missing/duplicate/non-finite context fails closed | context normalizers, dataset and live inference gates | missing and duplicate tests |
+| Historical replay does not claim local receipt reconstruction | context metadata/artifact | metadata contract test |
+| Live inference uses recorded availability cutoff | `app/services/signals.py::_market_context_values` | runtime contract/full suite |
+| Index/OI history is progressively backfilled with bounded public requests | `app/services/market_data.py`, `app/workers/runner.py`, `BybitClient.get_open_interest` | bounded OI request test, full suite |
+| Enriched model is compared with independently refit core comparator | `evaluate_market_context_ablation`, walk-forward validation | quality-gate ablation regression test |
+| Runtime requires exact feature/context schemas | `app/ml/runtime.py` | missing context artifact contract test |
+| Live refresh defaults are operationally enabled | `app/config.py`, `.env.example` | `test_market_context_live_refresh_is_enabled_by_default` |
+
+## Schema changes 1.16.0
+
+- Feature schema: `hourly-barrier-market-context-v4`.
+- Context schema: `hourly-oi-basis-settled-funding-turnover-v1`.
+- Availability schema: `exchange-event-close-live-receipt-v1`.
+- Ablation schema: `same-split-zeroed-context-v1`.
+- Alembic head unchanged: `0011_selection_experiment`.
+
 ## Work package: prospective operator-selection experiment ledger
 
 | Acceptance criterion | Production/research implementation | Tests |

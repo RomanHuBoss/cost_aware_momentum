@@ -20,9 +20,14 @@ from app.db.models import (
     FundingRate,
     InstrumentSpecHistory,
     ModelRegistry,
+    OpenInterest,
     TickerSnapshot,
 )
 from app.json_utils import json_compatible
+from app.ml.context import (
+    MARKET_CONTEXT_AVAILABILITY_SCHEMA,
+    MARKET_CONTEXT_SCHEMA_VERSION,
+)
 from app.ml.data_profile import (
     TrainingDataProfile,
     profile_from_symbol_rows,
@@ -40,6 +45,7 @@ from app.ml.training import (
     DEFAULT_WALK_FORWARD_FOLDS,
     ENTRY_EXECUTION_MODEL_SCHEMA,
     LABEL_PATH_SCHEMA_VERSION,
+    MARKET_CONTEXT_ABLATION_SCHEMA_VERSION,
     MIN_WALK_FORWARD_POSITIVE_FRACTION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
@@ -56,6 +62,7 @@ from app.ml.training import (
     expanding_walk_forward_splits,
     make_barrier_dataset,
     timeout_return_r_targets,
+    zero_market_context_split,
 )
 from app.services.audit import append_audit_event, publish_outbox
 
@@ -96,6 +103,8 @@ class ModelCandidate:
 class TrainingMarketData:
     candles: pd.DataFrame
     mark_candles: pd.DataFrame
+    index_candles: pd.DataFrame
+    open_interest: pd.DataFrame
     funding: pd.DataFrame
     funding_interval_minutes: dict[str, int]
 
@@ -299,6 +308,19 @@ async def load_training_market_data(
             (await session.execute(mark_query.order_by(Candle.open_time, Candle.symbol))).scalars().all()
         )
 
+        index_query = select(Candle).where(
+            Candle.interval == interval,
+            Candle.price_type == "index",
+            Candle.confirmed.is_(True),
+        )
+        if selected_symbols:
+            index_query = index_query.where(Candle.symbol.in_(selected_symbols))
+        if cutoff is not None:
+            index_query = index_query.where(Candle.open_time >= cutoff)
+        index_rows = (
+            (await session.execute(index_query.order_by(Candle.open_time, Candle.symbol))).scalars().all()
+        )
+
         spec_query = select(InstrumentSpecHistory).order_by(
             InstrumentSpecHistory.symbol,
             desc(InstrumentSpecHistory.valid_from),
@@ -315,9 +337,22 @@ async def load_training_market_data(
                 funding_intervals[row.symbol] = interval_minutes
 
         funding_rows: list[FundingRate] = []
+        open_interest_rows: list[OpenInterest] = []
         if candle_rows:
             earliest_candle = min(row.open_time for row in candle_rows)
             latest_candle_close = max(row.close_time for row in candle_rows)
+            oi_query = select(OpenInterest).where(
+                OpenInterest.interval == "1h",
+                OpenInterest.event_time >= earliest_candle - timedelta(hours=24),
+                OpenInterest.event_time <= latest_candle_close,
+            )
+            if selected_symbols:
+                oi_query = oi_query.where(OpenInterest.symbol.in_(selected_symbols))
+            open_interest_rows = (
+                (await session.execute(oi_query.order_by(OpenInterest.event_time, OpenInterest.symbol)))
+                .scalars()
+                .all()
+            )
             max_interval = max(funding_intervals.values(), default=1440)
             funding_query = select(FundingRate).where(
                 FundingRate.funding_time >= earliest_candle - timedelta(minutes=max_interval),
@@ -361,6 +396,31 @@ async def load_training_market_data(
             for row in mark_rows
         ]
     )
+    index_candles = pd.DataFrame(
+        [
+            {
+                "symbol": row.symbol,
+                "open_time": row.open_time,
+                "close_time": row.close_time,
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+            }
+            for row in index_rows
+        ]
+    )
+    open_interest = pd.DataFrame(
+        [
+            {
+                "symbol": row.symbol,
+                "event_time": row.event_time,
+                "available_at": row.available_at,
+                "value": float(row.value),
+            }
+            for row in open_interest_rows
+        ]
+    )
     funding = pd.DataFrame(
         [
             {
@@ -375,6 +435,8 @@ async def load_training_market_data(
     return TrainingMarketData(
         candles=candles,
         mark_candles=mark_candles,
+        index_candles=index_candles,
+        open_interest=open_interest,
         funding=funding,
         funding_interval_minutes=funding_intervals,
     )
@@ -407,6 +469,30 @@ def incumbent_from_registry(model: ModelRegistry | None) -> IncumbentSnapshot | 
         artifact_sha256=model.artifact_sha256,
         training_end=model.training_end,
     )
+
+
+def evaluate_market_context_ablation(
+    split,
+    *,
+    model_type: str,
+) -> dict[str, Any]:
+    if split.train_meta is None:
+        raise ValueError("Market-context ablation requires training metadata")
+    core_split = zero_market_context_split(split)
+    core_model = TemporalCalibratedBarrierModel(model_type).fit(
+        core_split.x_train,
+        core_split.y_train,
+        core_split.x_cal,
+        core_split.y_cal,
+        timeout_return_r_train=timeout_return_r_targets(core_split.train_meta),
+    )
+    core_metrics = evaluate_model(core_model, core_split)
+    return {
+        "schema": MARKET_CONTEXT_ABLATION_SCHEMA_VERSION,
+        "method": "same-temporal-split-context-columns-zeroed-and-refit",
+        "core_log_loss": float(core_metrics["log_loss"]),
+        "core_multiclass_brier": float(core_metrics["multiclass_brier"]),
+    }
 
 
 def evaluate_walk_forward_validation(
@@ -454,6 +540,18 @@ def evaluate_walk_forward_validation(
             timeout_return_r_train=timeout_return_r_targets(fold_split.train_meta),
         )
         fold_metrics = evaluate_model(fold_model, fold_split)
+        fold_ablation = evaluate_market_context_ablation(
+            fold_split,
+            model_type=model_type,
+        )
+        fold_metrics["market_context_ablation_schema"] = MARKET_CONTEXT_ABLATION_SCHEMA_VERSION
+        fold_metrics["market_context_core_log_loss"] = fold_ablation["core_log_loss"]
+        fold_metrics["market_context_core_multiclass_brier"] = fold_ablation[
+            "core_multiclass_brier"
+        ]
+        fold_metrics["market_context_log_loss_benefit"] = (
+            float(fold_ablation["core_log_loss"]) - float(fold_metrics["log_loss"])
+        )
         if policy_config is not None:
             fold_metrics.update(
                 evaluate_policy_model(
@@ -514,6 +612,12 @@ def evaluate_walk_forward_validation(
                 float(sum(policy_means) / len(policy_means)) if policy_means else None
             ),
             "walk_forward_policy_realized_mean_r_min": (float(min(policy_means)) if policy_means else None),
+            "walk_forward_market_context_noninferior_folds": int(
+                sum(float(item["market_context_log_loss_benefit"]) >= -0.005 for item in fold_results)
+            ),
+            "walk_forward_market_context_positive_folds": int(
+                sum(float(item["market_context_log_loss_benefit"]) > 0.0 for item in fold_results)
+            ),
             "walk_forward_fold_results": fold_results,
         }
     )
@@ -523,6 +627,8 @@ def build_model_candidate(
     candles: pd.DataFrame,
     *,
     mark_candles: pd.DataFrame | None = None,
+    index_candles: pd.DataFrame | None = None,
+    open_interest: pd.DataFrame | None = None,
     horizon: int,
     model_type: str,
     model_dir: Path,
@@ -549,6 +655,9 @@ def build_model_candidate(
         require_funding_timeline=True,
         mark_candles=mark_candles,
         require_mark_timeline=True,
+        index_candles=index_candles,
+        open_interest=open_interest,
+        require_market_context=True,
         liquidation_leverage=(policy_config.research_leverage if policy_config is not None else 3),
         liquidation_equity_reserve_fraction=(
             policy_config.liquidation_equity_reserve_fraction
@@ -570,6 +679,17 @@ def build_model_candidate(
         timeout_return_r_train=timeout_return_r_targets(split.train_meta),
     )
     metrics = evaluate_model(model, split)
+    ablation = evaluate_market_context_ablation(split, model_type=model_type)
+    metrics["market_context_ablation"] = {
+        **ablation,
+        "enriched_log_loss": float(metrics["log_loss"]),
+        "enriched_multiclass_brier": float(metrics["multiclass_brier"]),
+        "log_loss_benefit": float(ablation["core_log_loss"]) - float(metrics["log_loss"]),
+        "multiclass_brier_benefit": (
+            float(ablation["core_multiclass_brier"]) - float(metrics["multiclass_brier"])
+        ),
+        "noninferiority_tolerance": 0.005,
+    }
     label_data_end = _as_datetime(dataset.label_end_time.max())
     metrics["temporal_split_schema"] = TEMPORAL_SPLIT_SCHEMA_VERSION
     metrics["feature_schema_version"] = MODEL_FEATURE_SCHEMA_VERSION
@@ -579,6 +699,7 @@ def build_model_candidate(
         dataset.attrs.get("historical_funding_timeline") or {}
     )
     metrics["intrahorizon_margin_path"] = json_compatible(dataset.attrs.get("intrahorizon_margin_path") or {})
+    metrics["market_context"] = json_compatible(dataset.attrs.get("market_context") or {})
     metrics["hourly_continuity"] = json_compatible(dataset.attrs.get("hourly_continuity") or {})
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
@@ -696,6 +817,10 @@ def build_model_candidate(
         "calibration_version": f"sigmoid-ovr-{generated_version}",
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+        "market_context_schema": MARKET_CONTEXT_SCHEMA_VERSION,
+        "market_context_availability_schema": MARKET_CONTEXT_AVAILABILITY_SCHEMA,
+        "market_context": metrics["market_context"],
+        "market_context_ablation_schema": MARKET_CONTEXT_ABLATION_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": float(entry_spread_bps),
         "entry_execution_model": metrics["entry_execution_model"],
@@ -843,6 +968,50 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("policy_expected_funding_lookahead_risk")
     if metrics.get("policy_realized_funding_source") != HISTORICAL_FUNDING_SCHEMA_VERSION:
         reasons.append("policy_realized_funding_source_mismatch")
+
+    market_context = metrics.get("market_context")
+    context_schema = market_context.get("schema") if isinstance(market_context, dict) else None
+    context_availability_schema = (
+        market_context.get("availability_schema") if isinstance(market_context, dict) else None
+    )
+    if context_schema != MARKET_CONTEXT_SCHEMA_VERSION:
+        reasons.append("invalid_market_context_schema")
+    if context_availability_schema != MARKET_CONTEXT_AVAILABILITY_SCHEMA:
+        reasons.append("invalid_market_context_availability_schema")
+    if not isinstance(market_context, dict) or market_context.get(
+        "historical_receipt_time_reconstructed"
+    ) is not False:
+        reasons.append("invalid_market_context_receipt_semantics")
+
+    context_ablation = metrics.get("market_context_ablation")
+    ablation_schema = (
+        context_ablation.get("schema") if isinstance(context_ablation, dict) else None
+    )
+    ablation_benefit = finite_or_none(
+        context_ablation.get("log_loss_benefit")
+        if isinstance(context_ablation, dict)
+        else None
+    )
+    ablation_tolerance = finite_or_none(
+        context_ablation.get("noninferiority_tolerance")
+        if isinstance(context_ablation, dict)
+        else None
+    )
+    if ablation_schema != MARKET_CONTEXT_ABLATION_SCHEMA_VERSION:
+        reasons.append("invalid_market_context_ablation_schema")
+    if ablation_benefit is None or ablation_tolerance is None or ablation_tolerance < 0:
+        reasons.append("invalid_market_context_ablation_evidence")
+    elif ablation_benefit < -ablation_tolerance:
+        reasons.append("market_context_ablation_regression")
+    context_noninferior_folds = finite_or_none(
+        metrics.get("walk_forward_market_context_noninferior_folds")
+    )
+    if (
+        context_noninferior_folds is None
+        or not context_noninferior_folds.is_integer()
+        or int(context_noninferior_folds) < 2
+    ):
+        reasons.append("market_context_walk_forward_instability")
 
     margin_path = metrics.get("intrahorizon_margin_path")
     margin_schema = margin_path.get("schema") if isinstance(margin_path, dict) else None
@@ -1305,6 +1474,12 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         "passed": not reasons,
         "reasons": reasons,
         "absolute": {
+            "market_context_schema": context_schema,
+            "expected_market_context_schema": MARKET_CONTEXT_SCHEMA_VERSION,
+            "market_context_availability_schema": context_availability_schema,
+            "market_context_ablation_schema": ablation_schema,
+            "market_context_log_loss_benefit": ablation_benefit,
+            "market_context_walk_forward_noninferior_folds": context_noninferior_folds,
             "entry_execution_model_schema": entry_execution_schema,
             "expected_entry_execution_model_schema": ENTRY_EXECUTION_MODEL_SCHEMA,
             "entry_spread_bps": entry_spread_bps,

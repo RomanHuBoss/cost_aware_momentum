@@ -64,8 +64,8 @@ class Settings(BaseSettings):
     )
     universe_allow_non_crypto_symbol_types: bool = False
     universe_backfill_batch_size: int = 40
-    universe_sync_mark_price: bool = False
-    universe_enrich_funding_oi: bool = False
+    universe_sync_mark_price: bool = True
+    universe_enrich_funding_oi: bool = True
     ticker_retention_hours: int = 48
     orderbook_depth_levels: int = 200
     max_orderbook_age_seconds: int = 90

@@ -7,6 +7,7 @@ import pytest
 from app.api.deps import sign_session, verify_session
 from app.bybit.client import BybitClient
 from app.config import Settings
+from app.ml.context import MARKET_CONTEXT_FEATURE_NAMES
 from app.ml.features import FEATURE_NAMES
 from app.ml.runtime import ModelRuntime
 from app.ml.training import (
@@ -41,7 +42,7 @@ def test_session_signature_round_trip() -> None:
 def test_baseline_prediction_is_normalized() -> None:
     runtime = ModelRuntime(None, allow_baseline=True)
     runtime.load()
-    features = {name: 0.0 for name in FEATURE_NAMES}
+    features = {**{name: 0.0 for name in FEATURE_NAMES}, **{name: 0.0 for name in MARKET_CONTEXT_FEATURE_NAMES}}
     features.update({"ret_6h": 0.02, "atr_pct_14": 0.01})
     prediction = runtime.predict(features)
     assert prediction.direction == "LONG"
@@ -112,6 +113,14 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
             "calibration_version": "test-cal-v1",
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+            "market_context_schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "market_context_availability_schema": "exchange-event-close-live-receipt-v1",
+            "market_context": {
+                "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+                "availability_schema": "exchange-event-close-live-receipt-v1",
+                "historical_receipt_time_reconstructed": False,
+            },
+            "market_context_ablation_schema": "same-split-zeroed-context-v1",
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {
@@ -148,7 +157,7 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
 
     runtime = ModelRuntime(path, allow_baseline=False)
     runtime.load(expected_version="test-barrier-v1")
-    features = {name: 0.0 for name in FEATURE_NAMES}
+    features = {**{name: 0.0 for name in FEATURE_NAMES}, **{name: 0.0 for name in MARKET_CONTEXT_FEATURE_NAMES}}
     features.update({"ret_1h": 0.03, "atr_pct_14": 0.01})
     prediction = runtime.predict(features)
 
@@ -185,6 +194,14 @@ def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) 
             "calibration_version": "stub",
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+            "market_context_schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "market_context_availability_schema": "exchange-event-close-live-receipt-v1",
+            "market_context": {
+                "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+                "availability_schema": "exchange-event-close-live-receipt-v1",
+                "historical_receipt_time_reconstructed": False,
+            },
+            "market_context_ablation_schema": "same-split-zeroed-context-v1",
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {

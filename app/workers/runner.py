@@ -21,12 +21,14 @@ from app.ml.runtime_selection import select_model_runtime
 from app.services.market_data import (
     symbols_needing_funding_history_backfill,
     symbols_needing_history_backfill,
+    symbols_needing_open_interest_history_backfill,
     sync_candle_history,
     sync_candle_windows,
     sync_candles,
     sync_funding_and_oi,
     sync_funding_history,
     sync_instruments,
+    sync_open_interest_history,
     sync_orderbooks,
     sync_read_only_account,
     sync_tickers,
@@ -336,7 +338,7 @@ class Worker:
             funding = 0
             oi = 0
             if newly_admitted:
-                price_types = ("last", "mark") if settings.universe_sync_mark_price else ("last",)
+                price_types = ("last", "mark", "index") if settings.universe_sync_mark_price else ("last",)
                 candles = await sync_candles(
                     session,
                     self.client,
@@ -372,7 +374,7 @@ class Worker:
                     "symbols_total": 0,
                     "symbols_covered": 0,
                 }
-            price_types = ("last", "mark") if settings.universe_sync_mark_price else ("last",)
+            price_types = ("last", "mark", "index") if settings.universe_sync_mark_price else ("last",)
             diagnostics: dict[str, object] = {}
             candles = await sync_candles(
                 session,
@@ -385,7 +387,19 @@ class Worker:
                 required_close_time=event_time,
                 diagnostics=diagnostics,
             )
-            return {"symbols": len(symbols), "candles": candles, **diagnostics}
+            funding = 0
+            open_interest = 0
+            if settings.universe_enrich_funding_oi:
+                funding, open_interest = await sync_funding_and_oi(
+                    session, self.client, symbols
+                )
+            return {
+                "symbols": len(symbols),
+                "candles": candles,
+                "funding": funding,
+                "open_interest": open_interest,
+                **diagnostics,
+            }
 
         return await self.run_job(
             "hourly_market_close",
@@ -419,13 +433,27 @@ class Worker:
                 limit=settings.history_backfill_symbols_per_cycle,
                 price_type="mark",
             )
+            index_candidates = await symbols_needing_history_backfill(
+                session,
+                self.active_symbols,
+                interval=settings.candle_interval,
+                target_days=settings.history_backfill_target_days,
+                limit=settings.history_backfill_symbols_per_cycle,
+                price_type="index",
+            )
+            open_interest_candidates = await symbols_needing_open_interest_history_backfill(
+                session,
+                self.active_symbols,
+                target_days=settings.history_backfill_target_days,
+                limit=settings.history_backfill_symbols_per_cycle,
+            )
             funding_candidates = await symbols_needing_funding_history_backfill(
                 session,
                 self.active_symbols,
                 target_days=settings.history_backfill_target_days,
                 limit=settings.history_backfill_symbols_per_cycle,
             )
-            if not candle_candidates and not mark_candidates and not funding_candidates:
+            if not any((candle_candidates, mark_candidates, index_candidates, open_interest_candidates, funding_candidates)):
                 return {
                     "enabled": True,
                     "status": "COMPLETE",
@@ -433,6 +461,8 @@ class Worker:
                     "rows_received": 0,
                     "candle_history": {"symbols_processed": 0, "rows_received": 0},
                     "mark_price_history": {"symbols_processed": 0, "rows_received": 0},
+                    "index_price_history": {"symbols_processed": 0, "rows_received": 0},
+                    "open_interest_history": {"symbols_processed": 0, "rows_received": 0},
                     "funding_history": {"symbols_processed": 0, "rows_received": 0},
                     "target_days": settings.history_backfill_target_days,
                 }
@@ -464,6 +494,32 @@ class Worker:
                 if mark_candidates
                 else {"symbols_processed": 0, "rows_received": 0, "progress": []}
             )
+            index_result = (
+                await sync_candle_history(
+                    session,
+                    self.client,
+                    index_candidates,
+                    interval=settings.candle_interval,
+                    target_days=settings.history_backfill_target_days,
+                    page_size=settings.history_backfill_page_size,
+                    max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+                    price_type="index",
+                )
+                if index_candidates
+                else {"symbols_processed": 0, "rows_received": 0, "progress": []}
+            )
+            open_interest_result = (
+                await sync_open_interest_history(
+                    session,
+                    self.client,
+                    open_interest_candidates,
+                    target_days=settings.history_backfill_target_days,
+                    page_size=min(settings.history_backfill_page_size, 200),
+                    max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+                )
+                if open_interest_candidates
+                else {"symbols_processed": 0, "rows_received": 0, "progress": []}
+            )
             funding_result = (
                 await sync_funding_history(
                     session,
@@ -482,12 +538,18 @@ class Worker:
                 "target_days": settings.history_backfill_target_days,
                 "symbols_processed": int(candle_result["symbols_processed"])
                 + int(mark_result["symbols_processed"])
+                + int(index_result["symbols_processed"])
+                + int(open_interest_result["symbols_processed"])
                 + int(funding_result["symbols_processed"]),
                 "rows_received": int(candle_result["rows_received"])
                 + int(mark_result["rows_received"])
+                + int(index_result["rows_received"])
+                + int(open_interest_result["rows_received"])
                 + int(funding_result["rows_received"]),
                 "candle_history": candle_result,
                 "mark_price_history": mark_result,
+                "index_price_history": index_result,
+                "open_interest_history": open_interest_result,
                 "funding_history": funding_result,
             }
 

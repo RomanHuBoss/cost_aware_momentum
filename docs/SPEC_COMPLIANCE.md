@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.15.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.16.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -13,6 +13,6 @@
 | Rolling/expanding walk-forward | Реализовано 1.11.0 | Три purged expanding folds внутри development period, fresh fit/calibration на каждом fold и отдельный final holdout. Не является nested CV/PBO. |
 | Operator-selection bias correction | Частично реализовано 1.15.0 | Для каждой новой plan version сохраняется immutable ex-ante ledger; отчёт включает ACCEPT/REJECT/NO_DECISION, observed all-eligible benchmark и chronological OOS propensity/IPSW diagnostics с overlap/ESS gates. Это prospective plan-version selection correction, а не causal treatment model: UI exposure, latent operator state, cluster-robust inference и pre-1.15 opportunities отсутствуют. |
 | Intrahorizon MTM and liquidation simulation | Частично реализовано 1.13.0 | Training/backtest требуют exact hourly Bybit mark-price path, рассчитывают directional MAE/MFE/minimum equity и conservative isolated-margin liquidation proxy с actual funding timing; future mark path влияет только на realized evidence. Не реализованы sub-hour ordering, historical MMR/risk tiers, liquidation fees, cross/portfolio margin, ADL и точная exchange fill/liquidation mechanics. |
-| OI/basis/funding/liquidity/context features | Не реализовано в model | Model использует 10 OHLCV-derived features; OI/funding могут храниться, но не входят в feature schema. |
+| OI/basis/funding/liquidity/context features | Частично реализовано 1.16.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано | Immutable artifacts/model registry/backtest runs и fold evidence дают часть ledger; PBO/DSR отсутствуют. |
 | Production drift monitoring | Не реализовано | Нет PSI/calibration/feature drift service и alert gate. |

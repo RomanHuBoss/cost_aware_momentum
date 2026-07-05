@@ -1,5 +1,21 @@
 # Incident Runbook
 
+## Симптом: `incomplete_market_context` / рекомендации исчезли после 1.16.0
+
+Проверьте, что `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`, worker успешно сохраняет current `price_type=mark/index`, hourly OI и funding, а `available_at` не позже inference cutoff. Сравните exact `event_time/close_time` с decision boundary. Не подставляйте нули, stale OI или last price вместо mark/index.
+
+## Симптом: training исключает много timestamps из-за market context
+
+Проверьте `history_backfill.index_price_history`, `open_interest_history` и `funding_history`: earliest/newest, hourly continuity, duplicates, positive OI, valid funding interval и API errors. Для первых 24 часов каждого symbol OI-24h feature закономерно недоступен. Увеличьте фактическое покрытие, а не ослабляйте completeness.
+
+## Симптом: `invalid_market_context_*` / artifact не загружается
+
+Artifact создан до 1.16.0, повреждён или не содержит exact context/availability/ablation schemas. Сохраните его для аудита, завершите backfill и переобучите. Не редактируйте joblib вручную.
+
+## Симптом: `market_context_ablation_regression` или `market_context_walk_forward_instability`
+
+Context model ухудшает final holdout более допустимых 0.005 log loss либо нестабилен более чем в одном walk-forward fold. Это валидный research failure. Не увеличивайте tolerance только ради activation; исследуйте data alignment, regimes, scaling и feature definitions, затем повторите эксперимент на новых данных.
+
 ## Симптом: selection report возвращает `LEDGER_INTEGRITY_ERROR`
 
 Не редактируйте JSONB или hash вручную. Сохраните plan IDs из отчёта, проверьте audit chain, миграцию `0011_selection_experiment`, версию приложения и несанкционированные DB updates. Повреждённые строки исключать молча нельзя.

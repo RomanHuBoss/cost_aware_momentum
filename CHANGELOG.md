@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.16.0 — 2026-07-05
+
+- Добавлен строгий point-in-time market-context layer: OI log changes 1h/24h, mark/index basis и его часовая динамика, последняя settled funding rate/age и turnover-to-OI liquidity proxy.
+- Progressive history backfill расширен hourly index-price candles и hourly open-interest observations; live market close по умолчанию обновляет mark/index/funding/OI.
+- Training, walk-forward, final holdout, artifact и runtime переведены на `hourly-barrier-market-context-v4`; missing/duplicate/non-finite context блокируется без zero-fill.
+- Историческая доступность честно ограничена exchange event/close timestamps; локальный receipt time задним числом не реконструируется. Live inference фильтрует все context rows по фактическому `available_at`.
+- Добавлен same-temporal-split core-feature ablation с независимым refit; promotion gate блокирует final-holdout regression более 0.005 log-loss и требует non-inferiority минимум в двух из трёх walk-forward folds.
+- Старые artifacts без context schemas/evidence отклоняются fail-closed; требуется завершить index/OI backfill и переобучить candidate.
+- Новых migration и имён `.env` нет; defaults/recommended values `UNIVERSE_SYNC_MARK_PRICE` и `UNIVERSE_ENRICH_FUNDING_OI` изменены на `true`.
+- Добавлены regression tests для temporal alignment, missing/duplicate context, bounded OI requests, artifact/gate contracts и operational defaults.
+
 ## 1.15.0 — 2026-07-05
 
 - Added immutable prospective `advisory.selection_experiment_ledger` rows for every execution-plan version.

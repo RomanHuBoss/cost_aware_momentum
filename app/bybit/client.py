@@ -179,12 +179,37 @@ class BybitClient:
             raise RuntimeError("Bybit funding history response list is invalid")
         return items
 
-    async def get_open_interest(self, symbol: str, interval: str = "1h", limit: int = 50) -> list[dict]:
+    async def get_open_interest(
+        self,
+        symbol: str,
+        interval: str = "1h",
+        limit: int = 50,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, object]:
+        if start_ms is not None and end_ms is not None and start_ms > end_ms:
+            raise ValueError("Bybit open-interest start_ms must not exceed end_ms")
         response = await self._get(
             "/v5/market/open-interest",
-            {"category": "linear", "symbol": symbol, "intervalTime": interval, "limit": min(limit, 200)},
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "intervalTime": interval,
+                "limit": min(max(int(limit), 1), 200),
+                "startTime": start_ms,
+                "endTime": end_ms,
+                "cursor": cursor,
+            },
         )
-        return response.result.get("list") or []
+        items = response.result.get("list") or []
+        if not isinstance(items, list):
+            raise RuntimeError("Bybit open-interest response list is invalid")
+        return {
+            "items": items,
+            "next_cursor": str(response.result.get("nextPageCursor") or "").strip() or None,
+        }
 
     async def get_orderbook(self, symbol: str, limit: int = 50) -> dict:
         depth = min(max(int(limit), 1), 1000)

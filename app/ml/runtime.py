@@ -9,6 +9,10 @@ from typing import Any, Literal
 import joblib
 import numpy as np
 
+from app.ml.context import (
+    MARKET_CONTEXT_AVAILABILITY_SCHEMA,
+    MARKET_CONTEXT_SCHEMA_VERSION,
+)
 from app.ml.features import FEATURE_NAMES
 from app.ml.funding import HISTORICAL_FUNDING_SCHEMA_VERSION
 from app.ml.mtm import (
@@ -20,6 +24,8 @@ from app.ml.training import (
     DEFAULT_TP_ATR_MULTIPLIER,
     ENTRY_EXECUTION_MODEL_SCHEMA,
     LABEL_PATH_SCHEMA_VERSION,
+    MARKET_CONTEXT_ABLATION_SCHEMA_VERSION,
+    MODEL_BASE_FEATURE_NAMES,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
@@ -83,6 +89,14 @@ class ModelRuntime:
             "liquidation_equity_reserve_fraction": (self.liquidation_equity_reserve_fraction),
             "feature_schema_version": (
                 self.bundle.get("feature_schema_version") if self.bundle is not None else None
+            ),
+            "market_context_schema": (
+                self.bundle.get("market_context_schema") if self.bundle is not None else None
+            ),
+            "market_context_availability_schema": (
+                self.bundle.get("market_context_availability_schema")
+                if self.bundle is not None
+                else None
             ),
             "label_path_schema_version": (
                 self.bundle.get("label_path_schema_version") if self.bundle is not None else None
@@ -150,6 +164,30 @@ class ModelRuntime:
                     "Model feature schema version mismatch: "
                     f"expected {MODEL_FEATURE_SCHEMA_VERSION}, got {feature_schema_version or 'missing'}"
                 )
+            market_context_schema = str(bundle.get("market_context_schema") or "")
+            if market_context_schema != MARKET_CONTEXT_SCHEMA_VERSION:
+                raise ValueError(
+                    "Model market context schema mismatch: "
+                    f"expected {MARKET_CONTEXT_SCHEMA_VERSION}, got {market_context_schema or 'missing'}"
+                )
+            availability_schema = str(bundle.get("market_context_availability_schema") or "")
+            if availability_schema != MARKET_CONTEXT_AVAILABILITY_SCHEMA:
+                raise ValueError(
+                    "Model market context availability schema mismatch: "
+                    f"expected {MARKET_CONTEXT_AVAILABILITY_SCHEMA}, "
+                    f"got {availability_schema or 'missing'}"
+                )
+            context_metadata = bundle.get("market_context")
+            if not isinstance(context_metadata, dict):
+                raise ValueError("Model artifact market context metadata is required")
+            if context_metadata.get("schema") != MARKET_CONTEXT_SCHEMA_VERSION:
+                raise ValueError("Model artifact market context metadata schema mismatch")
+            if context_metadata.get("availability_schema") != MARKET_CONTEXT_AVAILABILITY_SCHEMA:
+                raise ValueError("Model artifact market context availability metadata mismatch")
+            if context_metadata.get("historical_receipt_time_reconstructed") is not False:
+                raise ValueError("Model artifact must not claim reconstructed historical receipt times")
+            if str(bundle.get("market_context_ablation_schema") or "") != MARKET_CONTEXT_ABLATION_SCHEMA_VERSION:
+                raise ValueError("Model artifact market context ablation schema mismatch")
             label_path_schema_version = str(bundle.get("label_path_schema_version") or "")
             if label_path_schema_version != LABEL_PATH_SCHEMA_VERSION:
                 raise ValueError(
@@ -332,13 +370,13 @@ class ModelRuntime:
             raise ValueError(f"Model artifact {key} must be non-negative and finite")
         return value
 
-    @staticmethod
-    def _validated_features(features: dict[str, float]) -> dict[str, float]:
-        missing = [name for name in FEATURE_NAMES if name not in features]
+    def _validated_features(self, features: dict[str, float]) -> dict[str, float]:
+        required_features = MODEL_BASE_FEATURE_NAMES if self.bundle is not None else FEATURE_NAMES
+        missing = [name for name in required_features if name not in features]
         if missing:
             raise ValueError(f"missing model features: {', '.join(missing)}")
         validated: dict[str, float] = {}
-        for name in FEATURE_NAMES:
+        for name in required_features:
             raw_value = features[name]
             if isinstance(raw_value, bool):
                 raise ValueError(f"model feature {name} must be finite")
@@ -367,7 +405,7 @@ class ModelRuntime:
         if self.bundle is None:
             raise RuntimeError("No artifact loaded")
         model = self.bundle["model"]
-        vector_values_base = [features[name] for name in FEATURE_NAMES]
+        vector_values_base = [features[name] for name in MODEL_BASE_FEATURE_NAMES]
         scenarios: list[tuple[Direction, float, dict[str, float], float | None]] = []
         for direction, code in (("LONG", 1.0), ("SHORT", -1.0)):
             vector_values = vector_values_base + [code]

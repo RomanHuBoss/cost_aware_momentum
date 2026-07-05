@@ -26,6 +26,21 @@ def _candidate(tmp_path: Path, *, lower_bound: float) -> ModelCandidate:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
+        "market_context": {
+            "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "availability_schema": "exchange-event-close-live-receipt-v1",
+            "historical_receipt_time_reconstructed": False,
+            "complete_rows": 300,
+            "incomplete_rows": 0,
+        },
+        "market_context_ablation": {
+            "schema": "same-split-zeroed-context-v1",
+            "core_log_loss": 0.91,
+            "enriched_log_loss": 0.90,
+            "log_loss_benefit": 0.01,
+            "noninferiority_tolerance": 0.005,
+        },
+        "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
             "schema": "directional-half-spread-on-next-hour-open-v1",
             "entry_spread_bps": 18.0,

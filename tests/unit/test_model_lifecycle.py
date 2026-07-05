@@ -55,6 +55,21 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
+        "market_context": {
+            "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "availability_schema": "exchange-event-close-live-receipt-v1",
+            "historical_receipt_time_reconstructed": False,
+            "complete_rows": 300,
+            "incomplete_rows": 0,
+        },
+        "market_context_ablation": {
+            "schema": "same-split-zeroed-context-v1",
+            "core_log_loss": 0.91,
+            "enriched_log_loss": 0.90,
+            "log_loss_benefit": 0.01,
+            "noninferiority_tolerance": 0.005,
+        },
+        "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
             "schema": "directional-half-spread-on-next-hour-open-v1",
             "entry_spread_bps": 18.0,
@@ -374,3 +389,16 @@ def test_quality_gate_rejects_future_actual_funding_as_expected_policy_input(
 
     assert result["passed"] is False
     assert "policy_expected_funding_lookahead_risk" in result["reasons"]
+
+
+def test_quality_gate_rejects_market_context_ablation_regression(tmp_path: Path) -> None:
+    metrics = _metrics()
+    metrics["market_context_ablation"]["log_loss_benefit"] = -0.02
+
+    result = evaluate_quality_gate(
+        _candidate(tmp_path, metrics=metrics),
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is False
+    assert "market_context_ablation_regression" in result["reasons"]

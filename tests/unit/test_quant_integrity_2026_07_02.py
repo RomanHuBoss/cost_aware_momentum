@@ -148,6 +148,14 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
         "calibration_version": "cal-v1",
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+        "market_context_schema": "hourly-oi-basis-settled-funding-turnover-v1",
+        "market_context_availability_schema": "exchange-event-close-live-receipt-v1",
+        "market_context": {
+            "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "availability_schema": "exchange-event-close-live-receipt-v1",
+            "historical_receipt_time_reconstructed": False,
+        },
+        "market_context_ablation_schema": "same-split-zeroed-context-v1",
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": 18.0,
         "entry_execution_model": {
@@ -277,6 +285,21 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
+        "market_context": {
+            "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "availability_schema": "exchange-event-close-live-receipt-v1",
+            "historical_receipt_time_reconstructed": False,
+            "complete_rows": 300,
+            "incomplete_rows": 0,
+        },
+        "market_context_ablation": {
+            "schema": "same-split-zeroed-context-v1",
+            "core_log_loss": 0.91,
+            "enriched_log_loss": 0.90,
+            "log_loss_benefit": 0.01,
+            "noninferiority_tolerance": 0.005,
+        },
+        "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
             "schema": "directional-half-spread-on-next-hour-open-v1",
             "entry_spread_bps": 18.0,
@@ -445,7 +468,20 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
     monkeypatch.setattr(lifecycle, "make_barrier_dataset", lambda *_args, **_kwargs: dataset)
     monkeypatch.setattr(lifecycle, "chronological_split", lambda *_args, **_kwargs: split)
     monkeypatch.setattr(lifecycle, "TemporalCalibratedBarrierModel", _TrainableArtifactModel)
-    monkeypatch.setattr(lifecycle, "evaluate_model", lambda *_args, **_kwargs: {"rows": 1})
+    monkeypatch.setattr(
+        lifecycle,
+        "evaluate_model",
+        lambda *_args, **_kwargs: {"rows": 1, "log_loss": 0.9, "multiclass_brier": 0.55},
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "evaluate_market_context_ablation",
+        lambda *_args, **_kwargs: {
+            "schema": "same-split-zeroed-context-v1",
+            "core_log_loss": 1.0,
+            "core_multiclass_brier": 0.7,
+        },
+    )
     monkeypatch.setattr(
         lifecycle,
         "evaluate_walk_forward_validation",
@@ -505,3 +541,13 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
         "candidate_liquidation_equity_reserve_fraction": None,
         "incumbent_liquidation_equity_reserve_fraction": 0.10,
     }
+
+
+def test_runtime_rejects_artifact_without_market_context_contract(tmp_path: Path) -> None:
+    bundle = _artifact_bundle()
+    bundle.pop("market_context_schema")
+    path = tmp_path / "missing-market-context.joblib"
+    joblib.dump(bundle, path)
+
+    with pytest.raises(ValueError, match="market context schema mismatch"):
+        ModelRuntime(path, allow_baseline=False).load()

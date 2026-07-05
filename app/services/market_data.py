@@ -805,6 +805,177 @@ async def symbols_needing_funding_history_backfill(
     return candidates[: max(1, limit)]
 
 
+async def symbols_needing_open_interest_history_backfill(
+    session: AsyncSession,
+    symbols: Iterable[str],
+    *,
+    target_days: int,
+    limit: int,
+) -> list[dict[str, object]]:
+    symbol_list = sorted(set(symbols))
+    if not symbol_list:
+        return []
+    now = datetime.now(UTC)
+    target_start = now - timedelta(days=target_days)
+    grouped = (
+        await session.execute(
+            select(
+                OpenInterest.symbol,
+                func.count(OpenInterest.id).label("rows"),
+                func.min(OpenInterest.event_time).label("earliest"),
+                func.max(OpenInterest.event_time).label("latest"),
+            )
+            .where(OpenInterest.symbol.in_(symbol_list), OpenInterest.interval == "1h")
+            .group_by(OpenInterest.symbol)
+        )
+    ).all()
+    by_symbol = {
+        row.symbol: {"rows": int(row.rows), "earliest": row.earliest, "latest": row.latest}
+        for row in grouped
+    }
+    candidates: list[dict[str, object]] = []
+    for symbol in symbol_list:
+        current = by_symbol.get(symbol, {"rows": 0, "earliest": None, "latest": None})
+        earliest = current["earliest"]
+        latest = current["latest"]
+        history_missing = earliest is None or earliest > target_start + timedelta(hours=1)
+        current_missing = latest is None or latest < now - timedelta(hours=2)
+        if history_missing or current_missing:
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    **current,
+                    "target_start": target_start,
+                    "history_missing": history_missing,
+                    "current_missing": current_missing,
+                }
+            )
+    candidates.sort(
+        key=lambda item: (
+            not bool(item["current_missing"]),
+            int(item["rows"]),
+            item["earliest"] or datetime.max.replace(tzinfo=UTC),
+            str(item["symbol"]),
+        )
+    )
+    return candidates[: max(1, limit)]
+
+
+async def sync_open_interest_history(
+    session: AsyncSession,
+    client: BybitClient,
+    candidates: Iterable[dict[str, object]],
+    *,
+    target_days: int,
+    page_size: int,
+    max_pages_per_symbol: int,
+) -> dict[str, object]:
+    """Progressively backfill exact hourly Bybit open-interest observations."""
+
+    now = datetime.now(UTC)
+    default_target_start = now - timedelta(days=target_days)
+    request_limit = min(max(int(page_size), 1), 200)
+    rows_received = 0
+    symbols_processed = 0
+    completed_symbols: list[str] = []
+    progress: list[dict[str, object]] = []
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        target_start = candidate.get("target_start")
+        if not isinstance(target_start, datetime):
+            target_start = default_target_start
+        earliest = candidate.get("earliest")
+        latest = candidate.get("latest")
+        current_missing = bool(candidate.get("current_missing"))
+        end_ms = (
+            int(now.timestamp() * 1000)
+            if current_missing or not isinstance(earliest, datetime)
+            else int(earliest.timestamp() * 1000) - 1
+        )
+        symbol_rows = 0
+        oldest_seen = earliest if isinstance(earliest, datetime) else None
+        newest_seen = latest if isinstance(latest, datetime) else None
+        exhausted = False
+        error: str | None = None
+        try:
+            for _page in range(max_pages_per_symbol):
+                page = await client.get_open_interest(
+                    symbol,
+                    "1h",
+                    limit=request_limit,
+                    end_ms=end_ms,
+                )
+                items = list(page.get("items") or [])
+                if not items:
+                    exhausted = True
+                    break
+                received_at = datetime.now(UTC)
+                parsed: list[tuple[datetime, Decimal]] = []
+                for item in items:
+                    event_time = _dt_ms(item.get("timestamp"))
+                    if event_time is None:
+                        raise ValueError("Bybit open-interest timestamp is required")
+                    value = _required_positive_decimal(item.get("openInterest"), "openInterest")
+                    parsed.append((event_time, value))
+                page_times = [item[0] for item in parsed]
+                oldest_page = min(page_times)
+                newest_page = max(page_times)
+                oldest_seen = min(oldest_seen, oldest_page) if oldest_seen else oldest_page
+                newest_seen = max(newest_seen, newest_page) if newest_seen else newest_page
+                values = [
+                    {
+                        "symbol": symbol,
+                        "interval": "1h",
+                        "event_time": event_time,
+                        "available_at": received_at,
+                        "value": value,
+                    }
+                    for event_time, value in parsed
+                    if event_time >= target_start
+                ]
+                if values:
+                    await session.execute(
+                        insert(OpenInterest)
+                        .values(values)
+                        .on_conflict_do_nothing(constraint="uq_oi_natural")
+                    )
+                    symbol_rows += len(values)
+                if oldest_page <= target_start or len(items) < request_limit:
+                    exhausted = True
+                    break
+                end_ms = int(oldest_page.timestamp() * 1000) - 1
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("Historical open-interest backfill failed", extra={"symbol": symbol})
+        symbols_processed += 1
+        rows_received += symbol_rows
+        complete = (
+            newest_seen is not None
+            and newest_seen >= now - timedelta(hours=2)
+            and oldest_seen is not None
+            and (oldest_seen <= target_start + timedelta(hours=1) or exhausted)
+        )
+        if complete:
+            completed_symbols.append(symbol)
+        progress.append(
+            {
+                "symbol": symbol,
+                "rows_received": symbol_rows,
+                "oldest_seen": oldest_seen.isoformat() if oldest_seen else None,
+                "newest_seen": newest_seen.isoformat() if newest_seen else None,
+                "target_start": target_start.isoformat(),
+                "completed": complete,
+                "error": error,
+            }
+        )
+    return {
+        "symbols_processed": symbols_processed,
+        "rows_received": rows_received,
+        "completed_symbols": completed_symbols,
+        "progress": progress,
+    }
+
+
 async def sync_funding_history(
     session: AsyncSession,
     client: BybitClient,
@@ -1081,7 +1252,12 @@ async def sync_funding_and_oi(
         except Exception:
             logger.exception("Funding fetch failed", extra={"symbol": symbol})
         try:
-            oi_items = await client.get_open_interest(symbol, "1h", limit=20)
+            oi_page = await client.get_open_interest(symbol, "1h", limit=20)
+            oi_items = (
+                list(oi_page.get("items") or [])
+                if isinstance(oi_page, dict)
+                else list(oi_page or [])
+            )
             oi_received_at = datetime.now(UTC)
             for item in oi_items:
                 event_time = _dt_ms(item.get("timestamp"))

@@ -1,5 +1,18 @@
 # Configuration
 
+## Release 1.16.0 — market-context features
+
+Новых имён `.env` и migration нет. Однако active artifact теперь требует ongoing mark/index/funding/OI refresh, поэтому defaults и `.env.example` изменены на:
+
+```env
+UNIVERSE_SYNC_MARK_PRICE=true
+UNIVERSE_ENRICH_FUNDING_OI=true
+```
+
+Существующий `.env` со значениями `false` необходимо изменить вручную. `HISTORY_BACKFILL_*` управляет progressive backfill last/mark/index candles, open interest и funding. Для OI effective page size ограничивается 200 согласно public endpoint contract.
+
+После обновления дождитесь покрытия `index_price_history` и `open_interest_history`, затем переобучите candidate. Artifact 1.15.0 не содержит context feature/ablation contract и отклоняется runtime fail-closed. Historical public data позволяет replay по exchange timestamps, но не восстанавливает фактическое локальное receipt time прошлых лет.
+
 ## Release 1.15.0 — selection experiment reporting
 
 Новых `.env` параметров нет. После migration `0011_selection_experiment` каждая новая plan version автоматически создаёт prospective ledger row.

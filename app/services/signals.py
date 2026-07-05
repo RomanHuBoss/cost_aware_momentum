@@ -16,9 +16,16 @@ from app.db.models import (
     Candle,
     CapitalProfile,
     ExecutionPlan,
+    FundingRate,
     InstrumentSpecHistory,
     MarketSignal,
+    OpenInterest,
     TickerSnapshot,
+)
+from app.ml.context import (
+    MARKET_CONTEXT_COMPLETE_COLUMN,
+    MARKET_CONTEXT_FEATURE_NAMES,
+    build_market_context_frame,
 )
 from app.ml.features import BASELINE_FEATURE_SCHEMA_VERSION, latest_feature_snapshot
 from app.ml.runtime import ModelRuntime, Prediction
@@ -245,6 +252,126 @@ async def _candles_frame(
     return pd.DataFrame.from_records(records)
 
 
+async def _market_context_values(
+    session: AsyncSession,
+    *,
+    symbol: str,
+    candles: pd.DataFrame,
+    event_time: datetime,
+    available_cutoff: datetime,
+    funding_interval_minutes: int | None,
+) -> dict[str, float]:
+    if candles.empty or funding_interval_minutes is None or funding_interval_minutes <= 0:
+        raise ValueError("Market context requires candles and a positive funding interval")
+    history_start = event_time - timedelta(hours=24)
+
+    async def candle_frame(price_type: str) -> pd.DataFrame:
+        rows = (
+            (
+                await session.execute(
+                    select(Candle)
+                    .where(
+                        Candle.symbol == symbol,
+                        Candle.interval == "60",
+                        Candle.price_type == price_type,
+                        Candle.confirmed.is_(True),
+                        Candle.close_time >= history_start,
+                        Candle.close_time <= event_time,
+                        Candle.available_at <= available_cutoff,
+                    )
+                    .order_by(Candle.open_time)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return pd.DataFrame.from_records(
+            [
+                {
+                    "symbol": row.symbol,
+                    "open_time": row.open_time,
+                    "close_time": row.close_time,
+                    "open": float(row.open),
+                    "high": float(row.high),
+                    "low": float(row.low),
+                    "close": float(row.close),
+                }
+                for row in rows
+            ]
+        )
+
+    mark_candles = await candle_frame("mark")
+    index_candles = await candle_frame("index")
+    oi_rows = (
+        (
+            await session.execute(
+                select(OpenInterest)
+                .where(
+                    OpenInterest.symbol == symbol,
+                    OpenInterest.interval == "1h",
+                    OpenInterest.event_time >= history_start,
+                    OpenInterest.event_time <= event_time,
+                    OpenInterest.available_at <= available_cutoff,
+                )
+                .order_by(OpenInterest.event_time)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    funding_start = event_time - timedelta(minutes=funding_interval_minutes)
+    funding_rows = (
+        (
+            await session.execute(
+                select(FundingRate)
+                .where(
+                    FundingRate.symbol == symbol,
+                    FundingRate.funding_time >= funding_start,
+                    FundingRate.funding_time <= event_time,
+                    FundingRate.available_at <= available_cutoff,
+                )
+                .order_by(FundingRate.funding_time)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    open_interest = pd.DataFrame.from_records(
+        [
+            {
+                "symbol": row.symbol,
+                "event_time": row.event_time,
+                "available_at": row.available_at,
+                "value": float(row.value),
+            }
+            for row in oi_rows
+        ]
+    )
+    funding = pd.DataFrame.from_records(
+        [
+            {
+                "symbol": row.symbol,
+                "funding_time": row.funding_time,
+                "available_at": row.available_at,
+                "rate": float(row.rate),
+            }
+            for row in funding_rows
+        ]
+    )
+    context = build_market_context_frame(
+        candles[candles["close_time"] >= history_start],
+        mark_candles=mark_candles,
+        index_candles=index_candles,
+        open_interest=open_interest,
+        funding_history=funding,
+        funding_interval_minutes={symbol: funding_interval_minutes},
+    )
+    latest = context[context["decision_time"].eq(pd.Timestamp(event_time))]
+    if len(latest) != 1 or not bool(latest.iloc[0][MARKET_CONTEXT_COMPLETE_COLUMN]):
+        raise ValueError("Point-in-time market context is incomplete at the decision boundary")
+    return {name: float(latest.iloc[0][name]) for name in MARKET_CONTEXT_FEATURE_NAMES}
+
+
 async def _latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | None:
     return (
         await session.execute(
@@ -465,6 +592,27 @@ async def publish_hourly_signals(
             )
             continue
 
+        model_features = dict(snapshot.values)
+        if not getattr(runtime, "is_baseline", True):
+            try:
+                model_features.update(
+                    await _market_context_values(
+                        session,
+                        symbol=symbol,
+                        candles=frame,
+                        event_time=event_time,
+                        available_cutoff=now,
+                        funding_interval_minutes=spec.funding_interval_minutes,
+                    )
+                )
+            except ValueError as exc:
+                count("incomplete_market_context")
+                logger.warning(
+                    "Skipping symbol with incomplete point-in-time market context",
+                    extra={"symbol": symbol, "error": str(exc)},
+                )
+                continue
+
         spread_bps = _spread_bps(ticker)
         if spread_bps is None:
             count("missing_executable_bid_ask")
@@ -527,7 +675,7 @@ async def publish_hourly_signals(
         )
         try:
             scenario = select_cost_aware_scenario(
-                runtime.predict_scenarios(snapshot.values),
+                runtime.predict_scenarios(model_features),
                 bid_price=ticker.bid_price,
                 ask_price=ticker.ask_price,
                 last_price=ticker.last_price,
@@ -624,7 +772,7 @@ async def publish_hourly_signals(
             reasons=list(prediction.reasons),
             warnings=warnings,
             feature_snapshot={
-                **snapshot.values,
+                **model_features,
                 "score": prediction.score,
                 "spread_bps": spread_bps,
                 "model_runtime": runtime.metadata(),

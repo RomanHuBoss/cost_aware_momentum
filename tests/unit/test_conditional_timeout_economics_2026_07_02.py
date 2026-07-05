@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import pytest
 
+from app.ml.context import MARKET_CONTEXT_FEATURE_NAMES
 from app.ml.features import FEATURE_NAMES
 from app.ml.runtime import ModelRuntime, Prediction
 from app.ml.training import (
@@ -109,6 +110,14 @@ def test_runtime_rejects_artifact_without_timeout_return_schema(tmp_path: Path) 
             "calibration_version": "cal-v1",
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+            "market_context_schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "market_context_availability_schema": "exchange-event-close-live-receipt-v1",
+            "market_context": {
+                "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+                "availability_schema": "exchange-event-close-live-receipt-v1",
+                "historical_receipt_time_reconstructed": False,
+            },
+            "market_context_ablation_schema": "same-split-zeroed-context-v1",
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {
@@ -157,6 +166,14 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
             "calibration_version": "cal-v1",
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
+            "market_context_schema": "hourly-oi-basis-settled-funding-turnover-v1",
+            "market_context_availability_schema": "exchange-event-close-live-receipt-v1",
+            "market_context": {
+                "schema": "hourly-oi-basis-settled-funding-turnover-v1",
+                "availability_schema": "exchange-event-close-live-receipt-v1",
+                "historical_receipt_time_reconstructed": False,
+            },
+            "market_context_ablation_schema": "same-split-zeroed-context-v1",
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
             "entry_execution_model": {
@@ -193,7 +210,7 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
 
     runtime = ModelRuntime(path, allow_baseline=False)
     runtime.load()
-    long_scenario, short_scenario = runtime.predict_scenarios({name: 0.0 for name in FEATURE_NAMES})
+    long_scenario, short_scenario = runtime.predict_scenarios({**{name: 0.0 for name in FEATURE_NAMES}, **{name: 0.0 for name in MARKET_CONTEXT_FEATURE_NAMES}})
 
     assert long_scenario.timeout_return_r == pytest.approx(0.40)
     assert short_scenario.timeout_return_r == pytest.approx(-0.60)

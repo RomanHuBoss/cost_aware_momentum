@@ -45,6 +45,8 @@ async def run(args: argparse.Namespace) -> None:
     candidate = build_model_candidate(
         market_data.candles,
         mark_candles=market_data.mark_candles,
+        index_candles=market_data.index_candles,
+        open_interest=market_data.open_interest,
         horizon=args.horizon,
         model_type=args.model_type,
         model_dir=settings.model_dir,

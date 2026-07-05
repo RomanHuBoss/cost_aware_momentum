@@ -3,6 +3,7 @@ from decimal import Decimal
 import numpy as np
 import pytest
 
+from app.ml.context import MARKET_CONTEXT_FEATURE_NAMES
 from app.ml.features import FEATURE_NAMES
 from app.ml.runtime import ModelRuntime, Prediction
 from app.risk.math import CostScenario
@@ -30,7 +31,7 @@ def test_runtime_exposes_both_directional_scenarios() -> None:
     runtime.version = "fixed-v1"
     runtime.calibration_version = "fixed-cal-v1"
 
-    scenarios = runtime.predict_scenarios({name: 0.0 for name in FEATURE_NAMES})
+    scenarios = runtime.predict_scenarios({**{name: 0.0 for name in FEATURE_NAMES}, **{name: 0.0 for name in MARKET_CONTEXT_FEATURE_NAMES}})
 
     assert [item.direction for item in scenarios] == ["LONG", "SHORT"]
     assert scenarios[0].p_tp == pytest.approx(0.35)

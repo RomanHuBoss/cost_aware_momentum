@@ -1,5 +1,14 @@
 # Security
 
+## Market-context integrity boundary 1.16.0
+
+- OI, mark/index and funding sources remain public/read-only GET; trade mutation methods are not introduced.
+- Historical context uses only exchange event/close timestamps and explicitly records that local receipt times were not reconstructed.
+- Live inference filters every context source by stored `available_at`; future or not-yet-received rows cannot enter the feature vector.
+- Exact joins, positive/finiteness checks and duplicate rejection are fail-closed. Zero-fill, silent forward-fill and substitution of last price for mark/index are prohibited.
+- Artifact validation covers exact feature order, context schema, availability schema and ablation schema; manual metadata editing does not make a legacy artifact compatible.
+- Context ablation is independently refit on the same temporal splits, preventing an untested feature expansion from bypassing promotion gates.
+
 ## Selection ledger integrity boundary 1.15.0
 
 - Ledger row создаётся до operator decision в транзакции execution-plan creation.

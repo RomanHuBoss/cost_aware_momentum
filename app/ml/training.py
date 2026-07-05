@@ -10,6 +10,13 @@ from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from app.ml.context import (
+    MARKET_CONTEXT_AVAILABILITY_SCHEMA,
+    MARKET_CONTEXT_COMPLETE_COLUMN,
+    MARKET_CONTEXT_FEATURE_NAMES,
+    MARKET_CONTEXT_SCHEMA_VERSION,
+    build_market_context_frame,
+)
 from app.ml.features import (
     FEATURE_CONTINUITY_COLUMN,
     FEATURE_LOOKBACK_HOURS,
@@ -31,10 +38,12 @@ from app.ml.mtm import (
 )
 
 OUTCOME_CLASSES = np.array(["TP", "SL", "TIMEOUT"])
-MODEL_FEATURE_NAMES = [*FEATURE_NAMES, "scenario_direction"]
+MODEL_BASE_FEATURE_NAMES = [*FEATURE_NAMES, *MARKET_CONTEXT_FEATURE_NAMES]
+MODEL_FEATURE_NAMES = [*MODEL_BASE_FEATURE_NAMES, "scenario_direction"]
 DEFAULT_STOP_ATR_MULTIPLIER = 1.15
 DEFAULT_TP_ATR_MULTIPLIER = 2.20
-MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
+MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-market-context-v4"
+MARKET_CONTEXT_ABLATION_SCHEMA_VERSION = "same-split-zeroed-context-v1"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
 ENTRY_EXECUTION_MODEL_SCHEMA = "directional-half-spread-on-next-hour-open-v1"
@@ -228,6 +237,27 @@ class DatasetSplit:
     cal_meta: pd.DataFrame | None = None
 
 
+def zero_market_context_split(split: DatasetSplit) -> DatasetSplit:
+    context_indexes = [MODEL_FEATURE_NAMES.index(name) for name in MARKET_CONTEXT_FEATURE_NAMES]
+
+    def zeroed(values: np.ndarray) -> np.ndarray:
+        result = np.asarray(values, dtype=float).copy()
+        result[:, context_indexes] = 0.0
+        return result
+
+    return DatasetSplit(
+        x_train=zeroed(split.x_train),
+        y_train=split.y_train.copy(),
+        x_cal=zeroed(split.x_cal),
+        y_cal=split.y_cal.copy(),
+        x_test=zeroed(split.x_test),
+        y_test=split.y_test.copy(),
+        test_meta=split.test_meta.copy(),
+        train_meta=split.train_meta.copy() if split.train_meta is not None else None,
+        cal_meta=split.cal_meta.copy() if split.cal_meta is not None else None,
+    )
+
+
 @dataclass(frozen=True)
 class PolicyEvaluationConfig:
     fee_rate_round_trip: float
@@ -339,6 +369,9 @@ def make_barrier_dataset(
     require_funding_timeline: bool = False,
     mark_candles: pd.DataFrame | None = None,
     require_mark_timeline: bool = False,
+    index_candles: pd.DataFrame | None = None,
+    open_interest: pd.DataFrame | None = None,
+    require_market_context: bool = False,
     liquidation_leverage: int = 3,
     liquidation_equity_reserve_fraction: float = DEFAULT_EQUITY_RESERVE_FRACTION,
 ) -> pd.DataFrame:
@@ -417,7 +450,60 @@ def make_barrier_dataset(
     elif require_mark_timeline:
         raise ValueError("Historical mark-price timeline is required for margin-path research")
 
+    context_frame: pd.DataFrame | None = None
+    context_metadata: dict[str, object]
+    context_inputs = (mark_candles, index_candles, open_interest, funding_history)
+    if all(item is not None for item in context_inputs):
+        context_frame = build_market_context_frame(
+            candles,
+            mark_candles=mark_candles,
+            index_candles=index_candles,
+            open_interest=open_interest,
+            funding_history=funding_history,
+            funding_interval_minutes=funding_interval_minutes or {},
+        )
+        context_metadata = dict(context_frame.attrs.get("market_context") or {})
+    elif require_market_context:
+        missing = [
+            name
+            for name, value in {
+                "mark_candles": mark_candles,
+                "index_candles": index_candles,
+                "open_interest": open_interest,
+                "funding_history": funding_history,
+            }.items()
+            if value is None
+        ]
+        raise ValueError(f"Point-in-time market context is required; missing: {missing}")
+    else:
+        context_metadata = {
+            "schema": MARKET_CONTEXT_SCHEMA_VERSION,
+            "availability_schema": MARKET_CONTEXT_AVAILABILITY_SCHEMA,
+            "status": "not_requested_test_compatibility",
+            "required": False,
+            "features": list(MARKET_CONTEXT_FEATURE_NAMES),
+        }
+
     frame = build_feature_frame(candles).sort_values(["symbol", "open_time"]).reset_index(drop=True)
+    if context_frame is not None:
+        context_values = context_frame[[
+            "symbol",
+            "decision_time",
+            *MARKET_CONTEXT_FEATURE_NAMES,
+            MARKET_CONTEXT_COMPLETE_COLUMN,
+        ]].copy()
+        frame = frame.merge(
+            context_values,
+            how="left",
+            left_on=["symbol", "close_time"],
+            right_on=["symbol", "decision_time"],
+            validate="one_to_one",
+        )
+    else:
+        for name in MARKET_CONTEXT_FEATURE_NAMES:
+            frame[name] = 0.0
+        frame[MARKET_CONTEXT_COMPLETE_COLUMN] = True
+
     rows: list[dict] = []
     diagnostics: dict[str, int | str] = {
         "schema": HOURLY_CONTINUITY_SCHEMA,
@@ -431,6 +517,7 @@ def make_barrier_dataset(
         "skipped_incomplete_direction_pair_timestamps": 0,
         "skipped_incomplete_funding_timeline_timestamps": 0,
         "skipped_incomplete_mark_timeline_timestamps": 0,
+        "skipped_incomplete_market_context_timestamps": 0,
         "liquidation_path_timestamps": 0,
     }
     hourly = pd.Timedelta(1, unit="h")
@@ -505,8 +592,12 @@ def make_barrier_dataset(
                 diagnostics["skipped_incomplete_mark_timeline_timestamps"] += 1
                 continue
 
-            values = [current.get(name) for name in FEATURE_NAMES]
+            if not bool(current.get(MARKET_CONTEXT_COMPLETE_COLUMN, False)):
+                diagnostics["skipped_incomplete_market_context_timestamps"] += 1
+                continue
+            values = [current.get(name) for name in MODEL_BASE_FEATURE_NAMES]
             if any(value is None or not np.isfinite(float(value)) for value in values):
+                diagnostics["skipped_incomplete_market_context_timestamps"] += 1
                 continue
             # A signal can only be acted on after the source candle has closed.
             # Hourly OHLC exposes a last-trade/open proxy rather than executable
@@ -694,7 +785,7 @@ def make_barrier_dataset(
                         "historical_funding_margin_path_rate": effective_funding_rate,
                         "historical_funding_margin_path_settlements": effective_funding_settlements,
                     }
-                row = {name: float(current[name]) for name in FEATURE_NAMES}
+                row = {name: float(current[name]) for name in MODEL_BASE_FEATURE_NAMES}
                 row.update(
                     {
                         "scenario_direction": direction_code,
@@ -734,6 +825,7 @@ def make_barrier_dataset(
 
     dataset = pd.DataFrame.from_records(rows)
     dataset.attrs["hourly_continuity"] = diagnostics
+    dataset.attrs["market_context"] = context_metadata
     dataset.attrs["label_path_schema"] = LABEL_PATH_SCHEMA_VERSION
     dataset.attrs["historical_funding_timeline"] = (
         funding_timeline.describe()
@@ -1029,6 +1121,18 @@ def _dataset_split_from_frames(
     cal: pd.DataFrame,
     test: pd.DataFrame,
 ) -> DatasetSplit:
+    train = train.copy()
+    cal = cal.copy()
+    test = test.copy()
+    for frame in (train, cal, test):
+        missing_core = [name for name in FEATURE_NAMES if name not in frame.columns]
+        if missing_core:
+            raise ValueError(f"Temporal split is missing core features: {missing_core}")
+        # Hand-built legacy unit fixtures may omit context. Production candidate
+        # construction requires complete point-in-time context before this split.
+        for name in MARKET_CONTEXT_FEATURE_NAMES:
+            if name not in frame.columns:
+                frame[name] = 0.0
     meta_columns = [
         "decision_time",
         "open_time",

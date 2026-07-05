@@ -4,9 +4,19 @@
 
 Direction-conditional multiclass probability model для hypothetical LONG и SHORT scenarios. Classes: `TP`, `SL`, `TIMEOUT`. `NO TRADE` определяется downstream policy. Intrahorizon liquidation не является новым ML-классом и не переписывает обучающий target.
 
-## Features
+## Features, schema v4
 
-Текущая schema содержит десять OHLCV-derived features и direction code. OI, basis, funding, cross-asset context, mark-price path и liquidity state в model features не входят. Mark-price history используется только для realized OOS margin evidence после формирования ex-ante сценариев.
+Artifact model использует 17 ex-ante base features и direction code:
+
+- 10 существующих OHLCV-derived features;
+- `oi_log_change_1h`, `oi_log_change_24h`;
+- `basis_bps`, `basis_change_1h_bps` по hourly mark/index close;
+- `settled_funding_rate`, `funding_age_fraction` только по последнему уже состоявшемуся settlement;
+- `turnover_oi_log_ratio` как ограниченный liquidity/participation proxy.
+
+Schema: `hourly-barrier-market-context-v4`; context schema: `hourly-oi-basis-settled-funding-turnover-v1`. Exact OI/basis rows обязательны, funding join только backward, missing/duplicate/non-finite input блокирует timestamp. Historical public replay опирается на exchange event/close timestamps и не утверждает reconstruction локального receipt time; live inference дополнительно фильтрует `available_at`.
+
+Context ablation: на тех же train/calibration/test timestamps независимо переобучается comparator с нулевыми context columns. Final holdout допускает не более 0.005 ухудшения log loss; минимум два из трёх walk-forward folds должны быть non-inferior. Это защита от декоративного расширения признаков, а не доказательство устойчивого edge.
 
 ## Temporal protocol, schema v4
 
@@ -86,9 +96,9 @@ Auto-activation требует:
 - положительный policy realized mean R минимум в двух из трёх folds;
 - отдельные absolute final-holdout calibration/skill/economic gates;
 - independent horizon phases, positive lower confidence bound и compatible incumbent comparison;
-- complete historical-funding и intrahorizon-margin evidence;
+- complete historical-funding, market-context/ablation и intrahorizon-margin evidence;
 - одинаковые research leverage/reserve assumptions у candidate, runtime и incumbent comparison.
 
 ## Known limitations
 
-Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют point-in-time funding forecasts, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.
+Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют historical receipt-time reconstruction, point-in-time funding forecasts, orderbook-depth/cross-asset model features, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.
