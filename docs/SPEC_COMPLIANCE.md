@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.26.1, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.26.2, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -18,7 +18,26 @@
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.26.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Новая family до первого `STARTED` требует immutable preregistration. Normal activation теперь требует `READY` report и selected trial, связанный с exact model version/SHA-256/horizon; центральная boundary повторно сверяет binding с artifact bytes. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding, experiments outside ledger и автоматический запуск experiment family отсутствуют. |
 | Production drift monitoring | Частично реализовано 1.23.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют evidence. Failed jobs/insufficient evidence дают `BLOCKED`, critical drift деградирует heartbeat. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
 | Fail-closed model activation gate | Реализовано 1.26.0 | Normal activation требует два passed контракта: model quality gate и exact-artifact experiment promotion gate. Selected preregistered trial должен совпасть по version/SHA-256/horizon, а central atomic boundary повторно проверяет binding до artifact/DB mutation. Fresh candidate остаётся inactive до завершения backtests. Emergency rollback требует явного flag + reason и сохраняет обе исходные evidence в audit. |
+| Deferred background promotion reconciliation | Реализовано 1.26.2 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. `READY` family должна быть связана с exact version/SHA-256/horizon; activation повторно проверяется под PostgreSQL lock и использует общий artifact/concurrency/audit/outbox contract. Missing/non-READY/mismatched evidence оставляет candidate inactive. Experiment family сама автоматически не запускается. |
 | Candidate/live recommendation attrition diagnostics | Реализовано 1.26.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. Report v2 отдельно показывает model quality и experiment-promotion attrition. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или основание ослаблять gates. |
+
+
+## Work package: deferred governed background promotion
+
+Release 1.26.2 закрывает lifecycle-разрыв после регистрации immutable candidate. До этого trainer проверял experiment family только внутри того же вызова, который только что создал новый artifact. Поскольку exact preregistration/backtests требуют уже известных version и SHA-256, обычный результат был `inactive`; следующие scheduling iterations к candidate не возвращались.
+
+Реализовано:
+
+- поиск newest inactive background candidate с `activation_requested=true`;
+- повторная независимая валидация persisted quality gate;
+- выбор `AUTO_TRAIN_EXPERIMENT_FAMILY` после регистрации artifact;
+- exact version/SHA-256/horizon recheck до activation и повторный recheck family под PostgreSQL lock;
+- общий production activation service для trainer и CLI;
+- active-version compare-and-swap, artifact runtime validation, audit и outbox в одной транзакции;
+- успешная promotion завершает текущую scheduling iteration без немедленного повторного fit;
+- missing, non-READY, malformed или mismatched evidence остаётся fail-closed.
+
+Ограничения: trainer не создаёт preregistration и не запускает backtests/experiment family автоматически; `READY` не доказывает live profitability. При нескольких inactive candidates автоматически рассматривается newest quality-passed background candidate; более старую версию можно активировать только явным reviewed CLI workflow.
 
 
 ## Work package: policy-evaluation metadata split integrity
@@ -50,7 +69,7 @@ Release 1.26.0 закрывает разрыв между prospective experiment
 - attrition report v2 различает model quality failure и experiment-promotion failure;
 - emergency rollback остаётся явным, reasoned и audited, но не отключает artifact/concurrency checks.
 
-Ограничения: система не запускает полный experiment family автоматически после training, не создаёт trusted external timestamp, не обнаруживает эксперименты вне ledger и не превращает `READY` в доказательство live profitability. Normal workflow становится двухэтапным: immutable candidate → preregistered backtests → reviewed activation.
+Ограничения: система не запускает полный experiment family автоматически после training, не создаёт trusted external timestamp, не обнаруживает эксперименты вне ledger и не превращает `READY` в доказательство live profitability. Начиная с 1.26.2 background workflow остаётся двухэтапным, но после immutable candidate → preregistered backtests trainer может завершить exact-artifact activation на следующей scheduling iteration; reviewed CLI activation сохраняется.
 
 
 ## Work package: fail-closed model activation gate

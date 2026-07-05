@@ -148,8 +148,9 @@ class Settings(BaseSettings):
     # separate process so CPU-heavy fitting never blocks API or inference work.
     auto_train_enabled: bool = True
     auto_train_auto_activate: bool = True
-    # Optional family to evaluate after training. A fresh artifact is normally registered
-    # inactive until its exact SHA/version/horizon has completed the preregistered trials.
+    # Optional staged family selection. A fresh artifact is registered inactive; the trainer
+    # rechecks this exact SHA/version/horizon on later scheduling iterations and activates
+    # only after the preregistered experiment report becomes READY.
     auto_train_experiment_family: str | None = None
     auto_train_model_type: Literal["logistic", "hist_gradient_boosting"] = "logistic"
     auto_train_interval_hours: int = 168

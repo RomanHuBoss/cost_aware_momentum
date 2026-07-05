@@ -140,7 +140,7 @@ async def test_atomic_candidate_activation_rejects_missing_failed_or_inconsisten
 async def test_registered_activation_requires_explicit_reasoned_emergency_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from scripts import model_registry
+    from app.services import model_activation
 
     target = SimpleNamespace(
         id=uuid4(),
@@ -156,9 +156,9 @@ async def test_registered_activation_requires_explicit_reasoned_emergency_overri
     )
     previous = SimpleNamespace(id=uuid4(), version="incumbent-v1", active=True)
     session = _FakeSession([target, previous, None])
-    monkeypatch.setattr(model_registry, "SessionFactory", lambda: session)
+    monkeypatch.setattr(model_activation, "SessionFactory", lambda: session)
     monkeypatch.setattr(
-        model_registry,
+        model_activation,
         "validate_registry_artifact",
         lambda _model: {"version": "failed-v1", "horizon_hours": 8},
     )
@@ -166,16 +166,16 @@ async def test_registered_activation_requires_explicit_reasoned_emergency_overri
     async def no_op(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(model_registry, "append_audit_event", no_op)
-    monkeypatch.setattr(model_registry, "publish_outbox", no_op)
+    monkeypatch.setattr(model_activation, "append_audit_event", no_op)
+    monkeypatch.setattr(model_activation, "publish_outbox", no_op)
 
     with pytest.raises(RuntimeError, match="quality gate"):
-        await model_registry.activate_registered_model("failed-v1")
+        await model_activation.activate_registered_model("failed-v1")
 
     second_session = _FakeSession([target, previous, None])
-    monkeypatch.setattr(model_registry, "SessionFactory", lambda: second_session)
+    monkeypatch.setattr(model_activation, "SessionFactory", lambda: second_session)
     with pytest.raises(ValueError, match="override reason"):
-        await model_registry.activate_registered_model(
+        await model_activation.activate_registered_model(
             "failed-v1",
             emergency_gate_override=True,
             override_reason="",
@@ -186,7 +186,7 @@ async def test_registered_activation_requires_explicit_reasoned_emergency_overri
 async def test_reasoned_emergency_override_is_explicitly_audited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from scripts import model_registry
+    from app.services import model_activation
 
     target = SimpleNamespace(
         id=uuid4(),
@@ -197,9 +197,9 @@ async def test_reasoned_emergency_override_is_explicitly_audited(
     )
     previous = SimpleNamespace(id=uuid4(), version="incumbent-v2", active=True)
     session = _FakeSession([target, previous, None])
-    monkeypatch.setattr(model_registry, "SessionFactory", lambda: session)
+    monkeypatch.setattr(model_activation, "SessionFactory", lambda: session)
     monkeypatch.setattr(
-        model_registry,
+        model_activation,
         "validate_registry_artifact",
         lambda _model: {"version": "rollback-v1", "horizon_hours": 8},
     )
@@ -211,10 +211,10 @@ async def test_reasoned_emergency_override_is_explicitly_audited(
     async def no_op(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(model_registry, "append_audit_event", audit)
-    monkeypatch.setattr(model_registry, "publish_outbox", no_op)
+    monkeypatch.setattr(model_activation, "append_audit_event", audit)
+    monkeypatch.setattr(model_activation, "publish_outbox", no_op)
 
-    result = await model_registry.activate_registered_model(
+    result = await model_activation.activate_registered_model(
         "rollback-v1",
         emergency_gate_override=True,
         override_reason="Rollback after incumbent artifact integrity incident",

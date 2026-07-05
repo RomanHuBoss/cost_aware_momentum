@@ -270,7 +270,7 @@ async def test_atomic_activation_rejects_gate_bound_to_different_artifact(
 async def test_registered_activation_requires_matching_ready_experiment_family(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from scripts import model_registry
+    from app.services import model_activation
 
     target = SimpleNamespace(
         id=uuid4(),
@@ -308,15 +308,15 @@ async def test_registered_activation_requires_matching_ready_experiment_family(
         async def flush(self) -> None:
             return None
 
-    monkeypatch.setattr(model_registry, "SessionFactory", _RegistrySession)
+    monkeypatch.setattr(model_activation, "SessionFactory", _RegistrySession)
     monkeypatch.setattr(
-        model_registry,
+        model_activation,
         "validate_registry_artifact",
         lambda _target: {"version": "candidate-v1", "horizon_hours": 8},
     )
 
     with pytest.raises(RuntimeError, match="experiment family"):
-        await model_registry.activate_registered_model("candidate-v1")
+        await model_activation.activate_registered_model("candidate-v1")
 
 
 def test_attrition_report_separates_experiment_promotion_rejection() -> None:

@@ -28,10 +28,12 @@ from app.ml.lifecycle import (
     policy_evaluation_config,
     register_and_activate_model_candidate,
     register_model_candidate,
+    require_passed_quality_gate,
 )
 from app.ml.runtime_selection import recoverable_registry_artifact_notice
 from app.ml.training import minimum_hourly_history_timestamps_for_quality_gate
 from app.services.audit import publish_outbox
+from app.services.model_activation import activate_registered_model
 from app.services.model_promotion import (
     blocked_experiment_promotion_gate,
     evaluate_experiment_promotion_gate,
@@ -141,6 +143,119 @@ class BackgroundTrainer:
                     .limit(1)
                 )
             ).scalar_one_or_none()
+
+    async def _pending_auto_activation_candidate(self) -> ModelRegistry | None:
+        """Return the newest safe background candidate awaiting governed activation."""
+
+        async with SessionFactory() as session:
+            candidates = (
+                await session.execute(
+                    select(ModelRegistry)
+                    .where(
+                        ModelRegistry.active.is_(False),
+                        ModelRegistry.model_type != "deterministic_baseline",
+                    )
+                    .order_by(desc(ModelRegistry.created_at))
+                    .limit(50)
+                )
+            ).scalars().all()
+        for candidate in candidates:
+            metrics = candidate.metrics if isinstance(candidate.metrics, dict) else {}
+            if metrics.get("source") != "background_trainer":
+                continue
+            if metrics.get("activation_requested") is not True:
+                continue
+            quality_gate = metrics.get("quality_gate")
+            try:
+                require_passed_quality_gate(
+                    quality_gate if isinstance(quality_gate, dict) else None
+                )
+            except RuntimeError:
+                continue
+            return candidate
+        return None
+
+    async def reconcile_pending_activation(self) -> dict[str, object] | None:
+        """Recheck staged experiment evidence for an already registered candidate."""
+
+        if not settings.auto_train_auto_activate or settings.active_model_path is not None:
+            return None
+        candidate = await self._pending_auto_activation_candidate()
+        if candidate is None:
+            return None
+
+        metrics = candidate.metrics if isinstance(candidate.metrics, dict) else {}
+        persisted_gate = metrics.get("experiment_promotion_gate")
+        stored_family = (
+            persisted_gate.get("experiment_family")
+            if isinstance(persisted_gate, dict)
+            else None
+        )
+        configured_family = (settings.auto_train_experiment_family or "").strip() or None
+        # The configured family is an explicit operator selection for this staged
+        # candidate. Exact version/SHA/horizon binding below prevents a stale or
+        # unrelated family from authorizing activation.
+        experiment_family = configured_family or stored_family
+        if experiment_family is None:
+            return {
+                "status": "WAITING",
+                "reason": "missing_auto_train_experiment_family",
+                "candidate_version": candidate.version,
+            }
+
+        horizon = metrics.get("horizon_hours")
+        if isinstance(horizon, bool):
+            horizon = None
+        try:
+            horizon_hours = int(horizon)
+        except (TypeError, ValueError):
+            horizon_hours = 0
+        if horizon_hours != settings.default_horizon_hours:
+            return {
+                "status": "BLOCKED",
+                "reason": "candidate_horizon_mismatch",
+                "candidate_version": candidate.version,
+                "candidate_horizon_hours": horizon_hours,
+                "expected_horizon_hours": settings.default_horizon_hours,
+            }
+        artifact_sha256 = str(candidate.artifact_sha256 or "").strip().lower()
+        if len(artifact_sha256) != 64:
+            return {
+                "status": "BLOCKED",
+                "reason": "candidate_artifact_sha256_missing_or_invalid",
+                "candidate_version": candidate.version,
+            }
+
+        async with SessionFactory() as promotion_session:
+            experiment_gate = await evaluate_experiment_promotion_gate(
+                promotion_session,
+                experiment_family=experiment_family,
+                model_version=candidate.version,
+                model_sha256=artifact_sha256,
+                horizon_hours=horizon_hours,
+            )
+        if experiment_gate.get("passed") is not True:
+            return {
+                "status": "WAITING",
+                "reason": "experiment_promotion_gate_failed",
+                "candidate_version": candidate.version,
+                "experiment_promotion_gate": experiment_gate,
+            }
+
+        active = await self.active_model()
+        activation = await activate_registered_model(
+            candidate.version,
+            actor=settings.trainer_id,
+            expected_previous_version=active.version if active else None,
+            enforce_expected_previous_version=True,
+            experiment_family=experiment_family,
+        )
+        return {
+            "status": "ACTIVATED",
+            "candidate_version": candidate.version,
+            "experiment_promotion_gate": experiment_gate,
+            "activation": activation,
+        }
 
     async def latest_attempt(self) -> JobRun | None:
         async with SessionFactory() as session:
@@ -581,8 +696,24 @@ class BackgroundTrainer:
         await self.heartbeat_best_effort()
 
     async def run_scheduling_iteration(self) -> None:
-        self.state["phase"] = "CHECKING_DATA"
+        self.state["phase"] = "CHECKING_PROMOTION"
         self.state.pop("wait_reason", None)
+        promotion = await self.reconcile_pending_activation()
+        if promotion is not None:
+            self.state["last_promotion"] = promotion
+            if promotion.get("status") == "ACTIVATED":
+                self.state.update(
+                    {
+                        "phase": "WAITING",
+                        "healthy": True,
+                        "wait_reason": {
+                            "reason": "registered_candidate_activated",
+                            "candidate_version": promotion.get("candidate_version"),
+                        },
+                    }
+                )
+                return
+        self.state["phase"] = "CHECKING_DATA"
         due, trigger = await self.due_reason()
         if due:
             await self.run_training_once(trigger)

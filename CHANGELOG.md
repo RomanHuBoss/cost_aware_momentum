@@ -1,0 +1,19 @@
+# Changelog
+
+## 1.26.2 — 2026-07-05
+
+### Fixed
+
+- Background trainer now reconciles already registered inactive candidates after preregistered experiment evidence becomes `READY`; previously evidence was checked only during the same call that created a fresh artifact.
+- Model activation logic used by the CLI and trainer now shares one production service with the same quality, experiment-binding, artifact-integrity, concurrency, audit and outbox checks.
+- A successful deferred activation ends the scheduling iteration instead of immediately starting another training run.
+
+### Configuration
+
+- Added `AUTO_TRAIN_EXPERIMENT_FAMILY=` to `.env.example`. Empty or non-READY evidence remains fail-closed and leaves the candidate inactive.
+- No database migration, risk-threshold change or artifact-schema change.
+
+### Verification
+
+- Clean isolated baseline: 606 passed, 4 skipped.
+- Post-change suite: 609 passed, 4 skipped.
