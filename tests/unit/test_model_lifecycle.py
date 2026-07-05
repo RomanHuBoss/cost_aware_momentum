@@ -138,7 +138,7 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16",
+        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v17",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",
@@ -156,13 +156,15 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "policy_trades": 80,
         "policy_trade_rate": 0.08,
         "policy_cohorts": 80,
+        "policy_trade_cohorts": 80,
+        "policy_no_trade_cohorts": 0,
         "policy_independent_cohorts": 80,
         "policy_independent_mean_r": 0.04,
         "policy_mean_r_lcb": 0.01,
         "policy_mean_r_confidence_level": 0.95,
         "policy_mean_r_bootstrap_samples": 2_000,
         "policy_mean_r_bootstrap_block_length": 1,
-        "policy_mean_r_uncertainty_schema": "all-horizon-phases-circular-moving-block-v2",
+        "policy_mean_r_uncertainty_schema": "observed-opportunity-zero-return-all-horizon-phases-circular-moving-block-v3",
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
         "policy_max_drawdown_r": 5.0,
@@ -178,7 +180,9 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
     assert result["relative"] is None
 
 
-def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
+def test_quality_gate_requires_observed_opportunity_policy_metric_schema(
+    tmp_path: Path,
+) -> None:
     metrics = _metrics()
     metrics["policy_metric_schema"] = (
         "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16"
@@ -189,8 +193,8 @@ def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path
         Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
     )
 
-    assert result["passed"] is True
-    assert "invalid_policy_metric_schema" not in result["reasons"]
+    assert result["passed"] is False
+    assert "invalid_policy_metric_schema" in result["reasons"]
 
     legacy_metrics = _metrics()
     legacy_metrics["policy_metric_schema"] = "exit-time-open-gap-horizon-independent-cohort-v8"
@@ -275,7 +279,11 @@ def test_quality_gate_remains_strict_json_when_incumbent_has_no_policy_trades(
         {
             "policy_trades": 0,
             "policy_trade_rate": 0.0,
-            "policy_realized_mean_r": None,
+            "policy_trade_cohorts": 0,
+            "policy_no_trade_cohorts": 80,
+            "policy_independent_mean_r": 0.0,
+            "policy_mean_r_lcb": 0.0,
+            "policy_realized_mean_r": 0.0,
             "policy_profit_factor": None,
             "policy_max_drawdown_r": 0.0,
         }
@@ -292,9 +300,30 @@ def test_quality_gate_remains_strict_json_when_incumbent_has_no_policy_trades(
     )
 
     json.dumps(result, allow_nan=False)
-    assert result["relative"]["incumbent_policy_realized_mean_r"] is None
-    assert result["relative"]["policy_realized_mean_r_delta"] is None
+    assert result["relative"]["incumbent_policy_realized_mean_r"] == 0.0
+    assert result["relative"]["policy_realized_mean_r_delta"] == 0.05
     assert result["relative"]["policy_improved"] is True
+
+
+def test_quality_gate_rejects_inconsistent_incumbent_opportunity_counts(
+    tmp_path: Path,
+) -> None:
+    incumbent_metrics = _metrics(log_loss=0.95, brier=0.56)
+    incumbent_metrics["policy_no_trade_cohorts"] = 3
+    candidate = _candidate(
+        tmp_path,
+        metrics=_metrics(log_loss=0.90, brier=0.55),
+        incumbent_metrics=incumbent_metrics,
+    )
+
+    result = evaluate_quality_gate(
+        candidate,
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+    )
+
+    assert result["passed"] is False
+    assert "invalid_incumbent_metrics" in result["reasons"]
+    assert "policy_no_trade_cohorts" in result["relative"]["invalid_fields"]
 
 
 def test_quality_gate_serializes_missing_candidate_policy_metrics_as_null(
@@ -305,6 +334,8 @@ def test_quality_gate_serializes_missing_candidate_policy_metrics_as_null(
         {
             "policy_trades": 0,
             "policy_trade_rate": 0.0,
+            "policy_trade_cohorts": 0,
+            "policy_no_trade_cohorts": 80,
             "policy_realized_mean_r": None,
             "policy_profit_factor": None,
             "policy_max_drawdown_r": None,

@@ -328,6 +328,8 @@ def _passing_metrics() -> dict[str, object]:
         "policy_trades": 80,
         "policy_trade_rate": 0.08,
         "policy_cohorts": 80,
+        "policy_trade_cohorts": 80,
+        "policy_no_trade_cohorts": 0,
         "policy_independent_cohorts": 80,
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,

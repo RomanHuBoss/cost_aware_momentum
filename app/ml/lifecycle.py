@@ -1387,6 +1387,18 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         ):
             reasons.append("inconsistent_policy_trade_rate")
     policy_cohorts = nonnegative_int_metric("policy_cohorts")
+    policy_trade_cohorts = nonnegative_int_metric("policy_trade_cohorts")
+    policy_no_trade_cohorts = nonnegative_int_metric("policy_no_trade_cohorts")
+    if policy_cohorts > policy_candidates:
+        reasons.append("policy_cohorts_exceed_candidates")
+    if policy_trade_cohorts > policy_cohorts:
+        reasons.append("policy_trade_cohorts_exceed_cohorts")
+    if policy_trade_cohorts > policy_trades:
+        reasons.append("policy_trade_cohorts_exceed_trades")
+    if policy_no_trade_cohorts != policy_cohorts - policy_trade_cohorts:
+        reasons.append("inconsistent_policy_no_trade_cohorts")
+    if policy_candidates > 0 and policy_cohorts == 0:
+        reasons.append("missing_policy_opportunity_cohorts")
     policy_independent_cohorts = nonnegative_int_metric("policy_independent_cohorts")
     policy_horizon_phase_count = nonnegative_int_metric("policy_horizon_phase_count")
     policy_horizon_phase_expected = nonnegative_int_metric("policy_horizon_phase_expected")
@@ -1511,6 +1523,12 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         incumbent_brier = finite_or_none(incumbent.get("multiclass_brier"))
         incumbent_policy_trades_value = finite_or_none(incumbent.get("policy_trades"))
         incumbent_policy_cohorts_value = finite_or_none(incumbent.get("policy_cohorts"))
+        incumbent_policy_trade_cohorts_value = finite_or_none(
+            incumbent.get("policy_trade_cohorts")
+        )
+        incumbent_policy_no_trade_cohorts_value = finite_or_none(
+            incumbent.get("policy_no_trade_cohorts")
+        )
         incumbent_policy_independent_cohorts_value = finite_or_none(
             incumbent.get("policy_independent_cohorts")
         )
@@ -1526,6 +1544,20 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             if incumbent_policy_cohorts_value is not None
             and incumbent_policy_cohorts_value >= 0
             and incumbent_policy_cohorts_value.is_integer()
+            else None
+        )
+        incumbent_policy_trade_cohorts = (
+            int(incumbent_policy_trade_cohorts_value)
+            if incumbent_policy_trade_cohorts_value is not None
+            and incumbent_policy_trade_cohorts_value >= 0
+            and incumbent_policy_trade_cohorts_value.is_integer()
+            else None
+        )
+        incumbent_policy_no_trade_cohorts = (
+            int(incumbent_policy_no_trade_cohorts_value)
+            if incumbent_policy_no_trade_cohorts_value is not None
+            and incumbent_policy_no_trade_cohorts_value >= 0
+            and incumbent_policy_no_trade_cohorts_value.is_integer()
             else None
         )
         incumbent_policy_independent_cohorts = (
@@ -1548,12 +1580,36 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
                 ("multiclass_brier", incumbent_brier),
                 ("policy_trades", incumbent_policy_trades),
                 ("policy_cohorts", incumbent_policy_cohorts),
+                ("policy_trade_cohorts", incumbent_policy_trade_cohorts),
+                ("policy_no_trade_cohorts", incumbent_policy_no_trade_cohorts),
                 ("policy_independent_cohorts", incumbent_policy_independent_cohorts),
             )
             if value is None
         ]
         if incumbent_policy_schema != expected_policy_schema:
             invalid_incumbent_fields.append("policy_metric_schema")
+        if incumbent.get("policy_mean_r_uncertainty_schema") != POLICY_UNCERTAINTY_SCHEMA:
+            invalid_incumbent_fields.append("policy_mean_r_uncertainty_schema")
+        if (
+            incumbent_policy_trade_cohorts is not None
+            and incumbent_policy_cohorts is not None
+            and incumbent_policy_trade_cohorts > incumbent_policy_cohorts
+        ):
+            invalid_incumbent_fields.append("policy_trade_cohorts")
+        if (
+            incumbent_policy_trade_cohorts is not None
+            and incumbent_policy_trades is not None
+            and incumbent_policy_trade_cohorts > incumbent_policy_trades
+        ):
+            invalid_incumbent_fields.append("policy_trade_cohorts")
+        if (
+            incumbent_policy_no_trade_cohorts is not None
+            and incumbent_policy_cohorts is not None
+            and incumbent_policy_trade_cohorts is not None
+            and incumbent_policy_no_trade_cohorts
+            != incumbent_policy_cohorts - incumbent_policy_trade_cohorts
+        ):
+            invalid_incumbent_fields.append("policy_no_trade_cohorts")
         if (
             incumbent_policy_horizon is None
             or not incumbent_policy_horizon.is_integer()
@@ -1566,15 +1622,17 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             or int(incumbent_policy_sleeves) != candidate.horizon
         ):
             invalid_incumbent_fields.append("policy_capital_sleeves")
-        if incumbent_policy_trades is not None and incumbent_policy_trades > 0:
+        if incumbent_policy_cohorts is not None and incumbent_policy_cohorts > 0:
             if incumbent_policy_mean_r is None:
                 invalid_incumbent_fields.append("policy_realized_mean_r")
-            if incumbent_policy_mean_r_lcb is None:
-                invalid_incumbent_fields.append("policy_mean_r_lcb")
-            if incumbent.get("policy_mean_r_uncertainty_schema") != POLICY_UNCERTAINTY_SCHEMA:
-                invalid_incumbent_fields.append("policy_mean_r_uncertainty_schema")
             if incumbent_policy_drawdown is None:
                 invalid_incumbent_fields.append("policy_max_drawdown_r")
+        if (
+            incumbent_policy_independent_cohorts is not None
+            and incumbent_policy_independent_cohorts > 1
+            and incumbent_policy_mean_r_lcb is None
+        ):
+            invalid_incumbent_fields.append("policy_mean_r_lcb")
         if invalid_incumbent_fields:
             reasons.append("invalid_incumbent_metrics")
             relative = {
@@ -1689,6 +1747,8 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
             "policy_trade_rate": policy_trade_rate,
             "min_policy_trade_rate": settings.auto_train_min_policy_trade_rate,
             "policy_cohorts": policy_cohorts,
+            "policy_trade_cohorts": policy_trade_cohorts,
+            "policy_no_trade_cohorts": policy_no_trade_cohorts,
             "policy_independent_cohorts": policy_independent_cohorts,
             "policy_horizon_phase_count": policy_horizon_phase_count,
             "policy_horizon_phase_expected": policy_horizon_phase_expected,

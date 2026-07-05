@@ -52,8 +52,8 @@ TEMPORAL_SPLIT_SCHEMA_VERSION = "final-holdout-plus-expanding-walk-forward-v4"
 WALK_FORWARD_SCHEMA_VERSION = "expanding-train-rolling-calibration-purged-v1"
 DEFAULT_WALK_FORWARD_FOLDS = 3
 MIN_WALK_FORWARD_POSITIVE_FRACTION = 2.0 / 3.0
-POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16"
-POLICY_UNCERTAINTY_SCHEMA = "all-horizon-phases-circular-moving-block-v2"
+POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v17"
+POLICY_UNCERTAINTY_SCHEMA = "observed-opportunity-zero-return-all-horizon-phases-circular-moving-block-v3"
 HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
 MIN_TIMEOUT_SAMPLES_PER_DIRECTION = 5
@@ -1991,74 +1991,61 @@ def evaluate_policy_model(
         context="Policy evaluation",
     )
 
-    empty_metrics: dict[str, object] = {
-        "policy_metric_schema": POLICY_METRIC_SCHEMA,
-        "historical_funding_schema": historical_funding_schema,
-        "policy_funding_timeline_complete": historical_funding_schema is not None,
-        "policy_expected_funding_source": "none-no-point-in-time-forecast",
-        "policy_realized_funding_source": historical_funding_schema,
-        "policy_intrahorizon_margin_schema": intrahorizon_margin_schema,
-        "policy_intrahorizon_margin_complete": intrahorizon_margin_schema is not None,
-        "policy_research_leverage": int(config.research_leverage),
-        "policy_liquidation_equity_reserve_fraction": float(config.liquidation_equity_reserve_fraction),
-        "policy_liquidation_events": 0,
-        "policy_liquidation_rate": 0.0,
-        "policy_mark_max_adverse_excursion_mean": None,
-        "policy_mark_max_adverse_excursion_max": None,
-        "policy_mark_max_favorable_excursion_mean": None,
-        "policy_mark_minimum_equity_rate_min": None,
-        "policy_timeout_return_schema": timeout_return_source,
-        "policy_horizon_hours": resolved_horizon,
-        "policy_capital_sleeves": resolved_horizon,
-        "policy_candidates": int(len(selected)),
-        "policy_actionable_candidates": int(len(actionable_trades)),
-        "policy_selected_calibration_schema": PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA,
-        "policy_selected_calibration_rows": int(len(selected)),
-        "policy_selected_log_loss": float(selected_log_loss),
-        "policy_selected_multiclass_brier": selected_multiclass_brier,
-        "policy_overlap_blocked_trades": int(overlap_blocked_trades),
-        "policy_trades": 0,
-        "policy_cohorts": 0,
-        "policy_independent_cohorts": 0,
-        "policy_horizon_phase_count": 0,
-        "policy_horizon_phase_expected": resolved_horizon,
-        "policy_independent_mean_r": None,
-        "policy_mean_r_lcb": None,
-        "policy_mean_r_confidence_level": float(config.confidence_level),
-        "policy_mean_r_bootstrap_samples": int(config.bootstrap_samples),
-        "policy_mean_r_bootstrap_block_length": 0,
-        "policy_mean_r_uncertainty_schema": POLICY_UNCERTAINTY_SCHEMA,
-        "policy_trade_rate": 0.0,
-        "policy_mean_expected_ev_r": None,
-        "policy_realized_mean_r": None,
-        "policy_realized_total_r": 0.0,
-        "policy_win_rate": None,
-        "policy_profit_factor": None,
-        "policy_profit_factor_unbounded": False,
-        "policy_gross_gain_r": 0.0,
-        "policy_gross_loss_r": 0.0,
-        "policy_max_drawdown_r": 0.0,
-        "policy_event_periods": 0,
-    }
-    if trades.empty:
-        return empty_metrics
+    opportunity_times = pd.DatetimeIndex(
+        pd.to_datetime(selected["decision_time"], utc=True, errors="coerce")
+        .drop_duplicates()
+        .sort_values(kind="mergesort")
+    )
+    if opportunity_times.empty or opportunity_times.isna().any():
+        raise ValueError("Policy evaluation requires valid observed decision cohorts")
 
-    outcome = trades["target"].astype(str)
-    if (~outcome.isin(OUTCOME_CLASSES)).any():
-        raise ValueError("Policy evaluation target contains an unsupported outcome")
-    liquidation_events = int(trades["mark_liquidated"].sum()) if intrahorizon_margin_schema else 0
-    liquidation_rate = float(liquidation_events / len(trades)) if len(trades) else 0.0
-    trades["realized_r"] = np.where(
-        trades["stress_downside_rate"] > 0,
-        trades["realized_net_rate"] / trades["stress_downside_rate"],
-        0.0,
-    )
-    cohort_size = trades.groupby("decision_time")["realized_r"].transform("size")
-    trades["realized_r_contribution"] = trades["realized_r"] / cohort_size / resolved_horizon
-    cohort_metrics = trades.groupby("decision_time", sort=True).agg(
-        realized_mean_r=("realized_r", "mean"),
-        expected_mean_ev_r=("expected_ev_r", "mean"),
-    )
+    trades = trades.copy()
+    if trades.empty:
+        trades["realized_r"] = pd.Series(index=trades.index, dtype=float)
+        trades["realized_r_contribution"] = pd.Series(index=trades.index, dtype=float)
+        trade_cohort_metrics = pd.DataFrame(
+            columns=["realized_mean_r", "expected_mean_ev_r"],
+            index=pd.DatetimeIndex([], name="decision_time"),
+            dtype=float,
+        )
+        liquidation_events = 0
+        liquidation_rate = 0.0
+    else:
+        outcome = trades["target"].astype(str)
+        if (~outcome.isin(OUTCOME_CLASSES)).any():
+            raise ValueError("Policy evaluation target contains an unsupported outcome")
+        liquidation_events = int(trades["mark_liquidated"].sum()) if intrahorizon_margin_schema else 0
+        liquidation_rate = float(liquidation_events / len(trades))
+        trades["realized_r"] = np.where(
+            trades["stress_downside_rate"] > 0,
+            trades["realized_net_rate"] / trades["stress_downside_rate"],
+            0.0,
+        )
+        cohort_size = trades.groupby("decision_time")["realized_r"].transform("size")
+        trades["realized_r_contribution"] = trades["realized_r"] / cohort_size / resolved_horizon
+        trade_cohort_metrics = trades.groupby("decision_time", sort=True).agg(
+            realized_mean_r=("realized_r", "mean"),
+            expected_mean_ev_r=("expected_ev_r", "mean"),
+        )
+        trade_cohort_metrics.index = pd.to_datetime(
+            trade_cohort_metrics.index,
+            utc=True,
+            errors="coerce",
+        )
+        if trade_cohort_metrics.index.isna().any():
+            raise ValueError("Policy trade cohorts contain invalid decision_time")
+
+    # Policy inference is defined on every observed decision cohort. A cohort
+    # where all directions are rejected has a known strategy return of zero.
+    # Dropping these hours conditions inference on the policy's own selection,
+    # overstates sparse-policy evidence and makes phase coverage trade-dependent.
+    # Reindex only to observed opportunities; missing market hours are not invented.
+    cohort_metrics = trade_cohort_metrics.reindex(opportunity_times, fill_value=0.0)
+    cohort_metrics.index.name = "decision_time"
+    trade_cohort_count = int(len(trade_cohort_metrics))
+    opportunity_cohort_count = int(len(cohort_metrics))
+    no_trade_cohort_count = opportunity_cohort_count - trade_cohort_count
+
     horizon_phases = _horizon_separated_phase_series(
         cohort_metrics["realized_mean_r"],
         horizon_hours=resolved_horizon,
@@ -2090,8 +2077,13 @@ def evaluate_policy_model(
         )
         policy_mean_r_lcb = None
         bootstrap_block_length = 0
-    exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
-    trade_contributions = trades["realized_r_contribution"]
+
+    if trades.empty:
+        exit_r = pd.Series(dtype=float)
+        trade_contributions = pd.Series(dtype=float)
+    else:
+        exit_r = trades.groupby("exit_time", sort=True)["realized_r_contribution"].sum()
+        trade_contributions = trades["realized_r_contribution"]
     gains = float(trade_contributions[trade_contributions > 0].sum())
     losses = float(-trade_contributions[trade_contributions < 0].sum())
     profit_factor = gains / losses if losses > 0 else None
@@ -2112,6 +2104,26 @@ def evaluate_policy_model(
         "policy_liquidation_equity_reserve_fraction": float(config.liquidation_equity_reserve_fraction),
         "policy_liquidation_events": liquidation_events,
         "policy_liquidation_rate": liquidation_rate,
+        "policy_mark_max_adverse_excursion_mean": (
+            float(trades["mark_max_adverse_excursion_rate"].mean())
+            if intrahorizon_margin_schema and len(trades)
+            else None
+        ),
+        "policy_mark_max_adverse_excursion_max": (
+            float(trades["mark_max_adverse_excursion_rate"].max())
+            if intrahorizon_margin_schema and len(trades)
+            else None
+        ),
+        "policy_mark_max_favorable_excursion_mean": (
+            float(trades["mark_max_favorable_excursion_rate"].mean())
+            if intrahorizon_margin_schema and len(trades)
+            else None
+        ),
+        "policy_mark_minimum_equity_rate_min": (
+            float(trades["mark_minimum_equity_rate"].min())
+            if intrahorizon_margin_schema and len(trades)
+            else None
+        ),
         "policy_timeout_return_schema": timeout_return_source,
         "policy_horizon_hours": resolved_horizon,
         "policy_capital_sleeves": resolved_horizon,
@@ -2123,7 +2135,9 @@ def evaluate_policy_model(
         "policy_selected_multiclass_brier": selected_multiclass_brier,
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": int(len(trades)),
-        "policy_cohorts": int(len(cohort_metrics)),
+        "policy_cohorts": opportunity_cohort_count,
+        "policy_trade_cohorts": trade_cohort_count,
+        "policy_no_trade_cohorts": no_trade_cohort_count,
         "policy_independent_cohorts": int(independent_cohort_count),
         "policy_horizon_phase_count": int(phase_count),
         "policy_horizon_phase_expected": resolved_horizon,
@@ -2137,25 +2151,14 @@ def evaluate_policy_model(
         "policy_mean_expected_ev_r": float(cohort_metrics["expected_mean_ev_r"].mean()),
         "policy_realized_mean_r": float(cohort_metrics["realized_mean_r"].mean()),
         "policy_realized_total_r": float(exit_r.sum()),
-        "policy_win_rate": float((exit_r > 0).mean()),
-        "policy_trade_mean_r": float(trades["realized_r"].mean()),
-        "policy_trade_win_rate": float((trades["realized_r"] > 0).mean()),
+        "policy_win_rate": float((exit_r > 0).mean()) if len(exit_r) else 0.0,
+        "policy_opportunity_win_rate": float((cohort_metrics["realized_mean_r"] > 0).mean()),
+        "policy_trade_mean_r": float(trades["realized_r"].mean()) if len(trades) else None,
+        "policy_trade_win_rate": float((trades["realized_r"] > 0).mean()) if len(trades) else None,
         "policy_profit_factor": float(profit_factor) if profit_factor is not None else None,
         "policy_profit_factor_unbounded": profit_factor_unbounded,
         "policy_gross_gain_r": gains,
         "policy_gross_loss_r": losses,
         "policy_max_drawdown_r": float(drawdown.max()) if len(drawdown) else 0.0,
         "policy_event_periods": int(len(exit_r)),
-        "policy_mark_max_adverse_excursion_mean": (
-            float(trades["mark_max_adverse_excursion_rate"].mean()) if intrahorizon_margin_schema else None
-        ),
-        "policy_mark_max_adverse_excursion_max": (
-            float(trades["mark_max_adverse_excursion_rate"].max()) if intrahorizon_margin_schema else None
-        ),
-        "policy_mark_max_favorable_excursion_mean": (
-            float(trades["mark_max_favorable_excursion_rate"].mean()) if intrahorizon_margin_schema else None
-        ),
-        "policy_mark_minimum_equity_rate_min": (
-            float(trades["mark_minimum_equity_rate"].min()) if intrahorizon_margin_schema else None
-        ),
     }

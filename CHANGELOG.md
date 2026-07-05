@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.26.4 — 2026-07-05
+
+### Fixed
+
+- Policy evaluation now builds economic mean and uncertainty evidence over every observed hourly decision cohort, not only cohorts in which a trade survived the policy and overlap filters.
+- An observed `NO TRADE` cohort contributes a known zero strategy return and zero expected policy contribution; missing market hours are not invented.
+- Quality-gate evidence exposes and validates `policy_trade_cohorts` and `policy_no_trade_cohorts`; incumbent comparison rejects missing or inconsistent opportunity accounting.
+- Policy metric schemas were raised to opportunity-path v17 and uncertainty v3, so legacy conditional-on-trade evidence cannot be reused for normal promotion.
+
+### Compatibility
+
+- No database migration, public HTTP API change or `.env` addition.
+- Already active artifacts remain runnable. Inactive candidates evaluated under the previous policy schemas must be retrained and their governed experiment evidence regenerated before normal activation.
+
+### Verification
+
+- Clean isolated baseline: 613 passed, 4 skipped.
+- Post-change suite: 615 passed, 4 skipped, 61 warnings.
+
 ## 1.26.3 — 2026-07-05
 
 ### Fixed

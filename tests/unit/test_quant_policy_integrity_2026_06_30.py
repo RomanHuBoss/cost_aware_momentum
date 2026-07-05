@@ -145,7 +145,7 @@ def _passing_metrics() -> dict[str, object]:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v16",
+        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v17",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",
@@ -163,13 +163,15 @@ def _passing_metrics() -> dict[str, object]:
         "policy_trades": 80,
         "policy_trade_rate": 0.08,
         "policy_cohorts": 80,
+        "policy_trade_cohorts": 80,
+        "policy_no_trade_cohorts": 0,
         "policy_independent_cohorts": 80,
         "policy_independent_mean_r": 0.04,
         "policy_mean_r_lcb": 0.01,
         "policy_mean_r_confidence_level": 0.95,
         "policy_mean_r_bootstrap_samples": 2_000,
         "policy_mean_r_bootstrap_block_length": 1,
-        "policy_mean_r_uncertainty_schema": "all-horizon-phases-circular-moving-block-v2",
+        "policy_mean_r_uncertainty_schema": "observed-opportunity-zero-return-all-horizon-phases-circular-moving-block-v3",
         "policy_realized_mean_r": 0.05,
         "policy_profit_factor": 1.2,
         "policy_max_drawdown_r": 5.0,
@@ -308,6 +310,8 @@ def test_quality_gate_rejects_many_cross_sectional_trades_from_one_hour(tmp_path
     metrics["policy_trades"] = 100
     metrics["policy_trade_rate"] = 0.1
     metrics["policy_cohorts"] = 1
+    metrics["policy_trade_cohorts"] = 1
+    metrics["policy_no_trade_cohorts"] = 0
     metrics["policy_independent_cohorts"] = 1
 
     result = evaluate_quality_gate(
