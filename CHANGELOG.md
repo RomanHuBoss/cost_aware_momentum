@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.25.0 — 2026-07-05
+
+- Closed the silent quality-gate bypass in every candidate activation path.
+- Atomic candidate activation now requires a persisted, internally consistent `passed` gate before artifact validation or database mutation.
+- Manual `train --activate` evaluates the normal absolute/incumbent-relative gate and registers failed candidates inactive with `activation_requested=true`.
+- Registered-model activation rejects missing, failed or contradictory gate evidence by default.
+- Added explicit emergency rollback override requiring `--emergency-gate-override` plus a human-readable `--override-reason`; both the override and original gate are recorded in `MODEL_ACTIVATED` audit evidence.
+- Restored the release `.env.example` template required by `manage.py setup`; no database migration, new setting, artifact schema or risk threshold was added.
+- Added six focused red-to-green regression tests; full suite is `598 passed, 4 skipped`.
+
 ## 1.24.0 — 2026-07-05
 
 - Added prospective per-symbol terminal outcomes for hourly and catch-up inference with exact `symbol × event_time` retry deduplication.

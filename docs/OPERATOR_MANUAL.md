@@ -1,5 +1,22 @@
 # Operator Manual
 
+## Upgrade to 1.25.0
+
+1. No Alembic migration, `.env` change or model retraining is required.
+2. Restart API, worker and trainer so all processes use the guarded activation code.
+3. For normal activation run `python manage.py model-registry activate --version <version>`. The command now refuses a missing, failed or contradictory persisted quality gate.
+4. `python manage.py train --activate ...` evaluates the same gate. On failure it registers the candidate inactive and prints the gate reasons; it does not change the incumbent.
+5. Use emergency override only for a documented rollback incident:
+
+```bash
+python manage.py model-registry activate --version <version> \
+  --emergency-gate-override \
+  --override-reason "Rollback after documented incumbent integrity incident"
+```
+
+6. Preserve the command output and corresponding `MODEL_ACTIVATED` audit event. Never use override merely because a new candidate fails policy/ML thresholds or recommendations are rare.
+7. Legacy registered versions without gate evidence now require the same explicit override. This is expected and keeps rollback possible without restoring a silent default bypass.
+
 ## Upgrade to 1.24.0
 
 1. No Alembic migration, `.env` change or model retraining is required.

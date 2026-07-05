@@ -1,5 +1,11 @@
 # Incident Runbook
 
+## Symptom: model activation is rejected by the quality-gate guard
+
+Inspect the registered model `metrics.quality_gate`. Normal activation requires `passed=true`, an empty `reasons` list and a valid artifact. If the candidate failed, leave it inactive and investigate the listed model-quality, temporal, policy, evidence or incumbent-relative cause. Do not edit PostgreSQL JSONB or artifact metadata.
+
+For a genuine rollback incident where the target predates persisted gate evidence, use the explicit emergency command with a concrete incident reason. The override is audited and must be reviewed after service recovery. A one-word or omitted reason is rejected. Do not use emergency override to activate a newly failed candidate or to increase signal frequency.
+
 ## Symptom: recommendations are rare or candidates repeatedly fail gates
 
 Run `python manage.py attrition-report -- --hours 168`. First require `status=OK`; otherwise resolve `integrity_errors`, failed jobs or legacy instrumentation before interpreting rates. Use `training.quality_gate_stage_counts` to separate model quality, temporal validation, policy economics, incumbent-relative and evidence-integrity failures. Use `live.signal_opportunities.terminal_skip_reason_counts` for market/data publication attrition and `live.plan_opportunities.reason_counts` for the single primary plan cause. Do not sum `contributing_reason_counts` as independent opportunities. Do not lower gates until the dominant prospective cause is stable across a sufficient window.

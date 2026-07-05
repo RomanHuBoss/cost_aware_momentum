@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.24.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.25.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -16,7 +16,22 @@
 | OI/basis/funding/liquidity/context features | Частично реализовано 1.22.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age с interval effective at decision time и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.20.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Новая family до первого `STARTED` требует immutable preregistration: hypothesis, exact cohort fingerprint/horizon, exhaustive fixed/search contract, primary metric, thresholds, stopping rule и exclusions. Trial outside contract и post-result policy override блокируются. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding и automatic model-promotion gate отсутствуют. |
 | Production drift monitoring | Частично реализовано 1.23.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют evidence. Failed jobs/insufficient evidence дают `BLOCKED`, critical drift деградирует heartbeat. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
+| Fail-closed model activation gate | Реализовано 1.25.0 | Все candidate activation paths требуют persisted непротиворечивый `passed` quality gate. Manual train при провале регистрирует inactive candidate. Registered-model activation без passed gate по умолчанию запрещена; emergency rollback требует явного flag + reason и сохраняется в audit. Это не закрывает отсутствующий automatic experiment-family promotion gate. |
 | Candidate/live recommendation attrition diagnostics | Реализовано 1.24.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или автоматическое изменение gates. |
+
+
+## Work package: fail-closed model activation gate
+
+Release 1.25.0 закрывает silent bypass между вычислением model quality gate и state-changing activation:
+
+- центральная atomic activation function требует persisted `passed=true` и пустой список причин до artifact/DB mutation;
+- `train --activate` вычисляет обычный gate и при отказе сохраняет inactive candidate с `activation_requested=true`;
+- `model-registry activate` проверяет gate, сохранённый в registry metrics;
+- missing, failed и contradictory gate evidence fail closed;
+- emergency rollback без passed gate сохраняется, но требует явных `--emergency-gate-override` и `--override-reason`;
+- audit payload раскрывает исходный gate, override flag и reason; checksum/horizon/concurrency validation остаётся обязательной.
+
+Ограничения: release не связывает promotion автоматически с experiment-family PBO/DSR/preregistration, не запрещает осознанный emergency override и не доказывает экономический edge. Override является операторским аварийным действием, а не способом исправить редкие рекомендации.
 
 
 ## Work package: candidate/live recommendation attrition diagnostics

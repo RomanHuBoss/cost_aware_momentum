@@ -119,6 +119,35 @@ class TrainingMarketData:
     funding_interval_minutes: dict[str, int]
     funding_interval_history: pd.DataFrame
 
+MODEL_ACTIVATION_QUALITY_GATE_SCHEMA = "model-activation-quality-gate-v1"
+
+
+def require_passed_quality_gate(quality_gate: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a normalized gate snapshot or fail closed before activation.
+
+    Activation is a state-changing safety boundary.  A missing gate, a failed
+    gate, or a contradictory ``passed=True`` record with non-empty reasons must
+    never be interpreted as approval.
+    """
+
+    if not isinstance(quality_gate, dict):
+        raise RuntimeError("Model activation requires a persisted passed quality gate")
+    reasons = quality_gate.get("reasons")
+    if not isinstance(reasons, list) or any(not isinstance(item, str) or not item for item in reasons):
+        raise RuntimeError("Model activation quality gate has invalid reasons evidence")
+    passed = quality_gate.get("passed")
+    if passed is not True or reasons:
+        detail = ", ".join(reasons) if reasons else "gate_not_passed"
+        raise RuntimeError(f"Model activation quality gate did not pass: {detail}")
+    return json_compatible(
+        {
+            "schema": MODEL_ACTIVATION_QUALITY_GATE_SCHEMA,
+            "passed": True,
+            "reasons": [],
+            "gate": quality_gate,
+        }
+    )
+
 
 def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
     return PolicyEvaluationConfig(
@@ -1811,6 +1840,7 @@ async def register_and_activate_model_candidate(
 ) -> tuple[ModelRegistry, dict[str, object]]:
     """Register and activate a new candidate in one PostgreSQL transaction."""
 
+    activation_gate = require_passed_quality_gate(quality_gate)
     digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
     runtime_metadata = _validate_candidate_artifact_for_activation(
         candidate,
@@ -1856,6 +1886,7 @@ async def register_and_activate_model_candidate(
             "model_type": registry.model_type,
             "previous_version": (previous.version if previous and previous.id != registry.id else None),
             "expected_previous_version": expected_previous_version,
+            "activation_governance": activation_gate,
             "runtime": runtime_metadata,
         }
         await append_audit_event(

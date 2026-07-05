@@ -12,9 +12,11 @@ from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import ModelRegistry
 from app.ml.artifact_recovery import load_recovery_candidate
 from app.ml.lifecycle import (
+    MODEL_ACTIVATION_QUALITY_GATE_SCHEMA,
     evaluate_quality_gate,
     register_and_activate_model_candidate,
     register_model_candidate,
+    require_passed_quality_gate,
 )
 from app.ml.runtime import ModelRuntime
 from app.ml.runtime_selection import (
@@ -52,11 +54,54 @@ def validate_registry_artifact(model: ModelRegistry) -> dict[str, object]:
     return runtime.metadata()
 
 
+def registered_activation_governance(
+    model: ModelRegistry,
+    *,
+    emergency_gate_override: bool,
+    override_reason: str | None,
+) -> dict[str, object]:
+    metrics = model.metrics if isinstance(model.metrics, dict) else {}
+    quality_gate = metrics.get("quality_gate")
+    try:
+        validated = require_passed_quality_gate(
+            quality_gate if isinstance(quality_gate, dict) else None
+        )
+    except RuntimeError as exc:
+        if not emergency_gate_override:
+            raise RuntimeError(
+                f"Registered model {model.version} cannot be activated because its quality gate "
+                "is missing, failed, or inconsistent. Use --emergency-gate-override with "
+                "--override-reason only for a reviewed emergency rollback."
+            ) from exc
+        normalized_reason = (override_reason or "").strip()
+        if not normalized_reason:
+            raise ValueError("Emergency quality-gate override reason is required") from exc
+        return {
+            "schema": MODEL_ACTIVATION_QUALITY_GATE_SCHEMA,
+            "quality_gate_passed": False,
+            "emergency_gate_override": True,
+            "override_reason": normalized_reason,
+            "quality_gate": quality_gate,
+        }
+    if emergency_gate_override:
+        raise ValueError("Emergency quality-gate override is not allowed for a passed candidate")
+    if override_reason is not None and override_reason.strip():
+        raise ValueError("Override reason was supplied without --emergency-gate-override")
+    return {
+        **validated,
+        "quality_gate_passed": True,
+        "emergency_gate_override": False,
+        "override_reason": None,
+    }
+
+
 async def activate_registered_model(
     version: str,
     *,
     actor: str = "operator-cli",
     expected_previous_version: str | None = None,
+    emergency_gate_override: bool = False,
+    override_reason: str | None = None,
 ) -> dict[str, object]:
     async with SessionFactory() as session, session.begin():
         target = (
@@ -67,6 +112,11 @@ async def activate_registered_model(
         if target is None:
             raise SystemExit(f"Model version not found: {version}")
 
+        activation_governance = registered_activation_governance(
+            target,
+            emergency_gate_override=emergency_gate_override,
+            override_reason=override_reason,
+        )
         runtime_metadata = validate_registry_artifact(target)
         previous = (
             await session.execute(
@@ -94,6 +144,7 @@ async def activate_registered_model(
             "model_type": target.model_type,
             "previous_version": previous.version if previous and previous.id != target.id else None,
             "expected_previous_version": expected_previous_version,
+            "activation_governance": activation_governance,
             "runtime": runtime_metadata,
         }
         await append_audit_event(
@@ -279,7 +330,11 @@ async def async_main(args: argparse.Namespace) -> None:
         if args.action == "list":
             result: object = await list_models()
         elif args.action == "activate":
-            result = await activate_registered_model(args.version)
+            result = await activate_registered_model(
+                args.version,
+                emergency_gate_override=args.emergency_gate_override,
+                override_reason=args.override_reason,
+            )
         else:
             result = await recover_artifact(args.artifact)
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
@@ -298,6 +353,18 @@ def main() -> None:
         help="Activate a reviewed model version; activating an older version performs rollback",
     )
     activate.add_argument("--version", required=True)
+    activate.add_argument(
+        "--emergency-gate-override",
+        action="store_true",
+        help=(
+            "Explicitly activate a model without a passed persisted quality gate. "
+            "Reserved for reviewed emergency rollback and requires --override-reason."
+        ),
+    )
+    activate.add_argument(
+        "--override-reason",
+        help="Mandatory human-readable incident reason for --emergency-gate-override.",
+    )
     recover = subparsers.add_parser(
         "recover-artifact",
         help=(

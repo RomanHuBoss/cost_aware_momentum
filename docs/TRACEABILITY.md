@@ -1,5 +1,21 @@
 # Traceability
 
+## Work package: fail-closed model activation gate
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Missing/failed/contradictory gate cannot reach atomic activation | `app/ml/lifecycle.py::require_passed_quality_gate`, `register_and_activate_model_candidate` | three parameterized rejection regressions |
+| Manual `train --activate` cannot silently bypass gate | `scripts/train.py::run` evaluates gate and registers failed candidate inactive | manual-train activation regression |
+| Registered activation requires persisted passed evidence | `scripts/model_registry.py::registered_activation_governance` | default rejection regression |
+| Emergency rollback remains possible only as explicit reviewed override | CLI flags plus required reason and activation audit payload | reason-required and audited-override regressions |
+| Existing artifact/concurrency checks remain enforced | runtime validation and expected previous version logic unchanged | atomic promotion and recovery suites |
+
+## Contract changes 1.25.0
+
+- Activation governance schema: `model-activation-quality-gate-v1`.
+- No migration, artifact schema, `.env` name, exchange permission or risk-threshold change.
+- Alembic head remains `0014_ui_exposure_ledger`.
+
 ## Work package: candidate/live recommendation attrition diagnostics
 
 | Acceptance criterion | Production implementation | Tests |

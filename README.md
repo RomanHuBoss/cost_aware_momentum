@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.24.0: добавлен prospective fail-closed attrition report для всей цепочки candidate → hourly signal → execution plan. Каждый symbol/hour получает одно terminal outcome, повторные catch-up попытки дедуплицируются, каждый initial plan сохраняет стабильный machine-readable primary cause, а training gate/activation outcomes агрегируются без изменения модели, порогов или риска. Миграция, новые `.env`-параметры и переобучение artifact не требуются.
+> Версия 1.25.0: закрыт silent quality-gate bypass при активации моделей. Fresh candidate может быть атомарно активирован только с непротиворечивым persisted `passed` gate; `train --activate` сначала вычисляет gate и при отказе регистрирует candidate неактивным. Активация уже зарегистрированной модели по умолчанию также требует passed gate; аварийный rollback без него возможен только через явный reasoned override, который сохраняется в audit evidence. Миграция, новые `.env`-параметры и переобучение artifact не требуются.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -14,6 +14,7 @@
 - Artifact model использует 10 OHLCV-derived и 7 point-in-time market-context features: OI momentum, mark/index basis, settled funding state и turnover/OI liquidity proxy. Точный OI/basis и свежий funding anchor обязательны; zero-fill и future event leakage запрещены.
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
+- Все state-changing activation paths fail-closed требуют persisted quality gate с `passed=true` и пустым списком причин. Ручной emergency rollback без такого gate требует одновременно `--emergency-gate-override` и непустой `--override-reason`; факт override и исходный gate сохраняются в `MODEL_ACTIVATED` audit payload.
 - Production drift monitoring сравнивает только активную model version с её immutable final-holdout reference: feature/probability PSI, coverage/missingness, maturity-corrected selected-direction calibration и actionability density. Ранние barrier outcomes до полного horizon не входят в calibration; unresolved mature outcomes блокируют evidence. `CRITICAL/BLOCKED` деградирует operational heartbeat; automatic model action намеренно отсутствует.
 - Candidate/live attrition diagnostics prospectively фиксируют ровно один terminal outcome для каждого `symbol × event_time`, точную причину каждого initial execution plan и quality-gate/activation outcome каждого background training attempt. Повторные hourly/catch-up попытки дедуплицируются; неполная, legacy или конфликтующая evidence блокирует отчёт.
 - Research experiment-selection governance prospectively учитывает все backtest-конфигурации одной family, включая failed/open attempts; по выровненным почасовым return paths считает CSCV/PBO, HAC-adjusted Deflated Sharpe и moving-block confidence intervals. Неполный ledger или недостаток независимых временных блоков даёт `BLOCKED`, а не оптимистичную оценку.
@@ -128,11 +129,32 @@ python manage.py experiment-preregister -- \
 
 После регистрации все backtests должны использовать точное имя family. Registration immutable; исправление ошибки выполняется новой family, а не редактированием строки. Pre-1.20 families остаются в ledger, но не объявляются preregistered.
 
+
+## Безопасная активация модели
+
+Обычная ручная активация допускается только для зарегистрированной версии с сохранённым passed quality gate:
+
+```bash
+python manage.py model-registry activate --version <version>
+```
+
+`python manage.py train --activate ...` также вычисляет gate. Если gate не пройден, candidate регистрируется неактивным и active model не меняется.
+
+Аварийный rollback к legacy/старой версии без passed gate требует двух явных аргументов:
+
+```bash
+python manage.py model-registry activate --version <version> \
+  --emergency-gate-override \
+  --override-reason "Rollback after documented incumbent integrity incident"
+```
+
+Override не является способом обойти плохие метрики ради большего числа рекомендаций. Причина и исходный gate попадают в append-only audit payload.
+
 ## Конфигурация
 
 `manage.py configure` создаёт локальный `.env`. Реальные credentials не должны попадать в архив или систему контроля версий. Шаблон переменных находится в `.env.example`.
 
-`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.21.0 требует migration `0014_ui_exposure_ledger` и добавляет `SELECTION_MIN_EXPOSURE_COVERAGE=0.80`. Release 1.22.0 не добавляет migration или `.env`, но меняет model artifact contracts: после upgrade завершите instrument/funding history sync и переобучите candidate. Release 1.23.0 также не добавляет migration/`.env` и не меняет artifact contract; после обновления перезапустите worker и сформируйте новый drift report. Release 1.24.0 не меняет schema/artifact/config: перезапустите worker и trainer, чтобы новые `JobRun.details` начали накапливать terminal attrition evidence. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
+`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.21.0 требует migration `0014_ui_exposure_ledger` и добавляет `SELECTION_MIN_EXPOSURE_COVERAGE=0.80`. Release 1.22.0 не добавляет migration или `.env`, но меняет model artifact contracts: после upgrade завершите instrument/funding history sync и переобучите candidate. Release 1.23.0 также не добавляет migration/`.env` и не меняет artifact contract; после обновления перезапустите worker и сформируйте новый drift report. Release 1.24.0 не меняет schema/artifact/config: перезапустите worker и trainer, чтобы новые `JobRun.details` начали накапливать terminal attrition evidence. Release 1.25.0 не меняет DB/artifact/config, но ужесточает activation contract: обычная активация требует persisted passed gate, а emergency rollback без него требует явной причины. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
 
 `EXPERIMENT_*` и `RESEARCH_*` задают defaults для нового preregistration template; зарегистрированная family использует только immutable значения specification. `SELECTION_DEPENDENCE_*` задают signal-cluster block geometry, а `SELECTION_MIN_EXPOSURE_COVERAGE` — минимальную долю instrumented eligible opportunities с подтверждённым UI exposure. Эти параметры не входят в live inference, не изменяют risk limits и не запускают auto-activation. Текущий migration head — `0014_ui_exposure_ledger`; переобучение active model не требуется.
 

@@ -1,5 +1,13 @@
 # Security
 
+## Model activation integrity boundary 1.25.0
+
+- Atomic candidate activation fails before artifact validation or database mutation unless the supplied quality gate is present, passed and internally consistent.
+- Manual training cannot pass `quality_gate=None` into activation; failed candidates are retained inactive for review.
+- Registered-model activation uses persisted registry evidence and rejects missing/failed gates by default.
+- Emergency rollback is not an environment toggle. It requires an explicit one-shot CLI flag and human-readable incident reason, both stored with the original gate in the append-only activation audit event.
+- The override does not bypass checksum, version, horizon or concurrent-active-version checks and grants no Bybit order permission.
+
 ## UI exposure integrity boundary 1.21.0
 
 - Exposure ingestion requires an authenticated operator and the existing CSRF protection; anonymous impressions are rejected.

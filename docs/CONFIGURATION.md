@@ -1,5 +1,15 @@
 # Configuration
 
+## Release 1.25.0 — fail-closed model activation
+
+No new environment variable, migration, model artifact schema or threshold is introduced. Existing `AUTO_TRAIN_*` settings keep their meaning. The change is a state-transition guard:
+
+- fresh candidate activation requires a persisted passed quality gate;
+- `train --activate` registers a failed candidate inactive instead of changing the active model;
+- registered-model activation without a passed gate requires the CLI-only `--emergency-gate-override` and a non-empty `--override-reason`.
+
+The override is deliberately not configurable through `.env`, because a persistent environment switch would recreate a silent bypass. The release archive again includes the non-secret `.env.example` consumed by `manage.py setup`.
+
 ## Release 1.24.0 — candidate/live attrition diagnostics
 
 No new environment variables or database migration are introduced. `python manage.py attrition-report -- --hours 168` controls the UTC lookback only through the CLI argument and writes `reports/candidate_live_attrition.json`. Existing model, policy, risk, drift and activation thresholds are unchanged. Instrumentation is prospective, so choose a post-upgrade window for an `OK` report.

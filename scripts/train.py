@@ -10,6 +10,7 @@ from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import ModelRegistry
 from app.ml.lifecycle import (
     build_model_candidate,
+    evaluate_quality_gate,
     incumbent_from_registry,
     load_training_market_data,
     policy_evaluation_config,
@@ -61,12 +62,13 @@ async def run(args: argparse.Namespace) -> None:
         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
         policy_config=policy_evaluation_config(settings),
     )
+    quality_gate = evaluate_quality_gate(candidate, settings)
     activation = None
-    if args.activate:
+    if args.activate and quality_gate["passed"]:
         registry, activation = await register_and_activate_model_candidate(
             candidate,
             source="manual_cli",
-            quality_gate=None,
+            quality_gate=quality_gate,
             actor="training-cli",
             expected_previous_version=incumbent_model.version if incumbent_model else None,
             expected_horizon_hours=settings.default_horizon_hours,
@@ -75,8 +77,8 @@ async def run(args: argparse.Namespace) -> None:
         registry = await register_model_candidate(
             candidate,
             source="manual_cli",
-            quality_gate=None,
-            activation_requested=False,
+            quality_gate=quality_gate,
+            activation_requested=args.activate,
             actor="training-cli",
         )
 
@@ -89,10 +91,15 @@ async def run(args: argparse.Namespace) -> None:
             "metrics": candidate.metrics,
             "incumbent_version": candidate.incumbent_version,
             "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
+            "quality_gate": quality_gate,
             "note": (
                 "Worker will load the registry-active model on its next refresh."
                 if activation is not None
-                else "Model is registered inactive. Review holdout metrics, then run model-registry activate --version <version>."
+                else (
+                    "Activation was requested but the quality gate failed; the candidate was registered inactive."
+                    if args.activate and not quality_gate["passed"]
+                    else "Model is registered inactive. Review holdout metrics, then run model-registry activate --version <version>."
+                )
             ),
         }
     )

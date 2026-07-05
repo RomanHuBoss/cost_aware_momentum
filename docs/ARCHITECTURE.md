@@ -1,5 +1,16 @@
 # Architecture
 
+## Fail-closed model activation flow 1.25.0
+
+1. Candidate training computes the existing absolute and incumbent-relative quality gate before any activation request.
+2. `register_and_activate_model_candidate` is the central atomic mutation boundary and calls `require_passed_quality_gate` before artifact loading, registry insertion or active-version update. Missing, failed or contradictory gate evidence therefore cannot be interpreted as approval by any caller.
+3. Manual `train --activate` stores the computed gate. A failed candidate is registered inactive with `activation_requested=true`; the active model remains unchanged.
+4. `model-registry activate` reads the immutable registry metrics and requires the persisted gate to be passed.
+5. A reviewed emergency rollback to a model without passed evidence is possible only with an explicit override flag and non-empty incident reason. The original gate, override flag and reason are included in the append-only `MODEL_ACTIVATED` audit payload.
+6. Artifact checksum, version, horizon and compare-and-swap active-version checks remain mandatory after governance validation.
+
+This control does not weaken or replace experiment preregistration/PBO/DSR governance, and it does not automatically activate, roll back or place orders.
+
 ## Candidate/live attrition flow 1.24.0
 
 1. Background trainer persists candidate version, quality-gate decision/reasons and activation outcome in `JobRun.details`.
