@@ -1,5 +1,12 @@
 # Model Card
 
+## Formal research preregistration 1.20.0
+
+The market model, feature schema and active artifact are unchanged. Release 1.20.0 strengthens only external research governance. Before any trial result exists, a family must commit to a substantive hypothesis, exact final-test cohort fingerprint and horizon, complete fixed/enumerated configuration space, nonannualized Sharpe as the primary selection metric, PBO/DSR/dependence policy, stopping rule and exclusions.
+
+A registration hash and database immutability trigger make later mutation detectable and normally impossible. This reduces researcher degrees of freedom but does not prove that the hypothesis was conceived independently, provide an external timestamp authority, eliminate undisclosed experiments outside the system or turn `READY` into an activation/profitability claim.
+
+
 ## Dependence-aware research evidence 1.19.0
 
 The market model and artifact schema are unchanged. Research uncertainty is strengthened around two external evaluation layers:

@@ -1,5 +1,12 @@
 # Configuration
 
+## Release 1.20.0 — immutable experiment preregistration
+
+No new `.env` variable is added. Migration `0013_experiment_preregistration` is required. Existing `EXPERIMENT_*` and `RESEARCH_*` values are used only to populate a new preregistration template. Once a family is registered, its report policy comes from the immutable JSON specification; command-line overrides are accepted only when they exactly match that specification.
+
+A registration requires an explicit fixed/search partition of every backtest configuration key. `dataset_fingerprint`, `horizon`, configuration schema, policy source and portfolio accounting must be fixed. Search values are enumerated; undeclared parameters, values outside the list, expired deadlines and new variants after the maximum unique-configuration budget fail closed.
+
+
 ## Release 1.19.0 — dependence-aware research inference
 
 ```env

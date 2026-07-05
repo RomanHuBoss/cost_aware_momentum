@@ -1,5 +1,16 @@
 # Security
 
+## Experiment preregistration integrity boundary 1.20.0
+
+- `research.experiment_family_registrations` is insert-once: a PostgreSQL trigger rejects UPDATE and DELETE.
+- The canonical SHA-256 covers family name, UTC registration timestamp, normalized specification and release version.
+- A family cannot be registered after any trial event already exists.
+- STARTED acquires a row lock, verifies the registration hash, validates the full configuration contract and stores the registration hash in event evidence.
+- Report-time threshold changes, search-space drift, missing registration and ledger/reference mismatches fail closed.
+- Database-owner intervention can bypass ordinary controls; backups, least privilege and audit review remain required. Hashes provide tamper evidence, not an external trusted timestamp or protection against a fully compromised database owner.
+- Preregistration has no path to order placement, active-model mutation or risk-limit weakening.
+
+
 ## Dependence-evidence integrity boundary 1.19.0
 
 - Bootstrap seeds and algorithms are deterministic for identical evidence; researchers cannot repeatedly rerun random seeds and report only a favourable interval.

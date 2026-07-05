@@ -1,5 +1,27 @@
 # Traceability
 
+## Work package: formal experiment-family preregistration
+
+| Acceptance criterion | Implementation | Tests |
+|---|---|---|
+| Registration exists before first trial | `register_experiment_family`, prior-event query; `append_experiment_event` requires registration | STARTED integration regression, migration/model test |
+| Hypothesis and research policy are substantive and complete | `normalize_preregistration_spec` | placeholder/missing contract tests |
+| Exact cohort, horizon and all configuration keys are declared | fixed/search partition and `validate_preregistered_trial` | dataset mismatch, undeclared key and out-of-space tests |
+| Search space is enumerated and stopping is precommitted | values lists, max unique configurations, optional UTC deadline | stopping budget/deadline tests |
+| Registration is tamper-evident and immutable | canonical record hash; migration `0013` UPDATE/DELETE trigger | mutation hash and migration source tests |
+| Template is produced before evaluation | `backtest --prepare-preregistration` returns before STARTED/evaluation | template contract test plus static/full suite |
+| Post-result threshold overrides are blocked | preregistered governance in `experiment_governance_report` | policy mismatch regression |
+| Legacy families are not relabelled preregistered | `BLOCKED_UNREGISTERED_FAMILY` | service contract/full suite |
+| No automatic model/risk action | report invariants and advisory-only architecture | full suite/static scan |
+
+## Schema changes 1.20.0
+
+- Database head: `0013_experiment_preregistration`.
+- Specification: `formal-experiment-family-preregistration-v1`.
+- Registration record: `immutable-experiment-family-registration-v1`.
+- Report wrapper: `experiment-selection-preregistered-governance-v3`.
+
+
 ## Work package: dependence-aware experiment and operator-selection inference
 
 | Acceptance criterion | Research implementation | Tests |

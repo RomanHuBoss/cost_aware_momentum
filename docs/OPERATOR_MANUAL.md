@@ -1,5 +1,18 @@
 # Operator Manual
 
+## Upgrade and preregistration workflow 1.20.0
+
+1. Stop research/report processes and back up PostgreSQL.
+2. Update source files and run `python manage.py migrate`; expected head is `0013_experiment_preregistration`.
+3. For a new family, generate a template with `backtest --prepare-preregistration` and one or more `--search-parameter` arguments. This mode exits before model evaluation and writes no experiment event.
+4. Replace every placeholder, enumerate the complete planned search space, set a maximum unique-configuration count, optional UTC deadline and objective exclusion criteria.
+5. Run `python manage.py experiment-preregister -- --spec <file> --validate-only`.
+6. Register once with `python manage.py experiment-preregister -- --spec <file>`. Never edit the database row or recompute its hash.
+7. Run each planned backtest with `--experiment-family <exact-name>`. A mismatched dataset, horizon, fixed value, undeclared key, out-of-space value or exhausted stopping budget is rejected before `STARTED`.
+8. Run `experiment-report` without changing thresholds. Optional report flags are compatibility assertions and must equal the preregistration.
+9. A mistaken preregistration is not repaired in place: create a new family and preserve the abandoned registration as disclosed research history.
+
+
 ## Upgrade to 1.19.0
 
 1. Stop research/reporting processes and back up PostgreSQL.

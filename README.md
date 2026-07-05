@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.19.0: research-отчёты учитывают временную и внутрисигнальную зависимость. Experiment governance применяет Newey–West effective sample size и moving-block bootstrap к выбранному return path; operator-selection propensity не разделяет версии одного сигнала между train/OOS и публикует signal-cluster block-bootstrap intervals. Недостаток независимых блоков/кластеров блокирует вывод, а не создаёт чрезмерно узкую оценку.
+> Версия 1.20.0: каждая новая research experiment family должна быть формально и неизменяемо зарегистрирована до первого trial. Гипотеза, exact dataset fingerprint, horizon, fixed/search configuration contract, primary metric, PBO/DSR/dependence policy, stopping rule и exclusion criteria защищены SHA-256 и PostgreSQL запретом UPDATE/DELETE. Незарегистрированные legacy families и post-result threshold overrides блокируются.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -16,6 +16,7 @@
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
 - Production drift monitoring сравнивает только активную model version с её immutable final-holdout reference: feature/probability PSI, coverage/missingness, selected-direction calibration и actionability density. `CRITICAL/BLOCKED` деградирует operational heartbeat; automatic model action намеренно отсутствует.
 - Research experiment-selection governance prospectively учитывает все backtest-конфигурации одной family, включая failed/open attempts; по выровненным почасовым return paths считает CSCV/PBO, HAC-adjusted Deflated Sharpe и moving-block confidence intervals. Неполный ledger или недостаток независимых временных блоков даёт `BLOCKED`, а не оптимистичную оценку.
+- Formal experiment-family preregistration фиксирует гипотезу, точный cohort fingerprint/horizon, полный search space, primary metric, thresholds, stopping budget/deadline и допустимые exclusion criteria до первого `STARTED`. Trial вне контракта не вычисляется.
 - Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов final holdout; число символов не заменяет временную глубину. До final holdout candidate обязан пройти три последовательных purged expanding walk-forward folds с независимым переобучением и калибровкой.
 - Экономический promotion gate использует не только point mean R, но и 95% one-sided lower confidence bound. Для горизонта `H` часов отдельно оцениваются все `H` неперекрывающихся часовых фаз; gate использует худшую фазовую LCB и требует полного покрытия фаз. Default требует `LCB > 0`.
 - До запуска bootstrap trainer вычисляет необходимую часовую историю из feature warm-up, horizon, temporal split и holdout gates. При defaults требуется не менее 1206 уникальных часовых timestamps; это необходимое, но не достаточное условие при гэпах/невалидных свечах.
@@ -92,17 +93,45 @@ python manage.py restore-check  проверить backup восстановле
 python manage.py report         сформировать ежедневный отчёт, включая selection diagnostics
 python manage.py selection-report  сформировать 90-дневный отчёт смещения отбора
 python manage.py drift-report    сформировать отчёт production drift
-python manage.py experiment-report -- --family <name>  оценить disclosure, PBO и DSR
+python manage.py experiment-preregister  проверить/зарегистрировать experiment family
+python manage.py experiment-report -- --family <name>  оценить preregistered disclosure, PBO и DSR
 python manage.py release-check  проверить release tree и SHA256SUMS
 ```
+
+
+## Формальная preregistration research family
+
+Новые experiment families в 1.20.0 нельзя запускать без предварительной регистрации. Сначала сформируйте шаблон без model evaluation:
+
+```bash
+python manage.py backtest -- \
+  --model models/candidate.joblib \
+  --experiment-family momentum-policy-study-01 \
+  --prepare-preregistration research/momentum-policy-study-01.json \
+  --search-parameter minimum_net_rr \
+  --search-parameter minimum_net_ev_r
+```
+
+Отредактируйте гипотезу, полный набор допустимых значений, stopping rule и exclusion criteria. Затем:
+
+```bash
+python manage.py experiment-preregister -- \
+  --spec research/momentum-policy-study-01.json \
+  --validate-only
+python manage.py migrate
+python manage.py experiment-preregister -- \
+  --spec research/momentum-policy-study-01.json
+```
+
+После регистрации все backtests должны использовать точное имя family. Registration immutable; исправление ошибки выполняется новой family, а не редактированием строки. Pre-1.20 families остаются в ledger, но не объявляются preregistered.
 
 ## Конфигурация
 
 `manage.py configure` создаёт локальный `.env`. Реальные credentials не должны попадать в архив или систему контроля версий. Шаблон переменных находится в `.env.example`.
 
-`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.17.0 не добавляет migration, но добавляет `DRIFT_*` настройки и обязательный drift-reference contract. Artifact 1.16.0 необходимо переобучить. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
+`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.20.0 требует migration `0013_experiment_preregistration`, но не добавляет `.env` параметры и не меняет model artifact. Existing `EXPERIMENT_*` и `RESEARCH_*` служат defaults только при создании шаблона; после регистрации report использует immutable значения из specification. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
 
-`EXPERIMENT_*` задают классификацию research-governance отчёта: CSCV segments, минимальные trials/periods, PBO/DSR thresholds и длину/число временных dependence blocks. `RESEARCH_BOOTSTRAP_REPLICATES` и `RESEARCH_CONFIDENCE_LEVEL` общие для experiment и operator-selection intervals; `SELECTION_*` задают signal-cluster block geometry. Эти параметры не входят в live inference, не изменяют risk limits и не запускают auto-activation. Migration head остаётся `0012_experiment_selection`; переобучение active model не требуется.
+`EXPERIMENT_*` и `RESEARCH_*` задают defaults для нового preregistration template; зарегистрированная family использует только immutable значения specification. `SELECTION_*` по-прежнему задают signal-cluster block geometry для operator-selection report. Эти параметры не входят в live inference, не изменяют risk limits и не запускают auto-activation. Текущий migration head — `0013_experiment_preregistration`; переобучение active model не требуется.
 
 Поддерживаются оба формата списков:
 
@@ -191,7 +220,7 @@ python manage.py experiment-report -- --family <exact-family-name>
 
 Отчёт применяет contiguous combinatorially symmetric cross-validation для PBO, выбирает конфигурацию по non-annualized Sharpe и рассчитывает Deflated Sharpe probability с учётом skewness, kurtosis, числа зависимых trials и Newey–West effective observation count. Выбранный return path дополнительно получает Bartlett-HAC mean interval и moving-block intervals для mean/Sharpe; effective block length не может быть короче horizon. `READY` требует не только PBO/DSR thresholds, но и положительные нижние dependence-aware bounds. `STARTED` без terminal event, unresolved `FAILED`, недостаток blocks/trials/periods, несовпадающие timestamps или повреждённая hash chain дают `BLOCKED_*`. `automatic_model_action=none` и `profitability_claimed=false` обязательны.
 
-Evidence накапливается только после migration 1.18.0. Старые backtests не backfill-ятся, поскольку восстановление полного множества ранее испробованных и отброшенных конфигураций было бы недоказуемым. Release 1.19.0 добавляет HAC/block-bootstrap inference, но family всё ещё должна быть определена до сравнения, propensity bootstrap условен на уже fitted OOS scores, а experiment report не является promotion gate active model.
+Evidence trial ledger накапливается только после migration 1.18.0, а formal family preregistration — только после 1.20.0. Старые backtests и pre-1.20 families не backfill-ятся как preregistered evidence. Propensity bootstrap остаётся условным на уже fitted OOS scores, external trusted timestamp отсутствует, а experiment report не является promotion gate active model.
 
 ## Research backtest
 
@@ -238,6 +267,6 @@ python manage.py test --require-integration
 - Нет автоматического исполнения ордеров.
 - Ручные fills остаются источником фактической информации об исполнении.
 - Historical labels до накопления prospective evidence используют spread/entry proxy, а не архивные bid/ask и depth. Live plan моделирует bounded-depth VWAP и блокирует PARTIAL/NO_FILL, но queue position, exact exchange fill probability и pre-1.14 history отсутствуют.
-- Research validation использует трёхфолдовый purged expanding walk-forward внутри development period и отдельный final holdout. Prospective experiment ledger, contiguous CSCV/PBO, HAC-adjusted DSR, dependence-aware intervals и production drift monitoring реализованы как governance/diagnostic layers; nested hyperparameter selection, formal family preregistration, studentized bootstrap и automatic promotion по этим отчётам отсутствуют.
+- Research validation использует трёхфолдовый purged expanding walk-forward внутри development period и отдельный final holdout. Prospective trial ledger, formal family preregistration, contiguous CSCV/PBO, HAC-adjusted DSR, dependence-aware intervals и production drift monitoring реализованы как governance/diagnostic layers; nested hyperparameter selection, conditional search-space schemas, studentized bootstrap и automatic promotion по этим отчётам отсутствуют.
 - Intrahorizon mark-to-market реализован как conservative hourly mark-price isolated-margin proxy; exact sub-hour path, historical MMR/risk tiers, cross/portfolio margin и liquidation fees отсутствуют.
 - Техническая корректность расчётов и тестов не означает наличия статистически устойчивого торгового преимущества.

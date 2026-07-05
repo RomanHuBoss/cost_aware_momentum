@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.19.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-05. Статусы основаны на фактическом коде release 1.20.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -14,5 +14,21 @@
 | Operator-selection bias correction | Частично реализовано 1.19.0 | Prospective ex-ante ledger и ACCEPT/REJECT/NO_DECISION сохранены. Propensity train/OOS split теперь atomic по `signal_id` и purges overlapping cluster windows; chronological signal-cluster moving-block intervals покрывают eligible, selected, IPSW и selection-bias estimates, а недостаток clusters блокирует отчёт. Это не causal treatment model: UI exposure, latent operator state, bootstrap refit propensity и pre-1.15 opportunities отсутствуют. |
 | Intrahorizon MTM and liquidation simulation | Частично реализовано 1.13.0 | Training/backtest требуют exact hourly Bybit mark-price path, рассчитывают directional MAE/MFE/minimum equity и conservative isolated-margin liquidation proxy с actual funding timing; future mark path влияет только на realized evidence. Не реализованы sub-hour ordering, historical MMR/risk tiers, liquidation fees, cross/portfolio margin, ADL и точная exchange fill/liquidation mechanics. |
 | OI/basis/funding/liquidity/context features | Частично реализовано 1.16.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
-| PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.19.0 | Prospective append-only ledger, aligned returns, contiguous CSCV/PBO и trial-correlation DSR сохранены. Newey–West effective observation count корректирует DSR при serial dependence; horizon-floored moving-block intervals для mean/Sharpe и positive lower-bound requirement входят в family classification. Pre-1.18 trials не реконструируются, hard-killed attempts требуют явного разрешения, formal family preregistration/studentized bootstrap и automatic model-promotion gate отсутствуют. |
+| PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.20.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Новая family до первого `STARTED` требует immutable preregistration: hypothesis, exact cohort fingerprint/horizon, exhaustive fixed/search contract, primary metric, thresholds, stopping rule и exclusions. Trial outside contract и post-result policy override блокируются. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding и automatic model-promotion gate отсутствуют. |
 | Production drift monitoring | Частично реализовано 1.17.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Failed jobs/insufficient evidence дают `BLOCKED`, critical drift деградирует heartbeat. Multivariate tests, adaptive control limits, delayed-label correction и automated rollback отсутствуют. |
+
+## Work package: formal experiment-family preregistration
+
+Release 1.20.0 закрывает возможность создавать executable trial family только строковым именем после просмотра результатов. Для новых families обязательны:
+
+- preregistration до первого `STARTED`;
+- exact dataset fingerprint и horizon;
+- полный partition всех backtest configuration keys на fixed и enumerated search parameters;
+- primary metric `nonannualized_sharpe`, direction `maximize`;
+- immutable PBO/DSR/dependence thresholds;
+- maximum unique configuration budget и optional UTC deadline;
+- substantive hypothesis и objective exclusion criteria;
+- SHA-256 record integrity и PostgreSQL запрет UPDATE/DELETE.
+
+`backtest --prepare-preregistration` формирует draft после построения exact cohort, но возвращается до model evaluation и trial event. `experiment-report` блокирует unregistered legacy family и threshold override. Ограничения: нет external trusted timestamp, conditional parameter spaces, automated failure-to-exclusion classification или automatic promotion gate.
+

@@ -5,57 +5,32 @@ import json
 from pathlib import Path
 
 from app.asyncio_compat import run_with_compatible_event_loop
-from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.services.experiment_ledger import experiment_governance_report
 
 
 async def run(args: argparse.Namespace) -> None:
-    settings = get_settings()
+    requested_governance = {
+        key: value
+        for key, value in {
+            "pbo_segments": args.segments,
+            "minimum_trials": args.minimum_trials,
+            "minimum_periods": args.minimum_periods,
+            "maximum_pbo": args.maximum_pbo,
+            "minimum_dsr_probability": args.minimum_dsr_probability,
+            "dependence_block_periods": args.dependence_block_periods,
+            "minimum_independent_blocks": args.minimum_independent_blocks,
+            "bootstrap_replicates": args.bootstrap_replicates,
+            "confidence_level": args.confidence_level,
+        }.items()
+        if value is not None
+    }
     try:
         async with SessionFactory() as session:
             report = await experiment_governance_report(
                 session,
                 experiment_family=args.family,
-                segments=(args.segments if args.segments is not None else settings.experiment_pbo_segments),
-                minimum_trials=(
-                    args.minimum_trials
-                    if args.minimum_trials is not None
-                    else settings.experiment_min_trials
-                ),
-                minimum_periods=(
-                    args.minimum_periods
-                    if args.minimum_periods is not None
-                    else settings.experiment_min_periods
-                ),
-                maximum_pbo=(
-                    args.maximum_pbo if args.maximum_pbo is not None else settings.experiment_max_pbo
-                ),
-                minimum_dsr_probability=(
-                    args.minimum_dsr_probability
-                    if args.minimum_dsr_probability is not None
-                    else settings.experiment_min_dsr_probability
-                ),
-                dependence_block_periods=(
-                    args.dependence_block_periods
-                    if args.dependence_block_periods is not None
-                    else settings.experiment_dependence_block_periods
-                ),
-                minimum_independent_blocks=(
-                    args.minimum_independent_blocks
-                    if args.minimum_independent_blocks is not None
-                    else settings.experiment_min_independent_blocks
-                ),
-                bootstrap_replicates=(
-                    args.bootstrap_replicates
-                    if args.bootstrap_replicates is not None
-                    else settings.research_bootstrap_replicates
-                ),
-                confidence_level=(
-                    args.confidence_level
-                    if args.confidence_level is not None
-                    else settings.research_confidence_level
-                ),
+                requested_governance=requested_governance,
             )
         output = Path(args.output or "reports/experiment-selection.json")
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +42,8 @@ async def run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build append-only experiment disclosure, CSCV/PBO and DSR governance evidence."
+        description=("Build preregistered experiment disclosure, CSCV/PBO, DSR and dependence evidence. "
+            "Optional policy flags must exactly match the immutable preregistration.")
     )
     parser.add_argument("--family", required=True, help="Exact experiment_family from a backtest report")
     parser.add_argument("--segments", type=int)

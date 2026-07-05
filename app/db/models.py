@@ -625,6 +625,25 @@ class BacktestRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     artifact_path: Mapped[str | None] = mapped_column(Text)
 
 
+class ResearchExperimentFamilyRegistration(Base):
+    __tablename__ = "experiment_family_registrations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(record_hash) = 64",
+            name="experiment_family_registration_record_hash_length",
+        ),
+        Index("ix_experiment_family_registration_time", "registered_at"),
+        {"schema": "research"},
+    )
+
+    experiment_family: Mapped[str] = mapped_column(String(160), primary_key=True)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    registration_schema: Mapped[str] = mapped_column(String(100), nullable=False)
+    specification: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    release_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    record_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+
+
 class ResearchExperimentEvent(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "experiment_events"
     __table_args__ = (

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.20.0 — 2026-07-05
+
+- Added immutable formal preregistration for every new research experiment family before its first `STARTED` event.
+- Added exact fixed-parameter and enumerated search-space validation, including dataset fingerprint and trading horizon.
+- Added preregistered primary metric, PBO/DSR/dependence policy, stopping budget/deadline and objective exclusion criteria.
+- Added tamper-evident registration hashes and PostgreSQL `UPDATE/DELETE` protection.
+- Added an unevaluated backtest template mode and `experiment-preregister` validation/registration CLI.
+- Experiment reports now use immutable registered thresholds and block post-result overrides or legacy unregistered families.
+- Added migration `0013_experiment_preregistration` and nine focused regression tests.
+
 ## 1.19.0 — 2026-07-05
 
 - Добавлен единый dependence-aware research layer: Bartlett/Newey–West HAC для среднего и детерминированный moving-block bootstrap для среднего return и non-annualized Sharpe.

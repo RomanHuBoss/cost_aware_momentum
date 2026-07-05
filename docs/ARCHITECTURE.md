@@ -1,5 +1,19 @@
 # Architecture
 
+## Formal experiment-family preregistration 1.20.0
+
+1. `backtest --prepare-preregistration` builds the exact final-test cohort fingerprint and complete current configuration, writes a draft JSON, then exits before `STARTED`, prediction or policy evaluation.
+2. The researcher replaces placeholders, enumerates every permitted search value and commits the primary metric, PBO/DSR/dependence policy, stopping budget/deadline and objective exclusions.
+3. `experiment-preregister` validates the specification and inserts one `research.experiment_family_registrations` row only when no trial event exists for the family.
+4. A canonical record hash covers family, UTC registration time, normalized specification and release version. A PostgreSQL trigger rejects UPDATE and DELETE.
+5. `append_experiment_event(..., STARTED)` locks the registration row, verifies its hash, validates every fixed/search parameter and enforces the stopping budget/deadline before writing any trial event.
+6. The STARTED event stores the preregistration record hash and selected search values; terminal events require the same registration.
+7. `experiment-report` reconstructs the ledger only under that immutable contract. Threshold overrides must equal the registered values; legacy unregistered families return `BLOCKED_UNREGISTERED_FAMILY`.
+8. Registration is prospective governance. It does not alter model training, inference, risk, execution or active-model state.
+
+Data flow: exact unevaluated cohort/configuration → draft specification → immutable PostgreSQL registration → validated STARTED event → aligned returns/terminal event → preregistered PBO/DSR/dependence report.
+
+
 ## Dependence-aware research inference 1.19.0
 
 Experiment-family analysis now separates model-search multiplicity from time-series dependence:
@@ -14,8 +28,8 @@ Operator-selection inference uses `signal_id` as the dependence cluster. Every p
 
 ## Research experiment-selection flow 1.18.0
 
-1. Backtest validates the immutable model artifact and constructs the exact final-test dataset before experiment registration.
-2. A deterministic family identifier is derived from horizon and final-test cohort fingerprint unless the researcher supplies a predeclared family.
+1. Backtest validates the immutable model artifact and constructs the exact final-test dataset.
+2. Release 1.20.0 requires an explicit already-preregistered family; automatic family derivation is removed from executable trials.
 3. Before model evaluation, PostgreSQL receives a `STARTED` event containing the sanitized configuration and canonical SHA-256.
 4. The backtest simulates capital sleeves on a common hourly grid, explicitly retaining zero-return hours so alternatives are alignable.
 5. Completion appends exactly one `SUCCEEDED` event with period returns and summary evidence or one `FAILED` event with bounded diagnostics. Events link through `previous_event_hash`.
@@ -25,7 +39,7 @@ Operator-selection inference uses `signal_id` as the dependence cluster. Every p
 
 Data flow: validated artifact + final-test cohort → STARTED event → aligned hourly returns → terminal event → verified family matrix → PBO/DSR governance report.
 
-Boundary: this is prospective research governance. It does not recreate pre-1.18 experiments, formally preregister a family, alter the active model or become evidence of live profitability. Dependence-aware inference is added by release 1.19.0.
+Boundary: this is prospective research governance. It does not recreate pre-1.18 experiments or retroactively preregister pre-1.20 families, alter the active model or become evidence of live profitability. Dependence-aware inference is added by release 1.19.0 and formal family preregistration by 1.20.0.
 
 ## Production drift flow 1.17.0
 

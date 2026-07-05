@@ -1,5 +1,22 @@
 # Incident Runbook
 
+## Symptom: backtest says family is not preregistered
+
+Do not bypass the check or reuse an unrelated family. Generate an unevaluated template, complete it, apply migration `0013_experiment_preregistration`, validate and register before the first trial. Existing pre-1.20 events cannot be retroactively converted into preregistered evidence.
+
+## Symptom: preregistration hash mismatch or mutation trigger fires
+
+Stop research reporting and preserve a PostgreSQL backup. Do not update JSONB, timestamps or hashes. Compare the registered specification with source-controlled research plans and review database access. A corrupted registration invalidates the family; create a new family only after documenting the incident.
+
+## Symptom: trial is outside fixed/search contract or stopping budget
+
+Treat the block as expected governance. Do not expand values, extend the deadline or increase the trial budget after observing results. If the original plan was objectively wrong, close that family and preregister a distinct new family with a documented rationale.
+
+## Symptom: experiment report rejects a threshold override
+
+Remove the override or supply the exact registered value. The report intentionally refuses post-result changes to PBO, DSR, period, block or confidence policy.
+
+
 ## Symptom: `BLOCKED_INSUFFICIENT_DEPENDENCE_EVIDENCE`
 
 Compare period count, declared horizon, requested/effective block length and independent-block count. Do not shorten the block only because the selected strategy then passes. Extend the common final-test grid or start a new properly declared family. Confirm all alternatives remain aligned.

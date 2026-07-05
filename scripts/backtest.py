@@ -27,6 +27,7 @@ from app.ml.training import (
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
 )
+from app.research.preregistration import build_preregistration_template
 from app.services.experiment_ledger import (
     append_experiment_event,
     experiment_configuration_hash,
@@ -622,9 +623,11 @@ async def run(args) -> None:
                 ],
             }
         )
-        experiment_family = args.experiment_family or (
-            f"barrier-policy-h{horizon}-{dataset_fingerprint[:24]}"
-        )
+        experiment_family = args.experiment_family
+        if not experiment_family:
+            raise ValueError(
+                "--experiment-family is required; prepare and register the family before its first trial"
+            )
         experiment_configuration = {
             "schema": "barrier-policy-experiment-configuration-v1",
             "dataset_fingerprint": dataset_fingerprint,
@@ -648,6 +651,46 @@ async def run(args) -> None:
             "policy_source": "cost_aware_ev_r_v1",
             "portfolio_accounting": "horizon_sleeves_single_active_symbol_v2",
         }
+        if args.prepare_preregistration:
+            template = build_preregistration_template(
+                experiment_family=experiment_family,
+                configuration=experiment_configuration,
+                search_parameters=tuple(args.search_parameter or ()),
+                governance={
+                    "pbo_segments": settings.experiment_pbo_segments,
+                    "minimum_trials": settings.experiment_min_trials,
+                    "minimum_periods": settings.experiment_min_periods,
+                    "maximum_pbo": settings.experiment_max_pbo,
+                    "minimum_dsr_probability": settings.experiment_min_dsr_probability,
+                    "dependence_block_periods": settings.experiment_dependence_block_periods,
+                    "minimum_independent_blocks": settings.experiment_min_independent_blocks,
+                    "bootstrap_replicates": settings.research_bootstrap_replicates,
+                    "confidence_level": settings.research_confidence_level,
+                },
+                created_at=datetime.now(UTC),
+            )
+            template_path = Path(args.prepare_preregistration)
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                json.dumps(template, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": "PREREGISTRATION_TEMPLATE_CREATED",
+                        "output": str(template_path),
+                        "warning": (
+                            "Edit every placeholder and enumerate the complete search space, then "
+                            "register the specification before running any trial."
+                        ),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return
+
         trial_id = uuid4()
         async with SessionFactory() as session:
             await append_experiment_event(
@@ -794,9 +837,22 @@ def main() -> None:
     )
     parser.add_argument(
         "--experiment-family",
+        help="Required immutable preregistered research family name.",
+    )
+    parser.add_argument(
+        "--prepare-preregistration",
+        metavar="PATH",
         help=(
-            "Optional explicit research family. Defaults to a deterministic family derived "
-            "from the aligned final-test cohort and horizon."
+            "Write an unevaluated preregistration template after deriving the exact final-test "
+            "cohort and configuration, then exit before STARTED or model evaluation."
+        ),
+    )
+    parser.add_argument(
+        "--search-parameter",
+        action="append",
+        help=(
+            "Configuration key to place in the enumerated search space of a generated template; "
+            "repeat for each planned variable."
         ),
     )
     parser.add_argument("--output")

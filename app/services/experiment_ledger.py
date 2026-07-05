@@ -18,6 +18,15 @@ from app.research.overfitting import (
     ExperimentTrialEvidence,
     analyze_experiment_family,
 )
+from app.research.preregistration import (
+    normalize_preregistration_spec,
+    validate_preregistered_trial,
+)
+from app.services.experiment_preregistration import (
+    load_experiment_preregistration,
+    preregistration_report_metadata,
+    require_trial_preregistration,
+)
 
 EXPERIMENT_EVENT_SCHEMA_VERSION = "append-only-research-experiment-events-v1"
 _ALLOWED_EVENT_TYPES = frozenset({"STARTED", "SUCCEEDED", "FAILED"})
@@ -120,6 +129,18 @@ async def append_experiment_event(
     if not existing:
         if event_type != "STARTED":
             raise ValueError("The first experiment event must be STARTED")
+        registration, selected_search = await require_trial_preregistration(
+            session,
+            experiment_family=experiment_family,
+            configuration=normalized_configuration,
+            configuration_hash=configuration_hash,
+            observed_at=observed,
+        )
+        normalized_evidence = {
+            **normalized_evidence,
+            "preregistration_record_hash": registration.record_hash,
+            "preregistered_search_values": selected_search,
+        }
         sequence = 0
         previous_hash = None
     else:
@@ -134,6 +155,15 @@ async def append_experiment_event(
             raise ValueError("Experiment configuration cannot change within a trial")
         if not verify_experiment_event_integrity(latest):
             raise ValueError("Previous experiment event hash is invalid")
+        registration = await load_experiment_preregistration(
+            session,
+            experiment_family=experiment_family,
+            for_update=True,
+        )
+        if registration is None:
+            raise ValueError("Experiment preregistration is missing for a terminal event")
+        if latest.evidence.get("preregistration_record_hash") != registration.record_hash:
+            raise ValueError("Experiment preregistration changed or was not recorded at STARTED")
         sequence = 1
         previous_hash = latest.record_hash
 
@@ -189,6 +219,8 @@ async def load_experiment_family_evidence(
     session: AsyncSession,
     *,
     experiment_family: str,
+    preregistration_spec: Mapping[str, Any] | None = None,
+    preregistration_record_hash: str | None = None,
 ) -> tuple[ExperimentFamilyEvidence, dict[str, int]]:
     rows = list(
         (
@@ -224,6 +256,12 @@ async def load_experiment_family_evidence(
         if len(events) > 2 or any(item.event_sequence != index for index, item in enumerate(events)):
             raise ValueError(f"Experiment trial {trial_id} has a broken event sequence")
         start = events[0]
+        if preregistration_spec is not None:
+            validate_preregistered_trial(preregistration_spec, start.configuration)
+            if start.evidence.get("preregistration_record_hash") != preregistration_record_hash:
+                raise ValueError(
+                    f"Experiment trial {trial_id} does not reference the active preregistration"
+                )
         attempted.append(start.configuration_hash)
         raw_horizon = start.configuration.get("horizon")
         if raw_horizon is not None:
@@ -277,34 +315,93 @@ async def experiment_governance_report(
     session: AsyncSession,
     *,
     experiment_family: str,
-    segments: int,
-    minimum_trials: int,
-    minimum_periods: int,
-    maximum_pbo: float,
-    minimum_dsr_probability: float,
-    dependence_block_periods: int,
-    minimum_independent_blocks: int,
-    bootstrap_replicates: int,
-    confidence_level: float,
+    requested_governance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    evidence, counts = await load_experiment_family_evidence(
+    registration = await load_experiment_preregistration(
         session,
         experiment_family=experiment_family,
     )
+    if registration is None:
+        evidence, counts = await load_experiment_family_evidence(
+            session,
+            experiment_family=experiment_family,
+        )
+        return {
+            "schema": "experiment-selection-preregistered-governance-v3",
+            "experiment_family": experiment_family,
+            "status": "BLOCKED_UNREGISTERED_FAMILY",
+            "reason": "A formal immutable preregistration is required before the first trial",
+            "attempted_trial_count": len(evidence.attempted_configuration_hashes),
+            "ledger": {
+                "schema": EXPERIMENT_EVENT_SCHEMA_VERSION,
+                **counts,
+            },
+            "automatic_model_action": "none",
+            "profitability_claimed": False,
+        }
+
+    specification = normalize_preregistration_spec(
+        registration.specification,
+        expected_family=experiment_family,
+    )
+    governance = dict(specification["governance"])
+    if requested_governance:
+        mismatches = {
+            key: {"preregistered": governance.get(key), "requested": value}
+            for key, value in requested_governance.items()
+            if key not in governance or governance[key] != value
+        }
+        if mismatches:
+            return {
+                "schema": "experiment-selection-preregistered-governance-v3",
+                "experiment_family": experiment_family,
+                "status": "BLOCKED_PREREGISTRATION_POLICY_MISMATCH",
+                "mismatches": mismatches,
+                "preregistration": preregistration_report_metadata(registration),
+                "automatic_model_action": "none",
+                "profitability_claimed": False,
+            }
+
+    evidence, counts = await load_experiment_family_evidence(
+        session,
+        experiment_family=experiment_family,
+        preregistration_spec=specification,
+        preregistration_record_hash=registration.record_hash,
+    )
+    unique_attempts = len(set(evidence.attempted_configuration_hashes))
+    maximum = int(specification["stopping_rule"]["max_unique_configurations"])
+    if unique_attempts > maximum:
+        return {
+            "schema": "experiment-selection-preregistered-governance-v3",
+            "experiment_family": experiment_family,
+            "status": "BLOCKED_PREREGISTRATION_VIOLATION",
+            "reason": "Unique attempted configurations exceed the preregistered stopping budget",
+            "unique_attempted_configurations": unique_attempts,
+            "maximum_unique_configurations": maximum,
+            "preregistration": preregistration_report_metadata(registration),
+            "ledger": {"schema": EXPERIMENT_EVENT_SCHEMA_VERSION, **counts},
+            "automatic_model_action": "none",
+            "profitability_claimed": False,
+        }
+
     report = analyze_experiment_family(
         evidence,
-        segments=segments,
-        minimum_trials=minimum_trials,
-        minimum_periods=minimum_periods,
-        maximum_pbo=maximum_pbo,
-        minimum_dsr_probability=minimum_dsr_probability,
-        dependence_block_periods=dependence_block_periods,
-        minimum_independent_blocks=minimum_independent_blocks,
-        bootstrap_replicates=bootstrap_replicates,
-        confidence_level=confidence_level,
+        segments=int(governance["pbo_segments"]),
+        minimum_trials=int(governance["minimum_trials"]),
+        minimum_periods=int(governance["minimum_periods"]),
+        maximum_pbo=float(governance["maximum_pbo"]),
+        minimum_dsr_probability=float(governance["minimum_dsr_probability"]),
+        dependence_block_periods=int(governance["dependence_block_periods"]),
+        minimum_independent_blocks=int(governance["minimum_independent_blocks"]),
+        bootstrap_replicates=int(governance["bootstrap_replicates"]),
+        confidence_level=float(governance["confidence_level"]),
     )
+    report["schema"] = "experiment-selection-preregistered-governance-v3"
+    report["preregistration"] = preregistration_report_metadata(registration)
+    report["preregistration"]["unique_attempted_configurations"] = unique_attempts
     report["ledger"] = {
         "schema": EXPERIMENT_EVENT_SCHEMA_VERSION,
         **counts,
     }
     return report
+
