@@ -1,13 +1,13 @@
 # QA Report
 
-Release: **1.26.4**
+Release: **1.26.5**
 
-Date: **2026-07-05**  
-Scope: **unconditional observed-opportunity policy return path for model promotion**
+Date: **2026-07-05**
+Scope: **observed experiment-period support and legacy evidence invalidation**
 
 ## Environment
 
-- Python: 3.13.5 in isolated virtual environment `/mnt/data/cam_venv`.
+- Python: 3.13.5 in isolated virtual environment `/mnt/data/cam_iter_venv`.
 - Project requirement: Python >=3.12.
 - Node syntax check available.
 - Separate PostgreSQL integration database: not configured.
@@ -17,28 +17,33 @@ Scope: **unconditional observed-opportunity policy return path for model promoti
 
 | Check | Result |
 |---|---|
+| `python --version` | PASSED: Python 3.13.5 |
 | `python -m pip check` | PASSED in isolated venv |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 613 passed, 4 skipped, 61 warnings |
+| `python -m pytest -q` | PASSED: 615 passed, 4 skipped, 61 warnings |
 | `node --check web/js/app.js` | PASSED |
-| package/application version | PASSED: 1.26.3 |
+| package/application version | PASSED: 1.26.4 |
 
-The same commands under host/global Python were recorded separately: compileall and JavaScript syntax passed; `pip check` failed on an unrelated global package conflict, `ruff` was unavailable, and pytest collection failed because `psycopg` was absent.
+The same commands under host/global Python were recorded separately: compileall and JavaScript syntax passed; `pip check` failed on an unrelated global package conflict, `ruff` was unavailable, and pytest collection stopped with 33 import errors because `psycopg` was absent.
 
 ## Confirmed defect and red evidence
 
-`evaluate_policy_model` aggregated `policy_realized_mean_r`, horizon phases and bootstrap LCB only from hours in which a trade survived selection and overlap filtering. Observed hours where the policy chose `NO TRADE` disappeared from the return path instead of contributing the known strategy return of zero. This conditioned economic inference on the policy's own selected sample and made full phase coverage depend on trade occurrence.
+`policy_backtest` generated experiment timestamps with a continuous calendar `date_range` from the earliest decision to the latest exit. Two valid decision cohorts 100 hours apart therefore produced 102 period rows, including 98 unavailable hours represented as zero return. Those rows entered minimum-period, Sharpe, DSR, PBO and dependence calculations.
 
 Red command:
 
 ```text
-python -m pytest -q tests/unit/test_policy_opportunity_path_2026_07_05.py
+python -m pytest -q tests/unit/test_experiment_observed_period_path_2026_07_05.py
 ```
 
-Before implementation: **1 failed** with `KeyError: 'policy_trade_cohorts'`; the original output exposed no full opportunity accounting and reported only traded cohorts.
+Before implementation: **3 failed**:
 
-After implementation: the regression test passes and independently verifies 16 observed cohorts, 8 traded cohorts, 8 zero-return no-trade cohorts, all 8 horizon phases and an unconditional mean of 0.5 rather than the trade-conditional mean of 1.0.
+1. 102 timestamps were emitted instead of four covered timestamps;
+2. legacy `hourly-realized-capital-return-path-v1` evidence was accepted;
+3. invalid evidence propagated `ValueError` through the promotion gate.
+
+After implementation: **3 passed**.
 
 ## Post-change checks
 
@@ -47,19 +52,19 @@ After implementation: the regression test passes and independently verifies 16 o
 | `python -m pip check` | PASSED: no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 615 passed, 4 skipped, 61 warnings |
+| `python -m pytest -q` | PASSED: 618 passed, 4 skipped, 61 warnings |
 | `node --check web/js/app.js` | PASSED |
-| application/package version consistency | PASSED: app and package are 1.26.4 |
+| application/package version consistency | PASSED: app and package are 1.26.5 |
 | static Alembic head check | PASSED: one head, `0014_ui_exposure_ledger` |
-| release integrity / manifest | PASSED: 217 eligible files / 217 manifest entries |
-| clean ZIP test and re-extraction | PASSED: archive test and clean re-extraction verified |
+| release integrity / manifest | PASSED: 220 files checked, 220 manifest entries |
+| clean ZIP test and re-extraction | PASSED: one root directory; `unzip -t` clean; re-extracted manifest verified |
 
 ## Environment-dependent checks
 
 | Check | Result |
 |---|---|
-| `python manage.py doctor` | FAILED due environment: `.env` absent, default secrets, PostgreSQL tools absent and localhost PostgreSQL unavailable |
-| `python manage.py test --require-integration` | NOT RUN as integration evidence: command stopped because neither `TEST_DATABASE_URL` nor `POSTGRES_ADMIN_URL` was configured |
+| `python manage.py doctor` | FAILED as expected for this sandbox: `.env` absent, default secrets unresolved, PostgreSQL tools absent, service unreachable |
+| `python manage.py test --require-integration` | NOT RUN: neither `POSTGRES_ADMIN_URL` nor `TEST_DATABASE_URL` is configured |
 
 ## Warnings
 
@@ -70,7 +75,7 @@ After implementation: the regression test passes and independently verifies 16 o
 - Database migration: none.
 - Public HTTP API: unchanged.
 - `.env` variables: unchanged.
+- Trading/risk/model-quality thresholds: unchanged.
 - Advisory-only/read-only Bybit boundary: unchanged.
-- Policy metric schema: `...cohort-v16` → `...cohort-v17`.
-- Policy uncertainty schema: `all-horizon-phases-circular-moving-block-v2` → `observed-opportunity-zero-return-all-horizon-phases-circular-moving-block-v3`.
-- Already active artifacts remain runnable. Inactive candidates with legacy quality evidence require retraining and new governed experiment evidence before normal activation.
+- Experiment period-return schema: `hourly-realized-capital-return-path-v1` → `observed-opportunity-covered-hourly-capital-return-path-v2`.
+- Active artifacts remain runnable. Existing experiment families with successful v1 trials require rerun before normal activation.

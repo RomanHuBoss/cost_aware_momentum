@@ -264,11 +264,23 @@ async def evaluate_experiment_promotion_gate(
         gate["reasons"] = reasons
         return gate
 
-    report = await experiment_governance_report(
-        session,
-        experiment_family=family,
-        lock_family=lock_family,
-    )
+    try:
+        report = await experiment_governance_report(
+            session,
+            experiment_family=family,
+            lock_family=lock_family,
+        )
+    except (TypeError, ValueError) as exc:
+        gate = blocked_experiment_promotion_gate(
+            reason="invalid_experiment_return_evidence",
+            experiment_family=family,
+            model_version=version,
+            model_sha256=digest,
+            horizon_hours=horizon_hours,
+            expected_policy_binding=expected_policy_binding,
+        )
+        gate["error"] = str(exc)
+        return gate
     report_schema = report.get("schema") if isinstance(report, Mapping) else None
     report_status = report.get("status") if isinstance(report, Mapping) else None
     if report_schema != EXPERIMENT_GOVERNANCE_REPORT_SCHEMA:

@@ -15,6 +15,9 @@ EULER_MASCHERONI = 0.5772156649015329
 PBO_SCHEMA_VERSION = "cscv-pbo-contiguous-segments-v1"
 DSR_SCHEMA_VERSION = "deflated-sharpe-bailey-lopez-de-prado-hac-effective-n-v2"
 EXPERIMENT_REPORT_SCHEMA_VERSION = "experiment-selection-dependence-governance-v2"
+EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION = (
+    "observed-opportunity-covered-hourly-capital-return-path-v2"
+)
 
 
 @dataclass(frozen=True)

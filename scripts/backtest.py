@@ -27,6 +27,7 @@ from app.ml.training import (
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
 )
+from app.research.overfitting import EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION
 from app.research.preregistration import build_preregistration_template
 from app.services.experiment_ledger import (
     append_experiment_event,
@@ -55,6 +56,60 @@ def _finite_nonnegative(value: float, name: str) -> float:
     if not math.isfinite(parsed) or parsed < 0:
         raise ValueError(f"{name} must be finite and non-negative")
     return parsed
+
+
+def _observed_policy_period_grid(
+    chosen: pd.DataFrame,
+    *,
+    horizon_hours: int,
+) -> tuple[pd.DatetimeIndex, int, int]:
+    """Return only hourly periods covered by observed decision cohorts.
+
+    Each valid decision row proves that its full label horizon was observed.
+    The union of those decision-to-horizon windows therefore includes genuine
+    no-trade/holding hours while excluding calendar gaps for which no decision
+    cohort and no valid label path existed.
+    """
+
+    if isinstance(horizon_hours, bool) or not isinstance(horizon_hours, (int, np.integer)):
+        raise TypeError("horizon_hours must be an integer")
+    if int(horizon_hours) <= 0:
+        raise ValueError("horizon_hours must be positive")
+    resolved_horizon = int(horizon_hours)
+    if chosen.empty:
+        return pd.DatetimeIndex([]), 0, 0
+    if "decision_time" not in chosen.columns:
+        raise ValueError("Policy period grid requires decision_time")
+
+    decisions = pd.DatetimeIndex(
+        pd.to_datetime(chosen["decision_time"], utc=True, errors="coerce")
+        .drop_duplicates()
+        .sort_values(kind="mergesort")
+    )
+    if decisions.empty or decisions.isna().any():
+        raise ValueError("Policy period grid requires valid observed decision times")
+    if not decisions.equals(decisions.floor("h")):
+        raise ValueError("Policy period grid requires hour-aligned decision times")
+
+    covered_values: set[pd.Timestamp] = set()
+    for decision in decisions:
+        covered_values.update(
+            pd.date_range(
+                decision,
+                periods=resolved_horizon + 1,
+                freq="h",
+            )
+        )
+    covered = pd.DatetimeIndex(sorted(covered_values))
+    full_calendar = pd.date_range(
+        decisions[0],
+        decisions[-1] + pd.Timedelta(resolved_horizon, unit="h"),
+        freq="h",
+    )
+    omitted = int(len(full_calendar) - len(covered))
+    if omitted < 0:
+        raise ValueError("Policy covered periods exceed the calendar span")
+    return covered, int(len(decisions)), omitted
 
 
 def _simulate_capital_sleeves_evidence(
@@ -403,12 +458,14 @@ def policy_backtest(
         context="Backtest",
     )
 
-    if len(chosen):
-        period_start = pd.Timestamp(chosen["decision_time"].min())
-        period_end = pd.Timestamp(chosen["exit_time"].max())
-        period_grid = pd.date_range(period_start, period_end, freq="h")
-    else:
-        period_grid = pd.DatetimeIndex([])
+    (
+        period_grid,
+        observed_opportunity_period_count,
+        omitted_unobserved_calendar_period_count,
+    ) = _observed_policy_period_grid(
+        chosen,
+        horizon_hours=horizon_hours,
+    )
     portfolio_evidence = _simulate_capital_sleeves_evidence(
         traded,
         return_column="net_return",
@@ -526,8 +583,13 @@ def policy_backtest(
     }
     if include_experiment_evidence:
         result["experiment_evidence"] = {
-            "schema": "hourly-realized-capital-return-path-v1",
+            "schema": EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION,
             "period_returns": portfolio_evidence["period_returns"],
+            "observed_opportunity_period_count": observed_opportunity_period_count,
+            "covered_period_count": int(len(period_grid)),
+            "omitted_unobserved_calendar_period_count": (
+                omitted_unobserved_calendar_period_count
+            ),
         }
     return result
 
@@ -736,6 +798,13 @@ async def run(args) -> None:
                 "configuration_hash": experiment_configuration_hash(experiment_configuration),
                 "period_return_schema": experiment_evidence["schema"],
                 "period_count": len(experiment_evidence["period_returns"]),
+                "observed_opportunity_period_count": experiment_evidence[
+                    "observed_opportunity_period_count"
+                ],
+                "covered_period_count": experiment_evidence["covered_period_count"],
+                "omitted_unobserved_calendar_period_count": experiment_evidence[
+                    "omitted_unobserved_calendar_period_count"
+                ],
             },
         }
         output = Path(args.output or f"reports/backtest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
@@ -777,6 +846,13 @@ async def run(args) -> None:
                 evidence={
                     "period_return_schema": experiment_evidence["schema"],
                     "period_returns": experiment_evidence["period_returns"],
+                    "observed_opportunity_period_count": experiment_evidence[
+                        "observed_opportunity_period_count"
+                    ],
+                    "covered_period_count": experiment_evidence["covered_period_count"],
+                    "omitted_unobserved_calendar_period_count": experiment_evidence[
+                        "omitted_unobserved_calendar_period_count"
+                    ],
                     "prediction_metrics": prediction_metrics,
                     "policy_metrics": trade_metrics,
                     "output_path": str(output),

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import ResearchExperimentEvent
 from app.json_utils import json_compatible
 from app.research.overfitting import (
+    EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION,
     ExperimentFamilyEvidence,
     ExperimentTrialEvidence,
     analyze_experiment_family,
@@ -196,9 +197,34 @@ async def append_experiment_event(
 
 
 def _trial_evidence_from_success(row: ResearchExperimentEvent) -> ExperimentTrialEvidence:
+    period_return_schema = row.evidence.get("period_return_schema")
+    if period_return_schema != EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION:
+        raise ValueError(
+            "Successful experiment period return schema is unsupported: "
+            f"expected {EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION!r}, "
+            f"received {period_return_schema!r}"
+        )
     period_returns = row.evidence.get("period_returns")
     if not isinstance(period_returns, list) or not period_returns:
         raise ValueError("Successful experiment event lacks period_returns")
+
+    count_fields: dict[str, int] = {}
+    for field in (
+        "observed_opportunity_period_count",
+        "covered_period_count",
+        "omitted_unobserved_calendar_period_count",
+    ):
+        raw_value = row.evidence.get(field)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int) or raw_value < 0:
+            raise ValueError(f"Successful experiment {field} must be a non-negative integer")
+        count_fields[field] = raw_value
+    if count_fields["observed_opportunity_period_count"] <= 0:
+        raise ValueError("Successful experiment must contain observed opportunity periods")
+    if count_fields["covered_period_count"] != len(period_returns):
+        raise ValueError("Successful experiment covered period count does not match period_returns")
+    if count_fields["observed_opportunity_period_count"] > count_fields["covered_period_count"]:
+        raise ValueError("Successful experiment opportunity periods exceed covered periods")
+
     timestamps: list[datetime] = []
     returns: list[float] = []
     for item in period_returns:
@@ -207,10 +233,25 @@ def _trial_evidence_from_success(row: ResearchExperimentEvent) -> ExperimentTria
         timestamp = datetime.fromisoformat(str(item["timestamp"]))
         timestamps.append(_aware(timestamp, "period return timestamp"))
         returns.append(float(item["return"]))
+    ordered_timestamps = tuple(timestamps)
+    if tuple(sorted(ordered_timestamps)) != ordered_timestamps:
+        raise ValueError("Experiment period return timestamps must be strictly chronological")
+    if len(set(ordered_timestamps)) != len(ordered_timestamps):
+        raise ValueError("Experiment period return timestamps must be unique")
+    full_calendar_periods = (
+        int((ordered_timestamps[-1] - ordered_timestamps[0]).total_seconds() // 3600) + 1
+    )
+    if full_calendar_periods < count_fields["covered_period_count"]:
+        raise ValueError("Experiment covered period count exceeds its calendar span")
+    if (
+        full_calendar_periods - count_fields["covered_period_count"]
+        != count_fields["omitted_unobserved_calendar_period_count"]
+    ):
+        raise ValueError("Experiment omitted calendar period count is inconsistent")
     return ExperimentTrialEvidence(
         trial_id=str(row.trial_id),
         configuration_hash=row.configuration_hash,
-        timestamps=tuple(timestamps),
+        timestamps=ordered_timestamps,
         returns=tuple(returns),
     )
 

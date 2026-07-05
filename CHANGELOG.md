@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.26.5 — 2026-07-05
+
+### Fixed
+
+- Backtest experiment return paths now use the union of actually observed decision-to-horizon windows instead of a continuous calendar range between the first decision and final exit.
+- Missing market/data hours are no longer inserted as zero returns, so they cannot inflate period counts or distort Sharpe, DSR, PBO and dependence evidence.
+- Genuine observed `NO TRADE` and holding hours remain explicit zero-return periods inside covered windows.
+- Experiment evidence now records observed-opportunity, covered-period and omitted-gap counts and validates their arithmetic before governance analysis.
+- Legacy `hourly-realized-capital-return-path-v1` evidence is rejected; normal promotion returns a diagnostic fail-closed gate instead of propagating an unhandled validation error.
+
+### Compatibility
+
+- No database migration, public HTTP API change, risk-threshold change or `.env` addition.
+- Existing experiment families containing legacy successful trials must be rerun under the v2 return-path schema before normal model promotion. Active models are not deactivated.
+
+### Verification
+
+- Clean isolated baseline: 615 passed, 4 skipped.
+- Post-change suite: 618 passed, 4 skipped, 61 warnings.
+
 ## 1.26.4 — 2026-07-05
 
 ### Fixed
