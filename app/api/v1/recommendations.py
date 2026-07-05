@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response
@@ -21,18 +22,22 @@ from app.db.models import (
     SignalOutcome,
     TickerSnapshot,
 )
+from app.risk.liquidity import ORDERBOOK_EXECUTION_SCHEMA_VERSION
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.execution import (
     IMMUTABLE_PLAN_STATUSES,
     create_execution_plan,
     entry_price_is_adverse,
-    executable_entry_price,
     execution_plan_entry_reference,
     execution_plan_scope_clause,
     funding_rate_for_plan,
+    latest_orderbook,
     latest_spec,
     liquidity_notional_cap,
     load_acceptance_risk_state,
+    orderbook_depth_notional_cap,
+    orderbook_fill_for_qty,
+    orderbook_snapshot_is_fresh,
     reconciliation_issues,
     ticker_snapshot_is_fresh,
     validate_execution_plan_for_acceptance,
@@ -40,6 +45,39 @@ from app.services.execution import (
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 
 router = APIRouter(prefix="/api/v1/recommendations", tags=["recommendations"])
+
+
+def _plan_orderbook_contract(
+    plan: ExecutionPlan,
+) -> tuple[datetime | None, str | None]:
+    snapshot = plan.sizing_snapshot if isinstance(plan.sizing_snapshot, dict) else {}
+    execution_quality = snapshot.get("execution_quality")
+    if not isinstance(execution_quality, dict):
+        return None, "Execution plan lacks point-in-time orderbook evidence"
+    if execution_quality.get("schema") != ORDERBOOK_EXECUTION_SCHEMA_VERSION:
+        return None, "Execution plan orderbook schema is incompatible"
+    if execution_quality.get("fill_status") != "FULL":
+        return None, "Execution plan was not sized for a complete depth fill"
+    try:
+        requested_qty = Decimal(str(execution_quality["requested_qty"]))
+        filled_qty = Decimal(str(execution_quality["filled_qty"]))
+        vwap = Decimal(str(execution_quality["vwap"]))
+        entry_price = Decimal(str(snapshot["entry_price"]))
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return None, "Execution plan orderbook evidence is incomplete"
+    plan_qty = Decimal(str(plan.qty))
+    values = (requested_qty, filled_qty, vwap, entry_price, plan_qty)
+    if any(not value.is_finite() or value <= 0 for value in values):
+        return None, "Execution plan orderbook evidence is invalid"
+    if requested_qty != plan_qty or filled_qty != plan_qty or vwap != entry_price:
+        return None, "Execution plan orderbook evidence does not match its size or entry"
+    try:
+        planning_time = datetime.fromisoformat(str(snapshot["planning_time"]))
+    except (KeyError, TypeError, ValueError):
+        return None, "Execution plan planning time is missing or invalid"
+    if planning_time.tzinfo is None or planning_time.utcoffset() is None:
+        return None, "Execution plan planning time is not timezone-aware"
+    return planning_time, None
 
 
 async def resolve_profile(session: SessionDep, profile_id: UUID | None) -> CapitalProfile:
@@ -342,13 +380,19 @@ async def accept_recommendation(
         return Response(content=body, status_code=409, media_type="application/json")
 
     conflict_reason: str | None = None
+    plan_planning_time: datetime | None = None
     if plan.status not in {"ACTIONABLE", "LIMITED", "VIEWED"}:
         conflict_reason = f"Plan status {plan.status} is not acceptable"
-    elif signal.expires_at <= now:
+    else:
+        plan_planning_time, conflict_reason = _plan_orderbook_contract(plan)
+    if conflict_reason is None and plan_planning_time is not None and plan_planning_time > now:
+        conflict_reason = "Execution plan planning time is in the future"
+    if conflict_reason is None and signal.expires_at <= now:
         conflict_reason = "Recommendation expired"
-    elif plan.profile_version != profile.version:
+    elif conflict_reason is None and plan.profile_version != profile.version:
         conflict_reason = "Capital profile version changed"
     ticker = await latest_ticker(session, signal.symbol)
+    orderbook = await latest_orderbook(session, signal.symbol)
     if conflict_reason is None and (
         ticker is None
         or not ticker_snapshot_is_fresh(
@@ -358,16 +402,37 @@ async def accept_recommendation(
         )
     ):
         conflict_reason = "Ticker is stale or has a future timestamp"
+    if conflict_reason is None and (
+        orderbook is None
+        or not orderbook_snapshot_is_fresh(
+            orderbook.source_time,
+            now=now,
+            max_age_seconds=settings.max_orderbook_age_seconds,
+            received_at=orderbook.received_at,
+        )
+    ):
+        conflict_reason = "Orderbook is stale or has a future timestamp"
     executable_price = None
-    if conflict_reason is None and ticker is not None:
+    current_depth_cap = None
+    current_fill = None
+    if conflict_reason is None and ticker is not None and orderbook is not None:
         try:
-            executable_price = executable_entry_price(
+            current_fill = orderbook_fill_for_qty(
+                orderbook,
                 direction=signal.direction,
-                bid_price=ticker.bid_price,
-                ask_price=ticker.ask_price,
+                qty=plan.qty,
+                max_impact_bps=Decimal(str(settings.max_vwap_impact_bps)),
             )
-        except ValueError:
-            conflict_reason = "Executable bid/ask price is missing or invalid"
+            if current_fill.status != "FULL" or current_fill.vwap is None:
+                raise ValueError("Current orderbook cannot fully fill the plan within impact limit")
+            executable_price = current_fill.vwap
+            current_depth_cap = orderbook_depth_notional_cap(
+                orderbook,
+                direction=signal.direction,
+                max_impact_bps=Decimal(str(settings.max_vwap_impact_bps)),
+            )
+        except ValueError as exc:
+            conflict_reason = str(exc)
     executable_inside_zone = executable_price is not None and (
         signal.entry_low <= executable_price <= signal.entry_high
     )
@@ -407,7 +472,10 @@ async def accept_recommendation(
             try:
                 if ticker.funding_rate is None or ticker.next_funding_time is None:
                     raise ValueError("Current funding snapshot is incomplete")
-                current_liquidity_cap = liquidity_notional_cap(ticker.turnover_24h)
+                turnover_cap = liquidity_notional_cap(ticker.turnover_24h)
+                if current_depth_cap is None:
+                    raise ValueError("Current orderbook depth cap is unavailable")
+                current_liquidity_cap = min(turnover_cap, current_depth_cap)
                 current_funding_rate = funding_rate_for_plan(
                     start_time=now,
                     horizon_hours=signal.horizon_hours,
@@ -545,6 +613,34 @@ async def accept_recommendation(
                 else None
             ),
             "current_liquidity_notional_cap": str(acceptance_validation.current_liquidity_notional_cap),
+            "plan_planning_time": plan_planning_time.isoformat() if plan_planning_time else None,
+            "operator_latency_seconds": (
+                (now - plan_planning_time).total_seconds() if plan_planning_time else None
+            ),
+            "execution_quality": {
+                "schema": ORDERBOOK_EXECUTION_SCHEMA_VERSION,
+                "snapshot_source_time": orderbook.source_time.isoformat() if orderbook else None,
+                "snapshot_received_at": orderbook.received_at.isoformat() if orderbook else None,
+                "update_id": orderbook.update_id if orderbook else None,
+                "sequence": orderbook.sequence if orderbook else None,
+                "depth_requested": orderbook.depth if orderbook else None,
+                "max_impact_bps": str(settings.max_vwap_impact_bps),
+                "fill_status": current_fill.status if current_fill else None,
+                "requested_qty": str(current_fill.requested_qty) if current_fill else None,
+                "filled_qty": str(current_fill.filled_qty) if current_fill else None,
+                "vwap": str(current_fill.vwap) if current_fill and current_fill.vwap else None,
+                "worst_price": (
+                    str(current_fill.worst_price)
+                    if current_fill and current_fill.worst_price
+                    else None
+                ),
+                "impact_bps": (
+                    str(current_fill.impact_bps)
+                    if current_fill and current_fill.impact_bps is not None
+                    else None
+                ),
+                "levels_used": current_fill.levels_used if current_fill else 0,
+            },
             "instrument_spec_valid_from": (
                 current_spec.valid_from.isoformat() if current_spec is not None else None
             ),

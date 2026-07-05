@@ -187,10 +187,15 @@ class BybitClient:
         return response.result.get("list") or []
 
     async def get_orderbook(self, symbol: str, limit: int = 50) -> dict:
+        depth = min(max(int(limit), 1), 1000)
         response = await self._get(
-            "/v5/market/orderbook", {"category": "linear", "symbol": symbol, "limit": limit}
+            "/v5/market/orderbook",
+            {"category": "linear", "symbol": symbol, "limit": depth},
         )
-        return response.result
+        result = response.result
+        if not isinstance(result, dict):
+            raise RuntimeError("Bybit orderbook response is invalid")
+        return result
 
     async def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict:
         return (

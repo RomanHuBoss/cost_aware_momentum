@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     universe_sync_mark_price: bool = False
     universe_enrich_funding_oi: bool = False
     ticker_retention_hours: int = 48
+    orderbook_depth_levels: int = 200
+    max_orderbook_age_seconds: int = 90
+    max_vwap_impact_bps: float = 12.0
+    orderbook_retention_hours: int = 48
 
     candle_interval: str = "60"
     initial_backfill_bars: int = 1000
@@ -231,6 +235,7 @@ class Settings(BaseSettings):
             "MIN_NET_RR": self.min_net_rr,
             "MIN_NET_EV_R": self.min_net_ev_r,
             "MAX_SPREAD_BPS": self.max_spread_bps,
+            "MAX_VWAP_IMPACT_BPS": self.max_vwap_impact_bps,
             "FEE_RATE_TAKER": self.fee_rate_taker,
             "BASE_SLIPPAGE_BPS": self.base_slippage_bps,
             "MODEL_ENTRY_SPREAD_BPS": self.model_entry_spread_bps,
@@ -272,6 +277,14 @@ class Settings(BaseSettings):
             raise ValueError("MIN_NET_EV_R cannot be negative")
         if self.max_spread_bps < 0:
             raise ValueError("MAX_SPREAD_BPS cannot be negative")
+        if not 1 <= self.orderbook_depth_levels <= 1000:
+            raise ValueError("ORDERBOOK_DEPTH_LEVELS must be between 1 and 1000")
+        if self.max_orderbook_age_seconds <= 0:
+            raise ValueError("MAX_ORDERBOOK_AGE_SECONDS must be positive")
+        if self.max_vwap_impact_bps < 0:
+            raise ValueError("MAX_VWAP_IMPACT_BPS cannot be negative")
+        if self.orderbook_retention_hours < 1:
+            raise ValueError("ORDERBOOK_RETENTION_HOURS must be positive")
         if not 0 <= self.fee_rate_taker < 1:
             raise ValueError("FEE_RATE_TAKER must be in [0, 1)")
         if self.base_slippage_bps < 0:

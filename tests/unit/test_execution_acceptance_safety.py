@@ -31,6 +31,7 @@ DEFAULT_MAX_LEVERAGE = D("100")
 DEFAULT_PROFILE_MAX_TOTAL_RISK_RATE = D("0.02")
 DEFAULT_FUNDING_RATE = D("0")
 DEFAULT_TURNOVER_24H = D("100000000")
+DEFAULT_ORDERBOOK_SIZE = D("100000")
 DEFAULT_BID_PRICE = D("99.9")
 DEFAULT_ASK_PRICE = D("100.1")
 
@@ -214,6 +215,9 @@ async def _build_plan_for_safety_case(
     signal_status: str = "PUBLISHED",
     baseline: bool = False,
     profile_max_total_risk_rate: Decimal = DEFAULT_PROFILE_MAX_TOTAL_RISK_RATE,
+    orderbook_bids: list[list[str]] | None = None,
+    orderbook_asks: list[list[str]] | None = None,
+    max_vwap_impact_bps: float = 12.0,
 ):
     from uuid import uuid4
 
@@ -264,6 +268,22 @@ async def _build_plan_for_safety_case(
         funding_rate=D("0") if funding_snapshot_complete else None,
         next_funding_time=(ticker_time + timedelta(hours=8) if funding_snapshot_complete else None),
     )
+    orderbook = (
+        SimpleNamespace(
+            id=1,
+            source_time=ticker_time,
+            received_at=ticker_time,
+            update_id=1,
+            sequence=1,
+            depth=200,
+            best_bid=bid_price,
+            best_ask=ask_price,
+            bids=orderbook_bids or [[str(bid_price), "100000"]],
+            asks=orderbook_asks or [[str(ask_price), "100000"]],
+        )
+        if bid_price is not None and ask_price is not None
+        else None
+    )
     spec = SimpleNamespace(
         tick_size=D("0.1"),
         qty_step=D("0.001"),
@@ -280,6 +300,7 @@ async def _build_plan_for_safety_case(
     )
 
     monkeypatch.setattr(execution, "latest_ticker", AsyncMock(return_value=ticker))
+    monkeypatch.setattr(execution, "latest_orderbook", AsyncMock(return_value=orderbook))
     monkeypatch.setattr(execution, "latest_spec", AsyncMock(return_value=spec))
     monkeypatch.setattr(execution, "effective_capital", AsyncMock(return_value=capital_result))
     monkeypatch.setattr(execution, "open_risk_usdt", AsyncMock(return_value=D("0")))
@@ -287,7 +308,10 @@ async def _build_plan_for_safety_case(
     monkeypatch.setattr(execution, "append_audit_event", AsyncMock())
     monkeypatch.setattr(execution, "publish_outbox", AsyncMock())
 
-    settings = Settings(database_url="postgresql+psycopg://u:p@localhost/db")
+    settings = Settings(
+        database_url="postgresql+psycopg://u:p@localhost/db",
+        max_vwap_impact_bps=max_vwap_impact_bps,
+    )
     return await execution.create_execution_plan(
         session,
         signal=signal,
@@ -326,6 +350,52 @@ async def test_execution_plan_reprices_from_current_executable_quote(
     assert D(plan.sizing_snapshot["entry_price"]) == D("100.4")
 
 
+
+
+async def test_execution_plan_uses_full_depth_vwap_and_persists_fill_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        bid_price=D("100.0"),
+        ask_price=D("100.1"),
+        orderbook_bids=[["100.0", "100000"]],
+        orderbook_asks=[["100.1", "20"], ["100.2", "100000"]],
+    )
+
+    entry = D(plan.sizing_snapshot["entry_price"])
+    evidence = plan.sizing_snapshot["execution_quality"]
+    assert D("100.1") < entry < D("100.2")
+    assert plan.status in {"ACTIONABLE", "LIMITED"}
+    assert evidence["fill_status"] == "FULL"
+    assert D(evidence["vwap"]) == entry
+    assert D(evidence["impact_bps"]) > 0
+    assert evidence["levels_used"] == 2
+    assert plan.sizing_snapshot["entry_price_source"] == "orderbook_depth_vwap"
+
+
+async def test_execution_plan_is_depth_limited_instead_of_rounding_up_to_unfillable_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        bid_price=D("100.0"),
+        ask_price=D("100.1"),
+        orderbook_bids=[["100.0", "100000"]],
+        orderbook_asks=[["100.1", "1"], ["102", "100000"]],
+    )
+
+    assert plan.qty <= D("1")
+    assert plan.notional <= D("100.1")
+    assert plan.sizing_snapshot["execution_quality"]["fill_status"] == "FULL"
+    assert D(plan.sizing_snapshot["caps"]["orderbook_depth_notional"]) == D("100.1")
+
 async def test_execution_plan_fails_closed_when_executable_quote_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -337,8 +407,8 @@ async def test_execution_plan_fails_closed_when_executable_quote_is_missing(
         ask_price=None,
     )
 
-    assert plan.status == "BLOCKED_DATA"
-    assert any("bid/ask" in warning for warning in plan.warnings)
+    assert plan.status == "BLOCKED_STALE_DATA"
+    assert any("глубины рынка" in warning for warning in plan.warnings)
 
 
 async def test_execution_plan_marks_quote_outside_entry_zone_as_no_trade(
@@ -464,6 +534,9 @@ async def _run_acceptance_case(
     turnover_24h: Decimal | None = DEFAULT_TURNOVER_24H,
     reconciliation_failures: list[str] | None = None,
     profile_max_total_risk_rate: Decimal = DEFAULT_PROFILE_MAX_TOTAL_RISK_RATE,
+    orderbook_ask_size: Decimal = DEFAULT_ORDERBOOK_SIZE,
+    plan_has_orderbook_evidence: bool = True,
+    plan_planning_offset_seconds: int = -5,
 ):
     from uuid import uuid4
 
@@ -491,6 +564,19 @@ async def _run_acceptance_case(
         p_sl=0.25,
         p_timeout=0.15,
     )
+    sizing_snapshot = {
+        "entry_price": "100",
+        "planning_time": (now + timedelta(seconds=plan_planning_offset_seconds)).isoformat(),
+        "costs": {"funding_rate": str(stored_funding_rate)},
+    }
+    if plan_has_orderbook_evidence:
+        sizing_snapshot["execution_quality"] = {
+            "schema": "bybit-rest-depth-vwap-fill-v1",
+            "fill_status": "FULL",
+            "requested_qty": str(qty),
+            "filled_qty": str(qty),
+            "vwap": "100",
+        }
     plan = SimpleNamespace(
         id=uuid4(),
         signal_id=signal.id,
@@ -503,10 +589,7 @@ async def _run_acceptance_case(
         qty=qty,
         notional=qty * D("100"),
         leverage=plan_leverage,
-        sizing_snapshot={
-            "entry_price": "100",
-            "costs": {"funding_rate": str(stored_funding_rate)},
-        },
+        sizing_snapshot=sizing_snapshot,
         accepted_at=None,
         superseded_by_id=None,
     )
@@ -533,6 +616,18 @@ async def _run_acceptance_case(
             next_funding_time or now + timedelta(hours=8) if funding_snapshot_complete else None
         ),
     )
+    orderbook = SimpleNamespace(
+        id=1,
+        source_time=now,
+        received_at=now,
+        update_id=1,
+        sequence=1,
+        depth=200,
+        best_bid=D("99.9"),
+        best_ask=D("100"),
+        bids=[["99.9", "100000"]],
+        asks=[["100", str(orderbook_ask_size)]],
+    )
     spec = SimpleNamespace(
         valid_from=now - timedelta(hours=1),
         tick_size=D("0.1"),
@@ -552,9 +647,10 @@ async def _run_acceptance_case(
         capital_snapshot={"source": "bybit"},
     )
     replacement_plan = SimpleNamespace(id=uuid4(), status="ACTIONABLE")
+    added_records: list[object] = []
     session = SimpleNamespace(
         execute=AsyncMock(return_value=_NoRowsResult()),
-        add=lambda value: None,
+        add=added_records.append,
         commit=AsyncMock(),
     )
 
@@ -565,6 +661,7 @@ async def _run_acceptance_case(
         AsyncMock(return_value=(signal, plan, profile)),
     )
     monkeypatch.setattr(recommendations, "latest_ticker", AsyncMock(return_value=ticker))
+    monkeypatch.setattr(recommendations, "latest_orderbook", AsyncMock(return_value=orderbook))
     monkeypatch.setattr(
         recommendations,
         "latest_spec",
@@ -599,7 +696,58 @@ async def _run_acceptance_case(
         "test-operator",
         "acceptance-safety-test",
     )
+    plan.added_records = added_records
     return response, plan
+
+
+async def test_acceptance_persists_exact_orderbook_fill_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.models import OperatorDecision
+    from app.risk.liquidity import ORDERBOOK_EXECUTION_SCHEMA_VERSION
+
+    response, plan = await _run_acceptance_case(monkeypatch, qty=D("2"))
+
+    assert response.status_code == 200
+    decision = next(
+        record for record in plan.added_records if isinstance(record, OperatorDecision)
+    )
+    evidence = decision.context_snapshot["execution_quality"]
+    assert evidence["schema"] == ORDERBOOK_EXECUTION_SCHEMA_VERSION
+    assert evidence["fill_status"] == "FULL"
+    assert D(evidence["requested_qty"]) == D("2")
+    assert D(evidence["filled_qty"]) == D("2")
+    assert D(evidence["vwap"]) == D("100")
+    assert evidence["update_id"] == 1
+    assert decision.context_snapshot["operator_latency_seconds"] >= 5
+
+
+async def test_acceptance_recalculates_legacy_plan_without_depth_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        plan_has_orderbook_evidence=False,
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"point-in-time orderbook evidence" in response.body
+    assert plan.status == "SUPERSEDED"
+
+
+async def test_acceptance_recalculates_plan_with_future_planning_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        plan_planning_offset_seconds=5,
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"planning time is in the future" in response.body
+    assert plan.status == "SUPERSEDED"
 
 
 async def test_acceptance_rejects_profile_above_global_total_risk_cap(
@@ -724,6 +872,21 @@ async def test_acceptance_recalculates_when_current_liquidity_cap_is_too_low(
     assert b"liquidity cap" in response.body
     assert plan.status == "SUPERSEDED"
 
+
+
+
+async def test_acceptance_recalculates_when_current_depth_cannot_fill_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        qty=D("3"),
+        orderbook_ask_size=D("1"),
+    )
+
+    assert response.status_code == 409
+    assert b"cannot fully fill" in response.body
+    assert plan.status == "SUPERSEDED"
 
 async def test_acceptance_succeeds_only_after_fresh_state_revalidation(
     monkeypatch: pytest.MonkeyPatch,

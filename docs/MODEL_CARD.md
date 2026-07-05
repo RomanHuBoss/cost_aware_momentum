@@ -57,6 +57,19 @@ Future mark path не участвует в model fit, class probabilities, dire
 
 Это conservative hourly isolated-margin proxy, а не точная биржевая ликвидация. Нет historical MMR/risk tiers, sub-hour path ordering, liquidation fee, bankruptcy price, cross/portfolio margin, ADL или exact exchange fill mechanics.
 
+## Live advisory execution evidence, schema v1
+
+Release 1.14.0 не добавляет orderbook features в market model и не изменяет artifact schema. После ex-ante model/policy direction account-dependent execution layer использует prospective public REST snapshot:
+
+- LONG потребляет asks, SHORT — bids;
+- размер ограничивается bounded depth внутри `MAX_VWAP_IMPACT_BPS`;
+- entry для risk/EV/qty пересчитывается по complete-fill VWAP;
+- `PARTIAL` и `NO_FILL` блокируются;
+- acceptance повторяет simulation для всей qty на новом snapshot;
+- plan и decision сохраняют source/receipt times, sequence, VWAP, worst price, impact и operator latency.
+
+Схема evidence: `bybit-rest-depth-vwap-fill-v1`. Это prospective execution-quality evidence, не historical training feature и не подтверждение реального fill. RPI liquidity, queue position, order type, network/decision latency distribution и OMS partial-fill lifecycle отсутствуют.
+
 ## Promotion
 
 Auto-activation требует:
@@ -72,4 +85,4 @@ Auto-activation требует:
 
 ## Known limitations
 
-Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Нет historical bid/ask/depth, operator latency, path-dependent fill model, point-in-time funding forecasts, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.
+Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют point-in-time funding forecasts, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe и production drift monitor. Результаты не являются доказательством прибыльности.

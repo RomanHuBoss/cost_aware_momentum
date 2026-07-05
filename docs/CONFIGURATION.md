@@ -1,5 +1,16 @@
 # Configuration
 
+## Release 1.14.0 — execution depth policy
+
+| Variable | Default | Contract |
+|---|---:|---|
+| `ORDERBOOK_DEPTH_LEVELS` | `200` | Число bid/ask levels в public REST snapshot; допустимо 1..1000. |
+| `MAX_ORDERBOOK_AGE_SECONDS` | `90` | Максимальный возраст и exchange source time, и local receipt time. Ноль/отрицательное значение запрещено. |
+| `MAX_VWAP_IMPACT_BPS` | `12` | Максимальное неблагоприятное отклонение complete-fill VWAP band от best executable quote; должно быть конечным и неотрицательным. |
+| `ORDERBOOK_RETENTION_HOURS` | `48` | Retention prospective snapshots; минимум 1 час. |
+
+Изменение этих параметров не меняет market-model artifact и не требует retraining. Оно меняет account-dependent execution-plan semantics: существующие планы без `bybit-rest-depth-vwap-fill-v1` при принятии пересчитываются fail-closed. Перед запуском worker необходимо применить migration `0010_orderbook_exec_evidence`. Большой dynamic universe увеличивает число serial public REST requests и объём PostgreSQL; контролируйте market job duration и retention.
+
 ## Intrahorizon mark-price margin replay
 
 Release 1.13.0 не добавляет новую `.env` переменную. Progressive mark-price backfill использует существующие `HISTORY_BACKFILL_*` параметры и сохраняет candles с `price_type=mark`. Training требует непрерывную hourly mark timeline на всём label path; гэп исключает LONG/SHORT cohort fail-closed.

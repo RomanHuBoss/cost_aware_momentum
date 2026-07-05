@@ -1,5 +1,27 @@
 # Traceability
 
+## Work package: point-in-time orderbook execution evidence
+
+| Acceptance criterion | Production implementation | Tests |
+|---|---|---|
+| Public read-only snapshot request is bounded | `app/bybit/client.py::get_orderbook` | `test_bybit_orderbook_request_clamps_supported_depth` |
+| Exchange/source and receipt timestamps are preserved | `app/services/market_data.py::normalize_orderbook_snapshot` | normalization/future-time tests |
+| Restart-safe natural identity and idempotent persistence | `app/db/models.py::OrderBookSnapshot`, migration `0010`, `sync_orderbooks` | natural-key and duplicate diagnostics tests |
+| LONG consumes asks and SHORT consumes bids | `app/risk/liquidity.py::simulate_market_fill` | directional VWAP/impact tests |
+| Partial/no-fill is explicit and complete fill is required | same; `app/services/execution.py::create_execution_plan` | partial-fill and depth-limited sizing tests |
+| Size is capped by bounded depth and entry uses full-fill VWAP | `orderbook_depth_notional_cap`, iterative plan sizing | plan VWAP/cap regressions |
+| Stale/future source or receipt time blocks execution | `orderbook_snapshot_is_fresh` | freshness test and acceptance suite |
+| Acceptance revalidates entire qty and rejects legacy evidence | `app/api/v1/recommendations.py` | partial-depth, legacy-plan and adverse-entry tests |
+| Decision audit stores exact fill and operator latency | operator decision `context_snapshot` | `test_acceptance_persists_exact_orderbook_fill_evidence` |
+| Old snapshots are retained only for configured period | `app/workers/runner.py::retention_job` | static/full suite |
+
+## Schema changes 1.14.0
+
+- Database head: `0010_orderbook_exec_evidence`.
+- Execution evidence: `bybit-rest-depth-vwap-fill-v1`.
+- Model artifact schemas are unchanged from 1.13.0.
+- Evidence is prospective only; no pre-1.14 historical reconstruction is claimed.
+
 ## Work package: intrahorizon mark-to-market and liquidation proxy
 
 | Acceptance criterion | Production implementation | Tests |

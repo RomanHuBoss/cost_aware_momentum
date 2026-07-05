@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.14.0 — 2026-07-05
+
+- Added persisted point-in-time Bybit orderbook snapshots with exchange/source and local receipt timestamps.
+- Added direction-aware bounded-depth market-fill simulation with FULL/PARTIAL/NO_FILL, VWAP, worst price and impact evidence.
+- Execution-plan sizing now uses the minimum of turnover and bounded orderbook-depth caps and iterates entry geometry to complete-fill VWAP.
+- Acceptance revalidates the full planned quantity against a fresh orderbook and recalculates incompatible, stale, partial-fill or adversely changed plans.
+- Operator decisions persist exact depth/VWAP evidence and plan-to-decision latency.
+- Added migration `0010_orderbook_exec_evidence`, retention policy, fail-closed configuration validation and regression tests.
+- Historical orderbook backfill, queue position, limit-order fill probability and real exchange partial-fill lifecycle remain outside scope.
+
 ## 1.13.0 — 2026-07-05
 
 ### Added

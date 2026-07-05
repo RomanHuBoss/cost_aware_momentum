@@ -16,8 +16,14 @@ from app.db.models import (
     InstrumentSpecHistory,
     ManualTrade,
     MarketSignal,
+    OrderBookSnapshot,
     PositionSnapshot,
     TickerSnapshot,
+)
+from app.risk.liquidity import (
+    ORDERBOOK_EXECUTION_SCHEMA_VERSION,
+    FillSimulation,
+    simulate_market_fill,
 )
 from app.risk.math import (
     CostScenario,
@@ -344,6 +350,56 @@ def funding_rate_for_plan(
     )
 
 
+def orderbook_snapshot_is_fresh(
+    source_time: datetime,
+    *,
+    now: datetime,
+    max_age_seconds: int,
+    received_at: datetime | None = None,
+) -> bool:
+    if max_age_seconds <= 0 or source_time.tzinfo is None or now.tzinfo is None:
+        return False
+    if received_at is not None:
+        if received_at.tzinfo is None:
+            return False
+        receipt_age_seconds = (now - received_at).total_seconds()
+        if not 0.0 <= receipt_age_seconds <= max_age_seconds:
+            return False
+    age_seconds = (now - source_time).total_seconds()
+    return 0.0 <= age_seconds <= max_age_seconds
+
+
+def orderbook_fill_for_qty(
+    snapshot: OrderBookSnapshot,
+    *,
+    direction: str,
+    qty: Decimal,
+    max_impact_bps: Decimal,
+) -> FillSimulation:
+    return simulate_market_fill(
+        direction=direction,
+        requested_qty=qty,
+        bids=snapshot.bids,
+        asks=snapshot.asks,
+        max_impact_bps=max_impact_bps,
+    )
+
+
+def orderbook_depth_notional_cap(
+    snapshot: OrderBookSnapshot,
+    *,
+    direction: str,
+    max_impact_bps: Decimal,
+) -> Decimal:
+    probe = orderbook_fill_for_qty(
+        snapshot,
+        direction=direction,
+        qty=Decimal("1E30"),
+        max_impact_bps=max_impact_bps,
+    )
+    return positive_finite_decimal(probe.available_notional, "orderbook depth notional cap")
+
+
 def ticker_snapshot_is_fresh(
     source_time: datetime,
     *,
@@ -379,6 +435,17 @@ def execution_plan_entry_reference(plan: ExecutionPlan, signal: MarketSignal) ->
     snapshot = plan.sizing_snapshot if isinstance(plan.sizing_snapshot, dict) else {}
     raw_value = snapshot.get("entry_price", signal.entry_reference)
     return positive_finite_decimal(raw_value, "plan entry reference")
+
+
+async def latest_orderbook(session: AsyncSession, symbol: str) -> OrderBookSnapshot | None:
+    return (
+        await session.execute(
+            select(OrderBookSnapshot)
+            .where(OrderBookSnapshot.symbol == symbol)
+            .order_by(desc(OrderBookSnapshot.source_time), desc(OrderBookSnapshot.id))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | None:
@@ -778,6 +845,7 @@ async def create_execution_plan(
     version = int(current_version) + 1
     now = datetime.now(UTC)
     ticker = await latest_ticker(session, signal.symbol)
+    orderbook = await latest_orderbook(session, signal.symbol)
     spec = await latest_spec(session, signal.symbol, cutoff=now)
     warnings: list[str] = list(signal.warnings or [])
     status_override: str | None = None
@@ -794,27 +862,38 @@ async def create_execution_plan(
     )
     if baseline_policy_blocked:
         warnings.append("Некалиброванный baseline разрешен только для диагностики; исполнение заблокировано")
-    entry_source = "explicit" if entry_price is not None else "current_executable_quote"
-    if entry_price is not None:
-        planning_entry = positive_finite_decimal(entry_price, "planning entry")
-    else:
-        try:
+    orderbook_is_fresh = bool(
+        orderbook is not None
+        and orderbook_snapshot_is_fresh(
+            orderbook.source_time,
+            now=now,
+            max_age_seconds=settings.max_orderbook_age_seconds,
+            received_at=orderbook.received_at,
+        )
+    )
+    entry_source = "orderbook_best_quote"
+    try:
+        if orderbook_is_fresh and orderbook is not None:
+            planning_entry = executable_entry_price(
+                direction=signal.direction,
+                bid_price=orderbook.best_bid,
+                ask_price=orderbook.best_ask,
+            )
+        elif entry_price is not None:
+            planning_entry = positive_finite_decimal(entry_price, "planning entry")
+            entry_source = "explicit_for_blocked_diagnostics"
+        else:
             planning_entry = executable_entry_price(
                 direction=signal.direction,
                 bid_price=ticker.bid_price if ticker is not None else None,
                 ask_price=ticker.ask_price if ticker is not None else None,
             )
-        except ValueError as exc:
-            # Persist a blocked diagnostic snapshot without pretending that the
-            # historical signal reference is still executable.
-            planning_entry = positive_finite_decimal(signal.entry_reference, "signal entry reference")
-            entry_source = "signal_reference_for_blocked_diagnostics"
-            status_override = "BLOCKED_DATA"
-            warnings.append(f"Текущая исполнимая bid/ask-котировка недоступна: {exc}")
-
-    if not signal.entry_low <= planning_entry <= signal.entry_high:
-        entry_outside_zone = True
-        warnings.append("Текущая исполнимая цена вне зоны входа рекомендации")
+            entry_source = "ticker_quote_for_blocked_diagnostics"
+    except ValueError as exc:
+        planning_entry = positive_finite_decimal(signal.entry_reference, "signal entry reference")
+        entry_source = "signal_reference_for_blocked_diagnostics"
+        status_override = "BLOCKED_DATA"
+        warnings.append(f"Текущая исполнимая котировка недоступна: {exc}")
 
     c_eff, available_margin, verified, capital_snapshot = await effective_capital(
         session,
@@ -837,6 +916,9 @@ async def create_execution_plan(
     ):
         status_override = "BLOCKED_STALE_DATA"
         warnings.append("Текущая цена устарела или отсутствует")
+    if not orderbook_is_fresh:
+        status_override = "BLOCKED_STALE_DATA"
+        warnings.append("Снимок глубины рынка отсутствует, устарел или имеет будущее время")
     if spec is None:
         status_override = "BLOCKED_DATA"
         warnings.append("Спецификация инструмента отсутствует")
@@ -889,48 +971,105 @@ async def create_execution_plan(
         funding_rate=funding_rate,
     )
 
-    liquidity_cap = Decimal("0")
+    turnover_liquidity_cap = Decimal("0")
     if ticker is not None:
         try:
-            liquidity_cap = liquidity_notional_cap(ticker.turnover_24h)
+            turnover_liquidity_cap = liquidity_notional_cap(ticker.turnover_24h)
         except ValueError as exc:
             if status_override is None:
                 status_override = "BLOCKED_DATA"
             warnings.append(f"Снимок ликвидности отсутствует или некорректен: {exc}")
+
+    depth_liquidity_cap = Decimal("0")
+    max_impact_bps = Decimal(str(settings.max_vwap_impact_bps))
+    if orderbook_is_fresh and orderbook is not None:
+        try:
+            depth_liquidity_cap = orderbook_depth_notional_cap(
+                orderbook,
+                direction=signal.direction,
+                max_impact_bps=max_impact_bps,
+            )
+        except ValueError as exc:
+            status_override = "BLOCKED_DATA"
+            warnings.append(f"Снимок глубины рынка некорректен: {exc}")
+    liquidity_candidates = [
+        value for value in (turnover_liquidity_cap, depth_liquidity_cap) if value > 0
+    ]
+    liquidity_cap = min(liquidity_candidates) if liquidity_candidates else Decimal("0")
+
     open_risk = await open_risk_usdt(session, profile=profile)
     reserved_margin = await reserved_margin_usdt(session, profile=profile)
     max_total_risk = c_eff * profile_policy.max_total_risk_rate
     remaining_portfolio_risk = max(Decimal("0"), max_total_risk - open_risk)
-    try:
-        planning_downside_rate = stress_downside_rate(
-            planning_entry,
-            signal.stop_loss,
-            signal.direction,
-            costs,
+    fill_evidence: FillSimulation | None = None
+    portfolio_notional_cap = Decimal("0")
+    depth_converged = not orderbook_is_fresh
+    for _iteration in range(5):
+        try:
+            planning_downside_rate = stress_downside_rate(
+                planning_entry,
+                signal.stop_loss,
+                signal.direction,
+                costs,
+            )
+        except ValueError:
+            planning_downside_rate = Decimal("0")
+        portfolio_notional_cap = (
+            remaining_portfolio_risk / planning_downside_rate
+            if planning_downside_rate > 0
+            else Decimal("0")
         )
-    except ValueError:
-        planning_downside_rate = Decimal("0")
-    portfolio_notional_cap = (
-        remaining_portfolio_risk / planning_downside_rate if planning_downside_rate > 0 else Decimal("0")
-    )
+        plan_math = calculate_position_plan(
+            effective_capital=c_eff,
+            risk_rate=profile_policy.risk_rate,
+            entry=planning_entry,
+            stop=signal.stop_loss,
+            take_profit=signal.take_profit_1,
+            direction=signal.direction,
+            costs=costs,
+            constraints=constraints,
+            leverage=profile_policy.default_leverage,
+            available_margin=available_margin,
+            margin_reserve_rate=profile_policy.margin_reserve_rate,
+            reserved_margin=reserved_margin,
+            liquidity_notional_cap=liquidity_cap,
+            portfolio_notional_cap=portfolio_notional_cap,
+            capital_verified=verified,
+        )
+        if not orderbook_is_fresh or orderbook is None or plan_math.qty <= 0:
+            depth_converged = True
+            break
+        try:
+            fill_evidence = orderbook_fill_for_qty(
+                orderbook,
+                direction=signal.direction,
+                qty=plan_math.qty,
+                max_impact_bps=max_impact_bps,
+            )
+        except ValueError as exc:
+            status_override = "BLOCKED_DATA"
+            warnings.append(f"Невозможно оценить исполнение по глубине: {exc}")
+            break
+        if fill_evidence.status != "FULL" or fill_evidence.vwap is None:
+            status_override = "BLOCKED_LIQUIDITY"
+            warnings.append(
+                "Недостаточная глубина для полного исполнения в допустимом ценовом воздействии"
+            )
+            break
+        next_entry = positive_finite_decimal(fill_evidence.vwap, "orderbook VWAP")
+        if next_entry == planning_entry:
+            depth_converged = True
+            entry_source = "orderbook_depth_vwap"
+            break
+        planning_entry = next_entry
+        entry_source = "orderbook_depth_vwap"
+    if orderbook_is_fresh and not depth_converged and status_override is None:
+        status_override = "BLOCKED_INVALID_INPUT"
+        warnings.append("Расчёт размера и VWAP по глубине не сошёлся")
 
-    plan_math = calculate_position_plan(
-        effective_capital=c_eff,
-        risk_rate=profile_policy.risk_rate,
-        entry=planning_entry,
-        stop=signal.stop_loss,
-        take_profit=signal.take_profit_1,
-        direction=signal.direction,
-        costs=costs,
-        constraints=constraints,
-        leverage=profile_policy.default_leverage,
-        available_margin=available_margin,
-        margin_reserve_rate=profile_policy.margin_reserve_rate,
-        reserved_margin=reserved_margin,
-        liquidity_notional_cap=liquidity_cap,
-        portfolio_notional_cap=portfolio_notional_cap,
-        capital_verified=verified,
-    )
+    if not signal.entry_low <= planning_entry <= signal.entry_high:
+        entry_outside_zone = True
+        warnings.append("Текущий VWAP полного исполнения вне зоны входа рекомендации")
     plan_upside_rate: Decimal | None = None
     plan_timeout_net_rate: Decimal | None = None
     plan_break_even_tp_probability: Decimal | None = None
@@ -1048,6 +1187,42 @@ async def create_execution_plan(
                 str(plan_break_even_tp_probability) if plan_break_even_tp_probability is not None else None
             ),
             "break_even_probability_semantics": ("P_SL=1-P_TP-P_TIMEOUT; P_TIMEOUT fixed"),
+            "execution_quality": {
+                "schema": ORDERBOOK_EXECUTION_SCHEMA_VERSION,
+                "snapshot_source_time": (
+                    orderbook.source_time.isoformat() if orderbook is not None else None
+                ),
+                "snapshot_received_at": (
+                    orderbook.received_at.isoformat() if orderbook is not None else None
+                ),
+                "snapshot_age_seconds": (
+                    (now - orderbook.source_time).total_seconds() if orderbook is not None else None
+                ),
+                "update_id": orderbook.update_id if orderbook is not None else None,
+                "sequence": orderbook.sequence if orderbook is not None else None,
+                "depth_requested": orderbook.depth if orderbook is not None else None,
+                "max_impact_bps": str(max_impact_bps),
+                "fill_status": fill_evidence.status if fill_evidence is not None else None,
+                "requested_qty": (
+                    str(fill_evidence.requested_qty) if fill_evidence is not None else None
+                ),
+                "filled_qty": str(fill_evidence.filled_qty) if fill_evidence is not None else None,
+                "unfilled_qty": (
+                    str(fill_evidence.unfilled_qty) if fill_evidence is not None else None
+                ),
+                "vwap": str(fill_evidence.vwap) if fill_evidence and fill_evidence.vwap else None,
+                "worst_price": (
+                    str(fill_evidence.worst_price)
+                    if fill_evidence and fill_evidence.worst_price
+                    else None
+                ),
+                "impact_bps": (
+                    str(fill_evidence.impact_bps)
+                    if fill_evidence and fill_evidence.impact_bps is not None
+                    else None
+                ),
+                "levels_used": fill_evidence.levels_used if fill_evidence is not None else 0,
+            },
             "capital": capital_snapshot,
             "instrument": {
                 "tick_size": str(spec.tick_size) if spec is not None else None,
@@ -1058,7 +1233,9 @@ async def create_execution_plan(
                 "max_leverage": str(constraints.max_leverage),
             },
             "caps": {
-                "liquidity_notional": str(liquidity_cap) if liquidity_cap is not None else None,
+                "liquidity_notional": str(liquidity_cap),
+                "turnover_liquidity_notional": str(turnover_liquidity_cap),
+                "orderbook_depth_notional": str(depth_liquidity_cap),
                 "portfolio_notional": str(portfolio_notional_cap),
                 "available_margin": str(available_margin) if available_margin is not None else None,
                 "reserved_margin_usdt": str(reserved_margin),

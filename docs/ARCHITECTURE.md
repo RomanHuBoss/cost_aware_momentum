@@ -4,6 +4,20 @@
 
 Система advisory-only. Bybit client выполняет public/read-only GET operations; order placement, amend и cancel отсутствуют. PostgreSQL является единственным state store. API/UI, inference worker и trainer запускаются отдельными процессами.
 
+## Point-in-time execution flow 1.14.0
+
+1. Inference worker запрашивает public/read-only Bybit REST orderbook для активных symbols с bounded depth.
+2. Normalizer проверяет symbol, timestamps, ordering, positive levels и uncrossed geometry; сохраняются matching-engine/source time и local receipt time.
+3. PostgreSQL хранит immutable prospective snapshots; natural key `symbol + source_time + update_id` допускает перезапуск биржевого сервиса и повтор `u`.
+4. Execution plan выбирает asks для LONG или bids для SHORT и вычисляет доступный notional внутри `MAX_VWAP_IMPACT_BPS`.
+5. Position sizing использует минимум turnover cap и depth cap, затем пересчитывает full-fill VWAP, stop-distance risk и qty до устойчивого результата.
+6. `PARTIAL`, `NO_FILL`, stale/future snapshot и несовместимый plan evidence блокируют действие.
+7. Acceptance повторяет simulation на свежем snapshot для всей qty; при изменении создаётся новая plan version.
+8. Operator decision сохраняет source/receipt timestamps, update/sequence, VWAP, worst price, impact и latency.
+9. Retention удаляет snapshots старше `ORDERBOOK_RETENTION_HOURS`; архив до 1.14.0 не восстанавливается.
+
+Граница: это immediate-market prospective evidence. Queue position, RPI liquidity, historical depth backfill, limit-order fill probability и реальный OMS partial-fill lifecycle не входят в текущую архитектуру.
+
 ## Training and validation data flow 1.13.0
 
 1. Confirmed hourly last-price candles, hourly mark-price candles, фактические funding settlements и instrument funding interval загружаются из PostgreSQL одним `TrainingMarketData` bundle (`app/ml/lifecycle.py`).

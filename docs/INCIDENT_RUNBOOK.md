@@ -1,5 +1,25 @@
 # Incident Runbook
 
+## Симптом: все планы стали `BLOCKED_STALE_DATA` после 1.14.0
+
+Проверьте, что migration head равен `0010_orderbook_exec_evidence`, worker выполняет `market_sync`, а `orderbooks.failed` не растёт. Сравните exchange `source_time`, local `received_at` и `MAX_ORDERBOOK_AGE_SECONDS`. Не увеличивайте stale threshold только ради появления планов; сначала устраните сетевую задержку, API errors, неверное системное время или слишком длинный market cycle.
+
+## Симптом: `BLOCKED_LIQUIDITY` / current orderbook cannot fully fill
+
+Плановая qty не помещается в доступную bid/ask depth внутри `MAX_VWAP_IMPACT_BPS`. Не округляйте qty вверх и не заменяйте VWAP best quote. Уменьшите капитал/risk policy, дождитесь нового snapshot либо осознанно измените impact policy с последующим пересчётом plan.
+
+## Симптом: legacy plan требует recalculation
+
+Execution plan создан до `bybit-rest-depth-vwap-fill-v1`, его evidence повреждено или qty/VWAP не совпадают. Это ожидаемое fail-closed поведение. Используйте возвращённый `new_plan_id`; не редактируйте `sizing_snapshot` вручную.
+
+## Симптом: `orderbooks.failed` растёт
+
+Проверьте public Bybit connectivity, response type, symbol eligibility, timestamps, sorted levels и crossed-book diagnostics. При большом dynamic universe сравните duration `market_sync` с `MARKET_POLL_SECONDS`. Не добавляйте unbounded concurrency и не отключайте validation.
+
+## Симптом: таблица orderbook быстро растёт
+
+Проверьте `ORDERBOOK_DEPTH_LEVELS`, число активных symbols, `MARKET_POLL_SECONDS`, `ORDERBOOK_RETENTION_HOURS` и успешность hourly `market_snapshot_retention`. Уменьшение retention допустимо после оценки audit requirements; удаление свежего evidence перед разбором инцидента нежелательно.
+
 ## Симптом: active artifact не загружается после 1.13.0
 
 Вероятная причина: artifact создан до `bybit-mark-price-hourly-isolated-margin-proxy-v1`, metadata отсутствует/повреждена либо leverage/reserve не совпадает. Не редактируйте joblib вручную. Сохраните artifact для аудита, завершите mark-price backfill, подтвердите `DEFAULT_LEVERAGE`, переобучите candidate и активируйте только artifact с корректным SHA-256 и complete margin-path schema.

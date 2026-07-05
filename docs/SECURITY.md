@@ -1,5 +1,15 @@
 # Security
 
+## Execution evidence boundary 1.14.0
+
+- Orderbook endpoint остаётся public GET; create/amend/cancel order methods не добавлены.
+- Snapshot payload проходит strict positive/sorted/uncrossed validation; stale, future-dated или malformed data блокирует execution.
+- Natural key не доверяет `update_id` как вечному идентификатору и включает matching-engine source time.
+- Legacy plan без совместимого depth evidence не может быть принят после обновления; создаётся новая версия.
+- Full raw depth не отправляется в браузер как отдельный endpoint и не содержит credentials.
+- Retention ограничивает объём prospective market evidence; реальные API keys и `.env` по-прежнему исключаются из release.
+- Simulation не размещает ордер и не должна интерпретироваться как подтверждённый exchange fill.
+
 - Default bind: `127.0.0.1`.
 - `.env` и credentials запрещены в release archive.
 - Bybit integration не содержит create/amend/cancel order methods.

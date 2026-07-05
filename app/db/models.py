@@ -112,6 +112,40 @@ class TickerSnapshot(Base):
     raw: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
 
+class OrderBookSnapshot(Base):
+    __tablename__ = "orderbook_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "source_time",
+            "update_id",
+            name="uq_orderbook_symbol_source_update",
+        ),
+        CheckConstraint("depth > 0", name="ck_orderbook_depth_positive"),
+        CheckConstraint(
+            "best_bid > 0 AND best_ask > 0",
+            name="ck_orderbook_prices_positive",
+        ),
+        CheckConstraint("best_ask >= best_bid", name="ck_orderbook_not_crossed"),
+        Index("ix_orderbook_symbol_source_time", "symbol", "source_time"),
+        {"schema": "market"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    system_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False)
+    best_bid: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    best_ask: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    bids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    asks: Mapped[list] = mapped_column(JSONB, nullable=False)
+    raw: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
 class FundingRate(Base):
     __tablename__ = "funding"
     __table_args__ = (

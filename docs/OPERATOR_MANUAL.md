@@ -1,5 +1,24 @@
 # Operator Manual
 
+## Upgrade to 1.14.0
+
+1. Остановите API, worker и trainer; сохраните backup PostgreSQL и текущий model registry/artifact.
+2. Обновите исходники и перенесите четыре orderbook-параметра из `.env.example` в локальный `.env` либо подтвердите defaults.
+3. Выполните `python manage.py migrate`; ожидаемый head — `0010_orderbook_exec_evidence`.
+4. Выполните `python manage.py doctor` и затем запустите worker.
+5. В heartbeat/job details проверьте `orderbooks.requested/stored/duplicates/failed`. Повторные snapshots могут быть idempotent duplicates; систематические failures требуют расследования.
+6. Дождитесь свежих snapshots для symbols. План без свежего depth evidence будет `BLOCKED_STALE_DATA`.
+7. Existing `ACTIONABLE` plans 1.13.0 не принимайте как legacy contract: endpoint создаст новую версию с depth/VWAP evidence.
+8. Перед ручным входом проверьте complete-fill VWAP, impact, worst level и operator latency в details. `PARTIAL/NO_FILL` означает запрет, а не предложение вручную округлить qty вверх.
+9. Изменение `MAX_VWAP_IMPACT_BPS` или depth требует пересчёта plan; retraining модели не требуется.
+
+## Как интерпретировать execution evidence
+
+- `FULL`: весь плановый объём помещается в доступную snapshot depth внутри impact band. Это не гарантия фактического fill после задержки.
+- `PARTIAL`: только часть объёма доступна; система блокирует plan/acceptance.
+- `NO_FILL`: допустимая ликвидность отсутствует или snapshot некорректен; действие блокируется.
+- `operator_latency_seconds`: время от plan calculation до acceptance revalidation. Большая задержка требует нового snapshot и обычно приводит к plan version change.
+
 ## Upgrade to 1.13.0
 
 1. Сохраните backup PostgreSQL, model registry и active artifact.

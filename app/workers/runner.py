@@ -14,7 +14,7 @@ from app.bybit.client import BybitClient
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
 from app.db.locks import advisory_lock
-from app.db.models import JobRun, ModelRegistry, ServiceHeartbeat, TickerSnapshot
+from app.db.models import JobRun, ModelRegistry, OrderBookSnapshot, ServiceHeartbeat, TickerSnapshot
 from app.logging import configure_logging
 from app.ml.runtime import ModelRuntime
 from app.ml.runtime_selection import select_model_runtime
@@ -27,6 +27,7 @@ from app.services.market_data import (
     sync_funding_and_oi,
     sync_funding_history,
     sync_instruments,
+    sync_orderbooks,
     sync_read_only_account,
     sync_tickers,
 )
@@ -323,6 +324,12 @@ class Worker:
                 selected,
                 items=ticker_items,
             )
+            orderbooks = await sync_orderbooks(
+                session,
+                self.client,
+                selected,
+                depth=settings.orderbook_depth_levels,
+            )
 
             newly_admitted = selected if backfill else selected - previous_symbols
             candles = 0
@@ -345,6 +352,7 @@ class Worker:
             summary = selection.summary() if selection else self.universe_summary
             return {
                 "tickers": tickers,
+                "orderbooks": orderbooks,
                 "backfilled_symbols": len(newly_admitted),
                 "candles": candles,
                 "funding": funding,
@@ -586,11 +594,23 @@ class Worker:
 
     async def retention_job(self, event_time: datetime) -> dict:
         async def task(session):
-            cutoff = datetime.now(UTC) - timedelta(hours=max(1, settings.ticker_retention_hours))
-            result = await session.execute(delete(TickerSnapshot).where(TickerSnapshot.source_time < cutoff))
-            return {"ticker_rows_deleted": int(result.rowcount or 0), "cutoff": cutoff.isoformat()}
+            now = datetime.now(UTC)
+            ticker_cutoff = now - timedelta(hours=max(1, settings.ticker_retention_hours))
+            orderbook_cutoff = now - timedelta(hours=max(1, settings.orderbook_retention_hours))
+            ticker_result = await session.execute(
+                delete(TickerSnapshot).where(TickerSnapshot.source_time < ticker_cutoff)
+            )
+            orderbook_result = await session.execute(
+                delete(OrderBookSnapshot).where(OrderBookSnapshot.source_time < orderbook_cutoff)
+            )
+            return {
+                "ticker_rows_deleted": int(ticker_result.rowcount or 0),
+                "orderbook_rows_deleted": int(orderbook_result.rowcount or 0),
+                "ticker_cutoff": ticker_cutoff.isoformat(),
+                "orderbook_cutoff": orderbook_cutoff.isoformat(),
+            }
 
-        return await self.run_job("ticker_retention", event_time, task)
+        return await self.run_job("market_snapshot_retention", event_time, task)
 
     async def expiry_job(self) -> None:
         async with SessionFactory() as session:

@@ -21,9 +21,11 @@ from app.db.models import (
     Instrument,
     InstrumentSpecHistory,
     OpenInterest,
+    OrderBookSnapshot,
     PositionSnapshot,
     TickerSnapshot,
 )
+from app.risk.liquidity import validate_orderbook_levels
 from app.services.audit import append_audit_event, publish_outbox
 
 logger = logging.getLogger(__name__)
@@ -962,6 +964,93 @@ async def sync_tickers(
     if values_list:
         await session.execute(insert(TickerSnapshot).values(values_list))
     return len(values_list)
+
+
+def normalize_orderbook_snapshot(
+    payload: dict,
+    *,
+    expected_symbol: str,
+    received_at: datetime,
+    requested_depth: int,
+) -> dict[str, object]:
+    symbol = str(payload.get("s") or "").strip().upper()
+    if symbol != expected_symbol.strip().upper():
+        raise ValueError(f"Orderbook symbol mismatch: expected {expected_symbol}, got {symbol or 'missing'}")
+    if received_at.tzinfo is None or received_at.utcoffset() is None:
+        raise ValueError("Orderbook received_at must be timezone-aware")
+    if not 1 <= int(requested_depth) <= 1000:
+        raise ValueError("Orderbook depth must be between 1 and 1000")
+
+    system_time = _dt_ms(payload.get("ts"))
+    source_time = _dt_ms(payload.get("cts")) or system_time
+    if system_time is None or source_time is None:
+        raise ValueError("Orderbook timestamps are missing or invalid")
+    if source_time > received_at + timedelta(seconds=5) or system_time > received_at + timedelta(seconds=5):
+        raise ValueError("Orderbook timestamp is materially in the future")
+
+    try:
+        update_id = int(payload.get("u"))
+        sequence = int(payload.get("seq"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Orderbook update_id and sequence must be integers") from exc
+    if update_id < 0 or sequence < 0:
+        raise ValueError("Orderbook update_id and sequence must be non-negative")
+
+    bids, asks = validate_orderbook_levels(
+        bids=payload.get("b") or [],
+        asks=payload.get("a") or [],
+    )
+    if len(bids) > requested_depth or len(asks) > requested_depth:
+        raise ValueError("Orderbook response exceeds requested depth")
+    return {
+        "symbol": symbol,
+        "source_time": source_time,
+        "system_time": system_time,
+        "received_at": received_at,
+        "update_id": update_id,
+        "sequence": sequence,
+        "depth": int(requested_depth),
+        "best_bid": bids[0][0],
+        "best_ask": asks[0][0],
+        "bids": [[str(price), str(size)] for price, size in bids],
+        "asks": [[str(price), str(size)] for price, size in asks],
+        "raw": payload,
+    }
+
+
+async def sync_orderbooks(
+    session: AsyncSession,
+    client: BybitClient,
+    symbols: Iterable[str],
+    *,
+    depth: int,
+) -> dict[str, int]:
+    requested_symbols = sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+    result = {"requested": len(requested_symbols), "stored": 0, "duplicates": 0, "failed": 0}
+    for symbol in requested_symbols:
+        try:
+            payload = await client.get_orderbook(symbol, limit=depth)
+            received_at = datetime.now(UTC)
+            values = normalize_orderbook_snapshot(
+                payload,
+                expected_symbol=symbol,
+                received_at=received_at,
+                requested_depth=depth,
+            )
+            statement = (
+                insert(OrderBookSnapshot)
+                .values(**values)
+                .on_conflict_do_nothing(constraint="uq_orderbook_symbol_source_update")
+            )
+            execution_result = await session.execute(statement)
+            if int(getattr(execution_result, "rowcount", 0) or 0) > 0:
+                result["stored"] += 1
+            else:
+                result["duplicates"] += 1
+        except Exception:
+            result["failed"] += 1
+            logger.exception("Orderbook fetch failed", extra={"symbol": symbol})
+    return result
 
 
 async def sync_funding_and_oi(
