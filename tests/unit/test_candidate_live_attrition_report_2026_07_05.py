@@ -8,6 +8,22 @@ from app.services.attrition import (
 )
 
 
+def _experiment_gate(*, passed: bool, reasons: list[str]) -> dict[str, object]:
+    return {
+        "schema": "model-promotion-experiment-governance-v1",
+        "passed": passed,
+        "reasons": reasons,
+        "experiment_family": "family-v1",
+        "selected_configuration_hash": "c" * 64 if passed else None,
+        "preregistration_record_hash": "d" * 64 if passed else None,
+        "binding": {
+            "model_version": "candidate",
+            "model_sha256": "b" * 64,
+            "horizon_hours": 8,
+        },
+    }
+
+
 def test_report_deduplicates_retries_and_attributes_candidate_and_live_losses() -> None:
     since = datetime(2026, 7, 1, tzinfo=UTC)
     event_time = since + timedelta(hours=1)
@@ -106,6 +122,10 @@ def test_report_deduplicates_retries_and_attributes_candidate_and_live_losses() 
                         "policy_trade_rate_below_minimum",
                     ],
                 },
+                "experiment_promotion_gate": _experiment_gate(
+                    passed=False,
+                    reasons=["quality_gate_failed_before_experiment_promotion"],
+                ),
                 "activated": False,
                 "activation_skipped": "quality_gate_failed",
             },
@@ -116,6 +136,7 @@ def test_report_deduplicates_retries_and_attributes_candidate_and_live_losses() 
             "details": {
                 "candidate_version": "candidate-b",
                 "quality_gate": {"passed": True, "reasons": []},
+                "experiment_promotion_gate": _experiment_gate(passed=True, reasons=[]),
                 "activated": True,
                 "activation_skipped": None,
             },

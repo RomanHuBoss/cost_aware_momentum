@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -12,9 +13,7 @@ from app.db.engine import SessionFactory, dispose_engine
 from app.db.models import ModelRegistry
 from app.ml.artifact_recovery import load_recovery_candidate
 from app.ml.lifecycle import (
-    MODEL_ACTIVATION_QUALITY_GATE_SCHEMA,
     evaluate_quality_gate,
-    register_and_activate_model_candidate,
     register_model_candidate,
     require_passed_quality_gate,
 )
@@ -24,6 +23,11 @@ from app.ml.runtime_selection import (
     recoverable_registry_artifact_notice,
 )
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.model_promotion import (
+    blocked_experiment_promotion_gate,
+    evaluate_experiment_promotion_gate,
+    require_passed_experiment_promotion_gate,
+)
 
 
 def validate_registry_artifact(model: ModelRegistry) -> dict[str, object]:
@@ -57,39 +61,73 @@ def validate_registry_artifact(model: ModelRegistry) -> dict[str, object]:
 def registered_activation_governance(
     model: ModelRegistry,
     *,
+    experiment_promotion_gate: dict[str, object] | None,
     emergency_gate_override: bool,
     override_reason: str | None,
 ) -> dict[str, object]:
     metrics = model.metrics if isinstance(model.metrics, dict) else {}
     quality_gate = metrics.get("quality_gate")
+    quality_validated: dict[str, object] | None = None
+    quality_error: RuntimeError | None = None
+    experiment_validated: dict[str, object] | None = None
+    experiment_error: RuntimeError | None = None
     try:
-        validated = require_passed_quality_gate(
+        quality_validated = require_passed_quality_gate(
             quality_gate if isinstance(quality_gate, dict) else None
         )
     except RuntimeError as exc:
-        if not emergency_gate_override:
-            raise RuntimeError(
-                f"Registered model {model.version} cannot be activated because its quality gate "
-                "is missing, failed, or inconsistent. Use --emergency-gate-override with "
-                "--override-reason only for a reviewed emergency rollback."
-            ) from exc
+        quality_error = exc
+    try:
+        metrics_horizon = metrics.get("horizon_hours")
+        try:
+            expected_horizon = int(metrics_horizon)
+        except (TypeError, ValueError):
+            expected_horizon = None
+        experiment_validated = require_passed_experiment_promotion_gate(
+            experiment_promotion_gate,
+            expected_model_version=model.version,
+            expected_model_sha256=getattr(model, "artifact_sha256", None),
+            expected_horizon_hours=expected_horizon,
+        )
+    except RuntimeError as exc:
+        experiment_error = exc
+
+    if emergency_gate_override:
         normalized_reason = (override_reason or "").strip()
         if not normalized_reason:
-            raise ValueError("Emergency quality-gate override reason is required") from exc
+            raise ValueError("Emergency activation override reason is required")
+        if quality_error is None and experiment_error is None:
+            raise ValueError("Emergency activation override is not allowed when all gates passed")
         return {
-            "schema": MODEL_ACTIVATION_QUALITY_GATE_SCHEMA,
-            "quality_gate_passed": False,
+            "schema": "model-activation-governance-v2",
+            "quality_gate": quality_validated,
+            "experiment_promotion_gate": experiment_promotion_gate,
+            "quality_gate_passed": quality_error is None,
+            "experiment_promotion_gate_passed": experiment_error is None,
             "emergency_gate_override": True,
             "override_reason": normalized_reason,
-            "quality_gate": quality_gate,
         }
-    if emergency_gate_override:
-        raise ValueError("Emergency quality-gate override is not allowed for a passed candidate")
+
     if override_reason is not None and override_reason.strip():
         raise ValueError("Override reason was supplied without --emergency-gate-override")
+    if quality_error is not None:
+        raise RuntimeError(
+            f"Registered model {model.version} cannot be activated because its quality gate "
+            "is missing, failed, or inconsistent. Use --emergency-gate-override with "
+            "--override-reason only for a reviewed emergency rollback."
+        ) from quality_error
+    if experiment_error is not None:
+        raise RuntimeError(
+            f"Registered model {model.version} cannot be activated because its experiment "
+            "promotion gate is missing, failed, or inconsistent. Provide a matching READY "
+            "preregistered experiment family, or use an explicit emergency rollback override."
+        ) from experiment_error
     return {
-        **validated,
+        "schema": "model-activation-governance-v2",
+        "quality_gate": quality_validated,
+        "experiment_promotion_gate": experiment_validated,
         "quality_gate_passed": True,
+        "experiment_promotion_gate_passed": True,
         "emergency_gate_override": False,
         "override_reason": None,
     }
@@ -100,6 +138,7 @@ async def activate_registered_model(
     *,
     actor: str = "operator-cli",
     expected_previous_version: str | None = None,
+    experiment_family: str | None = None,
     emergency_gate_override: bool = False,
     override_reason: str | None = None,
 ) -> dict[str, object]:
@@ -112,12 +151,66 @@ async def activate_registered_model(
         if target is None:
             raise SystemExit(f"Model version not found: {version}")
 
+        metrics = target.metrics if isinstance(target.metrics, dict) else {}
+        if not emergency_gate_override:
+            quality_gate = metrics.get("quality_gate")
+            require_passed_quality_gate(
+                quality_gate if isinstance(quality_gate, dict) else None
+            )
+        persisted_experiment_gate = metrics.get("experiment_promotion_gate")
+        stored_family = (
+            persisted_experiment_gate.get("experiment_family")
+            if isinstance(persisted_experiment_gate, dict)
+            else None
+        )
+        selected_family = (experiment_family or stored_family or "").strip() or None
+        experiment_gate: dict[str, object] | None = None
+        if not emergency_gate_override:
+            if selected_family is None:
+                raise RuntimeError(
+                    "Normal model activation requires an experiment family with matching READY "
+                    "PBO/DSR/preregistration evidence"
+                )
+            horizon = metrics.get("horizon_hours")
+            if isinstance(horizon, bool):
+                horizon = None
+            try:
+                horizon_hours = int(horizon)
+            except (TypeError, ValueError):
+                horizon_hours = 0
+            experiment_gate = await evaluate_experiment_promotion_gate(
+                session,
+                experiment_family=selected_family,
+                model_version=target.version,
+                model_sha256=target.artifact_sha256 or "",
+                horizon_hours=horizon_hours,
+                lock_family=True,
+            )
+        else:
+            experiment_gate = (
+                persisted_experiment_gate
+                if isinstance(persisted_experiment_gate, dict)
+                else None
+            )
+
         activation_governance = registered_activation_governance(
             target,
+            experiment_promotion_gate=experiment_gate,
             emergency_gate_override=emergency_gate_override,
             override_reason=override_reason,
         )
         runtime_metadata = validate_registry_artifact(target)
+        if not emergency_gate_override:
+            runtime_horizon = runtime_metadata.get("horizon_hours")
+            binding = (
+                experiment_gate.get("binding")
+                if isinstance(experiment_gate, dict)
+                else None
+            )
+            if not isinstance(binding, dict) or binding.get("horizon_hours") != runtime_horizon:
+                raise RuntimeError(
+                    "Experiment promotion evidence horizon does not match the validated artifact"
+                )
         previous = (
             await session.execute(
                 select(ModelRegistry)
@@ -138,6 +231,10 @@ async def activate_registered_model(
             .values(active=False)
         )
         target.active = True
+        target.metrics = {
+            **metrics,
+            "experiment_promotion_gate": experiment_gate,
+        }
         await session.flush()
         payload = {
             "version": target.version,
@@ -252,6 +349,10 @@ async def recover_artifact(artifact: Path) -> dict[str, object]:
             existing.version,
             actor="operator-artifact-recovery",
             expected_previous_version=active.version if active else None,
+            emergency_gate_override=True,
+            override_reason=(
+                "Non-production orphan artifact recovery after active registry artifact failure"
+            ),
         )
         return {
             "version": existing.version,
@@ -265,25 +366,33 @@ async def recover_artifact(artifact: Path) -> dict[str, object]:
         }
 
     quality_gate = evaluate_quality_gate(candidate, settings)
+    candidate_digest = candidate.path.read_bytes()
+    experiment_promotion_gate = blocked_experiment_promotion_gate(
+        reason="operator_artifact_recovery_requires_emergency_override",
+        experiment_family=None,
+        model_version=candidate.version,
+        model_sha256=hashlib.sha256(candidate_digest).hexdigest(),
+        horizon_hours=candidate.horizon,
+    )
+    registry = await register_model_candidate(
+        candidate,
+        source="operator_artifact_recovery",
+        quality_gate=quality_gate,
+        activation_requested=bool(quality_gate["passed"]),
+        actor="operator-artifact-recovery",
+        incumbent_recovery=recovery_notice,
+        experiment_promotion_gate=experiment_promotion_gate,
+    )
     activation = None
     if quality_gate["passed"]:
-        registry, activation = await register_and_activate_model_candidate(
-            candidate,
-            source="operator_artifact_recovery",
-            quality_gate=quality_gate,
+        activation = await activate_registered_model(
+            registry.version,
             actor="operator-artifact-recovery",
             expected_previous_version=active.version if active else None,
-            expected_horizon_hours=settings.default_horizon_hours,
-            incumbent_recovery=recovery_notice,
-        )
-    else:
-        registry = await register_model_candidate(
-            candidate,
-            source="operator_artifact_recovery",
-            quality_gate=quality_gate,
-            activation_requested=False,
-            actor="operator-artifact-recovery",
-            incumbent_recovery=recovery_notice,
+            emergency_gate_override=True,
+            override_reason=(
+                "Non-production orphan artifact recovery after active registry artifact failure"
+            ),
         )
     return {
         "version": candidate.version,
@@ -332,6 +441,7 @@ async def async_main(args: argparse.Namespace) -> None:
         elif args.action == "activate":
             result = await activate_registered_model(
                 args.version,
+                experiment_family=args.experiment_family,
                 emergency_gate_override=args.emergency_gate_override,
                 override_reason=args.override_reason,
             )
@@ -354,10 +464,17 @@ def main() -> None:
     )
     activate.add_argument("--version", required=True)
     activate.add_argument(
+        "--experiment-family",
+        help=(
+            "Preregistered experiment family whose READY selected trial must bind to this "
+            "exact model version, SHA-256 and horizon."
+        ),
+    )
+    activate.add_argument(
         "--emergency-gate-override",
         action="store_true",
         help=(
-            "Explicitly activate a model without a passed persisted quality gate. "
+            "Explicitly activate a model without all normal quality/experiment gates. "
             "Reserved for reviewed emergency rollback and requires --override-reason."
         ),
     )

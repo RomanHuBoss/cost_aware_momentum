@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,6 +98,30 @@ def _candidate(tmp_path: Path) -> ModelCandidate:
     )
 
 
+def _experiment_gate() -> dict[str, object]:
+    return {
+        "schema": "model-promotion-experiment-governance-v1",
+        "passed": True,
+        "reasons": [],
+        "experiment_family": "family-v1",
+        "selected_configuration_hash": "c" * 64,
+        "preregistration_record_hash": "d" * 64,
+        "binding": {
+            "model_version": "candidate-v2",
+            "model_sha256": hashlib.sha256(b"immutable-candidate").hexdigest(),
+            "horizon_hours": 8,
+        },
+    }
+
+
+def _patch_experiment_recheck(monkeypatch: pytest.MonkeyPatch, lifecycle: object) -> None:
+    async def evaluate(_session: object, **kwargs: object) -> dict[str, object]:
+        assert kwargs["lock_family"] is True
+        return _experiment_gate()
+
+    monkeypatch.setattr(lifecycle, "evaluate_experiment_promotion_gate", evaluate)
+
+
 @pytest.mark.asyncio
 async def test_register_and_activate_uses_one_transaction(
     tmp_path: Path,
@@ -109,6 +134,7 @@ async def test_register_and_activate_uses_one_transaction(
     event_transactions: list[tuple[str, bool]] = []
 
     monkeypatch.setattr(lifecycle, "SessionFactory", lambda: session)
+    _patch_experiment_recheck(monkeypatch, lifecycle)
     monkeypatch.setattr(
         lifecycle,
         "_validate_candidate_artifact_for_activation",
@@ -128,6 +154,7 @@ async def test_register_and_activate_uses_one_transaction(
         _candidate(tmp_path),
         source="background_trainer",
         quality_gate={"passed": True, "reasons": []},
+        experiment_promotion_gate=_experiment_gate(),
         actor="trainer-1",
         expected_previous_version="incumbent-v1",
         expected_horizon_hours=8,
@@ -157,6 +184,7 @@ async def test_activation_audit_failure_rolls_back_candidate_registration(
     session = _FakeSession(previous)
 
     monkeypatch.setattr(lifecycle, "SessionFactory", lambda: session)
+    _patch_experiment_recheck(monkeypatch, lifecycle)
     monkeypatch.setattr(
         lifecycle,
         "_validate_candidate_artifact_for_activation",
@@ -178,6 +206,7 @@ async def test_activation_audit_failure_rolls_back_candidate_registration(
             _candidate(tmp_path),
             source="background_trainer",
             quality_gate={"passed": True, "reasons": []},
+            experiment_promotion_gate=_experiment_gate(),
             actor="trainer-1",
             expected_previous_version="incumbent-v1",
             expected_horizon_hours=8,
@@ -199,6 +228,7 @@ async def test_atomic_promotion_rejects_changed_active_version_before_registrati
     session = _FakeSession(previous)
 
     monkeypatch.setattr(lifecycle, "SessionFactory", lambda: session)
+    _patch_experiment_recheck(monkeypatch, lifecycle)
     monkeypatch.setattr(
         lifecycle,
         "_validate_candidate_artifact_for_activation",
@@ -210,6 +240,7 @@ async def test_atomic_promotion_rejects_changed_active_version_before_registrati
             _candidate(tmp_path),
             source="background_trainer",
             quality_gate={"passed": True, "reasons": []},
+            experiment_promotion_gate=_experiment_gate(),
             actor="trainer-1",
             expected_previous_version="incumbent-v1",
             expected_horizon_hours=8,

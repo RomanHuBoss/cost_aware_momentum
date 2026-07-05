@@ -8,10 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import JobRun
+from app.services.model_promotion import EXPERIMENT_PROMOTION_GATE_SCHEMA
 
 INFERENCE_ATTRITION_SCHEMA = "hourly-inference-terminal-outcomes-v1"
 EXECUTION_PLAN_ATTRITION_SCHEMA = "execution-plan-attrition-v1"
-ATTRITION_REPORT_SCHEMA = "candidate-live-attrition-report-v1"
+ATTRITION_REPORT_SCHEMA = "candidate-live-attrition-report-v2"
 INFERENCE_JOB_NAMES = ("hourly_inference", "universe_catchup_inference")
 
 
@@ -292,6 +293,7 @@ def build_attrition_report_from_records(
     training_terminal_counts: Counter[str] = Counter()
     gate_reason_counts: Counter[str] = Counter()
     gate_stage_counts: Counter[str] = Counter()
+    experiment_promotion_reason_counts: Counter[str] = Counter()
     activation_skip_counts: Counter[str] = Counter()
     for job in training_records:
         status = str(job.get("status") or "")
@@ -308,6 +310,15 @@ def build_attrition_report_from_records(
             integrity_errors.append("training_quality_gate_invalid")
             training_terminal_counts["INCOMPLETE_EVIDENCE"] += 1
             continue
+        experiment_gate = details.get("experiment_promotion_gate")
+        if (
+            not isinstance(experiment_gate, Mapping)
+            or experiment_gate.get("schema") != EXPERIMENT_PROMOTION_GATE_SCHEMA
+            or not isinstance(experiment_gate.get("passed"), bool)
+        ):
+            integrity_errors.append("training_experiment_promotion_gate_invalid")
+            training_terminal_counts["INCOMPLETE_EVIDENCE"] += 1
+            continue
         candidate_version = str(details.get("candidate_version") or "").strip()
         if not candidate_version:
             integrity_errors.append("training_candidate_version_missing")
@@ -320,13 +331,28 @@ def build_attrition_report_from_records(
             integrity_errors.append("training_quality_gate_failed_without_reasons")
         if gate["passed"] is True and normalized_gate_reasons:
             integrity_errors.append("training_quality_gate_passed_with_reasons")
+        experiment_reasons = experiment_gate.get("reasons", [])
+        if not isinstance(experiment_reasons, list):
+            integrity_errors.append("training_experiment_promotion_reasons_invalid")
+            experiment_reasons = []
+        normalized_experiment_reasons = _unique_strings(experiment_reasons)
+        if experiment_gate["passed"] is False and not normalized_experiment_reasons:
+            integrity_errors.append("training_experiment_promotion_failed_without_reasons")
+        if experiment_gate["passed"] is True and normalized_experiment_reasons:
+            integrity_errors.append("training_experiment_promotion_passed_with_reasons")
         if gate["passed"] is False and details.get("activated") is True:
             integrity_errors.append("training_failed_gate_but_activated")
+        if experiment_gate["passed"] is False and details.get("activated") is True:
+            integrity_errors.append("training_failed_experiment_promotion_but_activated")
         for reason in normalized_gate_reasons:
             gate_reason_counts[reason] += 1
             gate_stage_counts[quality_gate_reason_stage(reason)] += 1
         if gate["passed"] is False:
             training_terminal_counts["QUALITY_GATE_FAILED"] += 1
+        elif experiment_gate["passed"] is False:
+            training_terminal_counts["EXPERIMENT_PROMOTION_GATE_FAILED"] += 1
+            for reason in normalized_experiment_reasons:
+                experiment_promotion_reason_counts[reason] += 1
         elif details.get("activated") is True:
             training_terminal_counts["ACTIVATED"] += 1
         else:
@@ -396,6 +422,9 @@ def build_attrition_report_from_records(
             "terminal_outcome_counts": _counted(training_terminal_counts),
             "quality_gate_reason_counts": _counted(gate_reason_counts),
             "quality_gate_stage_counts": _counted(gate_stage_counts),
+            "experiment_promotion_reason_counts": _counted(
+                experiment_promotion_reason_counts
+            ),
             "activation_skip_counts": _counted(activation_skip_counts),
         },
     }

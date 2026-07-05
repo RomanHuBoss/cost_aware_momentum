@@ -75,6 +75,10 @@ from app.ml.training import (
     zero_market_context_split,
 )
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.model_promotion import (
+    evaluate_experiment_promotion_gate,
+    require_passed_experiment_promotion_gate,
+)
 
 
 @dataclass(frozen=True)
@@ -1703,6 +1707,7 @@ async def register_model_candidate(
     activation_requested: bool,
     actor: str,
     incumbent_recovery: dict[str, Any] | None = None,
+    experiment_promotion_gate: dict[str, Any] | None = None,
 ) -> ModelRegistry:
     digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
     async with SessionFactory() as session, session.begin():
@@ -1715,6 +1720,7 @@ async def register_model_candidate(
             activation_requested=activation_requested,
             actor=actor,
             incumbent_recovery=incumbent_recovery,
+            experiment_promotion_gate=experiment_promotion_gate,
         )
     return registry
 
@@ -1726,8 +1732,10 @@ def _candidate_registry_metrics(
     quality_gate: dict[str, Any] | None,
     activation_requested: bool,
     incumbent_recovery: dict[str, Any] | None,
+    experiment_promotion_gate: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     safe_quality_gate = json_compatible(quality_gate)
+    safe_experiment_promotion_gate = json_compatible(experiment_promotion_gate)
     metrics = json_compatible(
         {
             **candidate.metrics,
@@ -1745,6 +1753,7 @@ def _candidate_registry_metrics(
             "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
             "incumbent_recovery": incumbent_recovery,
             "quality_gate": safe_quality_gate,
+            "experiment_promotion_gate": safe_experiment_promotion_gate,
             "activation_requested": activation_requested,
         }
     )
@@ -1761,6 +1770,7 @@ async def _register_model_candidate_in_session(
     activation_requested: bool,
     actor: str,
     incumbent_recovery: dict[str, Any] | None,
+    experiment_promotion_gate: dict[str, Any] | None,
 ) -> ModelRegistry:
     metrics, safe_quality_gate = _candidate_registry_metrics(
         candidate,
@@ -1768,6 +1778,7 @@ async def _register_model_candidate_in_session(
         quality_gate=quality_gate,
         activation_requested=activation_requested,
         incumbent_recovery=incumbent_recovery,
+        experiment_promotion_gate=experiment_promotion_gate,
     )
     registry = ModelRegistry(
         name=f"Hourly direction-conditional barrier {candidate.model_type} h{candidate.horizon}",
@@ -1795,6 +1806,7 @@ async def _register_model_candidate_in_session(
             "version": candidate.version,
             "source": source,
             "quality_gate": safe_quality_gate,
+            "experiment_promotion_gate": json_compatible(experiment_promotion_gate),
             "activation_requested": activation_requested,
             "incumbent_recovery": json_compatible(incumbent_recovery),
         },
@@ -1833,6 +1845,7 @@ async def register_and_activate_model_candidate(
     *,
     source: str,
     quality_gate: dict[str, Any] | None,
+    experiment_promotion_gate: dict[str, Any] | None = None,
     actor: str,
     expected_previous_version: str | None,
     expected_horizon_hours: int,
@@ -1840,14 +1853,35 @@ async def register_and_activate_model_candidate(
 ) -> tuple[ModelRegistry, dict[str, object]]:
     """Register and activate a new candidate in one PostgreSQL transaction."""
 
-    activation_gate = require_passed_quality_gate(quality_gate)
+    quality_activation_gate = require_passed_quality_gate(quality_gate)
     digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
+    experiment_activation_gate = require_passed_experiment_promotion_gate(
+        experiment_promotion_gate,
+        expected_model_version=candidate.version,
+        expected_model_sha256=digest,
+        expected_horizon_hours=expected_horizon_hours,
+    )
     runtime_metadata = _validate_candidate_artifact_for_activation(
         candidate,
         digest=digest,
         expected_horizon_hours=expected_horizon_hours,
     )
+    experiment_family = str(experiment_activation_gate["experiment_family"])
     async with SessionFactory() as session, session.begin():
+        fresh_experiment_gate = await evaluate_experiment_promotion_gate(
+            session,
+            experiment_family=experiment_family,
+            model_version=candidate.version,
+            model_sha256=digest,
+            horizon_hours=expected_horizon_hours,
+            lock_family=True,
+        )
+        experiment_activation_gate = require_passed_experiment_promotion_gate(
+            fresh_experiment_gate,
+            expected_model_version=candidate.version,
+            expected_model_sha256=digest,
+            expected_horizon_hours=expected_horizon_hours,
+        )
         previous = (
             await session.execute(
                 select(ModelRegistry)
@@ -1873,6 +1907,7 @@ async def register_and_activate_model_candidate(
             activation_requested=True,
             actor=actor,
             incumbent_recovery=incumbent_recovery,
+            experiment_promotion_gate=experiment_activation_gate,
         )
         await session.execute(
             update(ModelRegistry)
@@ -1886,7 +1921,13 @@ async def register_and_activate_model_candidate(
             "model_type": registry.model_type,
             "previous_version": (previous.version if previous and previous.id != registry.id else None),
             "expected_previous_version": expected_previous_version,
-            "activation_governance": activation_gate,
+            "activation_governance": {
+                "schema": "model-activation-governance-v2",
+                "quality_gate": quality_activation_gate,
+                "experiment_promotion_gate": experiment_activation_gate,
+                "emergency_gate_override": False,
+                "override_reason": None,
+            },
             "runtime": runtime_metadata,
         }
         await append_audit_event(

@@ -128,8 +128,9 @@ class Settings(BaseSettings):
     drift_max_brier_delta: float = 0.05
     drift_max_actionability_rate_delta: float = 0.20
 
-    # Research experiment-selection governance. These thresholds only classify
-    # experiment reports; they never activate, deactivate, or roll back a model.
+    # Research experiment-selection governance. Reports remain observational, but a READY
+    # preregistered family bound to the exact artifact is now mandatory evidence for
+    # normal activation. The report itself still cannot mutate model state.
     experiment_pbo_segments: int = 6
     experiment_min_trials: int = 4
     experiment_min_periods: int = 60
@@ -147,6 +148,9 @@ class Settings(BaseSettings):
     # separate process so CPU-heavy fitting never blocks API or inference work.
     auto_train_enabled: bool = True
     auto_train_auto_activate: bool = True
+    # Optional family to evaluate after training. A fresh artifact is normally registered
+    # inactive until its exact SHA/version/horizon has completed the preregistered trials.
+    auto_train_experiment_family: str | None = None
     auto_train_model_type: Literal["logistic", "hist_gradient_boosting"] = "logistic"
     auto_train_interval_hours: int = 168
     auto_train_retry_hours: int = 6

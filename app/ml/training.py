@@ -58,6 +58,34 @@ HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
 MIN_TIMEOUT_SAMPLES_PER_DIRECTION = 5
 
+HISTORICAL_FUNDING_POLICY_METADATA_COLUMNS = (
+    "historical_funding_timeline_complete",
+    "historical_funding_horizon_rate",
+    "historical_funding_horizon_settlements",
+    "historical_funding_realized_rate",
+    "historical_funding_realized_settlements",
+)
+INTRAHORIZON_MARGIN_POLICY_METADATA_COLUMNS = (
+    "intrahorizon_margin_path_complete",
+    "intrahorizon_margin_schema",
+    "research_leverage",
+    "liquidation_equity_reserve_fraction",
+    "mark_max_adverse_excursion_rate",
+    "mark_max_favorable_excursion_rate",
+    "mark_minimum_equity_rate",
+    "mark_liquidated",
+    "margin_path_exit_index",
+    "margin_path_exit_at_open",
+    "margin_path_exit_time",
+    "margin_path_realized_gross_return",
+    "historical_funding_margin_path_rate",
+    "historical_funding_margin_path_settlements",
+)
+POLICY_PATH_METADATA_COLUMNS = (
+    *HISTORICAL_FUNDING_POLICY_METADATA_COLUMNS,
+    *INTRAHORIZON_MARGIN_POLICY_METADATA_COLUMNS,
+)
+
 
 class TemporalCalibratedBarrierModel:
     """Direction-conditional TP/SL/TIMEOUT classifier with later-window sigmoid calibration.
@@ -1153,6 +1181,14 @@ def _dataset_split_from_frames(
     ]
     if "entry_price" in test.columns:
         meta_columns.insert(5, "entry_price")
+    for column in POLICY_PATH_METADATA_COLUMNS:
+        present = [column in frame.columns for frame in (train, cal, test)]
+        if any(present) and not all(present):
+            raise ValueError(
+                f"Temporal split policy metadata column {column!r} is not present in every window"
+            )
+        if all(present):
+            meta_columns.append(column)
     missing = [
         column
         for column in meta_columns
@@ -1576,22 +1612,7 @@ def apply_intrahorizon_margin_path(
     after the ex-ante policy inputs have already been constructed.
     """
 
-    required = {
-        "intrahorizon_margin_path_complete",
-        "intrahorizon_margin_schema",
-        "research_leverage",
-        "liquidation_equity_reserve_fraction",
-        "mark_max_adverse_excursion_rate",
-        "mark_max_favorable_excursion_rate",
-        "mark_minimum_equity_rate",
-        "mark_liquidated",
-        "margin_path_exit_index",
-        "margin_path_exit_at_open",
-        "margin_path_exit_time",
-        "margin_path_realized_gross_return",
-        "historical_funding_margin_path_rate",
-        "historical_funding_margin_path_settlements",
-    }
+    required = set(INTRAHORIZON_MARGIN_POLICY_METADATA_COLUMNS)
     missing = sorted(required - set(meta.columns))
     result = meta.copy()
     if missing:

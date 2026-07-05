@@ -312,8 +312,8 @@ async def test_recover_artifact_registers_and_activates_gate_passed_orphan(
         model_type="barrier_logistic",
         artifact_path=str(tmp_path / "deleted.joblib"),
     )
-    candidate = SimpleNamespace(version=path.stem, path=path.resolve())
-    registered = SimpleNamespace(id="candidate-id")
+    candidate = SimpleNamespace(version=path.stem, path=path.resolve(), horizon=8)
+    registered = SimpleNamespace(id="candidate-id", version=path.stem)
     activations: list[tuple[str, str | None]] = []
 
     monkeypatch.setattr(
@@ -334,28 +334,41 @@ async def test_recover_artifact_registers_and_activates_gate_passed_orphan(
         lambda *_args, **_kwargs: {"passed": True, "reasons": [], "relative": None},
     )
 
-    async def register_and_activate(
+    async def register_inactive(
         candidate_value: object,
         *,
         source: str,
         quality_gate: dict[str, object] | None,
+        activation_requested: bool,
         actor: str,
-        expected_previous_version: str | None,
-        expected_horizon_hours: int,
         incumbent_recovery: dict[str, object] | None,
-    ) -> tuple[object, dict[str, object]]:
+        experiment_promotion_gate: dict[str, object] | None,
+    ) -> object:
         assert source == "operator_artifact_recovery"
         assert quality_gate and quality_gate["passed"] is True
-        assert expected_horizon_hours == 8
+        assert activation_requested is True
         assert incumbent_recovery is not None
-        activations.append((candidate_value.version, expected_previous_version))
-        return registered, {"version": candidate_value.version, "actor": actor}
+        assert experiment_promotion_gate and experiment_promotion_gate["passed"] is False
+        assert actor == "operator-artifact-recovery"
+        assert candidate_value.version == path.stem
+        return registered
 
-    monkeypatch.setattr(
-        model_registry,
-        "register_and_activate_model_candidate",
-        register_and_activate,
-    )
+    async def activate(
+        version: str,
+        *,
+        actor: str,
+        expected_previous_version: str | None,
+        emergency_gate_override: bool,
+        override_reason: str,
+    ) -> dict[str, object]:
+        assert actor == "operator-artifact-recovery"
+        assert emergency_gate_override is True
+        assert override_reason
+        activations.append((version, expected_previous_version))
+        return {"version": version, "actor": actor}
+
+    monkeypatch.setattr(model_registry, "register_model_candidate", register_inactive)
+    monkeypatch.setattr(model_registry, "activate_registered_model", activate)
 
     result = await model_registry.recover_artifact(path)
 

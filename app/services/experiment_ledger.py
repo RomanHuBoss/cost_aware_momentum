@@ -316,10 +316,12 @@ async def experiment_governance_report(
     *,
     experiment_family: str,
     requested_governance: Mapping[str, Any] | None = None,
+    lock_family: bool = False,
 ) -> dict[str, Any]:
     registration = await load_experiment_preregistration(
         session,
         experiment_family=experiment_family,
+        for_update=lock_family,
     )
     if registration is None:
         evidence, counts = await load_experiment_family_evidence(

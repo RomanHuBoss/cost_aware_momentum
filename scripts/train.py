@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 
 from sqlalchemy import desc, select
 
@@ -16,6 +17,10 @@ from app.ml.lifecycle import (
     policy_evaluation_config,
     register_and_activate_model_candidate,
     register_model_candidate,
+)
+from app.services.model_promotion import (
+    blocked_experiment_promotion_gate,
+    evaluate_experiment_promotion_gate,
 )
 
 
@@ -63,12 +68,49 @@ async def run(args: argparse.Namespace) -> None:
         policy_config=policy_evaluation_config(settings),
     )
     quality_gate = evaluate_quality_gate(candidate, settings)
+    candidate_digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
+    experiment_family = (getattr(args, "experiment_family", None) or "").strip() or None
+    if not args.activate:
+        experiment_promotion_gate = blocked_experiment_promotion_gate(
+            reason="activation_not_requested",
+            experiment_family=experiment_family,
+            model_version=candidate.version,
+            model_sha256=candidate_digest,
+            horizon_hours=candidate.horizon,
+        )
+    elif not quality_gate["passed"]:
+        experiment_promotion_gate = blocked_experiment_promotion_gate(
+            reason="quality_gate_failed_before_experiment_promotion",
+            experiment_family=experiment_family,
+            model_version=candidate.version,
+            model_sha256=candidate_digest,
+            horizon_hours=candidate.horizon,
+        )
+    elif experiment_family is None:
+        experiment_promotion_gate = blocked_experiment_promotion_gate(
+            reason="missing_experiment_family",
+            experiment_family=None,
+            model_version=candidate.version,
+            model_sha256=candidate_digest,
+            horizon_hours=candidate.horizon,
+        )
+    else:
+        async with SessionFactory() as promotion_session:
+            experiment_promotion_gate = await evaluate_experiment_promotion_gate(
+                promotion_session,
+                experiment_family=experiment_family,
+                model_version=candidate.version,
+                model_sha256=candidate_digest,
+                horizon_hours=candidate.horizon,
+            )
+
     activation = None
-    if args.activate and quality_gate["passed"]:
+    if args.activate and quality_gate["passed"] and experiment_promotion_gate["passed"]:
         registry, activation = await register_and_activate_model_candidate(
             candidate,
             source="manual_cli",
             quality_gate=quality_gate,
+            experiment_promotion_gate=experiment_promotion_gate,
             actor="training-cli",
             expected_previous_version=incumbent_model.version if incumbent_model else None,
             expected_horizon_hours=settings.default_horizon_hours,
@@ -80,6 +122,7 @@ async def run(args: argparse.Namespace) -> None:
             quality_gate=quality_gate,
             activation_requested=args.activate,
             actor="training-cli",
+            experiment_promotion_gate=experiment_promotion_gate,
         )
 
     print(
@@ -92,13 +135,14 @@ async def run(args: argparse.Namespace) -> None:
             "incumbent_version": candidate.incumbent_version,
             "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
             "quality_gate": quality_gate,
+            "experiment_promotion_gate": experiment_promotion_gate,
             "note": (
                 "Worker will load the registry-active model on its next refresh."
                 if activation is not None
                 else (
-                    "Activation was requested but the quality gate failed; the candidate was registered inactive."
-                    if args.activate and not quality_gate["passed"]
-                    else "Model is registered inactive. Review holdout metrics, then run model-registry activate --version <version>."
+                    "Activation was requested but a required quality or experiment promotion gate failed; the candidate was registered inactive."
+                    if args.activate
+                    else "Model is registered inactive. Complete preregistered backtests, then run model-registry activate --version <version> --experiment-family <family>."
                 )
             ),
         }
@@ -121,6 +165,13 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional rolling training window. Omit to use all confirmed candles.",
+    )
+    parser.add_argument(
+        "--experiment-family",
+        help=(
+            "Preregistered experiment family whose READY selected trial must bind to this "
+            "exact artifact before activation."
+        ),
     )
     parser.add_argument(
         "--activate",

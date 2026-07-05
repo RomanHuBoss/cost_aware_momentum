@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import signal
 from contextlib import suppress
@@ -31,6 +32,10 @@ from app.ml.lifecycle import (
 from app.ml.runtime_selection import recoverable_registry_artifact_notice
 from app.ml.training import minimum_hourly_history_timestamps_for_quality_gate
 from app.services.audit import publish_outbox
+from app.services.model_promotion import (
+    blocked_experiment_promotion_gate,
+    evaluate_experiment_promotion_gate,
+)
 from app.services.trainer_control import (
     TRAINER_CONTROL_ACTIONS,
     TRAINER_CONTROL_JOB_NAME,
@@ -686,9 +691,53 @@ class BackgroundTrainer:
                         expected_symbols=expected_symbols,
                     )
                     gate = evaluate_quality_gate(candidate, settings)
+                    candidate_digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
+                    experiment_family = (settings.auto_train_experiment_family or "").strip() or None
+                    if not settings.auto_train_auto_activate:
+                        experiment_promotion_gate = blocked_experiment_promotion_gate(
+                            reason="automatic_activation_not_requested",
+                            experiment_family=experiment_family,
+                            model_version=candidate.version,
+                            model_sha256=candidate_digest,
+                            horizon_hours=candidate.horizon,
+                        )
+                    elif not gate["passed"]:
+                        experiment_promotion_gate = blocked_experiment_promotion_gate(
+                            reason="quality_gate_failed_before_experiment_promotion",
+                            experiment_family=experiment_family,
+                            model_version=candidate.version,
+                            model_sha256=candidate_digest,
+                            horizon_hours=candidate.horizon,
+                        )
+                    elif settings.active_model_path is not None:
+                        experiment_promotion_gate = blocked_experiment_promotion_gate(
+                            reason="active_model_path_override_configured",
+                            experiment_family=experiment_family,
+                            model_version=candidate.version,
+                            model_sha256=candidate_digest,
+                            horizon_hours=candidate.horizon,
+                        )
+                    elif experiment_family is None:
+                        experiment_promotion_gate = blocked_experiment_promotion_gate(
+                            reason="missing_auto_train_experiment_family",
+                            experiment_family=None,
+                            model_version=candidate.version,
+                            model_sha256=candidate_digest,
+                            horizon_hours=candidate.horizon,
+                        )
+                    else:
+                        async with SessionFactory() as promotion_session:
+                            experiment_promotion_gate = await evaluate_experiment_promotion_gate(
+                                promotion_session,
+                                experiment_family=experiment_family,
+                                model_version=candidate.version,
+                                model_sha256=candidate_digest,
+                                horizon_hours=candidate.horizon,
+                            )
                     can_activate = bool(
                         settings.auto_train_auto_activate
                         and gate["passed"]
+                        and experiment_promotion_gate["passed"]
                         and settings.active_model_path is None
                     )
                     recovery_activation_skipped: str | None = None
@@ -718,6 +767,7 @@ class BackgroundTrainer:
                             candidate,
                             source="background_trainer",
                             quality_gate=gate,
+                            experiment_promotion_gate=experiment_promotion_gate,
                             actor=settings.trainer_id,
                             expected_previous_version=active.version if active else None,
                             expected_horizon_hours=settings.default_horizon_hours,
@@ -728,8 +778,9 @@ class BackgroundTrainer:
                             candidate,
                             source="background_trainer",
                             quality_gate=gate,
-                            activation_requested=False,
+                            activation_requested=bool(settings.auto_train_auto_activate),
                             actor=settings.trainer_id,
+                            experiment_promotion_gate=experiment_promotion_gate,
                             incumbent_recovery=incumbent_recovery,
                         )
                         if recovery_activation_skipped is not None:
@@ -740,6 +791,8 @@ class BackgroundTrainer:
                             activation_skipped = "AUTO_TRAIN_AUTO_ACTIVATE=false"
                         elif not gate["passed"]:
                             activation_skipped = "quality_gate_failed"
+                        elif not experiment_promotion_gate["passed"]:
+                            activation_skipped = "experiment_promotion_gate_failed"
 
                     result = {
                         "trigger": trigger,
@@ -757,6 +810,7 @@ class BackgroundTrainer:
                         "incumbent_metrics_same_holdout": candidate.incumbent_metrics,
                         "incumbent_recovery": incumbent_recovery,
                         "quality_gate": gate,
+                        "experiment_promotion_gate": experiment_promotion_gate,
                         "activated": activation is not None,
                         "activation": activation,
                         "activation_skipped": activation_skipped,

@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.25.0: закрыт silent quality-gate bypass при активации моделей. Fresh candidate может быть атомарно активирован только с непротиворечивым persisted `passed` gate; `train --activate` сначала вычисляет gate и при отказе регистрирует candidate неактивным. Активация уже зарегистрированной модели по умолчанию также требует passed gate; аварийный rollback без него возможен только через явный reasoned override, который сохраняется в audit evidence. Миграция, новые `.env`-параметры и переобучение artifact не требуются.
+> Версия 1.26.1: исправлена регрессия training policy evaluation — `chronological_split` и walk-forward splits теперь сохраняют historical-funding и intrahorizon-margin metadata вместо удаления этих колонок перед `evaluate_policy_model`. Production training больше не падает с `Policy evaluation metadata is missing intrahorizon margin columns`. Изменения схемы БД, `.env`, risk thresholds и runtime artifact contract отсутствуют.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -14,10 +14,10 @@
 - Artifact model использует 10 OHLCV-derived и 7 point-in-time market-context features: OI momentum, mark/index basis, settled funding state и turnover/OI liquidity proxy. Точный OI/basis и свежий funding anchor обязательны; zero-fill и future event leakage запрещены.
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
-- Все state-changing activation paths fail-closed требуют persisted quality gate с `passed=true` и пустым списком причин. Ручной emergency rollback без такого gate требует одновременно `--emergency-gate-override` и непустой `--override-reason`; факт override и исходный gate сохраняются в `MODEL_ACTIVATED` audit payload.
+- Все normal state-changing activation paths fail-closed требуют два независимых контракта: непротиворечивый passed model quality gate и passed `model-promotion-experiment-governance-v1`, связанный с точными version/SHA-256/horizon artifact. Ручной emergency rollback без одного из gates требует одновременно `--emergency-gate-override` и непустой `--override-reason`; исходная evidence и override сохраняются в `MODEL_ACTIVATED` audit payload.
 - Production drift monitoring сравнивает только активную model version с её immutable final-holdout reference: feature/probability PSI, coverage/missingness, maturity-corrected selected-direction calibration и actionability density. Ранние barrier outcomes до полного horizon не входят в calibration; unresolved mature outcomes блокируют evidence. `CRITICAL/BLOCKED` деградирует operational heartbeat; automatic model action намеренно отсутствует.
 - Candidate/live attrition diagnostics prospectively фиксируют ровно один terminal outcome для каждого `symbol × event_time`, точную причину каждого initial execution plan и quality-gate/activation outcome каждого background training attempt. Повторные hourly/catch-up попытки дедуплицируются; неполная, legacy или конфликтующая evidence блокирует отчёт.
-- Research experiment-selection governance prospectively учитывает все backtest-конфигурации одной family, включая failed/open attempts; по выровненным почасовым return paths считает CSCV/PBO, HAC-adjusted Deflated Sharpe и moving-block confidence intervals. Неполный ledger или недостаток независимых временных блоков даёт `BLOCKED`, а не оптимистичную оценку.
+- Research experiment-selection governance prospectively учитывает все backtest-конфигурации одной family, включая failed/open attempts; по выровненным почасовым return paths считает CSCV/PBO, HAC-adjusted Deflated Sharpe и moving-block confidence intervals. Неполный ledger или недостаток независимых временных блоков даёт `BLOCKED`. Начиная с 1.26.0 normal activation повторно вычисляет этот report и принимает только `READY` family, чей selected trial относится к exact artifact.
 - Formal experiment-family preregistration фиксирует гипотезу, точный cohort fingerprint/horizon, полный search space, primary metric, thresholds, stopping budget/deadline и допустимые exclusion criteria до первого `STARTED`. Trial вне контракта не вычисляется.
 - Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов final holdout; число символов не заменяет временную глубину. До final holdout candidate обязан пройти три последовательных purged expanding walk-forward folds с независимым переобучением и калибровкой.
 - Экономический promotion gate использует не только point mean R, но и 95% one-sided lower confidence bound. Для горизонта `H` часов отдельно оцениваются все `H` неперекрывающихся часовых фаз; gate использует худшую фазовую LCB и требует полного покрытия фаз. Default требует `LCB > 0`.
@@ -135,10 +135,10 @@ python manage.py experiment-preregister -- \
 Обычная ручная активация допускается только для зарегистрированной версии с сохранённым passed quality gate:
 
 ```bash
-python manage.py model-registry activate --version <version>
+python manage.py model-registry activate --version <version> --experiment-family <family>
 ```
 
-`python manage.py train --activate ...` также вычисляет gate. Если gate не пройден, candidate регистрируется неактивным и active model не меняется.
+`python manage.py train --activate ... --experiment-family <family>` вычисляет оба gate. Fresh artifact обычно ещё не имеет полного preregistered family report, поэтому регистрируется неактивным; после выполнения всех backtests используйте `model-registry activate` с той же family.
 
 Аварийный rollback к legacy/старой версии без passed gate требует двух явных аргументов:
 
@@ -246,7 +246,7 @@ Train/calibration/final holdout формируются по `decision_time`; lab
 python manage.py experiment-report -- --family <exact-family-name>
 ```
 
-Отчёт применяет contiguous combinatorially symmetric cross-validation для PBO, выбирает конфигурацию по non-annualized Sharpe и рассчитывает Deflated Sharpe probability с учётом skewness, kurtosis, числа зависимых trials и Newey–West effective observation count. Выбранный return path дополнительно получает Bartlett-HAC mean interval и moving-block intervals для mean/Sharpe; effective block length не может быть короче horizon. `READY` требует не только PBO/DSR thresholds, но и положительные нижние dependence-aware bounds. `STARTED` без terminal event, unresolved `FAILED`, недостаток blocks/trials/periods, несовпадающие timestamps или повреждённая hash chain дают `BLOCKED_*`. `automatic_model_action=none` и `profitability_claimed=false` обязательны.
+Отчёт применяет contiguous combinatorially symmetric cross-validation для PBO, выбирает конфигурацию по non-annualized Sharpe и рассчитывает Deflated Sharpe probability с учётом skewness, kurtosis, числа зависимых trials и Newey–West effective observation count. Выбранный return path дополнительно получает Bartlett-HAC mean interval и moving-block intervals для mean/Sharpe; effective block length не может быть короче horizon. `READY` требует не только PBO/DSR thresholds, но и положительные нижние dependence-aware bounds. `STARTED` без terminal event, unresolved `FAILED`, недостаток blocks/trials/periods, несовпадающие timestamps или повреждённая hash chain дают `BLOCKED_*`. Сам `experiment-report` не изменяет registry state и сохраняет `profitability_claimed=false`; normal activation отдельно потребляет и повторно проверяет его evidence.
 
 Evidence trial ledger накапливается только после migration 1.18.0, formal family preregistration — после 1.20.0, а verified UI exposure — после 1.21.0. Старые backtests и pre-1.20 families не backfill-ятся как preregistered evidence; pre-1.21 unexposed plans не считаются пропущенными exposures. Propensity bootstrap остаётся условным на уже fitted OOS scores, external trusted timestamp отсутствует, а experiment report не является promotion gate active model.
 
