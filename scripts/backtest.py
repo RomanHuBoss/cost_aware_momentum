@@ -466,6 +466,7 @@ async def run(args) -> None:
         horizon=horizon,
         stop_atr_multiplier=runtime.stop_atr_multiplier,
         tp_atr_multiplier=runtime.tp_atr_multiplier,
+        entry_spread_bps=runtime.entry_spread_bps,
     )
     split = chronological_split(dataset, purge_rows=horizon)
     round_trip_cost_bps = (
@@ -533,6 +534,7 @@ async def run(args) -> None:
                     "model_sha256": runtime.sha256,
                     "feature_schema_version": bundle.get("feature_schema_version"),
                     "label_path_schema_version": bundle.get("label_path_schema_version"),
+                    "entry_spread_bps": runtime.entry_spread_bps,
                     "temporal_split_schema": bundle.get("temporal_split_schema"),
                     "horizon": horizon,
                     "round_trip_cost_bps": round_trip_cost_bps,

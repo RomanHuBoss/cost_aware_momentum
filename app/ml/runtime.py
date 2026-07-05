@@ -13,6 +13,7 @@ from app.ml.features import FEATURE_NAMES
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
+    ENTRY_EXECUTION_MODEL_SCHEMA,
     LABEL_PATH_SCHEMA_VERSION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
@@ -51,6 +52,7 @@ class ModelRuntime:
         self.source = "baseline"
         self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
         self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
+        self.entry_spread_bps = 0.0
 
     @property
     def is_baseline(self) -> bool:
@@ -68,6 +70,7 @@ class ModelRuntime:
             "source": self.source,
             "stop_atr_multiplier": self.stop_atr_multiplier,
             "tp_atr_multiplier": self.tp_atr_multiplier,
+            "entry_spread_bps": self.entry_spread_bps,
             "feature_schema_version": (
                 self.bundle.get("feature_schema_version") if self.bundle is not None else None
             ),
@@ -98,6 +101,7 @@ class ModelRuntime:
         self.source = "baseline"
         self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
         self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
+        self.entry_spread_bps = 0.0
         self.version = "baseline-momentum-v1"
         self.calibration_version = "uncalibrated-baseline-v1"
 
@@ -169,6 +173,28 @@ class ModelRuntime:
             tp_atr_multiplier = self._artifact_multiplier(
                 bundle, "tp_atr_multiplier", DEFAULT_TP_ATR_MULTIPLIER
             )
+            entry_spread_bps = self._artifact_nonnegative(bundle, "entry_spread_bps")
+            entry_execution_model = bundle.get("entry_execution_model")
+            if not isinstance(entry_execution_model, dict):
+                raise ValueError("Model artifact entry execution model is required")
+            if entry_execution_model.get("schema") != ENTRY_EXECUTION_MODEL_SCHEMA:
+                raise ValueError(
+                    "Model artifact entry execution schema mismatch: "
+                    f"expected {ENTRY_EXECUTION_MODEL_SCHEMA}, "
+                    f"got {entry_execution_model.get('schema') or 'missing'}"
+                )
+            nested_entry_spread_bps = self._artifact_nonnegative(
+                entry_execution_model, "entry_spread_bps"
+            )
+            if not math.isclose(
+                nested_entry_spread_bps,
+                entry_spread_bps,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(
+                    "Model artifact entry_spread_bps conflicts with entry execution metadata"
+                )
             raw_horizon = bundle.get("horizon_hours")
             if isinstance(raw_horizon, bool):
                 raise ValueError("Model artifact horizon_hours must be a positive integer")
@@ -191,6 +217,7 @@ class ModelRuntime:
             self.model_type = str(bundle.get("model_type", "unknown"))
             self.stop_atr_multiplier = stop_atr_multiplier
             self.tp_atr_multiplier = tp_atr_multiplier
+            self.entry_spread_bps = entry_spread_bps
             self.source = source
             return
         if not self.allow_baseline:
@@ -208,6 +235,21 @@ class ModelRuntime:
             raise ValueError(f"Model artifact {key} must be positive and finite") from exc
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"Model artifact {key} must be positive and finite")
+        return value
+
+    @staticmethod
+    def _artifact_nonnegative(bundle: dict[str, Any], key: str) -> float:
+        raw_value = bundle.get(key)
+        if isinstance(raw_value, bool):
+            raise ValueError(f"Model artifact {key} must be non-negative and finite")
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"Model artifact {key} must be non-negative and finite"
+            ) from exc
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"Model artifact {key} must be non-negative and finite")
         return value
 
     @staticmethod

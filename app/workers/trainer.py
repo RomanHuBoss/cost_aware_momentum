@@ -688,6 +688,7 @@ class BackgroundTrainer:
                         horizon=settings.default_horizon_hours,
                         model_type=settings.auto_train_model_type,
                         model_dir=settings.model_dir,
+                        entry_spread_bps=settings.model_entry_spread_bps,
                         incumbent=incumbent,
                         source="background_trainer",
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,

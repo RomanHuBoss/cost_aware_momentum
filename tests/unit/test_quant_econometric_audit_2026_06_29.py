@@ -559,6 +559,11 @@ def _artifact_bundle(**overrides: object) -> dict[str, object]:
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+        "entry_spread_bps": 18.0,
+        "entry_execution_model": {
+            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "entry_spread_bps": 18.0,
+        },
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "horizon_hours": 8,

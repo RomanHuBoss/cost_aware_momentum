@@ -26,6 +26,7 @@ from app.ml.runtime import ModelRuntime
 from app.ml.training import (
     DEFAULT_STOP_ATR_MULTIPLIER,
     DEFAULT_TP_ATR_MULTIPLIER,
+    ENTRY_EXECUTION_MODEL_SCHEMA,
     LABEL_PATH_SCHEMA_VERSION,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
@@ -305,6 +306,7 @@ def build_model_candidate(
     horizon: int,
     model_type: str,
     model_dir: Path,
+    entry_spread_bps: float = 0.0,
     version: str | None = None,
     output: Path | None = None,
     incumbent: IncumbentSnapshot | None = None,
@@ -316,7 +318,11 @@ def build_model_candidate(
     if candles.empty:
         raise RuntimeError("No confirmed hourly candles are available for model training")
 
-    dataset = make_barrier_dataset(candles, horizon=horizon)
+    dataset = make_barrier_dataset(
+        candles,
+        horizon=horizon,
+        entry_spread_bps=entry_spread_bps,
+    )
     if dataset.empty:
         raise RuntimeError("No direction-specific barrier labels could be built from PostgreSQL candles")
     split = chronological_split(dataset, purge_rows=horizon)
@@ -335,6 +341,9 @@ def build_model_candidate(
     metrics["temporal_split_schema"] = TEMPORAL_SPLIT_SCHEMA_VERSION
     metrics["feature_schema_version"] = MODEL_FEATURE_SCHEMA_VERSION
     metrics["label_path_schema_version"] = LABEL_PATH_SCHEMA_VERSION
+    metrics["entry_execution_model"] = json_compatible(
+        dataset.attrs.get("entry_execution_model") or {}
+    )
     metrics["hourly_continuity"] = json_compatible(
         dataset.attrs.get("hourly_continuity") or {}
     )
@@ -371,13 +380,21 @@ def build_model_candidate(
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
+                and math.isclose(
+                    runtime.entry_spread_bps,
+                    entry_spread_bps,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
             ):
                 incumbent_metrics = {
-                    "comparison_skipped": "incumbent_barrier_geometry_mismatch",
+                    "comparison_skipped": "incumbent_execution_geometry_mismatch",
                     "candidate_stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
                     "candidate_tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,
+                    "candidate_entry_spread_bps": float(entry_spread_bps),
                     "incumbent_stop_atr_multiplier": runtime.stop_atr_multiplier,
                     "incumbent_tp_atr_multiplier": runtime.tp_atr_multiplier,
+                    "incumbent_entry_spread_bps": runtime.entry_spread_bps,
                 }
             else:
                 incumbent_metrics = evaluate_model(runtime.bundle["model"], split)
@@ -422,6 +439,8 @@ def build_model_candidate(
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+        "entry_spread_bps": float(entry_spread_bps),
+        "entry_execution_model": metrics["entry_execution_model"],
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "label_data_end": label_data_end.isoformat(),
@@ -513,6 +532,29 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         value is not None for value in ece_values
     ) else None
     max_ece_check = max(check for _, check in ece_pairs)
+
+    entry_execution_model = metrics.get("entry_execution_model")
+    entry_execution_schema = (
+        entry_execution_model.get("schema")
+        if isinstance(entry_execution_model, dict)
+        else None
+    )
+    entry_spread_bps = finite_or_none(
+        entry_execution_model.get("entry_spread_bps")
+        if isinstance(entry_execution_model, dict)
+        else None
+    )
+    if entry_execution_schema != ENTRY_EXECUTION_MODEL_SCHEMA:
+        reasons.append("invalid_entry_execution_model_schema")
+    if entry_spread_bps is None or entry_spread_bps < 0.0:
+        reasons.append("missing_or_invalid_entry_spread_bps")
+    elif not math.isclose(
+        entry_spread_bps,
+        settings.model_entry_spread_bps,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        reasons.append("entry_spread_bps_mismatch")
 
     class_distribution = metrics.get("class_distribution")
     required_classes = {"TP", "SL", "TIMEOUT"}
@@ -838,6 +880,10 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         "passed": not reasons,
         "reasons": reasons,
         "absolute": {
+            "entry_execution_model_schema": entry_execution_schema,
+            "expected_entry_execution_model_schema": ENTRY_EXECUTION_MODEL_SCHEMA,
+            "entry_spread_bps": entry_spread_bps,
+            "configured_entry_spread_bps": settings.model_entry_spread_bps,
             "holdout_rows": rows,
             "min_holdout_rows": settings.auto_train_min_holdout_rows,
             "holdout_span_hours": holdout_span_value,

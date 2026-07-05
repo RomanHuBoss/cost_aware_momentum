@@ -110,6 +110,11 @@ def test_runtime_rejects_artifact_without_timeout_return_schema(tmp_path: Path) 
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+            "entry_spread_bps": 18.0,
+            "entry_execution_model": {
+                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "entry_spread_bps": 18.0,
+            },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "horizon_hours": 8,
             "stop_atr_multiplier": 1.15,
@@ -144,6 +149,11 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
             "feature_names": MODEL_FEATURE_NAMES,
             "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+            "entry_spread_bps": 18.0,
+            "entry_execution_model": {
+                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "entry_spread_bps": 18.0,
+            },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
             "horizon_hours": 8,

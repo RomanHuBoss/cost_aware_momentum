@@ -26,9 +26,10 @@ DEFAULT_STOP_ATR_MULTIPLIER = 1.15
 DEFAULT_TP_ATR_MULTIPLIER = 2.20
 MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-contiguous-v3"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
-LABEL_PATH_SCHEMA_VERSION = "decision-open-entry-ohlc-path-v2"
+LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
+ENTRY_EXECUTION_MODEL_SCHEMA = "directional-half-spread-on-next-hour-open-v1"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "decision-and-label-end-purged-v3"
-POLICY_METRIC_SCHEMA = "decision-open-entry-exit-time-cohort-v12"
+POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-exit-time-cohort-v13"
 POLICY_UNCERTAINTY_SCHEMA = "all-horizon-phases-circular-moving-block-v2"
 HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
@@ -310,6 +311,7 @@ def make_barrier_dataset(
     *,
     stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
     tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
+    entry_spread_bps: float = 0.0,
 ) -> pd.DataFrame:
     """Build point-in-time LONG/SHORT scenarios from strict hourly windows.
 
@@ -332,6 +334,12 @@ def make_barrier_dataset(
         parsed = float(value)
         if not np.isfinite(parsed) or parsed <= 0:
             raise ValueError(f"{name} must be positive and finite")
+    try:
+        parsed_entry_spread_bps = float(entry_spread_bps)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("entry_spread_bps must be non-negative and finite") from exc
+    if not np.isfinite(parsed_entry_spread_bps) or parsed_entry_spread_bps < 0:
+        raise ValueError("entry_spread_bps must be non-negative and finite")
     frame = build_feature_frame(candles).sort_values(["symbol", "open_time"]).reset_index(drop=True)
     rows: list[dict] = []
     diagnostics: dict[str, int | str] = {
@@ -397,26 +405,31 @@ def make_barrier_dataset(
             if any(value is None or not np.isfinite(float(value)) for value in values):
                 continue
             # A signal can only be acted on after the source candle has closed.
-            # Use the first observable price at decision time as the executable
-            # entry proxy. Centering barriers on the already-finished candle close
-            # would book an overnight/hourly opening gap before a live entry was
-            # possible and would contaminate labels and promotion metrics.
-            entry = float(future.iloc[0]["open"])
+            # Hourly OHLC exposes a last-trade/open proxy rather than executable
+            # bid/ask. Production enters LONG at ask and SHORT at bid, therefore
+            # apply half of a configured full-spread stress in the adverse
+            # direction instead of centering both labels on one frictionless open.
+            entry_mid_proxy = float(future.iloc[0]["open"])
+            half_spread_rate = parsed_entry_spread_bps / 20000.0
             atr_pct = float(current.get("atr_pct_14", np.nan))
-            atr = entry * atr_pct
             if (
-                not np.isfinite(entry)
-                or entry <= 0
+                not np.isfinite(entry_mid_proxy)
+                or entry_mid_proxy <= 0
                 or not np.isfinite(atr_pct)
                 or atr_pct <= 0
-                or not np.isfinite(atr)
-                or atr <= 0
             ):
                 continue
             label_end_time = future.iloc[-1]["close_time"]
 
             direction_rows: list[dict] = []
             for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
+                entry = entry_mid_proxy * (
+                    1.0 + half_spread_rate if direction == "LONG" else 1.0 - half_spread_rate
+                )
+                atr = entry * atr_pct
+                if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
+                    direction_rows = []
+                    break
                 if direction == "LONG":
                     stop = entry - atr * stop_atr_multiplier
                     take_profit = entry + atr * tp_atr_multiplier
@@ -428,8 +441,17 @@ def make_barrier_dataset(
                 if stop <= 0 or take_profit <= 0:
                     direction_rows = []
                     break
+                execution_path = future.copy()
+                first_index = execution_path.index[0]
+                execution_path.loc[first_index, "open"] = entry
+                execution_path.loc[first_index, "high"] = max(
+                    float(execution_path.loc[first_index, "high"]), entry
+                )
+                execution_path.loc[first_index, "low"] = min(
+                    float(execution_path.loc[first_index, "low"]), entry
+                )
                 result = triple_barrier_outcome(
-                    future,
+                    execution_path,
                     direction=direction,
                     stop=stop,
                     take_profit=take_profit,
@@ -448,7 +470,10 @@ def make_barrier_dataset(
                         "label_end_time": label_end_time,
                         "symbol": symbol,
                         "direction": direction,
+                        "entry_mid_proxy": float(entry_mid_proxy),
                         "entry_price": float(entry),
+                        "entry_spread_bps": parsed_entry_spread_bps,
+                        "entry_price_source": "next_hour_open_directional_half_spread_stress",
                         "target": result.outcome,
                         "ambiguous": bool(result.ambiguous),
                         "exit_index": int(result.exit_index),
@@ -468,6 +493,15 @@ def make_barrier_dataset(
     dataset = pd.DataFrame.from_records(rows)
     dataset.attrs["hourly_continuity"] = diagnostics
     dataset.attrs["label_path_schema"] = LABEL_PATH_SCHEMA_VERSION
+    dataset.attrs["entry_execution_model"] = {
+        "schema": ENTRY_EXECUTION_MODEL_SCHEMA,
+        "entry_spread_bps": parsed_entry_spread_bps,
+        "residual_limitations": [
+            "historical_bid_ask_unavailable",
+            "operator_latency_unmodeled",
+            "historical_depth_and_partial_fill_unmodeled",
+        ],
+    }
     return dataset
 
 

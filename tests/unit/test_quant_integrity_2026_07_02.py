@@ -148,6 +148,11 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
         "feature_names": MODEL_FEATURE_NAMES,
         "feature_schema_version": MODEL_FEATURE_SCHEMA_VERSION,
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
+        "entry_spread_bps": 18.0,
+        "entry_execution_model": {
+            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "entry_spread_bps": 18.0,
+        },
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "timeout_return_schema_version": TIMEOUT_RETURN_SCHEMA_VERSION,
         "horizon_hours": 8,
@@ -166,6 +171,8 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
         ("label_path_schema_version", "ohlc-open-first-stop-gap-v1", "label path schema"),
         ("temporal_split_schema", None, "temporal split schema"),
         ("temporal_split_schema", "random-split-v0", "temporal split schema"),
+        ("entry_spread_bps", None, "entry_spread_bps"),
+        ("entry_spread_bps", -0.1, "entry_spread_bps"),
     ],
 )
 def test_runtime_rejects_artifacts_with_incompatible_training_semantics(
@@ -184,6 +191,30 @@ def test_runtime_rejects_artifacts_with_incompatible_training_semantics(
 
     with pytest.raises(ValueError, match=expected_message):
         ModelRuntime(path, allow_baseline=False).load()
+
+
+def test_runtime_rejects_inconsistent_entry_execution_metadata(tmp_path: Path) -> None:
+    wrong_schema = _artifact_bundle(
+        entry_execution_model={
+            "schema": "legacy-frictionless-open-v0",
+            "entry_spread_bps": 18.0,
+        }
+    )
+    wrong_schema_path = tmp_path / "wrong-entry-schema.joblib"
+    joblib.dump(wrong_schema, wrong_schema_path)
+    with pytest.raises(ValueError, match="entry execution schema mismatch"):
+        ModelRuntime(wrong_schema_path, allow_baseline=False).load()
+
+    inconsistent = _artifact_bundle(
+        entry_execution_model={
+            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "entry_spread_bps": 12.0,
+        }
+    )
+    inconsistent_path = tmp_path / "inconsistent-entry-spread.joblib"
+    joblib.dump(inconsistent, inconsistent_path)
+    with pytest.raises(ValueError, match="conflicts with entry execution metadata"):
+        ModelRuntime(inconsistent_path, allow_baseline=False).load()
 
 
 def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
@@ -224,7 +255,11 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v12",
+        "entry_execution_model": {
+            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "entry_spread_bps": 18.0,
+        },
+        "policy_metric_schema": "decision-open-directional-spread-entry-exit-time-cohort-v13",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,
@@ -340,6 +375,7 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
         model_type="logistic",
         model_dir=tmp_path,
         output=tmp_path / "candidate.joblib",
+        entry_spread_bps=18.0,
         incumbent=IncumbentSnapshot(
             version="incumbent-v1",
             model_type="logistic",
@@ -350,9 +386,11 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
     )
 
     assert candidate.incumbent_metrics == {
-        "comparison_skipped": "incumbent_barrier_geometry_mismatch",
+        "comparison_skipped": "incumbent_execution_geometry_mismatch",
         "candidate_stop_atr_multiplier": 1.15,
         "candidate_tp_atr_multiplier": 2.2,
+        "candidate_entry_spread_bps": 18.0,
         "incumbent_stop_atr_multiplier": 1.5,
         "incumbent_tp_atr_multiplier": 3.0,
+        "incumbent_entry_spread_bps": 18.0,
     }

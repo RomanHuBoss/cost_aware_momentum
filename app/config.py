@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     signal_ttl_minutes: int = 90
     fee_rate_taker: float = 0.00055
     base_slippage_bps: float = 3.0
+    model_entry_spread_bps: float = 18.0
     stop_gap_reserve_bps: float = 10.0
     timeout_gross_return_rate: float = -0.002
 
@@ -232,6 +233,7 @@ class Settings(BaseSettings):
             "MAX_SPREAD_BPS": self.max_spread_bps,
             "FEE_RATE_TAKER": self.fee_rate_taker,
             "BASE_SLIPPAGE_BPS": self.base_slippage_bps,
+            "MODEL_ENTRY_SPREAD_BPS": self.model_entry_spread_bps,
             "STOP_GAP_RESERVE_BPS": self.stop_gap_reserve_bps,
             "UNIVERSE_MIN_TURNOVER_24H": self.universe_min_turnover_24h,
             "UNIVERSE_MAX_SPREAD_BPS": self.universe_max_spread_bps,
@@ -274,6 +276,8 @@ class Settings(BaseSettings):
             raise ValueError("FEE_RATE_TAKER must be in [0, 1)")
         if self.base_slippage_bps < 0:
             raise ValueError("BASE_SLIPPAGE_BPS cannot be negative")
+        if self.model_entry_spread_bps < 0:
+            raise ValueError("MODEL_ENTRY_SPREAD_BPS cannot be negative")
         if self.stop_gap_reserve_bps < 0:
             raise ValueError("STOP_GAP_RESERVE_BPS cannot be negative")
         if self.max_ticker_age_seconds <= 0:

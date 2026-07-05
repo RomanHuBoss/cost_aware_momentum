@@ -32,7 +32,11 @@ def _candidate(
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v12",
+        "entry_execution_model": {
+            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "entry_spread_bps": 18.0,
+        },
+        "policy_metric_schema": "decision-open-directional-spread-entry-exit-time-cohort-v13",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,

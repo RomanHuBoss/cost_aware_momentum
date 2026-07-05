@@ -49,6 +49,7 @@ async def run(args: argparse.Namespace) -> None:
         horizon=args.horizon,
         model_type=args.model_type,
         model_dir=settings.model_dir,
+        entry_spread_bps=settings.model_entry_spread_bps,
         version=args.version,
         output=args.output,
         incumbent=incumbent_from_registry(incumbent_model),

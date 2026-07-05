@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.9.7: исправлено эконометрическое доказательство policy-качества. Неиспользованный stop-gap reserve больше не записывается как фактический убыток, а доверительная граница рассчитывается по всем часовым фазам горизонта вместо одной произвольной фазы. Auto-activation fail-closed требует полного покрытия фаз.
+> Версия 1.10.0: training labels и research backtest используют direction-specific entry proxy: LONG получает adverse half-spread выше следующего hourly open, SHORT — ниже. Artifact/runtime/auto-activation fail-closed проверяют единую execution-семантику и не сравнивают candidate с несовместимым incumbent.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -92,6 +92,8 @@ python manage.py release-check  проверить release tree и SHA256SUMS
 ## Конфигурация
 
 `manage.py configure` создаёт локальный `.env`. Реальные credentials не должны попадать в архив или систему контроля версий. Шаблон переменных находится в `.env.example`.
+
+`MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Артефакты со старой frictionless-open схемой версия 1.10.0 отклоняет fail-closed.
 
 Поддерживаются оба формата списков:
 
@@ -202,4 +204,7 @@ python manage.py test --require-integration
 
 - Нет автоматического исполнения ордеров.
 - Ручные fills остаются источником фактической информации об исполнении.
+- Historical labels используют stress proxy, а не архивные bid/ask и order-book depth. Operator latency, VWAP impact, no-fill и partial-fill пока не моделируются.
+- Research validation остаётся одним purged chronological train/calibration/holdout split; rolling/expanding walk-forward, PBO/Deflated Sharpe и production drift monitor не реализованы.
+- Intrahorizon mark-to-market и path-dependent liquidation simulation не реализованы; присутствует только pre-trade liquidation-distance guard.
 - Техническая корректность расчётов и тестов не означает наличия статистически устойчивого торгового преимущества.

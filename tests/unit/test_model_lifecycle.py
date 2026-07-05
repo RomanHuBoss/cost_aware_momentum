@@ -55,7 +55,11 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_metric_schema": "decision-open-entry-exit-time-cohort-v12",
+        "entry_execution_model": {
+            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "entry_spread_bps": 18.0,
+        },
+        "policy_metric_schema": "decision-open-directional-spread-entry-exit-time-cohort-v13",
         "policy_horizon_hours": 8,
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,
@@ -88,7 +92,7 @@ def test_quality_gate_accepts_bootstrap_candidate(tmp_path: Path) -> None:
 
 def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path) -> None:
     metrics = _metrics()
-    metrics["policy_metric_schema"] = "decision-open-entry-exit-time-cohort-v12"
+    metrics["policy_metric_schema"] = "decision-open-directional-spread-entry-exit-time-cohort-v13"
 
     result = evaluate_quality_gate(
         _candidate(tmp_path, metrics=metrics),
@@ -106,6 +110,25 @@ def test_quality_gate_requires_open_gap_propagation_metric_schema(tmp_path: Path
     )
     assert legacy_result["passed"] is False
     assert "invalid_policy_metric_schema" in legacy_result["reasons"]
+
+
+def test_quality_gate_rejects_missing_or_mismatched_entry_execution_model(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(database_url="postgresql+psycopg://u:p@localhost/db")
+
+    missing = _metrics()
+    missing.pop("entry_execution_model")
+    missing_result = evaluate_quality_gate(_candidate(tmp_path, metrics=missing), settings)
+    assert missing_result["passed"] is False
+    assert "invalid_entry_execution_model_schema" in missing_result["reasons"]
+    assert "missing_or_invalid_entry_spread_bps" in missing_result["reasons"]
+
+    mismatched = _metrics()
+    mismatched["entry_execution_model"]["entry_spread_bps"] = 12.0
+    mismatch_result = evaluate_quality_gate(_candidate(tmp_path, metrics=mismatched), settings)
+    assert mismatch_result["passed"] is False
+    assert "entry_spread_bps_mismatch" in mismatch_result["reasons"]
 
 
 def test_quality_gate_rejects_candidate_without_required_improvement(tmp_path: Path) -> None:
