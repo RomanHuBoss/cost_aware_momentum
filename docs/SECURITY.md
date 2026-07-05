@@ -1,5 +1,15 @@
 # Security
 
+## Research experiment integrity boundary 1.18.0
+
+- Experiment events are append-only application records with unique trial sequence and record hash constraints.
+- Configuration and evidence are canonicalized before SHA-256; terminal events link to the STARTED event hash.
+- Error evidence is bounded and must not contain credentials, raw environment variables or exchange secrets.
+- Manual updates/deletes of experiment JSONB or hashes invalidate governance evidence.
+- The ledger stores research configurations and return evidence, not order-placement authority; Bybit order mutation methods remain absent.
+- `experiment-report` is observational and cannot change active-model state, policy thresholds or risk limits.
+- Release archives exclude `.env`, database dumps and generated reports.
+
 ## Production drift integrity boundary 1.17.0
 
 - Drift reference is created from the untouched final holdout and embedded in the immutable artifact/registry evidence; production cannot redefine bins to hide drift.

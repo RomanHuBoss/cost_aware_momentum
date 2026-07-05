@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.18.0 — 2026-07-05
+
+- Добавлен append-only `research.experiment_events` ledger: каждая валидированная research backtest-оценка записывает `STARTED` и терминальное `SUCCEEDED/FAILED` событие с неизменяемой конфигурацией, canonical SHA-256 и hash chain.
+- Успешные trials сохраняют выровненный почасовой return path, включая нулевые часы, а не только агрегированный Sharpe или итоговый capital.
+- Добавлен contiguous CSCV/PBO по всем уникальным успешно раскрытым конфигурациям одной experiment family.
+- Добавлен Deflated Sharpe Ratio с поправкой на skewness/kurtosis, variance Sharpe across trials и correlation-implied effective number of independent trials.
+- Неполные/failed/open attempts, недостаток trials/periods, несопоставимые timestamps, redundant evidence или повреждённая hash chain блокируют отчёт fail-closed.
+- Повторные запуски одинаковой конфигурации дедуплицируются при выборе вариантов и отдельно раскрываются как repeated attempts.
+- Добавлены `manage.py experiment-report`, `cam-experiment-report`, настройки `EXPERIMENT_*`, migration `0012_experiment_selection` и десять regression tests.
+- Governance остаётся research-only: `automatic_model_action=none`, `profitability_claimed=false`; active model, live policy и risk limits не изменяются.
+
 ## 1.17.0 — 2026-07-05
 
 - Добавлен immutable final-holdout drift reference для всех 17 ex-ante base features, обеих directional probability distributions, selected-direction calibration и policy actionability density.

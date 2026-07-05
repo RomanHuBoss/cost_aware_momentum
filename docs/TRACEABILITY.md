@@ -1,5 +1,29 @@
 # Traceability
 
+## Work package: experiment-selection ledger, PBO and Deflated Sharpe
+
+| Acceptance criterion | Research implementation | Tests |
+|---|---|---|
+| Every backtest is disclosed before outcome is known | `scripts/backtest.py`, `append_experiment_event(... STARTED ...)` | integration/static path checks and full suite |
+| Trial configuration is immutable and tamper-evident | `app/services/experiment_ledger.py`, canonical configuration hash and event hash chain | event mutation and model-constraint tests |
+| Success and failure are terminally disclosed | `scripts/backtest.py`, `SUCCEEDED/FAILED` events | incomplete-ledger regression |
+| Successful alternatives expose an identical hourly timestamp/return grid | `_simulate_capital_sleeves_evidence`, `load_experiment_family_evidence` | zero-hour/reconciliation and unaligned-evidence tests |
+| Repeated identical configurations do not inflate trial count | `analyze_experiment_family` configuration-hash deduplication | duplicate-success test |
+| PBO uses combinatorial symmetric contiguous train/test segment complements | `app/research/overfitting.py::combinatorial_pbo` | stable-winner and regime-reversal tests |
+| DSR adjusts selected Sharpe for multiple trials and non-normal returns | `deflated_sharpe_ratio`, `effective_independent_trials` | independent-formula and correlation tests |
+| Missing/failed/open attempts block optimistic reporting | `analyze_experiment_family` | incomplete-disclosure test |
+| Report cannot mutate model lifecycle or claim profitability | report contract fields and CLI | governance contract/full suite |
+| PostgreSQL schema is append-only event oriented | migration `0012_experiment_selection`, `ResearchExperimentEvent` | migration head and constraint tests |
+
+## Schema changes 1.18.0
+
+- Database head: `0012_experiment_selection`.
+- Event ledger: `append-only-research-experiment-events-v1`.
+- PBO: `cscv-pbo-contiguous-segments-v1`.
+- DSR: `deflated-sharpe-bailey-lopez-de-prado-v1`.
+- Family report: `experiment-selection-governance-v1`.
+- Evidence is prospective from 1.18.0; legacy attempts are not reconstructed.
+
 ## Work package: production drift monitoring
 
 | Acceptance criterion | Production implementation | Tests |

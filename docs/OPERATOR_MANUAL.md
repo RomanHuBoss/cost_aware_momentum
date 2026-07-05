@@ -1,5 +1,19 @@
 # Operator Manual
 
+## Upgrade to 1.18.0
+
+1. Stop API, worker and trainer; back up PostgreSQL.
+2. Update sources and copy/review the five `EXPERIMENT_*` values from `.env.example`.
+3. Run `python manage.py migrate`; expected Alembic head is `0012_experiment_selection`.
+4. Restart normal processes. Active model retraining is not required for this release.
+5. For every planned variant series, assign one stable family name or retain the deterministic family generated from the same final-test cohort. Do not merge unrelated datasets/horizons into one family.
+6. Run each alternative through `python manage.py backtest ... --experiment-family <name>`. After artifact/cohort validation, a `STARTED` row is committed before model evaluation and a terminal event is appended after completion.
+7. After at least the configured number of unique successful variants on one aligned period grid, execute `python manage.py experiment-report -- --family <name>`.
+8. Treat `BLOCKED_*` as missing/invalid governance evidence. Do not delete failed/open trials or lower thresholds merely to obtain `READY`.
+9. Treat `READY/REJECTED` as research classification only. Neither status activates, deactivates or rolls back a model.
+
+Legacy backtests are intentionally absent. A process killed after `STARTED` may leave an open trial that blocks the family; resolve the operational cause and append an auditable terminal disposition instead of editing or deleting the row.
+
 ## Upgrade to 1.17.0
 
 1. Back up PostgreSQL, model registry and the active artifact.

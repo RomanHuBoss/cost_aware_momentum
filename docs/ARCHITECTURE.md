@@ -1,5 +1,20 @@
 # Architecture
 
+## Research experiment-selection flow 1.18.0
+
+1. Backtest validates the immutable model artifact and constructs the exact final-test dataset before experiment registration.
+2. A deterministic family identifier is derived from horizon and final-test cohort fingerprint unless the researcher supplies a predeclared family.
+3. Before model evaluation, PostgreSQL receives a `STARTED` event containing the sanitized configuration and canonical SHA-256.
+4. The backtest simulates capital sleeves on a common hourly grid, explicitly retaining zero-return hours so alternatives are alignable.
+5. Completion appends exactly one `SUCCEEDED` event with period returns and summary evidence or one `FAILED` event with bounded diagnostics. Events link through `previous_event_hash`.
+6. Family reconstruction verifies every event and hash chain, discloses repeated attempts, deduplicates identical configuration hashes and blocks unresolved failed/open configurations.
+7. The analysis builds a period-by-configuration matrix, applies contiguous CSCV/PBO, estimates the correlation-implied number of independent trials and calculates Deflated Sharpe for the selected non-annualized-Sharpe variant.
+8. Thresholds classify the report as `READY` or `REJECTED`; structural insufficiency produces a `BLOCKED_*` status. `automatic_model_action=none` and `profitability_claimed=false` are invariant.
+
+Data flow: validated artifact + final-test cohort → STARTED event → aligned hourly returns → terminal event → verified family matrix → PBO/DSR governance report.
+
+Boundary: this is prospective research governance. It does not recreate pre-1.18 experiments, correct serial dependence with HAC/bootstrap inference, alter the active model or become evidence of live profitability.
+
 ## Production drift flow 1.17.0
 
 1. Candidate training uses the untouched final holdout to create fixed histogram references for the 17 base features and all LONG/SHORT probability vectors.

@@ -1,5 +1,21 @@
 # Configuration
 
+## Release 1.18.0 — experiment-selection governance
+
+```env
+EXPERIMENT_PBO_SEGMENTS=6
+EXPERIMENT_MIN_TRIALS=4
+EXPERIMENT_MIN_PERIODS=60
+EXPERIMENT_MAX_PBO=0.20
+EXPERIMENT_MIN_DSR_PROBABILITY=0.95
+```
+
+`EXPERIMENT_PBO_SEGMENTS` must be an even integer of at least four. `EXPERIMENT_MIN_PERIODS` must support at least two observations per segment; minimum trials must be at least two. PBO/DSR thresholds are probabilities in `[0, 1]`. Invalid values stop settings validation.
+
+These variables classify `experiment-report` output only. They do not affect feature generation, model fit, inference, model activation, execution plans or risk. Every comparable backtest must use one exact `experiment_family`; its successful variants must share an identical hourly return timestamp grid.
+
+Migration `0012_experiment_selection` is required. No model retraining and no new exchange permission are required.
+
 ## Release 1.17.0 — production drift monitoring
 
 No database migration is required. Add or review the following settings:

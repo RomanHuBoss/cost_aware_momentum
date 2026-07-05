@@ -1,5 +1,13 @@
 # Model Card
 
+## Experiment overfitting governance 1.18.0
+
+The active market model is unchanged. Release 1.18.0 governs research selection around backtests: all variants in one declared family are prospectively logged before their results, successful variants expose an aligned hourly return path, and incomplete disclosure blocks PBO/DSR evaluation.
+
+PBO measures how often the in-sample winner ranks below the OOS median across complementary contiguous segment combinations. Deflated Sharpe compares the selected non-annualized Sharpe with a multiple-testing benchmark and adjusts the sampling variance for skewness and kurtosis. The number of independent trials is estimated conservatively from average cross-trial return correlation.
+
+A `READY` report means configured PBO and DSR thresholds were met on the disclosed matrix; it is not an activation gate, causal result, live-performance forecast or profitability proof. Serial dependence, family-definition discretion, data-mining outside the ledger and unavailable pre-1.18 attempts remain material limitations.
+
 ## Task
 
 Direction-conditional multiclass probability model для hypothetical LONG и SHORT scenarios. Classes: `TP`, `SL`, `TIMEOUT`. `NO TRADE` определяется downstream policy. Intrahorizon liquidation не является новым ML-классом и не переписывает обучающий target.
@@ -114,4 +122,4 @@ Auto-activation требует:
 
 ## Known limitations
 
-Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют historical receipt-time reconstruction, point-in-time funding forecasts, orderbook-depth/cross-asset model features, historical funding-interval/risk-tier reconstruction, exact liquidation engine, Deflated Sharpe, multivariate drift tests, adaptive control limits и automatic drift rollback. Результаты не являются доказательством прибыльности.
+Walk-forward фиксирован на трёх folds и не является nested cross-validation, combinatorial purged CV или PBO. Forward orderbook/latency evidence начинает накапливаться только с 1.14.0 и пока не входит в training/backtest; pre-1.14 historical depth, RPI/queue/limit-order fill model и реальный partial-fill lifecycle отсутствуют. Также отсутствуют historical receipt-time reconstruction, point-in-time funding forecasts, orderbook-depth/cross-asset model features, historical funding-interval/risk-tier reconstruction, exact liquidation engine, HAC/bootstrap correction for experiment returns, multivariate drift tests, adaptive control limits и automatic drift rollback. Результаты не являются доказательством прибыльности.

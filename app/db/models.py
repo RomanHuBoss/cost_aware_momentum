@@ -623,3 +623,26 @@ class BacktestRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     metrics: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     artifact_path: Mapped[str | None] = mapped_column(Text)
+
+
+class ResearchExperimentEvent(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "experiment_events"
+    __table_args__ = (
+        UniqueConstraint("trial_id", "event_sequence", name="uq_experiment_event_trial_sequence"),
+        Index("ix_experiment_event_family_time", "experiment_family", "observed_at"),
+        CheckConstraint("event_sequence >= 0", name="experiment_event_sequence_nonnegative"),
+        CheckConstraint("length(configuration_hash) = 64", name="experiment_configuration_hash_length"),
+        CheckConstraint("length(record_hash) = 64", name="experiment_record_hash_length"),
+        {"schema": "research"},
+    )
+
+    trial_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
+    experiment_family: Mapped[str] = mapped_column(String(160), nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    configuration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    previous_event_hash: Mapped[str | None] = mapped_column(String(64))
+    record_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)

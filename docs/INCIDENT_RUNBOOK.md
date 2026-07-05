@@ -1,5 +1,21 @@
 # Incident Runbook
 
+## Symptom: experiment report is `BLOCKED_INCOMPLETE_LEDGER`
+
+Inspect `research.experiment_events` for open `STARTED` trials, unresolved `FAILED` configurations and missing successful configuration hashes. Do not delete an unfavourable/failed attempt. Confirm the process failure, configuration hash and family, then use an explicit audited recovery procedure to append the correct terminal status. Re-running the same configuration may resolve a failed configuration for analysis, but the failed attempt remains disclosed.
+
+## Symptom: experiment ledger hash mismatch
+
+Stop research reporting and preserve a database backup. Compare `configuration`, `evidence`, `previous_event_hash` and `record_hash`; check for manual JSONB updates, incorrect restore or unauthorized DB access. Never recompute hashes in place to conceal mutation. A corrupted chain is not eligible for PBO/DSR.
+
+## Symptom: `BLOCKED_UNALIGNED_RETURNS` or `BLOCKED_INSUFFICIENT_PERIODS`
+
+Confirm that all variants use the same final-test cohort fingerprint, horizon and hourly timestamp grid. Do not pad or truncate only selected variants after seeing outcomes. Start a new predeclared family if the dataset/horizon changed.
+
+## Symptom: high PBO or low DSR
+
+Preserve the result as negative research evidence. Review family definition, regime dependence, excessive search breadth and return dependence. Do not lower thresholds, remove losing trials or promote the selected variant automatically.
+
 ## Симптом: production drift status `BLOCKED`
 
 Проверьте `alerts`, число hourly inference jobs, `failed_inference_jobs`, coverage, feature/probability observations и resolved outcomes. `active_artifact_model_required` означает baseline/отсутствие активного artifact; `invalid_production_drift_reference` — legacy или повреждённый artifact; `failed_inference_jobs_in_window` нельзя устранять исключением failed rows из отчёта. Исправьте worker/data flow или переобучите artifact, не переводите monitor в fail-open.

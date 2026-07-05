@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     drift_max_brier_delta: float = 0.05
     drift_max_actionability_rate_delta: float = 0.20
 
+    # Research experiment-selection governance. These thresholds only classify
+    # experiment reports; they never activate, deactivate, or roll back a model.
+    experiment_pbo_segments: int = 6
+    experiment_min_trials: int = 4
+    experiment_min_periods: int = 60
+    experiment_max_pbo: float = 0.20
+    experiment_min_dsr_probability: float = 0.95
+
     # Background model lifecycle. The trainer creates immutable candidates in a
     # separate process so CPU-heavy fitting never blocks API or inference work.
     auto_train_enabled: bool = True
@@ -337,6 +345,18 @@ class Settings(BaseSettings):
             raise ValueError("DRIFT_MAX_BRIER_DELTA cannot be negative")
         if not 0 <= self.drift_max_actionability_rate_delta <= 1:
             raise ValueError("DRIFT_MAX_ACTIONABILITY_RATE_DELTA must be in [0, 1]")
+        if self.experiment_pbo_segments < 4 or self.experiment_pbo_segments % 2:
+            raise ValueError("EXPERIMENT_PBO_SEGMENTS must be an even integer of at least four")
+        if self.experiment_min_trials < 2:
+            raise ValueError("EXPERIMENT_MIN_TRIALS must be at least two")
+        if self.experiment_min_periods < self.experiment_pbo_segments * 2:
+            raise ValueError(
+                "EXPERIMENT_MIN_PERIODS must provide at least two rows per PBO segment"
+            )
+        if not 0 <= self.experiment_max_pbo <= 1:
+            raise ValueError("EXPERIMENT_MAX_PBO must be in [0, 1]")
+        if not 0 <= self.experiment_min_dsr_probability <= 1:
+            raise ValueError("EXPERIMENT_MIN_DSR_PROBABILITY must be in [0, 1]")
         if self.max_account_snapshot_age_seconds < 30:
             raise ValueError("MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS must be at least 30")
         if self.initial_backfill_bars < self.universe_min_history_bars:

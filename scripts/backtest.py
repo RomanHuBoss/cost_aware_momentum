@@ -5,10 +5,12 @@ import json
 import math
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
+from app import __version__
 from app.asyncio_compat import run_with_compatible_event_loop
 from app.config import get_settings
 from app.db.engine import SessionFactory, dispose_engine
@@ -24,6 +26,10 @@ from app.ml.training import (
     make_barrier_dataset,
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
+)
+from app.services.experiment_ledger import (
+    append_experiment_event,
+    experiment_configuration_hash,
 )
 
 HOUR_NS = 3_600_000_000_000
@@ -50,24 +56,27 @@ def _finite_nonnegative(value: float, name: str) -> float:
     return parsed
 
 
-def _simulate_capital_sleeves(
+def _simulate_capital_sleeves_evidence(
     trades: pd.DataFrame,
     *,
     return_column: str,
     horizon_hours: int,
-) -> tuple[float, float, int]:
-    """Compound only non-overlapping hourly capital sleeves.
+    period_grid: pd.DatetimeIndex | None = None,
+) -> dict[str, object]:
+    """Compound non-overlapping sleeves and expose an aligned realized return path."""
 
-    A horizon-H strategy receives H equal capital sleeves.  The cohort opened at a
-    given hour uses one sleeve and that sleeve cannot be reused until H hours later,
-    when every barrier label in the previous cohort is already closed.  This avoids
-    treating overlapping H-hour trade returns as sequential one-hour reinvestment.
-    """
-
-    if trades.empty:
-        return 0.0, 0.0, 0
     if horizon_hours <= 0:
         raise ValueError("horizon_hours must be positive")
+    if trades.empty:
+        timestamps = list(period_grid) if period_grid is not None else []
+        return {
+            "net_return": 0.0,
+            "max_drawdown": 0.0,
+            "portfolio_periods": 0,
+            "period_returns": [
+                {"timestamp": pd.Timestamp(item).isoformat(), "return": 0.0} for item in timestamps
+            ],
+        }
 
     sleeve_capital = np.full(horizon_hours, 1.0 / horizon_hours, dtype=float)
     previous_decision: dict[int, pd.Timestamp] = {}
@@ -97,10 +106,58 @@ def _simulate_capital_sleeves(
 
     event_frame = pd.DataFrame(pnl_events, columns=["exit_time", "pnl"])
     realized_pnl = event_frame.groupby("exit_time", sort=True)["pnl"].sum()
-    equity = np.concatenate(([1.0], 1.0 + realized_pnl.cumsum().to_numpy(float)))
-    peaks = np.maximum.accumulate(equity)
-    drawdowns = equity / peaks - 1.0
-    return float(sleeve_capital.sum() - 1.0), float(drawdowns.min()), int(len(realized_pnl))
+    if period_grid is None:
+        grid = pd.DatetimeIndex(realized_pnl.index)
+    else:
+        grid = pd.DatetimeIndex(period_grid)
+        outside = realized_pnl.index.difference(grid)
+        if len(outside):
+            raise ValueError("Realized PnL events fall outside the experiment period grid")
+
+    current_equity = 1.0
+    peaks = [1.0]
+    equity_path = [1.0]
+    period_returns: list[dict[str, object]] = []
+    for timestamp in grid:
+        pnl = float(realized_pnl.get(timestamp, 0.0))
+        period_return = pnl / current_equity
+        if not math.isfinite(period_return) or period_return <= -1.0:
+            raise ValueError("Experiment period return is invalid")
+        current_equity += pnl
+        equity_path.append(current_equity)
+        peaks.append(max(peaks[-1], current_equity))
+        period_returns.append({"timestamp": pd.Timestamp(timestamp).isoformat(), "return": period_return})
+
+    equity = np.asarray(equity_path, dtype=float)
+    peak_array = np.asarray(peaks, dtype=float)
+    drawdowns = equity / peak_array - 1.0
+    expected_net = float(sleeve_capital.sum() - 1.0)
+    if not math.isclose(current_equity - 1.0, expected_net, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError("Experiment return path does not reconcile to sleeve capital")
+    return {
+        "net_return": expected_net,
+        "max_drawdown": float(drawdowns.min()),
+        "portfolio_periods": int(len(realized_pnl)),
+        "period_returns": period_returns,
+    }
+
+
+def _simulate_capital_sleeves(
+    trades: pd.DataFrame,
+    *,
+    return_column: str,
+    horizon_hours: int,
+) -> tuple[float, float, int]:
+    evidence = _simulate_capital_sleeves_evidence(
+        trades,
+        return_column=return_column,
+        horizon_hours=horizon_hours,
+    )
+    return (
+        float(evidence["net_return"]),
+        float(evidence["max_drawdown"]),
+        int(evidence["portfolio_periods"]),
+    )
 
 
 def _active_trade_statistics(trades: pd.DataFrame) -> tuple[int, float]:
@@ -148,6 +205,7 @@ def policy_backtest(
     research_leverage: int = 3,
     liquidation_equity_reserve_fraction: float = 0.10,
     require_intrahorizon_margin: bool = False,
+    include_experiment_evidence: bool = False,
 ) -> dict:
     """Evaluate the deployed cost-aware direction policy without overlap leverage.
 
@@ -344,11 +402,21 @@ def policy_backtest(
         context="Backtest",
     )
 
-    net_return, max_drawdown, portfolio_periods = _simulate_capital_sleeves(
+    if len(chosen):
+        period_start = pd.Timestamp(chosen["decision_time"].min())
+        period_end = pd.Timestamp(chosen["exit_time"].max())
+        period_grid = pd.date_range(period_start, period_end, freq="h")
+    else:
+        period_grid = pd.DatetimeIndex([])
+    portfolio_evidence = _simulate_capital_sleeves_evidence(
         traded,
         return_column="net_return",
         horizon_hours=horizon_hours,
+        period_grid=period_grid,
     )
+    net_return = float(portfolio_evidence["net_return"])
+    max_drawdown = float(portfolio_evidence["max_drawdown"])
+    portfolio_periods = int(portfolio_evidence["portfolio_periods"])
     stress_return_with_stop_reserve, _, _ = _simulate_capital_sleeves(
         traded,
         return_column="stress_net_return_with_stop_reserve",
@@ -384,7 +452,7 @@ def policy_backtest(
         )
         return result
 
-    return {
+    result = {
         "candidate_rows": int(len(chosen)),
         "actionable_candidates": int(len(actionable_trades)),
         "overlap_blocked_trades": int(overlap_blocked_trades),
@@ -455,141 +523,245 @@ def policy_backtest(
             "latency are not modeled. This is not evidence of profitability."
         ),
     }
+    if include_experiment_evidence:
+        result["experiment_evidence"] = {
+            "schema": "hourly-realized-capital-return-path-v1",
+            "period_returns": portfolio_evidence["period_returns"],
+        }
+    return result
 
 
 async def run(args) -> None:
     started = datetime.now(UTC)
     settings = get_settings()
-    symbols = settings.symbols if settings.universe_mode == "static" else None
-    market_data = await load_training_market_data(
-        symbols,
-        lookback_days=None,
-        max_symbols=0,
-    )
-    frame = market_data.candles
-    runtime = load_validated_artifact(
-        args.model,
-        expected_sha256=getattr(args, "model_sha256", None),
-    )
-    assert runtime.bundle is not None
-    assert runtime.horizon_hours is not None
-    bundle = runtime.bundle
-    artifact_horizon = runtime.horizon_hours
-    if args.horizon is not None and args.horizon != artifact_horizon:
-        raise ValueError(
-            f"Requested horizon {args.horizon} does not match artifact horizon {artifact_horizon}"
+    trial_id = None
+    experiment_family = None
+    experiment_configuration: dict[str, object] | None = None
+    try:
+        symbols = settings.symbols if settings.universe_mode == "static" else None
+        market_data = await load_training_market_data(
+            symbols,
+            lookback_days=None,
+            max_symbols=0,
         )
-    horizon = artifact_horizon
-    dataset = make_barrier_dataset(
-        frame,
-        horizon=horizon,
-        stop_atr_multiplier=runtime.stop_atr_multiplier,
-        tp_atr_multiplier=runtime.tp_atr_multiplier,
-        entry_spread_bps=runtime.entry_spread_bps,
-        funding_history=market_data.funding,
-        funding_interval_minutes=market_data.funding_interval_minutes,
-        require_funding_timeline=True,
-        mark_candles=market_data.mark_candles,
-        index_candles=market_data.index_candles,
-        open_interest=market_data.open_interest,
-        require_market_context=True,
-        require_mark_timeline=True,
-        liquidation_leverage=runtime.research_leverage,
-        liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
-    )
-    split = chronological_split(dataset, purge_rows=horizon)
-    round_trip_cost_bps = (
-        args.round_trip_cost_bps
-        if args.round_trip_cost_bps is not None
-        else settings.fee_rate_taker * 2 * 10000
-    )
-    slippage_bps = args.slippage_bps if args.slippage_bps is not None else settings.base_slippage_bps
-    stop_gap_reserve_bps = (
-        args.stop_gap_reserve_bps if args.stop_gap_reserve_bps is not None else settings.stop_gap_reserve_bps
-    )
-    timeout_return_rate = (
-        args.timeout_return_rate
-        if args.timeout_return_rate is not None
-        else settings.timeout_gross_return_rate
-    )
-    minimum_net_rr = args.minimum_net_rr if args.minimum_net_rr is not None else settings.min_net_rr
-    if args.minimum_net_ev_r is not None and args.minimum_predicted_edge is not None:
-        raise ValueError("Use either --minimum-net-ev-r or --minimum-predicted-edge, not both")
-    minimum_net_ev_r = (
-        args.minimum_net_ev_r
-        if args.minimum_net_ev_r is not None
-        else (
-            args.minimum_predicted_edge if args.minimum_predicted_edge is not None else settings.min_net_ev_r
+        frame = market_data.candles
+        runtime = load_validated_artifact(
+            args.model,
+            expected_sha256=getattr(args, "model_sha256", None),
         )
-    )
-
-    model = bundle["model"]
-    prediction_metrics = evaluate_model(model, split)
-    trade_metrics = policy_backtest(
-        model,
-        split,
-        round_trip_cost_bps=round_trip_cost_bps,
-        slippage_bps=slippage_bps,
-        stop_gap_reserve_bps=stop_gap_reserve_bps,
-        funding_rate=args.funding_rate,
-        timeout_return_rate=timeout_return_rate,
-        use_model_timeout_return=args.timeout_return_rate is None,
-        minimum_net_rr=minimum_net_rr,
-        minimum_net_ev_r=minimum_net_ev_r,
-        horizon_hours=horizon,
-        research_leverage=runtime.research_leverage,
-        liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
-        require_intrahorizon_margin=True,
-    )
-    metrics = {
-        "prediction": prediction_metrics,
-        "policy": trade_metrics,
-        "hourly_continuity": dataset.attrs.get("hourly_continuity") or {},
-        "artifact": runtime.metadata(),
-    }
-    output = Path(args.output or f"reports/backtest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
-    async with SessionFactory() as session:
-        session.add(
-            BacktestRun(
-                name=f"barrier-policy-{bundle.get('model_type', 'model')}-h{horizon}",
-                configuration={
-                    "model": args.model,
-                    "model_version": runtime.version,
-                    "model_sha256": runtime.sha256,
-                    "feature_schema_version": bundle.get("feature_schema_version"),
-                    "label_path_schema_version": bundle.get("label_path_schema_version"),
-                    "entry_spread_bps": runtime.entry_spread_bps,
-                    "temporal_split_schema": bundle.get("temporal_split_schema"),
-                    "intrahorizon_margin_schema": bundle.get("intrahorizon_margin_schema"),
-                    "research_leverage": runtime.research_leverage,
-                    "liquidation_equity_reserve_fraction": (runtime.liquidation_equity_reserve_fraction),
-                    "horizon": horizon,
-                    "round_trip_cost_bps": round_trip_cost_bps,
-                    "slippage_bps": slippage_bps,
-                    "stop_gap_reserve_bps": stop_gap_reserve_bps,
-                    "funding_rate": args.funding_rate,
-                    "timeout_return_rate": timeout_return_rate,
-                    "timeout_return_source": trade_metrics["timeout_return_source"],
-                    "timeout_return_schema_version": bundle.get("timeout_return_schema_version"),
-                    "minimum_net_rr": minimum_net_rr,
-                    "minimum_net_ev_r": minimum_net_ev_r,
-                    "purge_hours": horizon,
-                    "policy_source": "cost_aware_ev_r_v1",
-                    "portfolio_accounting": "horizon_sleeves_single_active_symbol_v2",
-                    "settings_mode": settings.app_mode,
-                },
-                started_at=started,
-                finished_at=datetime.now(UTC),
-                status="SUCCESS",
-                metrics=metrics,
-                artifact_path=str(output),
+        assert runtime.bundle is not None
+        assert runtime.horizon_hours is not None
+        bundle = runtime.bundle
+        artifact_horizon = runtime.horizon_hours
+        if args.horizon is not None and args.horizon != artifact_horizon:
+            raise ValueError(
+                f"Requested horizon {args.horizon} does not match artifact horizon {artifact_horizon}"
+            )
+        horizon = artifact_horizon
+        dataset = make_barrier_dataset(
+            frame,
+            horizon=horizon,
+            stop_atr_multiplier=runtime.stop_atr_multiplier,
+            tp_atr_multiplier=runtime.tp_atr_multiplier,
+            entry_spread_bps=runtime.entry_spread_bps,
+            funding_history=market_data.funding,
+            funding_interval_minutes=market_data.funding_interval_minutes,
+            require_funding_timeline=True,
+            mark_candles=market_data.mark_candles,
+            index_candles=market_data.index_candles,
+            open_interest=market_data.open_interest,
+            require_market_context=True,
+            require_mark_timeline=True,
+            liquidation_leverage=runtime.research_leverage,
+            liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
+        )
+        split = chronological_split(dataset, purge_rows=horizon)
+        round_trip_cost_bps = (
+            args.round_trip_cost_bps
+            if args.round_trip_cost_bps is not None
+            else settings.fee_rate_taker * 2 * 10000
+        )
+        slippage_bps = (
+            args.slippage_bps if args.slippage_bps is not None else settings.base_slippage_bps
+        )
+        stop_gap_reserve_bps = (
+            args.stop_gap_reserve_bps
+            if args.stop_gap_reserve_bps is not None
+            else settings.stop_gap_reserve_bps
+        )
+        timeout_return_rate = (
+            args.timeout_return_rate
+            if args.timeout_return_rate is not None
+            else settings.timeout_gross_return_rate
+        )
+        minimum_net_rr = args.minimum_net_rr if args.minimum_net_rr is not None else settings.min_net_rr
+        if args.minimum_net_ev_r is not None and args.minimum_predicted_edge is not None:
+            raise ValueError("Use either --minimum-net-ev-r or --minimum-predicted-edge, not both")
+        minimum_net_ev_r = (
+            args.minimum_net_ev_r
+            if args.minimum_net_ev_r is not None
+            else (
+                args.minimum_predicted_edge
+                if args.minimum_predicted_edge is not None
+                else settings.min_net_ev_r
             )
         )
-        await session.commit()
-    print(json.dumps({"output": str(output), "metrics": metrics}, indent=2, ensure_ascii=False))
-    await dispose_engine()
+
+        cohort_rows = (
+            split.test_meta[["decision_time", "symbol"]]
+            .drop_duplicates()
+            .sort_values(["decision_time", "symbol"])
+        )
+        dataset_fingerprint = experiment_configuration_hash(
+            {
+                "schema": "backtest-test-cohort-v1",
+                "horizon": horizon,
+                "rows": [
+                    [pd.Timestamp(row.decision_time).isoformat(), str(row.symbol)]
+                    for row in cohort_rows.itertuples(index=False)
+                ],
+            }
+        )
+        experiment_family = args.experiment_family or (
+            f"barrier-policy-h{horizon}-{dataset_fingerprint[:24]}"
+        )
+        experiment_configuration = {
+            "schema": "barrier-policy-experiment-configuration-v1",
+            "dataset_fingerprint": dataset_fingerprint,
+            "model_version": runtime.version,
+            "model_sha256": runtime.sha256,
+            "feature_schema_version": bundle.get("feature_schema_version"),
+            "label_path_schema_version": bundle.get("label_path_schema_version"),
+            "temporal_split_schema": bundle.get("temporal_split_schema"),
+            "entry_spread_bps": runtime.entry_spread_bps,
+            "intrahorizon_margin_schema": bundle.get("intrahorizon_margin_schema"),
+            "research_leverage": runtime.research_leverage,
+            "liquidation_equity_reserve_fraction": runtime.liquidation_equity_reserve_fraction,
+            "horizon": horizon,
+            "round_trip_cost_bps": round_trip_cost_bps,
+            "slippage_bps": slippage_bps,
+            "stop_gap_reserve_bps": stop_gap_reserve_bps,
+            "funding_rate_override": args.funding_rate,
+            "timeout_return_rate_override": args.timeout_return_rate,
+            "minimum_net_rr": minimum_net_rr,
+            "minimum_net_ev_r": minimum_net_ev_r,
+            "policy_source": "cost_aware_ev_r_v1",
+            "portfolio_accounting": "horizon_sleeves_single_active_symbol_v2",
+        }
+        trial_id = uuid4()
+        async with SessionFactory() as session:
+            await append_experiment_event(
+                session,
+                trial_id=trial_id,
+                experiment_family=experiment_family,
+                event_type="STARTED",
+                observed_at=started,
+                configuration=experiment_configuration,
+                evidence={"release_version": __version__},
+            )
+            await session.commit()
+
+        model = bundle["model"]
+        prediction_metrics = evaluate_model(model, split)
+        trade_metrics = policy_backtest(
+            model,
+            split,
+            round_trip_cost_bps=round_trip_cost_bps,
+            slippage_bps=slippage_bps,
+            stop_gap_reserve_bps=stop_gap_reserve_bps,
+            funding_rate=args.funding_rate,
+            timeout_return_rate=timeout_return_rate,
+            use_model_timeout_return=args.timeout_return_rate is None,
+            minimum_net_rr=minimum_net_rr,
+            minimum_net_ev_r=minimum_net_ev_r,
+            horizon_hours=horizon,
+            research_leverage=runtime.research_leverage,
+            liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
+            require_intrahorizon_margin=True,
+            include_experiment_evidence=True,
+        )
+        experiment_evidence = dict(trade_metrics.pop("experiment_evidence"))
+        metrics = {
+            "prediction": prediction_metrics,
+            "policy": trade_metrics,
+            "hourly_continuity": dataset.attrs.get("hourly_continuity") or {},
+            "artifact": runtime.metadata(),
+            "experiment": {
+                "trial_id": str(trial_id),
+                "experiment_family": experiment_family,
+                "configuration_hash": experiment_configuration_hash(experiment_configuration),
+                "period_return_schema": experiment_evidence["schema"],
+                "period_count": len(experiment_evidence["period_returns"]),
+            },
+        }
+        output = Path(args.output or f"reports/backtest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+        finished = datetime.now(UTC)
+        async with SessionFactory() as session:
+            session.add(
+                BacktestRun(
+                    name=f"barrier-policy-{bundle.get('model_type', 'model')}-h{horizon}",
+                    configuration={
+                        **experiment_configuration,
+                        "experiment_trial_id": str(trial_id),
+                        "experiment_family": experiment_family,
+                        "experiment_configuration_hash": experiment_configuration_hash(
+                            experiment_configuration
+                        ),
+                        "timeout_return_rate": timeout_return_rate,
+                        "timeout_return_source": trade_metrics["timeout_return_source"],
+                        "timeout_return_schema_version": bundle.get(
+                            "timeout_return_schema_version"
+                        ),
+                        "settings_mode": settings.app_mode,
+                    },
+                    started_at=started,
+                    finished_at=finished,
+                    status="SUCCESS",
+                    metrics=metrics,
+                    artifact_path=str(output),
+                )
+            )
+            await append_experiment_event(
+                session,
+                trial_id=trial_id,
+                experiment_family=experiment_family,
+                event_type="SUCCEEDED",
+                observed_at=finished,
+                configuration=experiment_configuration,
+                evidence={
+                    "period_return_schema": experiment_evidence["schema"],
+                    "period_returns": experiment_evidence["period_returns"],
+                    "prediction_metrics": prediction_metrics,
+                    "policy_metrics": trade_metrics,
+                    "output_path": str(output),
+                },
+            )
+            await session.commit()
+        print(json.dumps({"output": str(output), "metrics": metrics}, indent=2, ensure_ascii=False))
+    except Exception as exc:
+        if trial_id is not None and experiment_family and experiment_configuration is not None:
+            try:
+                async with SessionFactory() as session:
+                    await append_experiment_event(
+                        session,
+                        trial_id=trial_id,
+                        experiment_family=experiment_family,
+                        event_type="FAILED",
+                        observed_at=datetime.now(UTC),
+                        configuration=experiment_configuration,
+                        evidence={
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc)[:500],
+                        },
+                    )
+                    await session.commit()
+            except Exception:
+                pass
+        raise
+    finally:
+        await dispose_engine()
 
 
 def main() -> None:
@@ -619,6 +791,13 @@ def main() -> None:
         "--minimum-predicted-edge",
         type=float,
         help="Deprecated alias for --minimum-net-ev-r",
+    )
+    parser.add_argument(
+        "--experiment-family",
+        help=(
+            "Optional explicit research family. Defaults to a deterministic family derived "
+            "from the aligned final-test cohort and horizon."
+        ),
     )
     parser.add_argument("--output")
     run_with_compatible_event_loop(run(parser.parse_args()))

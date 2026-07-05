@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.17.0: добавлен production drift monitor. Immutable artifact сохраняет final-holdout reference для 17 ex-ante признаков, обеих directional probability distributions, выбранного policy-направления, calibration и actionability density. Hourly worker считает coverage/missingness, PSI, log-loss/Brier deltas и actionability drift только для активной версии модели. Недостаток данных, failed inference jobs или несовместимый reference дают `BLOCKED`; критический drift переводит heartbeat в `DEGRADED`, но не деактивирует модель и не ослабляет gates.
+> Версия 1.18.0: добавлен prospective research experiment ledger и fail-closed governance-отчёт для CSCV/PBO и Deflated Sharpe Ratio. Каждая валидированная backtest-оценка регистрирует `STARTED` и терминальное `SUCCEEDED/FAILED` событие с неизменяемой конфигурацией, SHA-256 hash chain и выровненным почасовым рядом доходностей. Неполное раскрытие попыток, несопоставимые временные ряды или недостаток вариантов блокируют оценку; отчёт не активирует модель и не заявляет прибыльность.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -15,6 +15,7 @@
 - Runtime возвращает оба directional-сценария; окончательный LONG/SHORT выбирается policy layer по текущим bid/ask, комиссиям, slippage, funding и barrier geometry.
 - Immutable model artifacts, SHA-256, candidate/incumbent comparison и guarded activation.
 - Production drift monitoring сравнивает только активную model version с её immutable final-holdout reference: feature/probability PSI, coverage/missingness, selected-direction calibration и actionability density. `CRITICAL/BLOCKED` деградирует operational heartbeat; automatic model action намеренно отсутствует.
+- Research experiment-selection governance prospectively учитывает все backtest-конфигурации одной family, включая failed/open attempts; по выровненным почасовым return paths считает CSCV/PBO и Deflated Sharpe с поправкой на число зависимых испытаний. Неполный ledger даёт `BLOCKED`, а не оптимистичную оценку.
 - Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов final holdout; число символов не заменяет временную глубину. До final holdout candidate обязан пройти три последовательных purged expanding walk-forward folds с независимым переобучением и калибровкой.
 - Экономический promotion gate использует не только point mean R, но и 95% one-sided lower confidence bound. Для горизонта `H` часов отдельно оцениваются все `H` неперекрывающихся часовых фаз; gate использует худшую фазовую LCB и требует полного покрытия фаз. Default требует `LCB > 0`.
 - До запуска bootstrap trainer вычисляет необходимую часовую историю из feature warm-up, horizon, temporal split и holdout gates. При defaults требуется не менее 1206 уникальных часовых timestamps; это необходимое, но не достаточное условие при гэпах/невалидных свечах.
@@ -91,6 +92,7 @@ python manage.py restore-check  проверить backup восстановле
 python manage.py report         сформировать ежедневный отчёт, включая selection diagnostics
 python manage.py selection-report  сформировать 90-дневный отчёт смещения отбора
 python manage.py drift-report    сформировать отчёт production drift
+python manage.py experiment-report -- --family <name>  оценить disclosure, PBO и DSR
 python manage.py release-check  проверить release tree и SHA256SUMS
 ```
 
@@ -99,6 +101,8 @@ python manage.py release-check  проверить release tree и SHA256SUMS
 `manage.py configure` создаёт локальный `.env`. Реальные credentials не должны попадать в архив или систему контроля версий. Шаблон переменных находится в `.env.example`.
 
 `MODEL_ENTRY_SPREAD_BPS` задаёт полный bid/ask spread stress для historical labels. Значение делится пополам вокруг следующего hourly open: LONG моделируется по ask-side proxy, SHORT — по bid-side proxy. Изменение этой переменной меняет label geometry; после обновления требуется обучить новый artifact. Release 1.17.0 не добавляет migration, но добавляет `DRIFT_*` настройки и обязательный drift-reference contract. Artifact 1.16.0 необходимо переобучить. Для непрерывного live-context refresh сохраняйте `UNIVERSE_SYNC_MARK_PRICE=true` и `UNIVERSE_ENRICH_FUNDING_OI=true`.
+
+`EXPERIMENT_*` задают только классификацию research-governance отчёта: число CSCV segments, минимальное количество уникальных конфигураций/периодов, максимальный PBO и минимальную DSR probability. Они не входят в live inference, не изменяют risk limits и не запускают auto-activation. Release 1.18.0 требует migration `0012_experiment_selection`; переобучение active model не требуется.
 
 Поддерживаются оба формата списков:
 
@@ -174,6 +178,20 @@ Market outcome `TP / SL / TIMEOUT` вычисляется по пути от `si
 - `label_end_time` — закрытие последней свечи label horizon.
 
 Train/calibration/final holdout формируются по `decision_time`; labels предыдущего окна обязаны завершиться раньше следующего окна. Stateful features сбрасывают состояние на gap, duplicate или невалидной OHLCV-свече; label-window с нечисловой/некогерентной ценой исключается. Исполнимый proxy входа — direction-specific adverse half-spread вокруг `open` первой часовой свечи, начинающейся в `decision_time`; барьеры центрируются на этой цене и масштабируются сохранённым `atr_pct_14`. Новые artifacts используют `feature_schema_version=hourly-barrier-market-context-v4`, `market_context_schema=hourly-oi-basis-settled-funding-turnover-v1`, `label_path_schema_version=decision-open-directional-spread-entry-ohlc-path-v3`, `temporal_split_schema=final-holdout-plus-expanding-walk-forward-v4`, `walk_forward_schema=expanding-train-rolling-calibration-purged-v1`, historical funding replay и intrahorizon margin schema. Runtime требует точного совпадения semantic contracts; legacy artifacts нужно переобучить.
+
+## Experiment-selection governance
+
+Каждая backtest-оценка, дошедшая до валидированных artifact и final-test cohort, создаёт prospective trial в `research.experiment_events`. До расчёта записывается `STARTED` с canonical configuration hash; после расчёта — `SUCCEEDED` с выровненным почасовым return path либо `FAILED` с ограниченной диагностикой. События образуют SHA-256 hash chain и не заменяются mutable итоговой строкой. Повтор одной конфигурации учитывается как повторная попытка, но не как новый независимый вариант.
+
+По умолчанию `experiment_family` детерминированно строится из horizon и fingerprint final-test cohort; для заранее объявленной серии допускается явный `--experiment-family`. Все сравниваемые конфигурации должны иметь один и тот же timestamp grid. Затем выполните:
+
+```bash
+python manage.py experiment-report -- --family <exact-family-name>
+```
+
+Отчёт применяет contiguous combinatorially symmetric cross-validation для оценки Probability of Backtest Overfitting, выбирает конфигурацию по non-annualized Sharpe и рассчитывает Deflated Sharpe probability с учётом skewness, kurtosis, дисперсии Sharpe между раскрытыми вариантами и оценочного числа независимых испытаний. `STARTED` без терминального события, unresolved `FAILED`, недостаток вариантов/периодов, несовпадающие timestamps или повреждённая hash chain дают `BLOCKED_*`. Поля `automatic_model_action=none` и `profitability_claimed=false` обязательны.
+
+Evidence накапливается только после migration 1.18.0. Старые backtests не backfill-ятся, поскольку восстановление полного множества ранее испробованных и отброшенных конфигураций было бы недоказуемым. Hourly returns сохраняют serial dependence; текущий DSR не заменяет HAC/bootstrap inference, а PBO требует заранее связанной family и не является promotion gate active model.
 
 ## Research backtest
 
