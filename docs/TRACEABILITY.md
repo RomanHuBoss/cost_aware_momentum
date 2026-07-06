@@ -1,6 +1,6 @@
 # Traceability
 
-Состояние: release 1.34.1, 2026-07-06. Таблица дополнена promotion-bound market-signal funding semantics; ранее реализованные automatic experiment control и PostgreSQL-native universe replay сохраняются без регрессии.
+Состояние: release 1.34.2, 2026-07-06. Таблица дополнена timezone-stable universe snapshot hashing; promotion-bound funding semantics, automatic experiment control и PostgreSQL-native universe replay сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
@@ -36,6 +36,7 @@
 | UNIVERSE-REPLAY-04 | После rollout missing/stale evidence не должна заменяться candle fallback | age limit `2 × UNIVERSE_REFRESH_SECONDS`; missing/stale/ambiguous evidence raises | `test_replay_fails_closed_when_post_rollout_snapshot_is_stale`, `test_required_replay_never_falls_back_when_snapshot_evidence_is_missing` | Проверено unit |
 | UNIVERSE-REPLAY-05 | Persisted snapshot должен повторно проверяться перед research use | `validate_universe_eligibility_snapshot_record` пересчитывает policy/record hashes и selection consistency | `test_research_replay_revalidates_persisted_snapshot_hashes` | Проверено unit |
 | UNIVERSE-REPLAY-05A | Dynamic research не должен смешиваться со static-mode snapshots после переключения конфигурации | loader фильтрует `mode=dynamic`; validator требует `expected_mode="dynamic"` | `test_research_replay_rejects_snapshot_from_another_universe_mode` | Проверено red → green |
+| UNIVERSE-REPLAY-05B | PostgreSQL session timezone не должен менять hash одного и того же `TIMESTAMPTZ` instant | UTC canonicalization в `_snapshot_payload` и `validate_universe_eligibility_snapshot_record`; contextual invalid-row error в loader | `test_universe_snapshot_hash_is_invariant_to_postgres_session_timezone`; `test_asof_loader_reports_the_exact_invalid_snapshot` | Проверено red → green unit |
 | UNIVERSE-REPLAY-06 | Dynamic loader не должен предварительно отбрасывать historically selected symbols текущим ranking | manual/background dynamic load используют bounded all-symbol candle set; filtering выполняется после label construction | full suite + caller contract inspection | Проверено static/unit regression suite |
 | UNIVERSE-REPLAY-07 | Background preflight и фактический fit должны считать один replay-covered cohort | `load_training_data_profile(... require_universe_replay=True)` и `build_model_candidate(... require_universe_replay=True)` | `test_background_training_profile_counts_only_replayed_eligible_rows` | Проверено unit |
 | UNIVERSE-REPLAY-08 | Formal backtest должен использовать тот же replay и раскрывать exact evidence | `scripts/backtest.py` применяет replay до temporal split; report/preregistration binding включает schema, policy hashes и record hashes | source contract + full suite | Проверено static/unit suite |
@@ -47,7 +48,7 @@
 | UNIVERSE-LEDGER-01 | Каждый committed universe refresh оставляет полный immutable decision set | `app/services/universe.py`, migration `0015_universe_eligibility` | existing universe ledger tests | Проверено unit; PostgreSQL trigger integration SKIPPED |
 | TEMPORAL-01 | Future universe observation/commit не должен влиять на прошлое решение | availability semantics `recorded_at`, no forward join | commit-availability regression | Проверено red → green |
 | FAIL-CLOSED-01 | Invalid hashes, timestamps, arrays, duplicate availability или stale gaps блокируют run | validators in `app/services/universe.py` and `app/ml/universe_replay.py` | targeted replay/ledger tests | Проверено unit |
-| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.34.1 не добавляет migration/config/API/artifact schema; меняется только место применения dynamic expected funding: market direction остаётся bound к OOS policy, execution/acceptance остаются строже по свежему funding | full suite + diff inspection | Реализовано |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.34.2 не добавляет migration/config/API/artifact schema и меняет только timezone canonicalization immutable universe record hash plus diagnostics; release 1.34.1 funding-policy separation сохраняется | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка

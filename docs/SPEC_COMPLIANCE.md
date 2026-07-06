@@ -1,13 +1,13 @@
 # Specification Compliance
 
-Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.34.1, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.34.2, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
 | Advisory-only, read-only Bybit | Реализовано | `app/bybit/client.py` содержит GET market/account reads; order mutation methods отсутствуют. |
 | PostgreSQL-only | Реализовано | SQLAlchemy/PostgreSQL models и Alembic; SQLite fallback отсутствует. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
-| Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; snapshot hashes и `dynamic` mode повторно проверяются; static-mode evidence исключено. Начиная с 1.31.0 PostgreSQL выбирает только first-rollout и latest-prior snapshots для фактических hourly decision timestamps, full rows потоково валидируются, а в памяти остаются compact replay fields. Pre-1.29.0/pre-rollout rows исключаются, stale/missing post-rollout evidence блокирует run. Exact membership до начала ledger не реконструируется. |
+| Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; timezone-stable validation 1.34.2 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; snapshot hashes и `dynamic` mode повторно проверяются; static-mode evidence исключено. PostgreSQL выбирает только first-rollout и latest-prior snapshots для фактических hourly decision timestamps, full rows потоково валидируются, а в памяти остаются compact replay fields. Release 1.34.2 канонизирует верхнеуровневые `TIMESTAMPTZ` поля snapshot в UTC до hash/revalidation, поэтому timezone представления одной и той же временной точки не создают ложную corruption-ошибку. Pre-1.29.0/pre-rollout rows исключаются, stale/missing или действительно повреждённое post-rollout evidence блокирует run. Exact membership до начала ledger не реконструируется. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history; deployment alignment усилен 1.34.1 | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках. Будущая фактическая ставка не участвует в ex-ante selection. До появления historical point-in-time forecast snapshots market-signal selector также обязан использовать нулевой expected funding; свежий ticker projection применяется только как более строгий execution-plan/acceptance overlay и не может менять направление. |
@@ -24,6 +24,21 @@
 | Deferred background promotion reconciliation | Реализовано 1.33.0 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. Явная operator family имеет приоритет; иначе при `AUTO_TRAIN_AUTO_EXPERIMENT=true` создаётся deterministic candidate-specific family, immutable preregistration фиксируется до первого trial и bounded configurations выполняются последовательно под advisory lock. Пока family incomplete, новый candidate не обучается. `READY` evidence всё равно обязана совпасть с exact artifact/version/horizon и persisted deployment-policy binding; terminal governance rejection, bounded retry exhaustion или authenticated exact-target operator cancellation транзакционно закрывают activation request с audit/outbox evidence. Отмена/terminal rejection завершает текущий scheduling cycle и не запускает немедленно новый candidate. |
 | Operator-visible automatic experiment control | Реализовано 1.34.0 | Fresh trainer heartbeat публикует exact family/candidate, stage, configuration, attempt и `subprocess_active`. `CANCEL_EXPERIMENT` требует exact target и CSRF/authenticated operator context. Formal subprocess запускается в isolated POSIX session/process group или Windows `CREATE_NEW_PROCESS_GROUP`; cancel/timeout/failure завершает всю доступную group/tree и сохраняет `subprocess-tree-termination-v1`. Mismatched/stale requests fail closed; pending `CHECK_NOW`/`RECOVER_NOW` не блокирует cancel; open trial закрывается append-only `FAILED`; preregistration и прошлые results не удаляются. Linux descendant runtime доказан; Windows runtime и намеренно detached POSIX `setsid()` descendants остаются непроверенными/вне group guarantee. |
 | Candidate/live recommendation attrition diagnostics | Реализовано 1.26.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. Report v2 отдельно показывает model quality и experiment-promotion attrition. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или основание ослаблять gates. |
+
+
+## Work package: timezone-stable universe snapshot hashing
+
+Release 1.34.2 закрывает подтверждённый operational/temporal-integrity defect в trainer preflight. Immutable `market.universe_eligibility_snapshots` хешировали `observed_at` и `recorded_at` через текстовое `datetime.isoformat()`. PostgreSQL `TIMESTAMPTZ` хранит момент времени, но возвращает его в timezone текущей DB session; один instant мог быть записан как `+00:00`, а прочитан как `+03:00`. Из-за разных JSON bytes validator ошибочно объявлял неизменённую запись повреждённой и блокировал `load_training_data_profile`, `due_reason` и trainer control.
+
+Реализовано:
+
+- top-level snapshot timestamps канонизируются в UTC до persistence hash и replay revalidation;
+- policy/record hashes, mode, decision coverage и selected-symbol consistency не ослаблены;
+- настоящий mismatch по-прежнему fail-closed блокирует training/backtest;
+- error context содержит точные `snapshot id`, `mode` и `recorded_at`;
+- regression воспроизводит одинаковые instants в UTC и UTC+03, второй regression проверяет диагностику реально неверного hash.
+
+Ограничения: PostgreSQL integration и Windows PostgreSQL timezone smoke не выполнялись в этой среде. Релиз не переписывает immutable rows, не ослабляет model gates и не гарантирует, что однодневный candidate пройдёт minimum-history/final-holdout требования.
 
 
 ## Work package: promotion-bound market-signal funding semantics

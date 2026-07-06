@@ -212,3 +212,23 @@ async def test_loader_evidence_flows_into_replay_report() -> None:
     assert len(filtered) == 1
     assert evidence["snapshot_loader"]["schema"] == POSTGRES_UNIVERSE_ASOF_LOADER_SCHEMA
     assert evidence["snapshot_loader"]["requested_decision_timestamps"] == 1
+
+
+@pytest.mark.asyncio
+async def test_asof_loader_reports_the_exact_invalid_snapshot() -> None:
+    row = await _valid_snapshot_row()
+    row["record_hash"] = "0" * 64
+    session = _StreamingSession([row])
+    decision_time = datetime(2026, 7, 6, 10, tzinfo=UTC)
+
+    with pytest.raises(ValueError) as exc_info:
+        await load_point_in_time_universe_snapshots(
+            session,  # type: ignore[arg-type]
+            [decision_time],
+            expected_mode="dynamic",
+        )
+
+    message = str(exc_info.value)
+    assert f"id={row['id']}" in message
+    assert f"recorded_at={row['recorded_at'].isoformat()}" in message
+    assert "record hash mismatch" in message

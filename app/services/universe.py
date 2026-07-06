@@ -130,6 +130,11 @@ def _require_aware(value: datetime, *, name: str) -> datetime:
     return value
 
 
+def _utc_hash_timestamp(value: datetime, *, name: str) -> str:
+    """Canonicalize TIMESTAMPTZ values independently of the PostgreSQL session timezone."""
+    return _require_aware(value, name=name).astimezone(UTC).isoformat()
+
+
 def _universe_policy(settings: Settings) -> dict[str, Any]:
     return json_compatible(
         {
@@ -410,8 +415,10 @@ def _snapshot_payload(
     return json_compatible(
         {
             "id": selection.refresh_id,
-            "observed_at": selection.observed_at,
-            "recorded_at": recorded_at,
+            "observed_at": _utc_hash_timestamp(
+                selection.observed_at, name="universe observed_at"
+            ),
+            "recorded_at": _utc_hash_timestamp(recorded_at, name="universe recorded_at"),
             "mode": selection.mode,
             "eligibility_schema": UNIVERSE_ELIGIBILITY_SCHEMA,
             "policy": selection.policy,
@@ -494,8 +501,12 @@ def validate_universe_eligibility_snapshot_record(
     payload = json_compatible(
         {
             "id": snapshot.id,
-            "observed_at": snapshot.observed_at,
-            "recorded_at": snapshot.recorded_at,
+            "observed_at": _utc_hash_timestamp(
+                snapshot.observed_at, name="universe snapshot observed_at"
+            ),
+            "recorded_at": _utc_hash_timestamp(
+                snapshot.recorded_at, name="universe snapshot recorded_at"
+            ),
             "mode": snapshot.mode,
             "eligibility_schema": snapshot.eligibility_schema,
             "policy": policy,

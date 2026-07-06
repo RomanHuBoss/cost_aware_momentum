@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.34.2 — 2026-07-06
+
+### Fixed
+
+- Canonicalized universe eligibility snapshot `observed_at` and `recorded_at` to UTC before record hashing and revalidation.
+- Prevented PostgreSQL session timezone rendering from producing false immutable-ledger hash mismatches that blocked trainer control and training-data profiling.
+- Preserved fail-closed validation for actual snapshot tampering and added exact snapshot identity/timestamp diagnostics.
+- Added regression coverage for timezone-invariant hash verification and invalid-row diagnostics.
+
 ## 1.34.1 — 2026-07-06
 
 ### Fixed

@@ -134,10 +134,17 @@ async def load_point_in_time_universe_snapshots(
         snapshot = UniverseEligibilitySnapshot(
             **{column: row[column] for column in model_columns}
         )
-        validate_universe_eligibility_snapshot_record(
-            snapshot,
-            expected_mode=expected_mode,
-        )
+        try:
+            validate_universe_eligibility_snapshot_record(
+                snapshot,
+                expected_mode=expected_mode,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Universe eligibility snapshot validation failed "
+                f"(id={snapshot.id}, mode={snapshot.mode}, "
+                f"recorded_at={snapshot.recorded_at.isoformat()}): {exc}"
+            ) from exc
         compact_records.append(
             {
                 "observed_at": snapshot.observed_at,

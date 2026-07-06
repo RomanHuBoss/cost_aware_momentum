@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -287,3 +287,26 @@ async def test_research_replay_rejects_snapshot_from_another_universe_mode() -> 
 
     with pytest.raises(ValueError, match="mode is incompatible"):
         validate_universe_eligibility_snapshot_record(snapshot, expected_mode="dynamic")
+
+
+@pytest.mark.asyncio
+async def test_universe_snapshot_hash_is_invariant_to_postgres_session_timezone() -> None:
+    selection = _selection()
+    snapshot = await persist_universe_selection(
+        _FakeSession(),  # type: ignore[arg-type]
+        selection,
+        recorded_at=selection.observed_at + timedelta(milliseconds=250),
+        release_version="test-release",
+    )
+    original_hash = snapshot.record_hash
+    database_timezone = timezone(timedelta(hours=3))
+    snapshot.observed_at = snapshot.observed_at.astimezone(database_timezone)
+    snapshot.recorded_at = snapshot.recorded_at.astimezone(database_timezone)
+
+    payload = validate_universe_eligibility_snapshot_record(snapshot)
+
+    assert snapshot.record_hash == original_hash
+    assert payload["observed_at"] == selection.observed_at.isoformat()
+    assert payload["recorded_at"] == (
+        selection.observed_at + timedelta(milliseconds=250)
+    ).isoformat()
