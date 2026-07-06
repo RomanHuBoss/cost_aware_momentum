@@ -158,6 +158,35 @@ def verify_selection_exposure_integrity(row: SelectionExposureLedger) -> bool:
         return False
 
 
+
+def verify_selection_exposure_against_ledger(
+    row: SelectionExposureLedger,
+    ledger: SelectionExperimentLedger,
+) -> bool:
+    """Verify immutable exposure evidence against its originating opportunity."""
+
+    try:
+        if not verify_selection_exposure_integrity(row):
+            return False
+        if (
+            row.plan_id != ledger.plan_id
+            or row.signal_id != ledger.signal_id
+            or row.profile_id != ledger.profile_id
+            or int(row.plan_version) != int(ledger.plan_version)
+        ):
+            return False
+        validate_ui_exposure_evidence(
+            plan_observed_at=ledger.observed_at,
+            exposed_at=row.exposed_at,
+            received_at=row.received_at,
+            viewport_ratio=row.viewport_ratio,
+            dwell_ms=row.dwell_ms,
+            surface=row.surface,
+        )
+        return True
+    except (ArithmeticError, TypeError, ValueError, OverflowError):
+        return False
+
 def exposure_insert_values(row: SelectionExposureLedger) -> dict[str, Any]:
     """Return explicit immutable values for PostgreSQL INSERT ... ON CONFLICT."""
 

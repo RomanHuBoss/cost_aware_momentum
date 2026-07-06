@@ -188,7 +188,7 @@ async def test_timeout_terminates_the_descendant_process_group(tmp_path: Path) -
             _run_subprocess(
                 _descendant_command(pid_file),
                 tmp_path,
-                1,
+                3,
                 cancellation_poll_seconds=0.02,
                 cancellation_grace_seconds=0.2,
             )

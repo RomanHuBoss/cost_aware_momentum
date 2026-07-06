@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -24,7 +24,7 @@ from app.research.selection_bias import (
 )
 from app.services.ui_exposures import (
     UI_EXPOSURE_SCHEMA,
-    verify_selection_exposure_integrity,
+    verify_selection_exposure_against_ledger,
 )
 
 ELIGIBLE_PLAN_STATUSES = frozenset({"ACTIONABLE", "LIMITED"})
@@ -247,14 +247,7 @@ async def selection_bias_report(
                 decision_without_exposure_count += 1
             continue
         exposure_row_count += 1
-        exposure_matches_opportunity = (
-            exposure.plan_id == ledger.plan_id
-            and exposure.signal_id == ledger.signal_id
-            and exposure.profile_id == ledger.profile_id
-            and int(exposure.plan_version) == int(ledger.plan_version)
-            and exposure.exposed_at >= ledger.observed_at - timedelta(seconds=5)
-        )
-        if not exposure_matches_opportunity or not verify_selection_exposure_integrity(exposure):
+        if not verify_selection_exposure_against_ledger(exposure, ledger):
             exposure_integrity_errors.append(str(ledger.plan_id))
             continue
         eligible_exposed_count += 1

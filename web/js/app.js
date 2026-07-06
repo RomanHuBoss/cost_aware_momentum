@@ -631,25 +631,35 @@ async function flushRecommendationExposures() {
   state.exposureFlushTimer = null;
   if (state.pendingExposures.length === 0) return;
   const batch = state.pendingExposures.splice(0, 100);
+  let retryDelay = 200;
   try {
-    await api('/api/v1/recommendations/exposures', {
+    const result = await api('/api/v1/recommendations/exposures', {
       method: 'POST',
       body: JSON.stringify({ exposures: batch }),
       keepalive: true,
     });
+    const nonRecorded = (result?.recorded || []).filter(
+      item => !['RECORDED', 'ALREADY_RECORDED'].includes(item.status),
+    );
+    if (nonRecorded.length > 0) {
+      console.warn('Some recommendation exposure events were terminally classified', nonRecorded);
+    }
   } catch (error) {
+    const status = Number(error?.response?.status || 0);
+    const retryable = status === 0 || status === 429 || status >= 500;
     console.warn('Recommendation exposure evidence was not recorded', error);
-    batch.forEach(item => {
-      state.exposedPlanIds.delete(item.plan_id);
-      startExposureDwell(item.plan_id);
-    });
+    if (retryable) {
+      // Preserve the original client_event_id/page_instance_id for true idempotency.
+      state.pendingExposures.unshift(...batch);
+      retryDelay = 5000;
+    }
   }
-  if (state.pendingExposures.length > 0) scheduleExposureFlush();
+  if (state.pendingExposures.length > 0) scheduleExposureFlush(retryDelay);
 }
 
-function scheduleExposureFlush() {
+function scheduleExposureFlush(delayMs = 200) {
   if (state.exposureFlushTimer) return;
-  state.exposureFlushTimer = setTimeout(flushRecommendationExposures, 200);
+  state.exposureFlushTimer = setTimeout(flushRecommendationExposures, delayMs);
 }
 
 function bindExposureObserver() {

@@ -11,7 +11,6 @@ from app import __version__
 from app.config import Settings
 from app.db.locks import acquire_advisory_xact_lock
 from app.db.models import (
-    AccountEquitySnapshot,
     CapitalProfile,
     ExecutionPlan,
     InstrumentSpecHistory,
@@ -50,7 +49,11 @@ from app.risk.policy import (
 from app.services.attrition import execution_plan_attrition_evidence
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.drift_monitor import production_drift_publication_guard
-from app.services.market_snapshots import latest_available_ticker
+from app.services.market_snapshots import (
+    latest_available_account_equity,
+    latest_available_orderbook,
+    latest_available_ticker,
+)
 from app.services.selection_experiments import build_selection_ledger_row
 
 IMMUTABLE_PLAN_STATUSES = frozenset({"ACCEPTED", "ENTERED", "PARTIAL", "CLOSED"})
@@ -484,15 +487,13 @@ def execution_plan_entry_reference(plan: ExecutionPlan, signal: MarketSignal) ->
     return positive_finite_decimal(raw_value, "plan entry reference")
 
 
-async def latest_orderbook(session: AsyncSession, symbol: str) -> OrderBookSnapshot | None:
-    return (
-        await session.execute(
-            select(OrderBookSnapshot)
-            .where(OrderBookSnapshot.symbol == symbol)
-            .order_by(desc(OrderBookSnapshot.source_time), desc(OrderBookSnapshot.id))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+async def latest_orderbook(
+    session: AsyncSession,
+    symbol: str,
+    *,
+    cutoff: datetime,
+) -> OrderBookSnapshot | None:
+    return await latest_available_orderbook(session, symbol, cutoff=cutoff)
 
 
 async def latest_ticker(
@@ -580,17 +581,14 @@ async def effective_capital(
                 "missing_source_account_id": True,
             },
         )
-    snapshot = (
-        await session.execute(
-            select(AccountEquitySnapshot)
-            .where(AccountEquitySnapshot.account_id == source_account_id)
-            .order_by(desc(AccountEquitySnapshot.source_time))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    current_time = now or datetime.now(UTC)
+    snapshot = await latest_available_account_equity(
+        session,
+        source_account_id,
+        cutoff=current_time,
+    )
     if snapshot is None:
         return Decimal("0"), Decimal("0"), False, {"source": "bybit", "missing_snapshot": True}
-    current_time = now or datetime.now(UTC)
     source_time = snapshot.source_time
     if source_time.tzinfo is None or current_time.tzinfo is None:
         age_seconds: float | None = None
@@ -780,6 +778,7 @@ async def reconciliation_issues(
     session: AsyncSession,
     *,
     profile: CapitalProfile,
+    cutoff: datetime | None = None,
 ) -> list[str]:
     """Compare one read-only account snapshot with its account-scoped journal."""
 
@@ -791,14 +790,11 @@ async def reconciliation_issues(
     if not account_id:
         return ["Для read-only профиля не задан source_account_id"]
 
-    account_snapshot = (
-        await session.execute(
-            select(AccountEquitySnapshot)
-            .where(AccountEquitySnapshot.account_id == account_id)
-            .order_by(desc(AccountEquitySnapshot.source_time))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    account_snapshot = await latest_available_account_equity(
+        session,
+        account_id,
+        cutoff=cutoff or datetime.now(UTC),
+    )
     if account_snapshot is None:
         return []
     exchange_positions = (
@@ -891,7 +887,7 @@ async def create_execution_plan(
     version = int(current_version) + 1
     now = datetime.now(UTC)
     ticker = await latest_ticker(session, signal.symbol, cutoff=now)
-    orderbook = await latest_orderbook(session, signal.symbol)
+    orderbook = await latest_orderbook(session, signal.symbol, cutoff=now)
     spec = await latest_spec(session, signal.symbol, cutoff=now)
     warnings: list[str] = list(signal.warnings or [])
     status_override: str | None = None
@@ -991,7 +987,7 @@ async def create_execution_plan(
         override_status("BLOCKED_STALE_DATA", "stale_or_missing_capital_snapshot")
         warnings.append("Снимок капитала отсутствует, устарел или имеет некорректное время")
     if profile.mode == "bybit_read_only":
-        issues = await reconciliation_issues(session, profile=profile)
+        issues = await reconciliation_issues(session, profile=profile, cutoff=now)
         if issues:
             override_status("BLOCKED_PORTFOLIO", "account_reconciliation_issue")
             warnings.extend(issues)

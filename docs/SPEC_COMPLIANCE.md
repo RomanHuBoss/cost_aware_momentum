@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.35.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.35.4, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -9,7 +9,7 @@
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
 | Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; timezone-stable validation 1.34.2 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; snapshot hashes и `dynamic` mode повторно проверяются; static-mode evidence исключено. PostgreSQL выбирает только first-rollout и latest-prior snapshots для фактических hourly decision timestamps, full rows потоково валидируются, а в памяти остаются compact replay fields. Release 1.34.2 канонизирует верхнеуровневые `TIMESTAMPTZ` поля snapshot в UTC до hash/revalidation, поэтому timezone представления одной и той же временной точки не создают ложную corruption-ошибку. Pre-1.29.0/pre-rollout rows исключаются, stale/missing или действительно повреждённое post-rollout evidence блокирует run. Exact membership до начала ledger не реконструируется. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
-| Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
+| Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0; latest-prior live selection исправлен 1.35.4 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Live lookup фильтрует `source_time` и `received_at` по exact decision cutoff до сортировки. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history; deployment alignment усилен 1.34.1 | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках. Будущая фактическая ставка не участвует в ex-ante selection. До появления historical point-in-time forecast snapshots market-signal selector также обязан использовать нулевой expected funding; свежий ticker projection применяется только как более строгий execution-plan/acceptance overlay и не может менять направление. |
 | Rolling/expanding walk-forward | Реализовано 1.11.0 | Три purged expanding folds внутри development period, fresh fit/calibration на каждом fold и отдельный final holdout. Не является nested CV/PBO. |
 | Operator-selection bias correction | Частично реализовано 1.21.0 | Prospective ex-ante opportunity ledger, immutable first UI-exposure evidence и ACCEPT/REJECT/NO_DECISION сохранены. Denominator теперь включает только plan versions, действительно показанные first-party UI после ≥50% видимости в активной вкладке в течение ≥1 секунды; exposure time задаёт chronological ordering, coverage/anomalies публикуются и низкое coverage блокирует IPSW. Signal-atomic OOS propensity split и cluster moving-block intervals сохранены. Это не causal treatment model: eye tracking, comprehension, latent operator state, propensity refit внутри bootstrap, API/CLI exposures и pre-1.15 opportunities отсутствуют. |
@@ -475,7 +475,7 @@ Implemented:
 
 This change does not manufacture current data, widen freshness windows or turn stale snapshots into usable quotes. If no prior row satisfies the cutoff, the existing missing/stale fail-closed paths remain active. It does not change model features, labels, policy thresholds, risk budgets, artifact contracts or activation gates.
 
-Limitations: PostgreSQL integration and `EXPLAIN ANALYZE` were not available. The analogous absolute-latest orderbook path remains a separate recommended audit; this release intentionally changes ticker selection only.
+Limitations: PostgreSQL integration and `EXPLAIN ANALYZE` were not available. The analogous orderbook and read-only account lookup paths were subsequently corrected in release 1.35.4.
 
 ## Work package: trainer stale-candidate closure and fail-closed artifact recovery
 
@@ -494,3 +494,21 @@ The release intentionally does not convert quality-gate failure into success. `w
 
 Limitations: existing malformed candidates are closed only when the upgraded trainer reconciles them; PostgreSQL integration and real Windows service recovery were not run in the sandbox. Recovery training can rebuild lost bytes but cannot guarantee that a replacement model has positive out-of-sample economic evidence.
 
+
+
+## Work package: exposure conflict isolation and latest-prior execution state
+
+Release 1.35.4 closes three live availability/integrity defects without relaxing economic gates.
+
+Implemented:
+
+- exposure batches are processed item by item; stale/legacy/version-conflicting events receive terminal statuses and cannot roll back valid rows;
+- browser transport retry preserves the original event identity and is limited to network, HTTP 429 and 5xx failures;
+- exposure evidence is verified against its immutable opportunity across plan, signal, profile, plan version and chronology;
+- orderbook and account-equity selection apply `source_time <= cutoff` and `received_at <= cutoff` before deterministic descending ordering;
+- exact cutoffs are shared by plan creation, recommendation acceptance, effective capital, reconciliation and portfolio display;
+- acceptance cannot proceed without a completed current-state validation object.
+
+These changes prevent future-dated records from masking older fresh state. They do not widen freshness windows, synthesize missing data, change model features/labels, relax candidate promotion, lower EV/RR requirements or increase risk limits.
+
+Limitations: no operator PostgreSQL database or actual candidate metrics were present, so the causes of specific quality-gate failures and realized losses remain unverified. Static typing is not clean and exact historical orderbook/operator-latency/exchange-liquidation mechanics remain incomplete.

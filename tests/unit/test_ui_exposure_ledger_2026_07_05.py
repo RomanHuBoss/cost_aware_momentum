@@ -18,6 +18,7 @@ from app.services.ui_exposures import (
     UI_EXPOSURE_SCHEMA,
     build_selection_exposure_row,
     validate_ui_exposure_evidence,
+    verify_selection_exposure_against_ledger,
     verify_selection_exposure_integrity,
 )
 
@@ -90,8 +91,31 @@ def test_ui_exposure_row_is_tamper_evident_and_predecision() -> None:
     assert row.viewport_ratio == Decimal("0.75")
     assert verify_selection_exposure_integrity(row) is True
 
+    assert verify_selection_exposure_against_ledger(row, ledger) is True
+
     row.dwell_ms = 9999
     assert verify_selection_exposure_integrity(row) is False
+    assert verify_selection_exposure_against_ledger(row, ledger) is False
+
+
+def test_ui_exposure_cross_ledger_mismatch_fails_closed() -> None:
+    ledger = build_selection_ledger_row(
+        signal=_signal(), plan=_plan(), observed_at=BASE, release_version="1.21.0"
+    )
+    row = _exposure(ledger)
+    other_ledger = build_selection_ledger_row(
+        signal=_signal(), plan=_plan(), observed_at=BASE, release_version="1.21.0"
+    )
+
+    assert verify_selection_exposure_integrity(row) is True
+    assert verify_selection_exposure_against_ledger(row, other_ledger) is False
+
+    other_ledger.plan_id = ledger.plan_id
+    other_ledger.signal_id = ledger.signal_id
+    other_ledger.profile_id = ledger.profile_id
+    other_ledger.plan_version = ledger.plan_version
+    other_ledger.observed_at = row.exposed_at + timedelta(seconds=6)
+    assert verify_selection_exposure_against_ledger(row, other_ledger) is False
 
 
 @pytest.mark.parametrize(
@@ -295,3 +319,6 @@ def test_frontend_records_only_visible_dwell_exposures() -> None:
     assert "dwell_ms" in source
     assert "viewport_ratio" in source
     assert "/api/v1/recommendations/exposures" in source
+    assert "state.pendingExposures.unshift(...batch)" in source
+    assert "state.exposedPlanIds.delete(item.plan_id)" not in source
+    assert "status >= 500" in source

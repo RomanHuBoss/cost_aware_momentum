@@ -54,7 +54,7 @@ from app.services.selection_experiments import verify_selection_ledger_integrity
 from app.services.ui_exposures import (
     build_selection_exposure_row,
     exposure_insert_values,
-    verify_selection_exposure_integrity,
+    verify_selection_exposure_against_ledger,
 )
 
 router = APIRouter(prefix="/api/v1/recommendations", tags=["recommendations"])
@@ -238,16 +238,27 @@ async def record_recommendation_exposures(
     session: SessionDep,
     operator: MutatingOperatorDep,
 ) -> dict:
-    """Persist the first verified UI exposure for each plan.
+    """Persist first verified UI exposure evidence without batch-wide conflicts.
 
-    Exposure is prospective research evidence only. It never changes plan status,
-    model lifecycle, risk limits, or exchange state.
+    Every item is classified independently. Permanent stale/legacy conflicts are
+    returned as terminal item statuses, so one obsolete browser card cannot roll
+    back valid evidence from the rest of the batch or trigger an endless retry
+    loop. Exposure evidence never changes trading or model lifecycle state.
     """
 
     received_at = datetime.now(UTC)
     created = 0
     duplicates = 0
+    ignored = 0
+    rejected = 0
     recorded: list[dict] = []
+
+    def outcome(event, status: str, detail: str | None = None) -> None:
+        item = {"plan_id": str(event.plan_id), "status": status}
+        if detail:
+            item["detail"] = detail
+        recorded.append(item)
+
     for event in payload.exposures:
         ledger = (
             await session.execute(
@@ -257,11 +268,17 @@ async def record_recommendation_exposures(
             )
         ).scalar_one_or_none()
         if ledger is None:
-            raise HTTPException(status_code=409, detail="Selection opportunity does not exist")
+            ignored += 1
+            outcome(event, "IGNORED_UNKNOWN_PLAN", "Selection opportunity does not exist")
+            continue
         if not verify_selection_ledger_integrity(ledger):
-            raise HTTPException(status_code=409, detail="Selection opportunity integrity failure")
+            rejected += 1
+            outcome(event, "REJECTED_LEDGER_INTEGRITY", "Selection opportunity integrity failure")
+            continue
         if int(ledger.plan_version) != int(event.plan_version):
-            raise HTTPException(status_code=409, detail="Exposure plan version mismatch")
+            ignored += 1
+            outcome(event, "IGNORED_PLAN_VERSION_MISMATCH", "Exposure plan version mismatch")
+            continue
 
         try:
             row = build_selection_exposure_row(
@@ -277,7 +294,10 @@ async def record_recommendation_exposures(
                 release_version=__version__,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            rejected += 1
+            outcome(event, "REJECTED_INVALID_EVIDENCE", str(exc))
+            continue
+
         statement = (
             insert(SelectionExposureLedger)
             .values(**exposure_insert_values(row))
@@ -285,39 +305,46 @@ async def record_recommendation_exposures(
             .returning(SelectionExposureLedger.id)
         )
         inserted_id = (await session.execute(statement)).scalar_one_or_none()
-        if inserted_id is None:
-            existing = (
-                await session.execute(
-                    select(SelectionExposureLedger).where(
-                        SelectionExposureLedger.plan_id == event.plan_id
-                    )
-                )
-            ).scalar_one_or_none()
-            event_owner = (
-                await session.execute(
-                    select(SelectionExposureLedger).where(
-                        SelectionExposureLedger.client_event_id == event.client_event_id
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is not None and verify_selection_exposure_integrity(existing):
-                duplicates += 1
-                recorded.append({"plan_id": str(event.plan_id), "status": "ALREADY_RECORDED"})
-                continue
-            if event_owner is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Client exposure event is already bound to another plan",
-                )
-            raise HTTPException(status_code=409, detail="Exposure evidence conflict")
-        else:
+        if inserted_id is not None:
             created += 1
-            recorded.append({"plan_id": str(event.plan_id), "status": "RECORDED"})
+            outcome(event, "RECORDED")
+            continue
+
+        existing = (
+            await session.execute(
+                select(SelectionExposureLedger).where(
+                    SelectionExposureLedger.plan_id == event.plan_id
+                )
+            )
+        ).scalar_one_or_none()
+        event_owner = (
+            await session.execute(
+                select(SelectionExposureLedger).where(
+                    SelectionExposureLedger.client_event_id == event.client_event_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None and verify_selection_exposure_against_ledger(existing, ledger):
+            duplicates += 1
+            outcome(event, "ALREADY_RECORDED")
+        elif event_owner is not None and event_owner.plan_id != event.plan_id:
+            rejected += 1
+            outcome(
+                event,
+                "REJECTED_CLIENT_EVENT_CONFLICT",
+                "Client exposure event is already bound to another plan",
+            )
+        else:
+            rejected += 1
+            outcome(event, "REJECTED_EXPOSURE_CONFLICT", "Exposure evidence conflict")
+
     await session.commit()
     return {
-        "ok": True,
+        "ok": rejected == 0,
         "created": created,
         "duplicates": duplicates,
+        "ignored": ignored,
+        "rejected": rejected,
         "recorded": recorded,
         "automatic_model_action": "none",
     }
@@ -510,7 +537,7 @@ async def accept_recommendation(
     elif conflict_reason is None and plan.profile_version != profile.version:
         conflict_reason = "Capital profile version changed"
     ticker = await latest_ticker(session, signal.symbol, cutoff=now)
-    orderbook = await latest_orderbook(session, signal.symbol)
+    orderbook = await latest_orderbook(session, signal.symbol, cutoff=now)
     if conflict_reason is None and (
         ticker is None
         or not ticker_snapshot_is_fresh(
@@ -576,7 +603,7 @@ async def accept_recommendation(
     if conflict_reason is None and profile.mode == "bybit_read_only" and not risk_state.capital_verified:
         conflict_reason = "Account capital snapshot is stale or missing"
     if conflict_reason is None and profile.mode == "bybit_read_only":
-        reconciliation_failures = await reconciliation_issues(session, profile=profile)
+        reconciliation_failures = await reconciliation_issues(session, profile=profile, cutoff=now)
         if reconciliation_failures:
             conflict_reason = "Account reconciliation failed: " + "; ".join(reconciliation_failures)
 
@@ -614,6 +641,9 @@ async def accept_recommendation(
                 )
             except (TypeError, ValueError) as exc:
                 conflict_reason = str(exc)
+
+    if conflict_reason is None and acceptance_validation is None:
+        conflict_reason = "Acceptance validation evidence is unavailable"
 
     if (
         conflict_reason is None
@@ -693,6 +723,9 @@ async def accept_recommendation(
         )
         await session.commit()
         return Response(content=body, status_code=409, media_type="application/json")
+
+    if acceptance_validation is None:
+        raise RuntimeError("Acceptance validation must exist after all fail-closed checks")
 
     existing_decision = (
         await session.execute(select(OperatorDecision).where(OperatorDecision.plan_id == plan.id))

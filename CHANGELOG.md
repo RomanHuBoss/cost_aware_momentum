@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.35.4 — 2026-07-06
+
+### Fixed
+
+- Replaced batch-wide exposure `409 Conflict` with independent terminal classification per event, so one stale/legacy card no longer rolls back valid evidence in the same request.
+- Preserved original browser exposure identifiers across retry and limited retries to network, HTTP 429 and 5xx failures, preventing regenerated-event conflict loops.
+- Added immutable exposure-to-opportunity verification across plan, signal, profile, version and chronology before duplicate acceptance and selection-bias analysis.
+- Added latest-prior point-in-time orderbook selection for execution-plan construction and recommendation acceptance.
+- Added latest-prior point-in-time account-equity selection for effective-capital, reconciliation and portfolio paths.
+- Added an explicit fail-closed guard for missing acceptance validation evidence and hardened the process-tree timeout regression against startup jitter.
+- Added nine regression tests; model quality, activation, EV/RR and risk thresholds are unchanged.
+
 ## 1.35.3 — 2026-07-06
 
 ### Fixed

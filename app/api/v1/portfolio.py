@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter
-from sqlalchemy import desc, select
+from sqlalchemy import select
 
 from app.api.deps import SessionDep, SettingsDep
 from app.db.models import (
-    AccountEquitySnapshot,
     CapitalProfile,
     ExecutionPlan,
     ManualTrade,
@@ -16,12 +16,14 @@ from app.db.models import (
 )
 from app.risk.policy import validate_capital_profile_policy
 from app.services.execution import execution_plan_scope_clause, reconciliation_issues
+from app.services.market_snapshots import latest_available_account_equity
 
 router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
 
 
 @router.get("/risk")
 async def portfolio_risk(session: SessionDep, settings: SettingsDep) -> dict:
+    now = datetime.now(UTC)
     active_profile = (
         await session.execute(select(CapitalProfile).where(CapitalProfile.active.is_(True)).limit(1))
     ).scalar_one_or_none()
@@ -64,21 +66,18 @@ async def portfolio_risk(session: SessionDep, settings: SettingsDep) -> dict:
     exchange_positions = []
     reconciliation: list[str] = []
     if active_profile is not None:
-        reconciliation = await reconciliation_issues(session, profile=active_profile)
+        reconciliation = await reconciliation_issues(session, profile=active_profile, cutoff=now)
     if (
         active_profile is not None
         and active_profile.mode == "bybit_read_only"
         and active_profile.source_account_id
     ):
         account_id = active_profile.source_account_id
-        account_snapshot = (
-            await session.execute(
-                select(AccountEquitySnapshot)
-                .where(AccountEquitySnapshot.account_id == account_id)
-                .order_by(desc(AccountEquitySnapshot.source_time))
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        account_snapshot = await latest_available_account_equity(
+            session,
+            account_id,
+            cutoff=now,
+        )
         if account_snapshot is not None:
             exchange_positions = (
                 (
