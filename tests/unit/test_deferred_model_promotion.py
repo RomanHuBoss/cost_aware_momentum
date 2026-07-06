@@ -24,6 +24,7 @@ async def test_trainer_promotes_registered_candidate_after_evidence_becomes_read
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trainer = trainer_module.BackgroundTrainer()
+    monkeypatch.setattr(trainer, "_candidate_artifact_rejection", lambda _candidate: (None, {}))
     policy_binding = experiment_policy_binding_from_settings(trainer_module.settings)
     candidate = SimpleNamespace(
         version="candidate-v2",
@@ -132,6 +133,7 @@ async def test_deferred_promotion_remains_fail_closed_until_experiment_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trainer = trainer_module.BackgroundTrainer()
+    monkeypatch.setattr(trainer, "_candidate_artifact_rejection", lambda _candidate: (None, {}))
     policy_binding = experiment_policy_binding_from_settings(trainer_module.settings)
     candidate = SimpleNamespace(
         version="candidate-waiting",

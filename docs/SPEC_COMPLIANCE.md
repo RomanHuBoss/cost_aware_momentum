@@ -477,3 +477,20 @@ This change does not manufacture current data, widen freshness windows or turn s
 
 Limitations: PostgreSQL integration and `EXPLAIN ANALYZE` were not available. The analogous absolute-latest orderbook path remains a separate recommended audit; this release intentionally changes ticker selection only.
 
+## Work package: trainer stale-candidate closure and fail-closed artifact recovery
+
+Release 1.35.3 closes a lifecycle deadlock visible in the trainer dialog. A quality-passed inactive candidate with a missing/invalid immutable deployment-policy binding previously returned `candidate_policy_binding_missing_or_invalid` as a non-terminal `BLOCKED` result. Because the same candidate retained `activation_requested=true`, every scheduler cycle selected it again and returned before evaluating active-artifact recovery or current training-data readiness.
+
+Implemented:
+
+- candidate artifact path, bytes SHA-256 and deployment horizon are validated before any automatic experiment subprocess;
+- missing, unreadable, hash-mismatched, horizon-invalid and policy-binding-invalid candidates are terminally closed through the existing append-only rejection/audit/outbox path;
+- terminal stale-candidate closure carries `continue_scheduling=true`, allowing the same scheduler iteration to evaluate recovery/data/quality state;
+- active-artifact recovery eligibility is independent from runtime baseline fallback, so production inference remains fail-closed while background/operator recovery training is allowed;
+- missing, invalid-SHA, unreadable and hash-mismatched active artifacts all enter the governed recovery path;
+- activation still requires a fresh candidate, passed quality gate, exact experiment evidence, current deployment-policy binding, valid artifact and active-version compare-and-swap.
+
+The release intentionally does not convert quality-gate failure into success. `walk_forward_policy_stability_below_minimum`, `holdout_span_below_minimum`, low policy trade density and insufficient independent cohorts remain blocking evidence. A technically successful training job may therefore remain inactive. No DB migration, environment variable, policy threshold, artifact schema or risk limit changed.
+
+Limitations: existing malformed candidates are closed only when the upgraded trainer reconciles them; PostgreSQL integration and real Windows service recovery were not run in the sandbox. Recovery training can rebuild lost bytes but cannot guarantee that a replacement model has positive out-of-sample economic evidence.
+

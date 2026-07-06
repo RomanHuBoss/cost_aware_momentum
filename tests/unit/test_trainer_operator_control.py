@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,13 +15,18 @@ from app.services.trainer_control import recovery_availability, trainer_heartbea
 from app.workers import trainer as trainer_module
 
 
-def model(path: Path | None, *, model_type: str = "barrier_logistic") -> SimpleNamespace:
+def model(
+    path: Path | None,
+    *,
+    model_type: str = "barrier_logistic",
+    artifact_sha256: str | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(),
         version="trained-v1",
         model_type=model_type,
         artifact_path=str(path) if path is not None else None,
-        artifact_sha256=None,
+        artifact_sha256=artifact_sha256,
         calibration_version=None,
     )
 
@@ -45,7 +51,10 @@ def test_recovery_availability_tracks_artifact_and_override(tmp_path: Path) -> N
 
     artifact = tmp_path / "active.joblib"
     artifact.write_bytes(b"artifact")
-    available, reason = recovery_availability(model(artifact), settings)
+    available, reason = recovery_availability(
+        model(artifact, artifact_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest()),
+        settings,
+    )
 
     assert available is False
     assert reason == "active_model_artifact_available"

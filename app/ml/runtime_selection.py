@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -74,6 +75,67 @@ def recoverable_registry_artifact_notice(
         registry=registry,
         artifact_path=registry.artifact_path,
     )
+
+
+def registry_artifact_recovery_notice(
+    registry: RegistryModel | None,
+    *,
+    allow_baseline_model: bool,
+    app_mode: str,
+) -> dict[str, object] | None:
+    """Describe an active trained artifact that requires recovery training.
+
+    Recovery eligibility is intentionally independent from runtime fallback.  In
+    production a missing or corrupted artifact must keep inference fail-closed,
+    but the trainer still needs an explicit signal to rebuild a governed model.
+    """
+
+    if registry is None or registry.model_type == "deterministic_baseline":
+        return None
+    fallback_allowed = baseline_fallback_allowed(
+        allow_baseline_model=allow_baseline_model,
+        app_mode=app_mode,
+    )
+    artifact_path = Path(registry.artifact_path).expanduser() if registry.artifact_path else None
+    common = {
+        "active": True,
+        "registry_id": str(registry.id),
+        "registry_version": registry.version,
+        "artifact_path": registry.artifact_path,
+        "runtime_fallback_allowed": fallback_allowed,
+    }
+    if artifact_path is None or not artifact_path.is_file():
+        return {
+            **common,
+            "code": "ACTIVE_MODEL_ARTIFACT_MISSING",
+            "message": "Active model artifact is missing; governed recovery training is required",
+        }
+
+    expected_sha256 = str(registry.artifact_sha256 or "").strip().lower()
+    if len(expected_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha256):
+        return {
+            **common,
+            "code": "ACTIVE_MODEL_ARTIFACT_SHA256_INVALID",
+            "message": "Active model artifact SHA-256 metadata is missing or invalid",
+        }
+    try:
+        actual_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        return {
+            **common,
+            "code": "ACTIVE_MODEL_ARTIFACT_UNREADABLE",
+            "message": "Active model artifact cannot be read",
+            "error": str(exc),
+        }
+    if actual_sha256 != expected_sha256:
+        return {
+            **common,
+            "code": "ACTIVE_MODEL_ARTIFACT_HASH_MISMATCH",
+            "message": "Active model artifact SHA-256 does not match the registry",
+            "actual_sha256": actual_sha256,
+            "expected_sha256": expected_sha256,
+        }
+    return None
 
 
 def _load_baseline(*, source: str, allow_baseline_model: bool) -> ModelRuntime:

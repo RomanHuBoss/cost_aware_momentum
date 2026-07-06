@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.35.3 — 2026-07-06
+
+### Fixed
+
+- Closed immutable pending candidates with missing/corrupt artifacts, invalid horizon metadata or missing/stale deployment-policy binding instead of leaving the trainer permanently `BLOCKED`.
+- Validated candidate path, SHA-256 and horizon before automatic experiment orchestration and persisted a terminal rejection gate with audit/outbox evidence.
+- Continued the same scheduler iteration after stale-candidate closure so active-artifact recovery or the real data/quality wait reason is evaluated immediately.
+- Decoupled governed recovery-training eligibility from baseline runtime fallback: production inference remains fail-closed while trainer/operator recovery can rebuild a missing or corrupted active artifact.
+- Added seven regression scenarios for production recovery, candidate artifact integrity, legacy policy binding and scheduler continuation.
+
 ## 1.35.2 — 2026-07-06
 
 ### Fixed

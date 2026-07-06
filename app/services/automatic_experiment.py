@@ -347,19 +347,40 @@ async def _run_subprocess(
         raise
 
 
-def _candidate_contract(candidate: ModelRegistry, settings: Settings) -> tuple[Path, str, int]:
+class CandidateArtifactContractError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def candidate_artifact_contract(
+    candidate: ModelRegistry,
+    settings: Settings,
+) -> tuple[Path, str, int]:
     artifact_path = str(candidate.artifact_path or "").strip()
     if not artifact_path:
-        raise ValueError("Automatic experiment candidate has no artifact path")
+        raise CandidateArtifactContractError(
+            "candidate_artifact_path_missing",
+            "Automatic experiment candidate has no artifact path",
+        )
     path = Path(artifact_path).expanduser()
     path = ((_PROJECT_ROOT / path) if not path.is_absolute() else path).resolve()
     if not path.is_file():
-        raise ValueError(f"Automatic experiment artifact does not exist: {path}")
+        raise CandidateArtifactContractError(
+            "candidate_artifact_missing",
+            f"Automatic experiment artifact does not exist: {path}",
+        )
     digest = str(candidate.artifact_sha256 or "").strip().lower()
     if not _SHA256.fullmatch(digest):
-        raise ValueError("Automatic experiment candidate artifact SHA-256 is invalid")
+        raise CandidateArtifactContractError(
+            "candidate_artifact_sha256_invalid",
+            "Automatic experiment candidate artifact SHA-256 is invalid",
+        )
     if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        raise ValueError("Automatic experiment candidate artifact SHA-256 mismatch")
+        raise CandidateArtifactContractError(
+            "candidate_artifact_sha256_mismatch",
+            "Automatic experiment candidate artifact SHA-256 mismatch",
+        )
     metrics = candidate.metrics if isinstance(candidate.metrics, dict) else {}
     raw_horizon = metrics.get("horizon_hours")
     if isinstance(raw_horizon, bool):
@@ -367,9 +388,15 @@ def _candidate_contract(candidate: ModelRegistry, settings: Settings) -> tuple[P
     try:
         horizon = int(raw_horizon)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Automatic experiment candidate horizon is invalid") from exc
+        raise CandidateArtifactContractError(
+            "candidate_horizon_invalid",
+            "Automatic experiment candidate horizon is invalid",
+        ) from exc
     if horizon != settings.default_horizon_hours:
-        raise ValueError("Automatic experiment candidate horizon does not match deployment settings")
+        raise CandidateArtifactContractError(
+            "candidate_horizon_mismatch",
+            "Automatic experiment candidate horizon does not match deployment settings",
+        )
     return path, digest, horizon
 
 
@@ -552,7 +579,7 @@ async def orchestrate_automatic_experiment(
 ) -> dict[str, Any]:
     if not settings.auto_train_auto_experiment:
         return {"status": "WAITING", "reason": "automatic_experiment_disabled"}
-    path, digest, horizon = _candidate_contract(candidate, settings)
+    path, digest, horizon = candidate_artifact_contract(candidate, settings)
     plan = automatic_experiment_plan(
         settings,
         model_version=candidate.version,

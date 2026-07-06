@@ -30,10 +30,12 @@ from app.ml.lifecycle import (
     register_model_candidate,
     require_passed_quality_gate,
 )
-from app.ml.runtime_selection import recoverable_registry_artifact_notice
+from app.ml.runtime_selection import registry_artifact_recovery_notice
 from app.ml.training import minimum_hourly_history_timestamps_for_quality_gate
 from app.services.audit import publish_outbox
 from app.services.automatic_experiment import (
+    CandidateArtifactContractError,
+    candidate_artifact_contract,
     close_candidate_activation_request,
     experiment_gate_is_terminal,
     orchestrate_automatic_experiment,
@@ -183,6 +185,46 @@ class BackgroundTrainer:
             return candidate
         return None
 
+    @staticmethod
+    def _candidate_artifact_rejection(
+        candidate: ModelRegistry,
+    ) -> tuple[str | None, dict[str, object]]:
+        try:
+            candidate_artifact_contract(candidate, settings)
+        except CandidateArtifactContractError as exc:
+            return exc.code, {"error": str(exc)}
+        return None, {}
+
+    async def _close_unusable_candidate(
+        self,
+        candidate: ModelRegistry,
+        *,
+        reason: str,
+        details: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        failure_gate = {
+            "schema": "automatic-experiment-failure-gate-v1",
+            "passed": False,
+            "report_status": reason.upper(),
+            "reasons": [reason],
+            "experiment_family": None,
+            **(details or {}),
+        }
+        closure = await close_candidate_activation_request(
+            candidate_version=candidate.version,
+            experiment_family=None,
+            experiment_gate=failure_gate,
+            actor=settings.trainer_id,
+        )
+        return {
+            "status": "REJECTED",
+            "reason": reason,
+            "candidate_version": candidate.version,
+            "experiment_promotion_gate": failure_gate,
+            "closure": closure,
+            "continue_scheduling": True,
+        }
+
     async def reconcile_pending_activation(self) -> dict[str, object] | None:
         """Recheck staged experiment evidence for an already registered candidate."""
 
@@ -201,31 +243,32 @@ class BackgroundTrainer:
         except (TypeError, ValueError):
             horizon_hours = 0
         if horizon_hours != settings.default_horizon_hours:
-            return {
-                "status": "BLOCKED",
-                "reason": "candidate_horizon_mismatch",
-                "candidate_version": candidate.version,
-                "candidate_horizon_hours": horizon_hours,
-                "expected_horizon_hours": settings.default_horizon_hours,
-            }
-        artifact_sha256 = str(candidate.artifact_sha256 or "").strip().lower()
-        if len(artifact_sha256) != 64:
-            return {
-                "status": "BLOCKED",
-                "reason": "candidate_artifact_sha256_missing_or_invalid",
-                "candidate_version": candidate.version,
-            }
+            return await self._close_unusable_candidate(
+                candidate,
+                reason="candidate_horizon_mismatch",
+                details={
+                    "candidate_horizon_hours": horizon_hours,
+                    "expected_horizon_hours": settings.default_horizon_hours,
+                },
+            )
+        artifact_reason, artifact_details = self._candidate_artifact_rejection(candidate)
+        if artifact_reason is not None:
+            return await self._close_unusable_candidate(
+                candidate,
+                reason=artifact_reason,
+                details=artifact_details,
+            )
+        artifact_sha256 = str(candidate.artifact_sha256).strip().lower()
         try:
             policy_binding = require_experiment_policy_binding(
                 metrics.get("promotion_policy_binding")
             )
         except RuntimeError as exc:
-            return {
-                "status": "BLOCKED",
-                "reason": "candidate_policy_binding_missing_or_invalid",
-                "candidate_version": candidate.version,
-                "error": str(exc),
-            }
+            return await self._close_unusable_candidate(
+                candidate,
+                reason="candidate_policy_binding_missing_or_invalid",
+                details={"error": str(exc)},
+            )
         configured_policy_binding = experiment_policy_binding_from_settings(settings)
         if policy_binding != configured_policy_binding:
             failure_gate = {
@@ -249,6 +292,7 @@ class BackgroundTrainer:
                 "candidate_version": candidate.version,
                 "experiment_promotion_gate": failure_gate,
                 "closure": closure,
+                "continue_scheduling": True,
             }
 
         persisted_gate = metrics.get("experiment_promotion_gate")
@@ -508,7 +552,7 @@ class BackgroundTrainer:
         recovery_notice = (
             None
             if settings.active_model_path is not None
-            else recoverable_registry_artifact_notice(
+            else registry_artifact_recovery_notice(
                 active,
                 allow_baseline_model=settings.allow_baseline_model,
                 app_mode=settings.app_mode,
@@ -935,7 +979,8 @@ class BackgroundTrainer:
                         },
                     }
                 )
-                return
+                if promotion.get("continue_scheduling") is not True:
+                    return
         self.state["phase"] = "CHECKING_DATA"
         due, trigger = await self.due_reason()
         if due:
@@ -993,7 +1038,7 @@ class BackgroundTrainer:
                 job = await self.create_job(scheduled_for, {"trigger": trigger})
                 try:
                     active = await self.active_model()
-                    incumbent_recovery = recoverable_registry_artifact_notice(
+                    incumbent_recovery = registry_artifact_recovery_notice(
                         active,
                         allow_baseline_model=settings.allow_baseline_model,
                         app_mode=settings.app_mode,
@@ -1001,7 +1046,7 @@ class BackgroundTrainer:
                     incumbent = None if incumbent_recovery else incumbent_from_registry(active)
                     if incumbent_recovery:
                         logger.warning(
-                            "Missing active artifact is treated as bootstrap baseline for training",
+                            "Unusable active artifact is treated as bootstrap recovery input",
                             extra={"incumbent_recovery": incumbent_recovery},
                         )
                     symbols = settings.symbols if settings.universe_mode == "static" else None
@@ -1113,7 +1158,7 @@ class BackgroundTrainer:
                     recovery_activation_skipped: str | None = None
                     if can_activate and incumbent_recovery:
                         current_active = await self.active_model()
-                        current_recovery = recoverable_registry_artifact_notice(
+                        current_recovery = registry_artifact_recovery_notice(
                             current_active,
                             allow_baseline_model=settings.allow_baseline_model,
                             app_mode=settings.app_mode,

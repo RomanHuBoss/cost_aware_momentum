@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -14,7 +13,7 @@ from app.db.engine import SessionFactory
 from app.db.locks import lock_key
 from app.db.models import JobRun, ModelRegistry, ServiceHeartbeat
 from app.json_utils import json_compatible
-from app.ml.runtime_selection import recoverable_registry_artifact_notice
+from app.ml.runtime_selection import registry_artifact_recovery_notice
 from app.services.audit import append_audit_event, publish_outbox
 
 TrainerControlAction = Literal["CHECK_NOW", "RECOVER_NOW", "CANCEL_EXPERIMENT"]
@@ -314,16 +313,14 @@ def recovery_availability(
         return True, "no_active_model"
     if active_model.model_type == "deterministic_baseline":
         return True, "registry_baseline_active"
-    artifact_path = Path(active_model.artifact_path).expanduser() if active_model.artifact_path else None
-    if artifact_path is None or not artifact_path.is_file():
-        notice = recoverable_registry_artifact_notice(
-            active_model,
-            allow_baseline_model=settings.allow_baseline_model,
-            app_mode=settings.app_mode,
-        )
-        if notice is not None:
-            return True, "active_model_artifact_missing"
-        return False, "active_model_artifact_missing_fail_closed"
+    notice = registry_artifact_recovery_notice(
+        active_model,
+        allow_baseline_model=settings.allow_baseline_model,
+        app_mode=settings.app_mode,
+    )
+    if notice is not None:
+        code = str(notice.get("code") or "ACTIVE_MODEL_ARTIFACT_INVALID").lower()
+        return True, code
     return False, "active_model_artifact_available"
 
 

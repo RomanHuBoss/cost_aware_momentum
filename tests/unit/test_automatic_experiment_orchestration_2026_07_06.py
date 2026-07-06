@@ -155,6 +155,7 @@ async def test_trainer_automatically_orchestrates_missing_family_before_activati
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trainer = trainer_module.BackgroundTrainer()
+    monkeypatch.setattr(trainer, "_candidate_artifact_rejection", lambda _candidate: (None, {}))
     policy_binding = experiment_policy_binding_from_settings(trainer_module.settings)
     candidate = SimpleNamespace(
         version="candidate-v3",
@@ -427,6 +428,7 @@ async def test_trainer_closes_candidate_when_automatic_experiment_retries_are_ex
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trainer = trainer_module.BackgroundTrainer()
+    monkeypatch.setattr(trainer, "_candidate_artifact_rejection", lambda _candidate: (None, {}))
     candidate = SimpleNamespace(
         version="candidate-v5",
         artifact_sha256="c" * 64,
@@ -700,6 +702,7 @@ async def test_trainer_rejects_stale_policy_binding_before_automatic_backtests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trainer = trainer_module.BackgroundTrainer()
+    monkeypatch.setattr(trainer, "_candidate_artifact_rejection", lambda _candidate: (None, {}))
     persisted_binding = experiment_policy_binding_from_settings(trainer_module.settings)
     candidate = SimpleNamespace(
         version="candidate-v8",
