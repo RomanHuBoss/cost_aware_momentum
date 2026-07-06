@@ -50,7 +50,7 @@ async def test_inference_records_one_terminal_outcome_for_every_symbol(
     async def no_expire(_session) -> int:
         return 0
 
-    async def latest_ticker(_session, _symbol):
+    async def latest_ticker(_session, _symbol, *, cutoff):
         return ticker
 
     async def latest_spec(_session, _symbol, *, available_cutoff):

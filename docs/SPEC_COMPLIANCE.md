@@ -458,3 +458,22 @@ Implemented:
 Independent regression evidence demonstrates a stale-rate false pass: 0.0526R under the old calculation versus 0.0235R under current-entry semantics for a 0.05R gate. No threshold, probability, risk budget, model artifact or activation gate was loosened.
 
 Limitations: this is a correctness fix, not proof of edge. Existing immutable plans are not rewritten; PostgreSQL integration and real forward execution evidence were not available in the sandbox.
+
+## Work package: latest-prior point-in-time ticker selection
+
+Release 1.35.2 closes a live availability defect in ticker lookup. Signal publication, execution-plan construction and recommendation API/acceptance previously ordered all rows by descending `source_time` and then selected one row. A row timestamped after the current decision/request time therefore became the absolute latest row, failed the subsequent future-time freshness check and masked an older snapshot that was both available and still fresh.
+
+Implemented:
+
+- a shared `latest_available_ticker_query` contract;
+- mandatory timezone-aware cutoff;
+- `source_time <= cutoff` and `received_at <= cutoff` predicates before ordering;
+- deterministic ordering by `source_time DESC`, `received_at DESC`, `id DESC`;
+- exact cutoff propagation from hourly signal publication, execution-plan creation, recommendation list/detail and acceptance;
+- existing stale-age validation remains unchanged after selection;
+- red → green regression coverage for all three former duplicate loaders.
+
+This change does not manufacture current data, widen freshness windows or turn stale snapshots into usable quotes. If no prior row satisfies the cutoff, the existing missing/stale fail-closed paths remain active. It does not change model features, labels, policy thresholds, risk budgets, artifact contracts or activation gates.
+
+Limitations: PostgreSQL integration and `EXPLAIN ANALYZE` were not available. The analogous absolute-latest orderbook path remains a separate recommended audit; this release intentionally changes ticker selection only.
+

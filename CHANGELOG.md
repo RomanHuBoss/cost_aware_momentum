@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.35.2 — 2026-07-06
+
+### Fixed
+
+- Replaced absolute-latest ticker reads with a shared latest-prior point-in-time query across signal publication, execution-plan construction and recommendation API/acceptance paths.
+- Required both `source_time <= cutoff` and `received_at <= cutoff`, preventing a future-dated row from masking an older valid snapshot.
+- Added deterministic tie-breaking by source time, receipt time and row id while retaining the existing stale-age checks after selection.
+- Added red → green regression coverage for all three ticker consumers without changing model, policy, risk or activation thresholds.
+
 ## 1.35.1 — 2026-07-06
 
 ### Fixed

@@ -50,6 +50,7 @@ from app.risk.policy import (
 from app.services.attrition import execution_plan_attrition_evidence
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.drift_monitor import production_drift_publication_guard
+from app.services.market_snapshots import latest_available_ticker
 from app.services.selection_experiments import build_selection_ledger_row
 
 IMMUTABLE_PLAN_STATUSES = frozenset({"ACCEPTED", "ENTERED", "PARTIAL", "CLOSED"})
@@ -494,15 +495,13 @@ async def latest_orderbook(session: AsyncSession, symbol: str) -> OrderBookSnaps
     ).scalar_one_or_none()
 
 
-async def latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | None:
-    return (
-        await session.execute(
-            select(TickerSnapshot)
-            .where(TickerSnapshot.symbol == symbol)
-            .order_by(desc(TickerSnapshot.source_time))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+async def latest_ticker(
+    session: AsyncSession,
+    symbol: str,
+    *,
+    cutoff: datetime,
+) -> TickerSnapshot | None:
+    return await latest_available_ticker(session, symbol, cutoff=cutoff)
 
 
 async def latest_spec(
@@ -891,7 +890,7 @@ async def create_execution_plan(
     ).scalar_one()
     version = int(current_version) + 1
     now = datetime.now(UTC)
-    ticker = await latest_ticker(session, signal.symbol)
+    ticker = await latest_ticker(session, signal.symbol, cutoff=now)
     orderbook = await latest_orderbook(session, signal.symbol)
     spec = await latest_spec(session, signal.symbol, cutoff=now)
     warnings: list[str] = list(signal.warnings or [])

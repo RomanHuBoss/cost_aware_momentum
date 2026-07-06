@@ -1,9 +1,9 @@
 # QA Report
 
-Release: **1.35.1**
+Release: **1.35.2**
 
-Date: **2026-07-06**  
-Scope: **current-entry repricing of conditional TIMEOUT economics**
+Date: **2026-07-06**
+Scope: **latest-prior point-in-time ticker selection**
 
 ## Environment
 
@@ -11,9 +11,9 @@ Scope: **current-entry repricing of conditional TIMEOUT economics**
 - Project requirement: Python >=3.12.
 - Node syntax check: available.
 - Separate PostgreSQL integration database: not configured.
-- Input archive: `cost_aware_momentum-1.35.0-outcome-attribution.zip`.
-- Input archive SHA-256: `5aa987b761d8ccd4f5554e1dd17b724b2ce6bc5340d167700e01b80ed0375f88`.
-- Source version: 1.35.0.
+- Input archive: `cost_aware_momentum-1.35.1-timeout-current-entry-repricing.zip`.
+- Input archive SHA-256: `fa119cdfae6432bac3a3bfa0de2c2affc9997cc735fa2f5e690cbee8b157435c`.
+- Source version: 1.35.1.
 
 ## Baseline before changes
 
@@ -23,7 +23,7 @@ Scope: **current-entry repricing of conditional TIMEOUT economics**
 | `python -m pip check` | PASSED: no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 699 passed, 7 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED: 704 passed, 7 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED |
 | Alembic heads | PASSED: one head, `0016_universe_replay_asof` |
 
@@ -31,49 +31,42 @@ The seven skipped tests require an isolated PostgreSQL integration database.
 
 ## Confirmed defect
 
-`app/services/signals.py::select_cost_aware_scenario` stores both the model's conditional `timeout_return_r` and its absolute gross return at the signal reference. The estimator target is explicitly defined in `app/ml/training.py::timeout_return_r_targets` as realized TIMEOUT gross return divided by contemporaneous gross stop distance.
+`app/services/signals.py::_latest_ticker`, `app/services/execution.py::latest_ticker` and `app/api/v1/recommendations.py::latest_ticker` independently selected the absolute latest row using only `ORDER BY source_time DESC LIMIT 1`.
 
-`app/services/execution.py::signal_timeout_return_rate` nevertheless read only the stored signal-reference absolute rate. Both `create_execution_plan` and `validate_execution_plan_for_acceptance` could then evaluate a different current ask/bid or depth VWAP while retaining the old absolute TIMEOUT percentage.
+The caller then rejected a future timestamp. This ordering was fail-closed but not latest-prior: a future row could mask a previous row that satisfied the decision cutoff and remained within `MAX_TICKER_AGE_SECONDS`.
 
-Impact: current plan EV did not preserve the trained stop-risk-unit semantics. An adverse entry could make TIMEOUT less negative than the model implies and create a false-positive policy pass; the reverse move could create a false block. Severity: **high mathematical/trading correctness defect**.
+Impact: hourly signal publication could record `stale_ticker`, execution plans could become `BLOCKED_STALE_DATA`, and acceptance could report a future ticker even when a valid prior quote existed. Severity: **high operational/point-in-time correctness defect**. It can suppress recommendations but does not by itself prove the cause of past trading losses.
 
-Existing tests checked reuse of the stored signal assumption but did not change entry geometry while retaining conditional `R`.
+Existing tests checked freshness after selection. They did not verify that database ordering first excludes rows unavailable at the decision/request cutoff.
 
 ## Red evidence
-
-Before implementation, the new LONG and SHORT contract cases failed:
-
-```text
-test_execution_reprojects_conditional_timeout_r_to_current_entry_geometry
-TypeError: signal_timeout_return_rate() got an unexpected keyword argument 'entry'
-```
 
 Command:
 
 ```bash
-python -m pytest -q tests/unit/test_conditional_timeout_economics_2026_07_02.py -k reprojects
+python -m pytest -q tests/unit/test_point_in_time_ticker_selection_2026_07_06.py
 ```
 
-Result: **2 failed** for the expected missing current-entry contract.
+Before implementation all three consumers failed for the expected missing contract:
 
-The independent gate regression demonstrates material impact:
+```text
+TypeError: _latest_ticker() got an unexpected keyword argument 'cutoff'
+TypeError: latest_ticker() got an unexpected keyword argument 'cutoff'
+```
 
-- stale absolute TIMEOUT rate: `EV = 0.0526131219700800R`;
-- current-entry `R` projection: `EV = 0.0234824376171073R`;
-- configured minimum: `0.05R`.
+Result: **3 failed**.
 
-The stale calculation would pass; the corrected calculation blocks.
+The independent fake session returned the older valid row only when the SQL contained both point-in-time predicates. The old queries would select the future row.
 
 ## Implemented correction
 
-- Added optional current execution entry to `signal_timeout_return_rate`.
-- For conditional signals, validate finite `timeout_return_r`, current directional TP/SL geometry and positive gross stop distance.
-- Reproject immutable `R` onto the current gross stop distance.
-- Clamp to current support `[-1R, gross TP distance / gross stop distance]` exactly as signal publication/policy evaluation do.
-- Pass converged plan bid/ask/depth VWAP during plan creation.
-- Pass fresh executable price during acceptance validation.
-- Preserve stored absolute TIMEOUT rate for legacy signals without conditional `R`.
-- Raise plan evidence schema to `tp-sl-timeout-current-entry-r-v2`.
+- Added shared `app/services/market_snapshots.py`.
+- Require a timezone-aware cutoff and non-empty normalized symbol.
+- Filter by both `TickerSnapshot.source_time <= cutoff` and `TickerSnapshot.received_at <= cutoff`.
+- Order eligible rows by source time, receipt time and row id descending.
+- Propagate the same request/decision cutoff through signal, execution and recommendation paths.
+- Preserve the existing maximum-age and future-time checks after selection.
+- Do not rewrite historical rows or silently substitute fabricated values.
 
 ## Post-change checks
 
@@ -82,8 +75,8 @@ The stale calculation would pass; the corrected calculation blocks.
 | `python -m pip check` | PASSED |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 704 passed, 7 skipped, 62 warnings |
-| focused conditional TIMEOUT/execution suite | PASSED: 58 passed |
+| `python -m pytest -q` | PASSED: 709 passed, 7 skipped, 62 warnings |
+| focused ticker/signal/execution/API suite | PASSED: 70 passed |
 | `node --check web/js/app.js` | PASSED |
 | Alembic heads | PASSED: one head, `0016_universe_replay_asof` |
 
@@ -91,6 +84,7 @@ The stale calculation would pass; the corrected calculation blocks.
 
 - PostgreSQL integration tests and `manage.py test --require-integration`: NOT RUN because no isolated `TEST_DATABASE_URL` was available.
 - `manage.py doctor`: NOT RUN because this sandbox does not contain the operator's configured PostgreSQL/Bybit runtime.
-- Actual exchange/orderbook forward evidence: NOT RUN; the project remains advisory-only.
-- This correction prevents one EV misclassification mechanism. It does not establish profitability, calibrate thresholds, or explain every past loss.
-- Previously persisted execution plans remain immutable historical evidence and are not rewritten. They should be recalculated before acceptance.
+- Real PostgreSQL query-plan and index performance: NOT RUN.
+- Actual forward effect on recommendation density: NOT RUN; requires production/shadow observation.
+- The analogous `latest_orderbook` path still selects the absolute latest row and is intentionally outside this ticker-only iteration.
+- This correction does not establish profitability, alter model gates or explain every past loss.

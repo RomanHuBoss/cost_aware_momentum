@@ -45,6 +45,7 @@ from app.services.attrition import INFERENCE_ATTRITION_SCHEMA
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.drift_monitor import production_drift_publication_guard
 from app.services.execution import create_execution_plan, validated_bid_ask
+from app.services.market_snapshots import latest_available_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -387,15 +388,13 @@ async def _market_context_values(
     return {name: float(latest.iloc[0][name]) for name in MARKET_CONTEXT_FEATURE_NAMES}
 
 
-async def _latest_ticker(session: AsyncSession, symbol: str) -> TickerSnapshot | None:
-    return (
-        await session.execute(
-            select(TickerSnapshot)
-            .where(TickerSnapshot.symbol == symbol)
-            .order_by(desc(TickerSnapshot.source_time))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+async def _latest_ticker(
+    session: AsyncSession,
+    symbol: str,
+    *,
+    cutoff: datetime,
+) -> TickerSnapshot | None:
+    return await latest_available_ticker(session, symbol, cutoff=cutoff)
 
 
 async def _latest_spec(
@@ -591,7 +590,7 @@ async def publish_hourly_signals(
     await expire_old_signals(session)
 
     for symbol in selected_symbols:
-        ticker = await _latest_ticker(session, symbol)
+        ticker = await _latest_ticker(session, symbol, cutoff=now)
         if ticker is None:
             record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="missing_ticker")
             logger.warning("Skipping symbol without ticker", extra={"symbol": symbol})

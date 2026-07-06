@@ -54,7 +54,7 @@ async def test_previous_hour_candle_cannot_publish_current_hour_signal(
     async def no_expire(_session) -> int:
         return 0
 
-    async def latest_ticker(_session, _symbol):
+    async def latest_ticker(_session, _symbol, *, cutoff):
         return ticker
 
     async def latest_spec(_session, _symbol, *, available_cutoff):

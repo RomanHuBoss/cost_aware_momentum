@@ -49,6 +49,7 @@ from app.services.execution import (
     validate_execution_plan_for_acceptance,
 )
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
+from app.services.market_snapshots import latest_available_ticker
 from app.services.selection_experiments import verify_selection_ledger_integrity
 from app.services.ui_exposures import (
     build_selection_exposure_row,
@@ -104,15 +105,13 @@ async def resolve_profile(session: SessionDep, profile_id: UUID | None) -> Capit
     return profile
 
 
-async def latest_ticker(session: SessionDep, symbol: str) -> TickerSnapshot | None:
-    return (
-        await session.execute(
-            select(TickerSnapshot)
-            .where(TickerSnapshot.symbol == symbol)
-            .order_by(desc(TickerSnapshot.source_time))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+async def latest_ticker(
+    session: SessionDep,
+    symbol: str,
+    *,
+    cutoff: datetime,
+) -> TickerSnapshot | None:
+    return await latest_available_ticker(session, symbol, cutoff=cutoff)
 
 
 async def latest_plan(session: SessionDep, signal_id: UUID, profile_id: UUID) -> ExecutionPlan | None:
@@ -183,6 +182,7 @@ async def list_recommendations(
     limit: int = Query(default=1000, ge=1, le=2000),
 ) -> dict:
     profile = await resolve_profile(session, profile_id)
+    now = datetime.now(UTC)
     active_symbols: list[str] | None = None
     if not include_expired:
         worker = (
@@ -202,7 +202,7 @@ async def list_recommendations(
         symbol=symbol,
         latest_per_symbol=latest_per_symbol,
         limit=limit,
-        now=datetime.now(UTC),
+        now=now,
         active_symbols=active_symbols,
     )
 
@@ -212,7 +212,7 @@ async def list_recommendations(
         plan = await latest_plan(session, signal.id, profile.id)
         if plan is None:
             continue
-        ticker = await latest_ticker(session, signal.symbol)
+        ticker = await latest_ticker(session, signal.symbol, cutoff=now)
         items.append(tile_dict(signal, plan, profile, ticker))
     rank = {"ACTIONABLE": 0, "LIMITED": 1, "NO_TRADE": 2}
     items.sort(key=lambda item: (rank.get(item["executability_status"], 3), -float(item["net_ev_r"])))
@@ -228,7 +228,7 @@ async def list_recommendations(
         "returned_count": len(items),
         "query_limit": limit,
         "latest_per_symbol": latest_per_symbol,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": now.isoformat(),
     }
 
 
@@ -333,10 +333,11 @@ async def recommendation_detail(
     if signal is None:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     profile = await resolve_profile(session, profile_id)
+    now = datetime.now(UTC)
     plan = await latest_plan(session, signal.id, profile.id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Execution plan not found for selected profile")
-    ticker = await latest_ticker(session, signal.symbol)
+    ticker = await latest_ticker(session, signal.symbol, cutoff=now)
     audit_rows = (
         (
             await session.execute(
@@ -508,7 +509,7 @@ async def accept_recommendation(
         conflict_reason = "Recommendation expired"
     elif conflict_reason is None and plan.profile_version != profile.version:
         conflict_reason = "Capital profile version changed"
-    ticker = await latest_ticker(session, signal.symbol)
+    ticker = await latest_ticker(session, signal.symbol, cutoff=now)
     orderbook = await latest_orderbook(session, signal.symbol)
     if conflict_reason is None and (
         ticker is None
@@ -900,5 +901,5 @@ async def recalculate_plan(
         old_plan.status = "SUPERSEDED"
         old_plan.superseded_by_id = new_plan.id
     await session.commit()
-    ticker = await latest_ticker(session, signal.symbol)
+    ticker = await latest_ticker(session, signal.symbol, cutoff=datetime.now(UTC))
     return tile_dict(signal, new_plan, profile, ticker)
