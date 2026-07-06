@@ -17,6 +17,7 @@ from app.db.models import (
     ExecutionPlan,
     JobRun,
     MarketSignal,
+    ModelArtifactBlob,
     ModelRegistry,
     ServiceHeartbeat,
 )
@@ -385,6 +386,13 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             now=now,
         )
     )
+    artifact_blob = None
+    if model and model.model_type != "deterministic_baseline":
+        artifact_blob = (
+            await session.execute(
+                select(ModelArtifactBlob).where(ModelArtifactBlob.model_registry_id == model.id)
+            )
+        ).scalar_one_or_none()
     artifact_path = Path(model.artifact_path).expanduser() if model and model.artifact_path else None
     artifact_exists = bool(
         model
@@ -494,6 +502,17 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "artifact_path": model.artifact_path if model else None,
             "artifact_sha256": model.artifact_sha256 if model else None,
             "artifact_exists": artifact_exists,
+            "artifact_archive": {
+                "available": True,
+                "sha256": artifact_blob.artifact_sha256,
+                "size_bytes": artifact_blob.size_bytes,
+                "created_at": artifact_blob.created_at.isoformat(),
+            }
+            if artifact_blob is not None
+            else {"available": model.model_type == "deterministic_baseline"}
+            if model is not None
+            else None,
+            "artifact_durability": worker_details.get("model_artifact_durability"),
             "metrics": model.metrics if model else None,
             "training_data_profile": (model.metrics or {}).get("training_data_profile")
             if model

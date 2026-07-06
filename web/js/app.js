@@ -381,6 +381,24 @@ function renderTrainerDialog(status = state.systemStatus) {
   const active = status.active_model || {};
   const runtime = active.worker_runtime || {};
   const notice = active.worker_notice || {};
+  const artifactArchive = active.artifact_archive || {};
+  const artifactDurability = active.artifact_durability || {};
+  const archiveState = active.type === 'deterministic_baseline'
+    ? 'не требуется для baseline'
+    : artifactArchive.available === true
+      ? `доступна (${fmt((artifactArchive.size_bytes || 0) / 1048576, 2)} MiB)`
+      : active.version ? 'не создана' : '—';
+  const durabilityState = artifactDurability.action === 'restored'
+    ? 'файл восстановлен из PostgreSQL'
+    : artifactDurability.action === 'archived'
+      ? 'файл сохранён в PostgreSQL'
+      : artifactDurability.action === 'available'
+        ? 'файл и архив проверены'
+        : artifactDurability.action === 'unavailable'
+          ? 'файл и архив недоступны'
+          : artifactDurability.action === 'invalid'
+            ? 'проверка целостности не пройдена'
+            : '—';
   const latestRequest = control.latest_request || null;
   const requestActive = latestRequest && ['PENDING', 'RUNNING'].includes(latestRequest.status);
   const automaticExperiment = control.automatic_experiment || details.automatic_experiment || null;
@@ -413,6 +431,8 @@ function renderTrainerDialog(status = state.systemStatus) {
       <dt>Registry version</dt><dd>${escapeHtml(active.version || '—')}</dd>
       <dt>Runtime source</dt><dd>${escapeHtml(runtime.source || '—')}</dd>
       <dt>Fallback notice</dt><dd>${escapeHtml(notice.code || 'нет')}</dd>
+      <dt>PostgreSQL archive</dt><dd>${escapeHtml(archiveState)}</dd>
+      <dt>Проверка artifact</dt><dd>${escapeHtml(durabilityState)}</dd>
       <dt>Восстановление доступно</dt><dd>${control.recovery_available === true ? 'да' : 'нет'}</dd>
       <dt>Причина</dt><dd>${escapeHtml(recoveryReasonLabels[control.recovery_reason] || control.recovery_reason || '—')}</dd>
     </dl>

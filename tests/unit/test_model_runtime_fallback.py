@@ -204,7 +204,10 @@ async def test_worker_refresh_survives_deleted_active_artifact(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def execute(self, _statement: object) -> FakeResult:
+        def begin(self) -> FakeSession:
+            return self
+
+        async def execute(self, _statement: object, *_args: object) -> FakeResult:
             return FakeResult()
 
     monkeypatch.setattr(runner_module, "SessionFactory", FakeSession)

@@ -21,6 +21,8 @@ from app.db.models import (
     ExecutionPlan,
     JobRun,
     MarketSignal,
+    ModelArtifactBlob,
+    ModelRegistry,
     OutboxEvent,
     PlanOutcome,
     ServiceHeartbeat,
@@ -79,7 +81,7 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert (await session.execute(select(CapitalProfile))).scalars().all()
         assert len((await session.execute(select(UIGlossary))).scalars().all()) >= 10
         revision = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert revision == "0016_universe_replay_asof"
+        assert revision == "0017_model_artifact_blobs"
         account_column = (
             await session.execute(
                 text(
@@ -138,6 +140,19 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert "UNIQUE INDEX" in model_index_definition
         assert "WHERE" in model_index_definition
         assert "active" in model_index_definition
+        artifact_table = (
+            await session.execute(
+                text(
+                    """
+                    SELECT tablename
+                    FROM pg_tables
+                    WHERE schemaname = 'model'
+                      AND tablename = 'model_artifact_blobs'
+                    """
+                )
+            )
+        ).scalar_one()
+        assert artifact_table == "model_artifact_blobs"
         tables = {
             row[0]
             for row in (
@@ -169,6 +184,51 @@ async def test_seeded_reference_data(database_url: str) -> None:
         ).scalar_one()
         assert "INVALID_INPUT" in valuation_constraint
         assert "PATH_UNAVAILABLE" in valuation_constraint
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_model_artifact_blob_is_append_only(database_url: str) -> None:
+    settings = Settings(database_url=database_url)
+    engine, factory = rebuild_engine(settings)
+    payload = b"integration-immutable-model-artifact"
+    import hashlib
+
+    digest = hashlib.sha256(payload).hexdigest()
+    version = f"integration-artifact-{datetime.now(UTC).timestamp()}"
+    async with factory() as session, session.begin():
+        registry = ModelRegistry(
+            name="Integration artifact",
+            version=version,
+            model_type="barrier_logistic",
+            artifact_path="missing.joblib",
+            artifact_sha256=digest,
+            feature_schema_version="integration-v1",
+            metrics={},
+            active=False,
+        )
+        session.add(registry)
+        await session.flush()
+        blob = ModelArtifactBlob(
+            model_registry_id=registry.id,
+            version=version,
+            artifact_sha256=digest,
+            size_bytes=len(payload),
+            payload=payload,
+        )
+        session.add(blob)
+        await session.flush()
+        registry_id = registry.id
+
+    async with factory() as session:
+        with pytest.raises(DBAPIError, match="model artifact blobs are immutable"):
+            await session.execute(
+                update(ModelArtifactBlob)
+                .where(ModelArtifactBlob.model_registry_id == registry_id)
+                .values(size_bytes=len(payload) + 1)
+            )
+            await session.commit()
+        await session.rollback()
     await engine.dispose()
 
 

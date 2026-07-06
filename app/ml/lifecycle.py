@@ -23,6 +23,7 @@ from app.db.models import (
     OpenInterest,
 )
 from app.json_utils import json_compatible
+from app.ml.artifact_store import archive_model_artifact_bytes
 from app.ml.context import (
     MARKET_CONTEXT_AVAILABILITY_SCHEMA,
     MARKET_CONTEXT_SCHEMA_VERSION,
@@ -1915,12 +1916,14 @@ async def register_model_candidate(
     incumbent_recovery: dict[str, Any] | None = None,
     experiment_promotion_gate: dict[str, Any] | None = None,
 ) -> ModelRegistry:
-    digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
+    artifact_bytes = candidate.path.read_bytes()
+    digest = hashlib.sha256(artifact_bytes).hexdigest()
     async with SessionFactory() as session, session.begin():
         registry = await _register_model_candidate_in_session(
             session,
             candidate,
             digest=digest,
+            artifact_bytes=artifact_bytes,
             source=source,
             quality_gate=quality_gate,
             activation_requested=activation_requested,
@@ -1971,6 +1974,7 @@ async def _register_model_candidate_in_session(
     candidate: ModelCandidate,
     *,
     digest: str,
+    artifact_bytes: bytes,
     source: str,
     quality_gate: dict[str, Any] | None,
     activation_requested: bool,
@@ -2001,6 +2005,12 @@ async def _register_model_candidate_in_session(
     )
     session.add(registry)
     await session.flush()
+    artifact_archive = await archive_model_artifact_bytes(
+        session,
+        registry,
+        artifact_bytes,
+        assume_new=True,
+    )
     event_type = "MODEL_CANDIDATE_TRAINED"
     await append_audit_event(
         session,
@@ -2015,6 +2025,7 @@ async def _register_model_candidate_in_session(
             "experiment_promotion_gate": json_compatible(experiment_promotion_gate),
             "activation_requested": activation_requested,
             "incumbent_recovery": json_compatible(incumbent_recovery),
+            "artifact_archive": artifact_archive,
         },
     )
     await publish_outbox(
@@ -2022,7 +2033,11 @@ async def _register_model_candidate_in_session(
         event_type=event_type,
         aggregate_type="model_registry",
         aggregate_id=str(registry.id),
-        payload={"version": candidate.version, "source": source},
+        payload={
+            "version": candidate.version,
+            "source": source,
+            "artifact_archive": artifact_archive,
+        },
     )
     return registry
 
@@ -2060,7 +2075,8 @@ async def register_and_activate_model_candidate(
     """Register and activate a new candidate in one PostgreSQL transaction."""
 
     quality_activation_gate = require_passed_quality_gate(quality_gate)
-    digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
+    artifact_bytes = candidate.path.read_bytes()
+    digest = hashlib.sha256(artifact_bytes).hexdigest()
     experiment_activation_gate = require_passed_experiment_promotion_gate(
         experiment_promotion_gate,
         expected_model_version=candidate.version,
@@ -2124,6 +2140,7 @@ async def register_and_activate_model_candidate(
             session,
             candidate,
             digest=digest,
+            artifact_bytes=artifact_bytes,
             source=source,
             quality_gate=quality_gate,
             activation_requested=True,

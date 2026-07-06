@@ -211,8 +211,12 @@ async def test_reasoned_emergency_override_is_explicitly_audited(
     async def no_op(*_args: object, **_kwargs: object) -> None:
         return None
 
+    async def durable(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"available": True, "action": "available"}
+
     monkeypatch.setattr(model_activation, "append_audit_event", audit)
     monkeypatch.setattr(model_activation, "publish_outbox", no_op)
+    monkeypatch.setattr(model_activation, "ensure_registry_artifact_durable", durable)
 
     result = await model_activation.activate_registered_model(
         "rollback-v1",

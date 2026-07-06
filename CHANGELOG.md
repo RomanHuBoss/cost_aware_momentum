@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.36.0 — 2026-07-07
+
+### Added
+
+- Added immutable PostgreSQL storage for exact registered model-artifact bytes, bound to registry UUID, version, SHA-256 and size.
+- Added atomic SHA-verified file restoration before worker runtime selection, trainer recovery/promotion checks and manual/automatic registered activation.
+- Added worker heartbeat, status API and trainer-dialog diagnostics for artifact archive and restore state.
+- Added Alembic migration `0017_model_artifact_blobs`, append-only trigger and a 256 MiB fail-closed artifact limit.
+
+### Fixed
+
+- Removed the release-directory single point of failure where PostgreSQL retained an absolute `artifact_path` after the old release tree had been replaced or deleted.
+- New candidate registration now archives exact bytes in the same transaction as registry, audit and outbox state; a failed archive rolls the registration back.
+- Existing valid pre-1.36.0 artifacts are archived lazily on first worker/trainer/activation check; already missing bytes remain an explicit recovery-training case.
+- Added eight red → green regression tests and one PostgreSQL integration contract; model quality, walk-forward, activation, EV/RR and risk gates are unchanged.
+
 ## 1.35.5 — 2026-07-07
 
 ### Fixed

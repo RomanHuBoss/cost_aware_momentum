@@ -18,6 +18,7 @@ from app.db.locks import lock_key
 from app.db.models import Candle, JobRun, ModelRegistry, ServiceHeartbeat
 from app.json_utils import json_compatible
 from app.logging import configure_logging
+from app.ml.artifact_store import ensure_registry_artifact_durable
 from app.ml.data_profile import TrainingDataProfile, compare_training_profiles
 from app.ml.lifecycle import (
     build_model_candidate,
@@ -144,20 +145,29 @@ class BackgroundTrainer:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=settings.heartbeat_seconds)
 
     async def active_model(self) -> ModelRegistry | None:
-        async with SessionFactory() as session:
-            return (
+        async with SessionFactory() as session, session.begin():
+            registry = (
                 await session.execute(
                     select(ModelRegistry)
                     .where(ModelRegistry.active.is_(True))
                     .order_by(desc(ModelRegistry.updated_at))
                     .limit(1)
+                    .with_for_update()
                 )
             ).scalar_one_or_none()
+            if registry is not None and settings.active_model_path is None:
+                await ensure_registry_artifact_durable(
+                    session,
+                    registry,
+                    model_dir=settings.model_dir,
+                    actor=settings.trainer_id,
+                )
+            return registry
 
     async def _pending_auto_activation_candidate(self) -> ModelRegistry | None:
         """Return the newest safe background candidate awaiting governed activation."""
 
-        async with SessionFactory() as session:
+        async with SessionFactory() as session, session.begin():
             candidates = (
                 await session.execute(
                     select(ModelRegistry)
@@ -167,22 +177,29 @@ class BackgroundTrainer:
                     )
                     .order_by(desc(ModelRegistry.created_at))
                     .limit(50)
+                    .with_for_update()
                 )
             ).scalars().all()
-        for candidate in candidates:
-            metrics = candidate.metrics if isinstance(candidate.metrics, dict) else {}
-            if metrics.get("source") != "background_trainer":
-                continue
-            if metrics.get("activation_requested") is not True:
-                continue
-            quality_gate = metrics.get("quality_gate")
-            try:
-                require_passed_quality_gate(
-                    quality_gate if isinstance(quality_gate, dict) else None
+            for candidate in candidates:
+                metrics = candidate.metrics if isinstance(candidate.metrics, dict) else {}
+                if metrics.get("source") != "background_trainer":
+                    continue
+                if metrics.get("activation_requested") is not True:
+                    continue
+                quality_gate = metrics.get("quality_gate")
+                try:
+                    require_passed_quality_gate(
+                        quality_gate if isinstance(quality_gate, dict) else None
+                    )
+                except RuntimeError:
+                    continue
+                await ensure_registry_artifact_durable(
+                    session,
+                    candidate,
+                    model_dir=settings.model_dir,
+                    actor=settings.trainer_id,
                 )
-            except RuntimeError:
-                continue
-            return candidate
+                return candidate
         return None
 
     @staticmethod

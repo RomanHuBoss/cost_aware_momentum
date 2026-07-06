@@ -7,6 +7,7 @@ from sqlalchemy import desc, select, update
 from app.config import get_settings
 from app.db.engine import SessionFactory
 from app.db.models import ModelRegistry
+from app.ml.artifact_store import ensure_registry_artifact_durable
 from app.ml.lifecycle import require_passed_quality_gate
 from app.ml.runtime import ModelRuntime
 from app.services.audit import append_audit_event, publish_outbox
@@ -203,6 +204,11 @@ async def activate_registered_model(
             emergency_gate_override=emergency_gate_override,
             override_reason=override_reason,
         )
+        artifact_durability = await ensure_registry_artifact_durable(
+            session,
+            target,
+            model_dir=get_settings().model_dir,
+        )
         runtime_metadata = validate_registry_artifact(target)
         if not emergency_gate_override:
             runtime_horizon = runtime_metadata.get("horizon_hours")
@@ -254,6 +260,7 @@ async def activate_registered_model(
             "previous_version": previous.version if previous and previous.id != target.id else None,
             "expected_previous_version": expected_previous_version,
             "activation_governance": activation_governance,
+            "artifact_durability": artifact_durability,
             "runtime": runtime_metadata,
         }
         await append_audit_event(

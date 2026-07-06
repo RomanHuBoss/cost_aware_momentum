@@ -18,6 +18,7 @@ from app.db.engine import SessionFactory, dispose_engine
 from app.db.locks import advisory_lock
 from app.db.models import JobRun, ModelRegistry, OrderBookSnapshot, ServiceHeartbeat, TickerSnapshot
 from app.logging import configure_logging
+from app.ml.artifact_store import ensure_registry_artifact_durable
 from app.ml.runtime import ModelRuntime
 from app.ml.runtime_selection import select_model_runtime
 from app.services.drift_monitor import build_production_drift_report
@@ -99,6 +100,7 @@ class Worker:
         self.last_model_refresh: datetime | None = None
         self.active_model_registry_id: str | None = None
         self.model_notice: dict[str, object] | None = None
+        self.model_artifact_durability: dict[str, object] | None = None
         self.last_drift_summary: dict[str, object] | None = None
         self.active_symbols: tuple[str, ...] = tuple(settings.symbols)
         self.universe_summary: dict = {
@@ -120,15 +122,37 @@ class Worker:
         ):
             return False
 
-        async with SessionFactory() as session:
+        durability: dict[str, object] | None = None
+        async with SessionFactory() as session, session.begin():
             registry = (
                 await session.execute(
                     select(ModelRegistry)
                     .where(ModelRegistry.active.is_(True))
                     .order_by(ModelRegistry.updated_at.desc())
                     .limit(1)
+                    .with_for_update()
                 )
             ).scalar_one_or_none()
+            if registry is not None and settings.active_model_path is None:
+                try:
+                    durability = await ensure_registry_artifact_durable(
+                        session,
+                        registry,
+                        model_dir=settings.model_dir,
+                        actor=settings.worker_id,
+                    )
+                except RuntimeError as exc:
+                    durability = {
+                        "schema": "postgresql-immutable-model-artifact-v1",
+                        "available": False,
+                        "action": "invalid",
+                        "reason": "artifact_durability_check_failed",
+                        "error": str(exc),
+                    }
+                    logger.exception(
+                        "Active model artifact durability verification failed",
+                        extra={"model_artifact_durability": durability},
+                    )
 
         selection = select_model_runtime(
             registry=registry,
@@ -145,6 +169,7 @@ class Worker:
         self.runtime = selection.runtime
         self.active_model_registry_id = selection.registry_id
         self.model_notice = selection.notice
+        self.model_artifact_durability = durability
         self.last_model_refresh = now
         if changed and self.model_notice is not None:
             logger.warning(
@@ -168,6 +193,7 @@ class Worker:
             "model": self.runtime.metadata(),
             "model_registry_id": self.active_model_registry_id,
             "model_notice": self.model_notice,
+            "model_artifact_durability": getattr(self, "model_artifact_durability", None),
             "production_drift": self.last_drift_summary,
             "universe": self.universe_summary,
             **extra,

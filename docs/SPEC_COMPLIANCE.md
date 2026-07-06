@@ -1,11 +1,12 @@
 # Specification Compliance
 
-Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.35.5, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.36.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
 | Advisory-only, read-only Bybit | Реализовано | `app/bybit/client.py` содержит GET market/account reads; order mutation methods отсутствуют. |
 | PostgreSQL-only | Реализовано | SQLAlchemy/PostgreSQL models и Alembic; SQLite fallback отсутствует. |
+| Durable immutable model artifacts | Реализовано 1.36.0 | Exact bytes каждого нового candidate, version, SHA-256 и size атомарно сохраняются в `model.model_artifact_blobs`; UPDATE/DELETE запрещены trigger. Worker/trainer/activation service архивируют surviving legacy file или SHA-verified атомарно восстанавливают runtime copy до selection/activation. Уже удалённый pre-1.36.0 artifact без другой копии не реконструируется. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
 | Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; timezone-stable validation 1.34.2 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; snapshot hashes и `dynamic` mode повторно проверяются; static-mode evidence исключено. PostgreSQL выбирает только first-rollout и latest-prior snapshots для фактических hourly decision timestamps, full rows потоково валидируются, а в памяти остаются compact replay fields. Release 1.34.2 канонизирует верхнеуровневые `TIMESTAMPTZ` поля snapshot в UTC до hash/revalidation, поэтому timezone представления одной и той же временной точки не создают ложную corruption-ошибку. Pre-1.29.0/pre-rollout rows исключаются, stale/missing или действительно повреждённое post-rollout evidence блокирует run. Exact membership до начала ledger не реконструируется. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
@@ -24,6 +25,23 @@
 | Deferred background promotion reconciliation | Реализовано 1.33.0 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. Явная operator family имеет приоритет; иначе при `AUTO_TRAIN_AUTO_EXPERIMENT=true` создаётся deterministic candidate-specific family, immutable preregistration фиксируется до первого trial и bounded configurations выполняются последовательно под advisory lock. Пока family incomplete, новый candidate не обучается. `READY` evidence всё равно обязана совпасть с exact artifact/version/horizon и persisted deployment-policy binding; terminal governance rejection, bounded retry exhaustion или authenticated exact-target operator cancellation транзакционно закрывают activation request с audit/outbox evidence. Отмена/terminal rejection завершает текущий scheduling cycle и не запускает немедленно новый candidate. |
 | Operator-visible automatic experiment control | Реализовано 1.34.0 | Fresh trainer heartbeat публикует exact family/candidate, stage, configuration, attempt и `subprocess_active`. `CANCEL_EXPERIMENT` требует exact target и CSRF/authenticated operator context. Formal subprocess запускается в isolated POSIX session/process group или Windows `CREATE_NEW_PROCESS_GROUP`; cancel/timeout/failure завершает всю доступную group/tree и сохраняет `subprocess-tree-termination-v1`. Mismatched/stale requests fail closed; pending `CHECK_NOW`/`RECOVER_NOW` не блокирует cancel; open trial закрывается append-only `FAILED`; preregistration и прошлые results не удаляются. Linux descendant runtime доказан; Windows runtime и намеренно detached POSIX `setsid()` descendants остаются непроверенными/вне group guarantee. |
 | Candidate/live recommendation attrition diagnostics | Реализовано prospectively; mature outcome attribution 1.35.0 | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются. Report v3 exact-join связывает instrumented `signal_id`/`plan_id` с persisted `SignalOutcome`/`PlanOutcome`, использует только full-horizon mature cohort с `resolved_at <= report.until` и показывает TP/SL/TIMEOUT, ambiguity, valuation coverage и descriptive `counterfactual_r` по initial status/stage/reason. Missing/conflicting mature evidence блокируется. История до 1.24.0 не реконструируется; это counterfactual diagnostic, не actual execution PnL, causal decomposition или основание ослаблять gates. |
+
+
+## Work package: durable PostgreSQL-backed model artifacts
+
+Release 1.36.0 закрывает подтверждённый deployment/state defect: `MODEL_DIR=models` находился внутри release tree, registry сохранял абсолютный путь, а clean ZIP корректно исключал `*.joblib`. После замены/удаления старого каталога PostgreSQL сохранял active version и SHA, но единственные bytes исчезали; runtime переходил на baseline, а trainer мог восстановиться только новым candidate после всех data/quality gates.
+
+Реализовано:
+
+- exact artifact bytes, registry UUID, version, SHA-256 и size сохраняются в одной transaction с candidate registry, audit и outbox;
+- PostgreSQL constraints проверяют positive/bounded size и exact payload length, UPDATE/DELETE запрещены trigger;
+- local file считается materialized runtime copy, а не единственным durable state;
+- worker, trainer и registered activation проверяют/архивируют local file либо восстанавливают missing copy из PostgreSQL до runtime validation;
+- restore выполняется через temp file, fsync, post-write hash и atomic replace; повреждённый local file не перезаписывается;
+- status API/UI раскрывают наличие DB archive и результат durability check;
+- quality, walk-forward, holdout, experiment, EV/RR и risk gates не меняются.
+
+Ограничения: migration не может создать bytes для artifact, который был удалён до 1.36.0 и не сохранился ни в одном release/backup. PostgreSQL integration и реальный service restart в этой среде не выполнялись. Хранилище увеличивает размер DB backups; artifact ограничен 256 MiB. Исправление не доказывает прибыльность и не устраняет отдельно наблюдаемый недостаток point-in-time eligible history.
 
 
 ## Work package: timezone-stable universe snapshot hashing

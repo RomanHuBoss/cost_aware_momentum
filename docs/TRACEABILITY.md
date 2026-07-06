@@ -1,9 +1,14 @@
 # Traceability
 
-Состояние: release 1.35.5, 2026-07-07. Таблица дополнена decision-time ticker freshness barrier и диагностикой stale snapshots; point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
+Состояние: release 1.36.0, 2026-07-07. Таблица дополнена durable model-artifact storage и release-safe restoration; decision-time freshness, point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
+| ARTIFACT-DUR-01 | Candidate registry не должен commit без exact immutable artifact bytes | `register_model_candidate`/atomic activation читают bytes один раз; `archive_model_artifact_bytes(..., assume_new=True)` добавляет `ModelArtifactBlob` в той же transaction до audit/outbox commit | `test_registration_passes_exact_file_bytes_into_registry_transaction`, exact-byte/idempotency tests | Проверено red → green unit |
+| ARTIFACT-DUR-02 | Replacement release tree не должен уничтожать active model state | worker/trainer/activation вызывают `ensure_registry_artifact_durable` до runtime selection/recovery/activation; missing file materialized из BYTEA | restore test + worker call-order test | Проверено red → green unit |
+| ARTIFACT-DUR-03 | Corrupt DB/local bytes не должны загружаться или скрытно перезаписываться | exact SHA/version/size validation, 256 MiB bound, temp+fsync+atomic replace; corrupt target сохраняется как forensic evidence | corrupt-payload and non-overwrite regressions | Проверено red → green unit |
+| ARTIFACT-DUR-04 | Archived bytes должны быть append-only | migration `0017_model_artifact_blobs`, payload-size checks, RESTRICT FK, UPDATE/DELETE trigger | ORM/migration contract + PostgreSQL integration test | Проверено unit; integration SKIPPED |
+| ARTIFACT-DUR-05 | Оператор должен видеть archive/restore state | worker heartbeat → `/api/v1/status.active_model` → trainer dialog | source/full suite + Node syntax | Проверено static/unit |
 | UI-EXPOSURE-01 | Один stale/legacy exposure item не должен откатывать остальные items batch | `record_recommendation_exposures` классифицирует события независимо и commit выполняется после полного batch | `test_stale_exposure_item_does_not_roll_back_valid_batch_item` | Проверено red → green unit |
 | UI-EXPOSURE-02 | Browser retry не должен менять identity исследовательского события | `flushRecommendationExposures` requeue исходного объекта только для network/429/5xx; повторный dwell не запускается | frontend source contract + full suite | Проверено static/unit |
 | UI-EXPOSURE-03 | Exposure обязан соответствовать exact immutable opportunity | `verify_selection_exposure_against_ledger` сверяет plan/signal/profile/version/time и hash | UI exposure ledger mismatch regressions | Проверено unit |
@@ -71,10 +76,15 @@
 | TIMEOUT-EXEC-02 | Stale signal-reference absolute rate не должен давать ложный policy pass | Plan/acceptance call helper с current entry; independent boundary case сравнивает stale 0.0526R с current 0.0235R при gate 0.05R | `test_current_entry_timeout_repricing_prevents_false_positive_ev_gate` | Проверено unit |
 | TIMEOUT-EXEC-03 | Plan evidence должно отражать current depth VWAP semantics | converged `planning_entry` передаётся в TIMEOUT projection; schema `tp-sl-timeout-current-entry-r-v2` | `test_execution_plan_reprojects_timeout_r_at_current_vwap` | Проверено unit |
 | TIMEOUT-EXEC-04 | Legacy signals и invalid conditional evidence должны обрабатываться явно | no-`R` path сохраняет stored absolute/fallback; non-finite `R`/invalid geometry fail closed | legacy and non-finite regressions | Проверено unit |
-| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.35.3 не добавляет migration/config/model-artifact changes; меняется только trainer recovery/pending-candidate lifecycle, releases 1.34.1–1.35.2 сохраняются | full suite + diff inspection | Реализовано |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.36.0 добавляет только durable artifact migration/status; feature/label/policy schemas, quality/promotion thresholds, EV/RR и risk limits не меняются | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка
+
+- PostgreSQL migration `0017`, BYTEA round-trip and immutable trigger were not executed because no isolated integration database was configured.
+- Actual operator release replacement and runtime restoration were not performed.
+- A pre-1.36.0 artifact already missing from every filesystem/backup cannot be recovered by the new migration.
+- Database/backup growth and restore latency with many near-limit artifacts were not benchmarked.
 
 - Live PostgreSQL execution of the latest-prior ticker query and query-plan performance were not run because an isolated integration database is unavailable.
 - Live decision-time ticker refresh was not executed against the operator PostgreSQL/Bybit environment; unit tests verify ordering, fail-closed behavior and diagnostics.

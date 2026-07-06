@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -264,6 +264,29 @@ class ModelRegistry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     training_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metrics: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+
+
+class ModelArtifactBlob(Base):
+    __tablename__ = "model_artifact_blobs"
+    __table_args__ = (
+        CheckConstraint("size_bytes > 0", name="size_positive"),
+        CheckConstraint("size_bytes <= 268435456", name="size_limit"),
+        CheckConstraint("length(artifact_sha256) = 64", name="sha256_length"),
+        CheckConstraint("octet_length(payload) = size_bytes", name="payload_size"),
+        {"schema": "model"},
+    )
+
+    model_registry_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model.model_registry.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    version: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    artifact_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
 
 
 class CapitalProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
