@@ -30,7 +30,11 @@ from app.ml.context import (
 from app.ml.drift import directional_prediction_snapshot
 from app.ml.features import BASELINE_FEATURE_SCHEMA_VERSION, latest_feature_snapshot
 from app.ml.runtime import ModelRuntime, Prediction
-from app.ml.training import DEFAULT_STOP_ATR_MULTIPLIER, DEFAULT_TP_ATR_MULTIPLIER
+from app.ml.training import (
+    DEFAULT_STOP_ATR_MULTIPLIER,
+    DEFAULT_TP_ATR_MULTIPLIER,
+    POLICY_EXPECTED_FUNDING_SOURCE,
+)
 from app.risk.math import (
     CostScenario,
     net_rr_and_ev,
@@ -87,12 +91,20 @@ def select_cost_aware_scenario(
     tick_size: Decimal | None = None,
     timeout_return_rate: Decimal = Decimal("-0.002"),
 ) -> SignalScenarioEconomics:
-    """Select LONG/SHORT by the exact economics published to the operator.
+    """Select LONG/SHORT by the promotion-bound market-signal economics.
 
-    The model runtime estimates outcome probabilities for both directions.  It
-    cannot choose the economically superior direction because executable bid/ask,
-    current costs and funding are only available in the signal policy layer.
+    The candidate promotion evidence has no historical point-in-time funding
+    forecast.  Therefore expected funding must remain zero in this capital-
+    independent selector.  Fresh projected funding is applied conservatively by
+    the execution-plan and acceptance layers, where it can block but never flip
+    the promoted market direction.
     """
+
+    funding_rate = decimal(costs.funding_rate)
+    if not funding_rate.is_finite() or funding_rate != 0:
+        raise ValueError(
+            "Market signal expected funding must be zero; apply current funding in the execution plan"
+        )
 
     prediction_rows = list(predictions)
     directions = [prediction.direction for prediction in prediction_rows]
@@ -717,7 +729,7 @@ async def publish_hourly_signals(
         # Entry reference already uses executable ask/bid; residual slippage must not add the spread again.
         slippage_bps = settings.base_slippage_bps
         fee_round_trip = settings.fee_rate_taker * 2
-        funding_scenario = float(
+        execution_funding_scenario = float(
             projected_funding_rate(
                 start_time=now,
                 horizon_hours=settings.default_horizon_hours,
@@ -726,11 +738,15 @@ async def publish_hourly_signals(
                 current_rate=ticker.funding_rate,
             )
         )
+        # Promotion/backtest evidence explicitly has no historical point-in-time
+        # funding forecast.  Keep market direction and unit economics bound to
+        # that evaluated policy.  create_execution_plan() independently applies
+        # the fresh ticker projection as a conservative, fail-closed overlay.
         costs = CostScenario(
             fee_rate_round_trip=decimal(fee_round_trip),
             slippage_rate=decimal(slippage_bps / 10000),
             stop_gap_reserve_rate=decimal(settings.stop_gap_reserve_bps / 10000),
-            funding_rate=decimal(funding_scenario),
+            funding_rate=Decimal("0"),
         )
         try:
             directional_predictions = runtime.predict_scenarios(model_features)
@@ -825,7 +841,7 @@ async def publish_hourly_signals(
             gross_edge_rate=float(abs(tp1 - reference) / reference),
             fee_rate_round_trip=fee_round_trip,
             slippage_rate=slippage_bps / 10000,
-            funding_rate_scenario=funding_scenario,
+            funding_rate_scenario=0.0,
             stress_downside_rate=float(downside),
             model_version=prediction.model_version,
             calibration_version=prediction.calibration_version,
@@ -852,6 +868,14 @@ async def publish_hourly_signals(
                         "artifact_training_direction_median_r"
                         if prediction.timeout_return_r is not None
                         else "configured_fallback"
+                    ),
+                    "expected_funding_source": POLICY_EXPECTED_FUNDING_SOURCE,
+                    "market_signal_funding_rate_scenario": "0",
+                    "execution_funding_projection_at_publish": str(
+                        execution_funding_scenario
+                    ),
+                    "execution_funding_source": (
+                        "ticker_current_rate_projection_revalidated_per_plan"
                     ),
                 },
             },

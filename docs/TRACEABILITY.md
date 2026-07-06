@@ -1,9 +1,13 @@
 # Traceability
 
-Состояние: release 1.34.0, 2026-07-06. Таблица связывает automatic experiment lifecycle/control plane и ранее реализованный PostgreSQL-native universe replay с production-кодом, тестами и release evidence.
+Состояние: release 1.34.1, 2026-07-06. Таблица дополнена promotion-bound market-signal funding semantics; ранее реализованные automatic experiment control и PostgreSQL-native universe replay сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
+| POLICY-FUNDING-01 | Live market direction должна соответствовать policy, проверенной на final holdout | `app/ml/training.py::POLICY_EXPECTED_FUNDING_SOURCE`; `app/services/signals.py::select_cost_aware_scenario` принимает только zero expected funding | `test_market_signal_policy_rejects_unvalidated_expected_funding_overlay` | Проверено red → green unit |
+| POLICY-FUNDING-02 | Текущий ticker funding не должен скрытно менять LONG/SHORT после activation | `publish_hourly_signals` передаёт zero-funding market costs; текущая projection сохраняется только как execution evidence | `test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping` расширен non-zero ticker funding regression | Проверено red → green unit |
+| POLICY-FUNDING-03 | Funding risk не должен стать fail-open после удаления из signal selector | `create_execution_plan`, `validate_execution_plan_for_acceptance`, `funding_rate_for_plan` продолжают fresh projection, adverse-cost and edge rechecks | existing `test_acceptance_recalculates_when_adverse_funding_cost_increases` и execution economics suite | Проверено unit |
+| POLICY-FUNDING-04 | Promotion metrics и activation gate должны разделять один expected-funding source token | training/lifecycle используют `POLICY_EXPECTED_FUNDING_SOURCE` | lifecycle + historical funding replay suites | Проверено unit |
 | AUTO-EXP-01 | Automatic family должна быть полностью объявлена до первого trial | `automatic_experiment_plan`, `finalize_automatic_preregistration`, затем transactional `register_experiment_family` перед subprocess trials | `test_automatic_preregistration_is_complete_before_any_trial`, `test_orchestrator_registers_complete_preregistration_before_first_trial` | Проверено red → green unit |
 | AUTO-EXP-02 | Search space не должен адаптироваться к observed returns | Deterministic Cartesian RR/EV grid; family/plan hash; sequential fixed ordering | `test_automatic_experiment_plan_is_bounded_deterministic_and_contains_deployment_policy` | Проверено unit |
 | AUTO-EXP-03 | Grid обязан включать exact deployment policy и иметь bounded size | Settings validation: multipliers include 1.0, additions include 0.0, count ≥ governance minimum and ≤16 | environment parsing, exact-policy and 16-config bound tests | Проверено unit |
@@ -43,7 +47,7 @@
 | UNIVERSE-LEDGER-01 | Каждый committed universe refresh оставляет полный immutable decision set | `app/services/universe.py`, migration `0015_universe_eligibility` | existing universe ledger tests | Проверено unit; PostgreSQL trigger integration SKIPPED |
 | TEMPORAL-01 | Future universe observation/commit не должен влиять на прошлое решение | availability semantics `recorded_at`, no forward join | commit-availability regression | Проверено red → green |
 | FAIL-CLOSED-01 | Invalid hashes, timestamps, arrays, duplicate availability или stale gaps блокируют run | validators in `app/services/universe.py` and `app/ml/universe_replay.py` | targeted replay/ledger tests | Проверено unit |
-| COMPAT-01 | Risk, cost, activation thresholds и `.env` contracts не меняются | Release 1.34.0 не добавляет migration/config и не меняет model/risk semantics; process-tree containment не меняет authenticated trainer-control schema или model/risk semantics | full suite + diff inspection | Реализовано |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.34.1 не добавляет migration/config/API/artifact schema; меняется только место применения dynamic expected funding: market direction остаётся bound к OOS policy, execution/acceptance остаются строже по свежему funding | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка

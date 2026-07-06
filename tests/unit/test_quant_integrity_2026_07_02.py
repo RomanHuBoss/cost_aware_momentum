@@ -63,7 +63,7 @@ async def test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping(
         bid_price=Decimal("99.9"),
         ask_price=Decimal("100.0"),
         last_price=Decimal("99.95"),
-        funding_rate=Decimal("0"),
+        funding_rate=Decimal("0.001"),
         next_funding_time=event_time + timedelta(hours=8),
     )
     spec = SimpleNamespace(
@@ -89,6 +89,7 @@ async def test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping(
 
     def capture_scenario(_predictions, **kwargs):
         captured["atr_pct"] = kwargs["atr_pct"]
+        captured["funding_rate"] = kwargs["costs"].funding_rate
         raise ValueError("stop after ATR capture")
 
     monkeypatch.setattr(signals, "expire_old_signals", no_expire)
@@ -132,6 +133,7 @@ async def test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping(
 
     assert published == []
     assert captured["atr_pct"] == Decimal("0.001")
+    assert captured["funding_rate"] == Decimal("0")
 
 
 class _ArtifactModel:

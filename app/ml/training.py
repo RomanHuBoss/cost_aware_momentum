@@ -59,6 +59,7 @@ POLICY_UNCERTAINTY_SCHEMA = "observed-opportunity-zero-return-all-horizon-phases
 HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
 MIN_TIMEOUT_SAMPLES_PER_DIRECTION = 5
+POLICY_EXPECTED_FUNDING_SOURCE = "none-no-point-in-time-forecast"
 
 HISTORICAL_FUNDING_POLICY_METADATA_COLUMNS = (
     "historical_funding_timeline_complete",
@@ -2235,7 +2236,7 @@ def evaluate_policy_model(
         "policy_metric_schema": POLICY_METRIC_SCHEMA,
         "historical_funding_schema": historical_funding_schema,
         "policy_funding_timeline_complete": historical_funding_schema is not None,
-        "policy_expected_funding_source": "none-no-point-in-time-forecast",
+        "policy_expected_funding_source": POLICY_EXPECTED_FUNDING_SOURCE,
         "policy_realized_funding_source": historical_funding_schema,
         "policy_intrahorizon_margin_schema": intrahorizon_margin_schema,
         "policy_intrahorizon_margin_complete": intrahorizon_margin_schema is not None,

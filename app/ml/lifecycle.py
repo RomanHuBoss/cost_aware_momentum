@@ -58,6 +58,7 @@ from app.ml.training import (
     MODEL_BASE_FEATURE_NAMES,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
+    POLICY_EXPECTED_FUNDING_SOURCE,
     POLICY_METRIC_SCHEMA,
     POLICY_UNCERTAINTY_SCHEMA,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
@@ -1208,7 +1209,7 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         reasons.append("policy_historical_funding_schema_mismatch")
     if metrics.get("policy_funding_timeline_complete") is not True:
         reasons.append("policy_historical_funding_timeline_incomplete")
-    if metrics.get("policy_expected_funding_source") != "none-no-point-in-time-forecast":
+    if metrics.get("policy_expected_funding_source") != POLICY_EXPECTED_FUNDING_SOURCE:
         reasons.append("policy_expected_funding_lookahead_risk")
     if metrics.get("policy_realized_funding_source") != HISTORICAL_FUNDING_SCHEMA_VERSION:
         reasons.append("policy_realized_funding_source_mismatch")
