@@ -39,6 +39,7 @@ from app.risk.math import (
 )
 from app.services.attrition import INFERENCE_ATTRITION_SCHEMA
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.drift_monitor import production_drift_publication_guard
 from app.services.execution import create_execution_plan, validated_bid_ask
 
 logger = logging.getLogger(__name__)
@@ -495,9 +496,6 @@ async def publish_hourly_signals(
     now = datetime.now(UTC)
     event_time = event_time or now.replace(minute=0, second=0, microsecond=0)
     published: list[MarketSignal] = []
-    profiles = (await session.execute(select(CapitalProfile))).scalars().all()
-
-    await expire_old_signals(session)
     selected_symbols = list(dict.fromkeys(symbols if symbols is not None else settings.symbols))
 
     def count(reason: str, amount: int = 1) -> None:
@@ -536,7 +534,7 @@ async def publish_hourly_signals(
                 "event_time": event_time.isoformat(),
                 "availability_cutoff": now.isoformat(),
                 "symbols_total": len(selected_symbols),
-                "profiles_total": len(profiles),
+                "profiles_total": 0,
                 "skip_counts": {},
                 "existing_current_hour": 0,
                 "published": 0,
@@ -546,6 +544,39 @@ async def publish_hourly_signals(
                 "plan_outcomes": [],
             }
         )
+
+    runtime_version = str(getattr(runtime, "version", "")).strip()
+    drift_guard = await production_drift_publication_guard(
+        session,
+        model_version=runtime_version or "unversioned-runtime",
+        monitor_enabled=(
+            bool(getattr(settings, "drift_monitor_enabled", False)) and bool(runtime_version)
+        ),
+        runtime_is_baseline=bool(getattr(runtime, "is_baseline", True)),
+    )
+    if diagnostics is not None:
+        diagnostics["drift_interlock"] = drift_guard
+    if drift_guard["blocked"]:
+        reason_code = str(drift_guard["reason_code"] or "critical_production_drift")
+        for symbol in selected_symbols:
+            record_symbol_outcome(
+                symbol,
+                terminal_state="SKIPPED",
+                reason_code=reason_code,
+            )
+        if diagnostics is not None:
+            diagnostics["skipped_total"] = len(selected_symbols)
+            diagnostics["symbol_outcome_count"] = len(selected_symbols)
+        logger.error(
+            "Signal publication blocked by production model safety interlock",
+            extra={"drift_interlock": drift_guard},
+        )
+        return []
+
+    profiles = (await session.execute(select(CapitalProfile))).scalars().all()
+    if diagnostics is not None:
+        diagnostics["profiles_total"] = len(profiles)
+    await expire_old_signals(session)
 
     for symbol in selected_symbols:
         ticker = await _latest_ticker(session, symbol)

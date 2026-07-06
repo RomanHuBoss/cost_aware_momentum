@@ -1,9 +1,9 @@
 # QA Report
 
-Release: **1.26.7**
+Release: **1.27.0**
 
 Date: **2026-07-06**
-Scope: **cost-stress experiment promotion gate**
+Scope: **critical production-drift publication interlock**
 
 ## Environment
 
@@ -17,40 +17,47 @@ Scope: **cost-stress experiment promotion gate**
 
 | Check | Result |
 |---|---|
-| input ZIP SHA-256 | `1ef3ca05de319366abc9db5fc207b59d8814f54d1728016ab6f4b7fd9a9ed3ab` |
-| source version | 1.26.6 |
-| source inventory | 223 files; 73 app, 83 tests, 9 docs; 14 migrations; head `0014_ui_exposure_ledger` |
+| input ZIP SHA-256 | `d5e3e857ef4adb0e946a4ba3b3aacdf379b493fa1c0b03566ef3ebdfc0957436` |
+| source version | 1.26.7 |
+| source inventory | 225 files; 94 production Python, 83 test Python, 10 docs; 14 migration revisions; head `0014_ui_exposure_ledger` |
 | `python --version` | PASSED: Python 3.13.5 |
 | `python -m pip check` | PASSED in isolated venv |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 622 passed, 4 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED: 627 passed, 4 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED |
 
 ## Confirmed gap and red evidence
 
-`policy_backtest` computed ×1.5/×2 terminal stress totals, but successful experiment events persisted only nominal period returns. `analyze_experiment_family` therefore selected and approved configurations without any cost-stress path or sign check. This contradicted the specification's mandatory commission/slippage stress analysis and allowed normal promotion despite a negative stressed capital result.
+`app/services/drift_monitor.py` produced `CRITICAL`, but `app/workers/runner.py::model_heartbeat_status` only degraded heartbeat. The loop published inference before running drift, `publish_hourly_signals` had no interlock, and execution/acceptance paths did not consult drift evidence. A critically degraded active artifact could therefore continue issuing new advisory decisions and an older actionable plan could still be accepted.
 
-Red command:
+Original red command:
 
 ```text
-python -m pytest -q \
-  tests/unit/test_experiment_observed_period_path_2026_07_05.py::test_experiment_evidence_carries_aligned_cost_stress_paths \
-  tests/unit/test_experiment_observed_period_path_2026_07_05.py::test_success_event_without_cost_stress_evidence_is_rejected
+python -m pytest -q tests/unit/test_critical_drift_interlock_2026_07_06.py
 ```
 
-Before implementation: **2 failed** (`KeyError: cost_stress`; missing evidence was accepted).
-After implementation: **2 passed**.
+Before production implementation: collection failed because `PRODUCTION_DRIFT_PUBLICATION_GUARD_SCHEMA` and the guard did not exist. After implementation: **4 passed**.
+
+Acceptance red command:
+
+```text
+python -m pytest -q tests/unit/test_execution_acceptance_safety.py::test_acceptance_rejects_actionable_plan_after_critical_drift
+```
+
+First run: **1 failed**, endpoint returned HTTP 200 instead of 409 because the drift conflict was overwritten by later plan-contract validation. After preserving the pre-existing conflict: **1 passed**.
 
 ## Added/extended regression coverage
 
-- ×1.5/×2 paths align exactly with nominal timestamps and independently reconcile to terminal compounded returns.
-- Known fee/slippage example verifies stressed entry and terminal arithmetic.
-- Missing/legacy stress evidence fails closed.
-- Negative selected ×2 path returns `REJECTED_COST_STRESS`.
-- READY report without stress evidence is rejected.
-- Legacy persisted promotion gate v2 cannot authorize activation.
-- Existing atomic promotion, policy binding and dependence tests now carry valid stress evidence.
+- Current-version `CRITICAL` latches quarantine across later `BLOCKED` reports and worker restarts.
+- Disabling new drift-monitor jobs does not clear already persisted critical quarantine.
+- Reactivating the same immutable artifact version does not clear its historical critical latch.
+- Previous-version critical evidence does not quarantine a newly activated version.
+- Stale runtime/signal version mismatching current active registry fails closed.
+- Signal publication stops before market/profile queries and records per-symbol attrition.
+- Hourly decision order evaluates drift before inference.
+- New/recalculated execution plans become `NO_TRADE` with persisted guard evidence.
+- Acceptance of an old actionable plan returns 409 and supersedes the plan.
 
 ## Post-change checks
 
@@ -59,19 +66,19 @@ After implementation: **2 passed**.
 | `python -m pip check` | PASSED: no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 627 passed, 4 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED: 636 passed, 4 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED |
-| application/package version consistency | PASSED: 1.26.7 |
+| application/package version consistency | PASSED: 1.27.0 |
 | Alembic heads | PASSED: one head, `0014_ui_exposure_ledger` |
-| release manifest | PASSED: 224 files verified by `sha256sum -c SHA256SUMS` |
+| release manifest | PASSED: 227 release files regenerated and verified |
 | clean ZIP/re-extraction | PASSED: one root directory, `unzip -t` clean, re-extracted manifest and forbidden-artifact scan clean |
 
 ## Environment-dependent checks
 
 | Check | Result |
 |---|---|
-| `python manage.py doctor` | FAILED: `.env` absent, default secrets unresolved, `psql`/`pg_dump`/`pg_restore` absent, PostgreSQL unreachable |
-| `python manage.py test --require-integration` | NOT RUN: neither `POSTGRES_ADMIN_URL` nor `TEST_DATABASE_URL` is configured |
+| `python manage.py doctor` | FAILED: `.env` absent, default secrets unresolved, PostgreSQL client tools/server unavailable in this container |
+| `python manage.py test --require-integration` | FAILED preflight: command exited 1 because neither `POSTGRES_ADMIN_URL` nor `TEST_DATABASE_URL` is configured; integration tests were not executed |
 
 ## Warnings
 
@@ -80,10 +87,9 @@ After implementation: **2 passed**.
 ## Release boundary
 
 - Database migration: none.
-- Public HTTP API: unchanged.
+- Public HTTP request/response schema: unchanged.
 - `.env` variables: unchanged.
 - Model feature/label/runtime artifact schemas: unchanged.
-- Recommendation/risk/quality thresholds: unchanged.
-- New governance invariant: selected trial terminal capital return must be non-negative at both ×1.5 and ×2 costs.
-- Experiment report schema: v3 → v4. Promotion gate schema: v2 → v3.
-- Active artifacts remain runnable. Existing successful experiment evidence without cost-stress v1 must be rerun before normal promotion.
+- Recommendation/risk/quality/promotion thresholds: unchanged.
+- New safety invariant: successful persisted `CRITICAL` drift for the exact active version quarantines new signals and plans until another version is activated.
+- Existing `BLOCKED` warm-up/incomplete-evidence diagnostics remain heartbeat-degrading but do not latch publication, preventing self-blocking evidence collection.

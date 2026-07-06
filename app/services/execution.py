@@ -48,6 +48,7 @@ from app.risk.policy import (
 )
 from app.services.attrition import execution_plan_attrition_evidence
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.drift_monitor import production_drift_publication_guard
 from app.services.selection_experiments import build_selection_ledger_row
 
 IMMUTABLE_PLAN_STATUSES = frozenset({"ACCEPTED", "ENTERED", "PARTIAL", "CLOSED"})
@@ -832,6 +833,7 @@ async def create_execution_plan(
     settings: Settings,
     actor: str = "worker",
     entry_price: Decimal | None = None,
+    drift_guard: dict[str, object] | None = None,
 ) -> ExecutionPlan:
     await acquire_advisory_xact_lock(
         session,
@@ -864,6 +866,31 @@ async def create_execution_plan(
         status_override = status
         status_override_reason = reason_code
         add_attrition_reason(reason_code)
+
+    signal_model_version = str(getattr(signal, "model_version", "")).strip()
+    if drift_guard is None:
+        drift_guard = await production_drift_publication_guard(
+            session,
+            model_version=signal_model_version or "unversioned-signal",
+            monitor_enabled=(
+                bool(getattr(settings, "drift_monitor_enabled", False))
+                and bool(signal_model_version)
+            ),
+            runtime_is_baseline=signal_uses_unvalidated_baseline(signal),
+        )
+    if drift_guard["blocked"]:
+        guard_reason = str(drift_guard.get("reason_code") or "model_safety_interlock")
+        override_status("NO_TRADE", guard_reason)
+        if guard_reason == "critical_production_drift":
+            warnings.append(
+                "Активная модель помещена в карантин из-за критического production drift; "
+                "исполнение запрещено до активации другой версии модели"
+            )
+        else:
+            warnings.append(
+                "Версия модели сигнала не совпадает с текущей активной model registry; "
+                "исполнение запрещено до синхронизации runtime"
+            )
 
     profile_policy_error: str | None = None
     try:
@@ -1234,6 +1261,7 @@ async def create_execution_plan(
         warnings=combined_warnings,
         sizing_snapshot={
             "attrition": attrition_evidence,
+            "production_drift_interlock": drift_guard,
             "entry_price": str(planning_entry),
             "entry_price_source": entry_source,
             "entry_inside_signal_zone": not entry_outside_zone,

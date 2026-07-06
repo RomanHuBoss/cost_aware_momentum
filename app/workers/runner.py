@@ -675,6 +675,16 @@ class Worker:
             self.last_drift_summary = result
         return result
 
+    async def hourly_decision_cycle(self, event_time: datetime) -> None:
+        """Run the hourly safety checks before publishing the new decision set."""
+
+        await self.hourly_market_close_job(event_time)
+        await self.counterfactual_outcome_job(event_time)
+        if settings.drift_monitor_enabled:
+            await self.drift_monitor_job(event_time)
+        await self.inference_job(event_time)
+        await self.retention_job(event_time)
+
     async def retention_job(self, event_time: datetime) -> dict:
         async def task(session):
             now = datetime.now(UTC)
@@ -713,10 +723,10 @@ class Worker:
                 await self.history_backfill_job()
             startup_event_time = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
             await self.counterfactual_outcome_job(startup_event_time)
-            if self.active_symbols and not market_result.get("skipped"):
-                await self.catchup_inference_job("startup_backfill")
             if settings.drift_monitor_enabled:
                 await self.drift_monitor_job(startup_event_time)
+            if self.active_symbols and not market_result.get("skipped"):
+                await self.catchup_inference_job("startup_backfill")
             if settings.bybit_read_only_account:
                 await self.account_job()
                 self.last_account_sync = datetime.now(UTC)
@@ -762,12 +772,7 @@ class Worker:
                 event_time = now.replace(minute=0, second=0, microsecond=0)
                 run_after = event_time + timedelta(seconds=settings.inference_delay_seconds)
                 if now >= run_after:
-                    await self.hourly_market_close_job(event_time)
-                    await self.counterfactual_outcome_job(event_time)
-                    await self.inference_job(event_time)
-                    if settings.drift_monitor_enabled:
-                        await self.drift_monitor_job(event_time)
-                    await self.retention_job(event_time)
+                    await self.hourly_decision_cycle(event_time)
                 await self.expiry_job()
                 await self.heartbeat(
                     self.model_heartbeat_status(),

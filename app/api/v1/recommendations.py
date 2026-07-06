@@ -28,6 +28,7 @@ from app.db.models import (
 )
 from app.risk.liquidity import ORDERBOOK_EXECUTION_SCHEMA_VERSION
 from app.services.audit import append_audit_event, publish_outbox
+from app.services.drift_monitor import production_drift_publication_guard
 from app.services.execution import (
     IMMUTABLE_PLAN_STATUSES,
     create_execution_plan,
@@ -43,6 +44,7 @@ from app.services.execution import (
     orderbook_fill_for_qty,
     orderbook_snapshot_is_fresh,
     reconciliation_issues,
+    signal_uses_unvalidated_baseline,
     ticker_snapshot_is_fresh,
     validate_execution_plan_for_acceptance,
 )
@@ -480,12 +482,26 @@ async def accept_recommendation(
         await session.commit()
         return Response(content=body, status_code=409, media_type="application/json")
 
-    conflict_reason: str | None = None
-    plan_planning_time: datetime | None = None
-    if plan.status not in {"ACTIONABLE", "LIMITED", "VIEWED"}:
-        conflict_reason = f"Plan status {plan.status} is not acceptable"
+    signal_model_version = str(getattr(signal, "model_version", "")).strip()
+    drift_guard = await production_drift_publication_guard(
+        session,
+        model_version=signal_model_version or "unversioned-signal",
+        monitor_enabled=(settings.drift_monitor_enabled and bool(signal_model_version)),
+        runtime_is_baseline=signal_uses_unvalidated_baseline(signal),
+    )
+    drift_reason = str(drift_guard.get("reason_code") or "")
+    if not drift_guard["blocked"]:
+        conflict_reason: str | None = None
+    elif drift_reason == "critical_production_drift":
+        conflict_reason = "Active model is quarantined by critical production drift"
     else:
-        plan_planning_time, conflict_reason = _plan_orderbook_contract(plan)
+        conflict_reason = "Signal model version does not match the active model registry"
+    plan_planning_time: datetime | None = None
+    if conflict_reason is None:
+        if plan.status not in {"ACTIONABLE", "LIMITED", "VIEWED"}:
+            conflict_reason = f"Plan status {plan.status} is not acceptable"
+        else:
+            plan_planning_time, conflict_reason = _plan_orderbook_contract(plan)
     if conflict_reason is None and plan_planning_time is not None and plan_planning_time > now:
         conflict_reason = "Execution plan planning time is in the future"
     if conflict_reason is None and signal.expires_at <= now:

@@ -218,6 +218,7 @@ async def _build_plan_for_safety_case(
     orderbook_bids: list[list[str]] | None = None,
     orderbook_asks: list[list[str]] | None = None,
     max_vwap_impact_bps: float = 12.0,
+    drift_blocked: bool = False,
 ):
     from uuid import uuid4
 
@@ -308,6 +309,17 @@ async def _build_plan_for_safety_case(
     monkeypatch.setattr(execution, "reconciliation_issues", AsyncMock(return_value=[]))
     monkeypatch.setattr(execution, "append_audit_event", AsyncMock())
     monkeypatch.setattr(execution, "publish_outbox", AsyncMock())
+    drift_guard = {
+        "schema": "production-drift-critical-quarantine-v1",
+        "blocked": drift_blocked,
+        "model_version": "model-v1",
+        "reason_code": "critical_production_drift" if drift_blocked else None,
+        "critical_report_generated_at": (
+            "2026-07-06T12:00:00+00:00" if drift_blocked else None
+        ),
+        "critical_alerts": ["calibration_drift"] if drift_blocked else [],
+        "release_condition": "activate_different_model_version" if drift_blocked else None,
+    }
 
     settings = Settings(
         database_url="postgresql+psycopg://u:p@localhost/db",
@@ -318,6 +330,7 @@ async def _build_plan_for_safety_case(
         signal=signal,
         profile=profile,
         settings=settings,
+        drift_guard=drift_guard,
     )
 
 
@@ -339,6 +352,23 @@ async def test_unvalidated_baseline_plan_is_diagnostic_only(
         plan.sizing_snapshot["attrition"]["primary_reason_code"]
         == "baseline_actionability_disabled"
     )
+
+
+async def test_critical_drift_forces_execution_plan_to_no_trade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        drift_blocked=True,
+    )
+
+    assert plan.status == "NO_TRADE"
+    assert plan.sizing_snapshot["attrition"]["primary_reason_code"] == "critical_production_drift"
+    assert plan.sizing_snapshot["production_drift_interlock"]["blocked"] is True
+    assert any("production drift" in warning for warning in plan.warnings)
 
 
 async def test_execution_plan_reprices_from_current_executable_quote(
@@ -544,6 +574,7 @@ async def _run_acceptance_case(
     orderbook_ask_size: Decimal = DEFAULT_ORDERBOOK_SIZE,
     plan_has_orderbook_evidence: bool = True,
     plan_planning_offset_seconds: int = -5,
+    drift_blocked: bool = False,
 ):
     from uuid import uuid4
 
@@ -570,6 +601,7 @@ async def _run_acceptance_case(
         p_tp=0.60,
         p_sl=0.25,
         p_timeout=0.15,
+        model_version="model-v2",
     )
     sizing_snapshot = {
         "entry_price": "100",
@@ -661,6 +693,25 @@ async def _run_acceptance_case(
         commit=AsyncMock(),
     )
 
+    monkeypatch.setattr(
+        recommendations,
+        "production_drift_publication_guard",
+        AsyncMock(
+            return_value={
+                "schema": "production-drift-critical-quarantine-v1",
+                "blocked": drift_blocked,
+                "model_version": signal.model_version,
+                "reason_code": "critical_production_drift" if drift_blocked else None,
+                "critical_report_generated_at": (
+                    "2026-07-06T12:00:00+00:00" if drift_blocked else None
+                ),
+                "critical_alerts": ["calibration_drift"] if drift_blocked else [],
+                "release_condition": (
+                    "activate_different_model_version" if drift_blocked else None
+                ),
+            }
+        ),
+    )
     monkeypatch.setattr(recommendations, "_idempotent_response", AsyncMock(return_value=None))
     monkeypatch.setattr(
         recommendations,
@@ -727,6 +778,20 @@ async def test_acceptance_persists_exact_orderbook_fill_evidence(
     assert D(evidence["vwap"]) == D("100")
     assert evidence["update_id"] == 1
     assert decision.context_snapshot["operator_latency_seconds"] >= 5
+
+
+async def test_acceptance_rejects_actionable_plan_after_critical_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        drift_blocked=True,
+    )
+
+    assert response.status_code == 409
+    assert b"PLAN_RECALCULATION_REQUIRED" in response.body
+    assert b"quarantined by critical production drift" in response.body
+    assert plan.status == "SUPERSEDED"
 
 
 async def test_acceptance_recalculates_legacy_plan_without_depth_evidence(

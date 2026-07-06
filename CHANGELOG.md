@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.27.0 — 2026-07-06
+
+### Fixed
+
+- A persisted `CRITICAL` production-drift report now quarantines the exact active model version instead of only degrading the worker heartbeat.
+- The hourly worker evaluates drift after outcome maturation and before inference, preventing one additional decision set from being published after critical drift is observed.
+- Signal publication short-circuits before market/profile queries while quarantined and records deterministic `critical_production_drift` attrition for every selected symbol.
+- New and recalculated execution plans fail closed to `NO_TRADE`; acceptance of an older actionable plan returns `PLAN_RECALCULATION_REQUIRED` instead of bypassing the quarantine.
+- The quarantine is reconstructed from successful persisted drift `JobRun` evidence after restart, cannot be cleared by disabling new monitor jobs, and is released only when a different reviewed model version becomes active.
+- Stale runtime or signal versions that do not match the current active model registry fail closed instead of bypassing the old-version quarantine.
+- Insufficient-observation `BLOCKED` reports do not latch the publication guard, avoiding a bootstrap deadlock in a monitor that depends on prospective published prediction snapshots.
+
+### Compatibility
+
+- No database migration, public HTTP schema change, `.env` variable, model artifact schema or recommendation threshold change.
+- Advisory-only and read-only Bybit boundaries are unchanged; the interlock never places, changes or cancels an order.
+- An already active version with any successful persisted `CRITICAL` report for that immutable version is quarantined immediately after upgrade or same-version reactivation. Operator recovery requires activating another governed model version; deleting evidence or silently clearing the latch is not supported.
+
+### Verification
+
+- Clean isolated baseline: 627 passed, 4 skipped, 62 warnings.
+- Red evidence: the guard contract was absent on baseline; an acceptance regression also returned HTTP 200 instead of the required 409 before the final conflict-preservation fix.
+- Post-change suite: 636 passed, 4 skipped, 62 warnings.
+
 ## 1.26.7 — 2026-07-06
 
 ### Fixed
