@@ -219,6 +219,8 @@ async def _build_plan_for_safety_case(
     orderbook_asks: list[list[str]] | None = None,
     max_vwap_impact_bps: float = 12.0,
     drift_blocked: bool = False,
+    timeout_return_r: Decimal | None = None,
+    timeout_gross_return_rate: Decimal | None = None,
 ):
     from uuid import uuid4
 
@@ -246,7 +248,19 @@ async def _build_plan_for_safety_case(
         direction="LONG",
         model_version="baseline-momentum-v1" if baseline else "model-v1",
         calibration_version=("uncalibrated-baseline-v1" if baseline else "calibrated-v1"),
-        feature_snapshot={"model_runtime": {"baseline": baseline, "source": "test"}},
+        feature_snapshot={
+            "model_runtime": {"baseline": baseline, "source": "test"},
+            **(
+                {
+                    "economics_assumptions": {
+                        "timeout_return_r": str(timeout_return_r),
+                        "timeout_gross_return_rate": str(timeout_gross_return_rate),
+                    }
+                }
+                if timeout_return_r is not None and timeout_gross_return_rate is not None
+                else {}
+            ),
+        },
     )
     profile = SimpleNamespace(
         id=uuid4(),
@@ -384,6 +398,32 @@ async def test_execution_plan_reprices_from_current_executable_quote(
     )
 
     assert D(plan.sizing_snapshot["entry_price"]) == D("100.4")
+
+
+async def test_execution_plan_reprojects_timeout_r_at_current_vwap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = await _build_plan_for_safety_case(
+        monkeypatch,
+        profile_mode="manual",
+        stop_loss=D("98"),
+        capital_result=(D("10000"), None, True, {"source": "manual"}),
+        bid_price=D("99.8"),
+        ask_price=D("100.4"),
+        timeout_return_r=D("-0.5"),
+        timeout_gross_return_rate=D("-0.01"),
+    )
+
+    entry = D(plan.sizing_snapshot["entry_price"])
+    expected = D("-0.5") * abs(entry - D("98")) / entry
+    actual = D(plan.sizing_snapshot["timeout_gross_return_rate"])
+
+    assert abs(actual - expected) <= D("1e-36")
+    assert actual != D("-0.01")
+    assert (
+        plan.sizing_snapshot["economics_schema_version"]
+        == "tp-sl-timeout-current-entry-r-v2"
+    )
 
 
 
@@ -538,7 +578,7 @@ async def test_execution_plan_snapshot_persists_three_outcome_economics(
     )
 
     snapshot = plan.sizing_snapshot
-    assert snapshot["economics_schema_version"] == "tp-sl-timeout-v1"
+    assert snapshot["economics_schema_version"] == "tp-sl-timeout-current-entry-r-v2"
     assert D(snapshot["upside_rate"]).is_finite()
     assert D(snapshot["timeout_net_rate"]).is_finite()
     assert D(snapshot["break_even_tp_probability"]).is_finite()
@@ -575,6 +615,8 @@ async def _run_acceptance_case(
     plan_has_orderbook_evidence: bool = True,
     plan_planning_offset_seconds: int = -5,
     drift_blocked: bool = False,
+    timeout_return_r: Decimal | None = None,
+    timeout_gross_return_rate: Decimal | None = None,
 ):
     from uuid import uuid4
 

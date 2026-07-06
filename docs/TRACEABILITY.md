@@ -1,6 +1,6 @@
 # Traceability
 
-Состояние: release 1.35.0, 2026-07-06. Таблица дополнена full-horizon counterfactual outcome attribution для candidate/live attrition; timezone-stable universe hashing, promotion-bound funding semantics, automatic experiment control и PostgreSQL-native universe replay сохраняются без регрессии.
+Состояние: release 1.35.1, 2026-07-06. Таблица дополнена current-entry repricing conditional TIMEOUT economics; full-horizon attrition outcomes, timezone-stable universe hashing, promotion-bound funding semantics, automatic experiment control и PostgreSQL-native universe replay сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
@@ -53,7 +53,11 @@
 | ATTRITION-OUTCOME-03 | Missing mature outcomes не должны превращаться в ложную прибыльность/убыточность группы | Mature signal/plan coverage, duplicate/conflict, outcome agreement и valuation/R consistency fail closed | `test_report_blocks_missing_mature_outcome_evidence` | Проверено red → green unit |
 | ATTRITION-OUTCOME-04 | Plan filters должны быть сопоставимы с post-horizon TP/SL/TIMEOUT и sized-plan R | `live.outcome_attribution.by_plan_status/by_terminal_stage/by_primary_reason`; `VALUED` R sign/mean/median/sum | `test_report_attributes_full_horizon_outcomes_to_plan_filters` | Проверено red → green unit |
 | ATTRITION-OUTCOME-05 | Counterfactual diagnostics нельзя выдавать за реальные fills или causal effect | Schema фиксирует `actual_execution_pnl=false`, `causal_claim=false`; immature и unavailable valuations раскрываются отдельно | outcome attribution regression suite + documentation | Проверено unit/static |
-| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.35.0 не добавляет migration/config/model-artifact changes и меняет только reporting/read paths; releases 1.34.1–1.34.2 semantics сохраняются | full suite + diff inspection | Реализовано |
+| TIMEOUT-EXEC-01 | Conditional TIMEOUT estimate должен сохранять stop-risk `R` при изменении executable entry/VWAP | `signal_timeout_return_rate(..., entry=...)` reprojects bounded immutable `timeout_return_r` на current gross stop distance | `test_execution_reprojects_conditional_timeout_r_to_current_entry_geometry` | Проверено red → green LONG/SHORT unit |
+| TIMEOUT-EXEC-02 | Stale signal-reference absolute rate не должен давать ложный policy pass | Plan/acceptance call helper с current entry; independent boundary case сравнивает stale 0.0526R с current 0.0235R при gate 0.05R | `test_current_entry_timeout_repricing_prevents_false_positive_ev_gate` | Проверено unit |
+| TIMEOUT-EXEC-03 | Plan evidence должно отражать current depth VWAP semantics | converged `planning_entry` передаётся в TIMEOUT projection; schema `tp-sl-timeout-current-entry-r-v2` | `test_execution_plan_reprojects_timeout_r_at_current_vwap` | Проверено unit |
+| TIMEOUT-EXEC-04 | Legacy signals и invalid conditional evidence должны обрабатываться явно | no-`R` path сохраняет stored absolute/fallback; non-finite `R`/invalid geometry fail closed | legacy and non-finite regressions | Проверено unit |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.35.1 не добавляет migration/config/model-artifact changes; меняется только execution TIMEOUT repricing semantics, releases 1.34.1–1.35.0 сохраняются | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка

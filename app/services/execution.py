@@ -41,6 +41,7 @@ from app.risk.math import (
     pretrade_funding_return_rate,
     projected_funding_rate,
     stress_downside_rate,
+    validate_directional_geometry,
 )
 from app.risk.policy import (
     configured_capital_risk_policy,
@@ -83,22 +84,62 @@ def signal_timeout_return_rate(
     signal: MarketSignal,
     *,
     fallback: Decimal,
+    entry: Decimal | None = None,
 ) -> Decimal:
-    """Read the immutable signal-level TIMEOUT assumption used for its EV.
+    """Return the signal TIMEOUT assumption for the requested entry geometry.
 
-    Legacy signals created before the conditional estimator use the configured
-    fallback. Invalid persisted assumptions fail closed instead of silently
-    changing the economics between publication, planning and acceptance.
+    Conditional artifacts estimate the TIMEOUT return in gross stop-risk units
+    (``R``).  A plan can use a different executable entry or depth VWAP than the
+    signal reference, so reusing the signal's absolute percentage return would
+    silently change the learned ``R`` semantics.  For conditional signals,
+    reproject the immutable estimate onto the current gross stop distance and
+    clamp it to the current TP/SL support.  Legacy signals without ``R`` retain
+    their stored absolute return (or the configured fallback).
     """
 
+    assumptions: dict | None = None
     snapshot = getattr(signal, "feature_snapshot", None)
     if isinstance(snapshot, dict):
-        assumptions = snapshot.get("economics_assumptions")
-        if isinstance(assumptions, dict) and assumptions.get("timeout_gross_return_rate") is not None:
-            return finite_decimal(
-                assumptions["timeout_gross_return_rate"],
-                "signal timeout_gross_return_rate",
+        candidate = snapshot.get("economics_assumptions")
+        if isinstance(candidate, dict):
+            assumptions = candidate
+
+    if assumptions is not None and assumptions.get("timeout_return_r") is not None:
+        timeout_return_r = finite_decimal(
+            assumptions["timeout_return_r"],
+            "signal timeout_return_r",
+        )
+        if entry is not None:
+            current_entry = positive_finite_decimal(entry, "current execution entry")
+            stop = positive_finite_decimal(signal.stop_loss, "signal stop_loss")
+            take_profit = positive_finite_decimal(
+                signal.take_profit_1,
+                "signal take_profit_1",
             )
+            validate_directional_geometry(
+                entry=current_entry,
+                stop=stop,
+                take_profit=take_profit,
+                direction=signal.direction,
+            )
+            gross_downside_rate = abs(current_entry - stop) / current_entry
+            gross_upside_rate = abs(take_profit - current_entry) / current_entry
+            if gross_downside_rate <= 0:
+                raise ValueError(
+                    "Conditional TIMEOUT return requires positive current stop distance"
+                )
+            support_upper = gross_upside_rate / gross_downside_rate
+            bounded_timeout_return_r = min(
+                max(timeout_return_r, Decimal("-1")),
+                support_upper,
+            )
+            return bounded_timeout_return_r * gross_downside_rate
+
+    if assumptions is not None and assumptions.get("timeout_gross_return_rate") is not None:
+        return finite_decimal(
+            assumptions["timeout_gross_return_rate"],
+            "signal timeout_gross_return_rate",
+        )
     return finite_decimal(fallback, "fallback timeout_gross_return_rate")
 
 
@@ -259,6 +300,7 @@ def validate_execution_plan_for_acceptance(
         p_timeout=signal.p_timeout,
         timeout_return_rate=signal_timeout_return_rate(
             signal,
+            entry=entry,
             fallback=Decimal(str(settings.timeout_gross_return_rate)),
         ),
     )
@@ -1121,6 +1163,7 @@ async def create_execution_plan(
     plan_break_even_tp_probability: Decimal | None = None
     timeout_return_rate = signal_timeout_return_rate(
         signal,
+        entry=planning_entry,
         fallback=Decimal(str(settings.timeout_gross_return_rate)),
     )
     try:
@@ -1266,7 +1309,7 @@ async def create_execution_plan(
             "entry_price_source": entry_source,
             "entry_inside_signal_zone": not entry_outside_zone,
             "planning_time": now.isoformat(),
-            "economics_schema_version": "tp-sl-timeout-v1",
+            "economics_schema_version": "tp-sl-timeout-current-entry-r-v2",
             "timeout_gross_return_rate": str(timeout_return_rate),
             "net_rr": str(plan_net_rr),
             "net_ev_r": str(plan_net_ev_r),

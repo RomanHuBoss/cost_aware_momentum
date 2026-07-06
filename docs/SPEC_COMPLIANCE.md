@@ -439,3 +439,22 @@ Release 1.20.0 закрывает возможность создавать exec
 
 `backtest --prepare-preregistration` формирует draft после построения exact cohort, но возвращается до model evaluation и trial event. `experiment-report` блокирует unregistered legacy family и threshold override. Ограничения: нет external trusted timestamp, conditional parameter spaces, automated failure-to-exclusion classification или automatic promotion gate.
 
+
+## Work package: current-entry conditional TIMEOUT economics
+
+Release 1.35.1 closes a mismatch between the trained conditional TIMEOUT target and execution repricing. The model target is direction-signed gross TIMEOUT return divided by contemporaneous gross stop distance. Signal publication already converted this `R` value to its signal-reference absolute rate, but execution-plan creation and acceptance previously reused that absolute percentage after current ask/bid or depth VWAP changed.
+
+Implemented:
+
+- immutable `timeout_return_r` is read from the signal evidence;
+- current executable entry is validated against directional stop/TP geometry;
+- `R` is reprojected onto current gross stop distance and bounded to current `[-1R, TP-support]`;
+- plan construction uses converged ask/bid/depth VWAP;
+- acceptance uses the fresh executable price;
+- legacy signals without conditional `R` keep their stored absolute TIMEOUT rate or configured fallback;
+- non-finite `R`, invalid geometry and non-positive stop distance fail closed;
+- plan evidence schema is `tp-sl-timeout-current-entry-r-v2`.
+
+Independent regression evidence demonstrates a stale-rate false pass: 0.0526R under the old calculation versus 0.0235R under current-entry semantics for a 0.05R gate. No threshold, probability, risk budget, model artifact or activation gate was loosened.
+
+Limitations: this is a correctness fix, not proof of edge. Existing immutable plans are not rewritten; PostgreSQL integration and real forward execution evidence were not available in the sandbox.

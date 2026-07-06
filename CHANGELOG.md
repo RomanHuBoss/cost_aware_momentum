@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.35.1 — 2026-07-06
+
+### Fixed
+
+- Reprojected conditional TIMEOUT expectations from immutable stop-risk `R` onto each current executable entry/depth VWAP instead of reusing the signal-reference absolute return.
+- Applied the same current-entry semantics during acceptance repricing, preventing stale TIMEOUT economics from falsely passing or failing `MIN_NET_EV_R`.
+- Preserved legacy absolute TIMEOUT assumptions for signals without `timeout_return_r` and retained fail-closed validation for non-finite conditional estimates or invalid directional geometry.
+- Raised execution-plan economics evidence to `tp-sl-timeout-current-entry-r-v2` and added LONG/SHORT, false-positive gate and plan-VWAP regressions.
+
 ## 1.35.0 — 2026-07-06
 
 ### Added

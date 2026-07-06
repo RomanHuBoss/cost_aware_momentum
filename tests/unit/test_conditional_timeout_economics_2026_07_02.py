@@ -380,3 +380,139 @@ def test_research_backtest_uses_artifact_timeout_estimator_unless_overridden() -
     assert metrics["timeout_return_source"] == "artifact_training_direction_median_r"
     assert metrics["trades"] == 1
     assert metrics["mean_net_return_per_trade"] == pytest.approx(0.01)
+
+@pytest.mark.parametrize(
+    ("direction", "entry", "stop", "take_profit", "timeout_return_r", "stored_rate", "expected"),
+    [
+        (
+            "LONG",
+            D("100.4"),
+            D("98"),
+            D("104"),
+            D("-0.5"),
+            D("-0.01"),
+            D("-0.5") * (D("100.4") - D("98")) / D("100.4"),
+        ),
+        (
+            "SHORT",
+            D("99.6"),
+            D("102"),
+            D("96"),
+            D("0.5"),
+            D("0.01"),
+            D("0.5") * (D("102") - D("99.6")) / D("99.6"),
+        ),
+    ],
+)
+def test_execution_reprojects_conditional_timeout_r_to_current_entry_geometry(
+    direction: str,
+    entry: Decimal,
+    stop: Decimal,
+    take_profit: Decimal,
+    timeout_return_r: Decimal,
+    stored_rate: Decimal,
+    expected: Decimal,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.services.execution import signal_timeout_return_rate
+
+    signal = SimpleNamespace(
+        direction=direction,
+        entry_reference=D("100"),
+        stop_loss=stop,
+        take_profit_1=take_profit,
+        feature_snapshot={
+            "economics_assumptions": {
+                "timeout_gross_return_rate": str(stored_rate),
+                "timeout_return_r": str(timeout_return_r),
+            }
+        },
+    )
+
+    actual = signal_timeout_return_rate(
+        signal,
+        entry=entry,
+        fallback=D("-0.002"),
+    )
+
+    assert abs(actual - expected) <= D("1e-36")
+    assert actual != stored_rate
+
+
+def test_current_entry_timeout_repricing_prevents_false_positive_ev_gate() -> None:
+    from types import SimpleNamespace
+
+    from app.risk.math import net_rr_and_ev
+    from app.services.execution import signal_timeout_return_rate
+
+    signal = SimpleNamespace(
+        direction="LONG",
+        entry_reference=D("100"),
+        stop_loss=D("98"),
+        take_profit_1=D("104"),
+        feature_snapshot={
+            "economics_assumptions": {
+                "timeout_gross_return_rate": "-0.01",
+                "timeout_return_r": "-0.5",
+            }
+        },
+    )
+    entry = D("100.4")
+    costs = CostScenario(D("0.0011"), D("0.0003"), D("0.0015"), D("0"))
+    current_timeout_rate = signal_timeout_return_rate(
+        signal,
+        entry=entry,
+        fallback=D("-0.002"),
+    )
+
+    _, stale_ev_r, _, _ = net_rr_and_ev(
+        entry=entry,
+        stop=signal.stop_loss,
+        take_profit=signal.take_profit_1,
+        direction=signal.direction,
+        costs=costs,
+        p_tp=D("0.36"),
+        p_sl=D("0.24"),
+        p_timeout=D("0.40"),
+        timeout_return_rate=D("-0.01"),
+    )
+    _, current_ev_r, _, _ = net_rr_and_ev(
+        entry=entry,
+        stop=signal.stop_loss,
+        take_profit=signal.take_profit_1,
+        direction=signal.direction,
+        costs=costs,
+        p_tp=D("0.36"),
+        p_sl=D("0.24"),
+        p_timeout=D("0.40"),
+        timeout_return_rate=current_timeout_rate,
+    )
+
+    assert stale_ev_r > D("0.05")
+    assert current_ev_r < D("0.05")
+
+
+def test_execution_rejects_non_finite_conditional_timeout_r_even_with_valid_legacy_rate() -> None:
+    from types import SimpleNamespace
+
+    from app.services.execution import signal_timeout_return_rate
+
+    signal = SimpleNamespace(
+        direction="LONG",
+        stop_loss=D("98"),
+        take_profit_1=D("104"),
+        feature_snapshot={
+            "economics_assumptions": {
+                "timeout_gross_return_rate": "-0.01",
+                "timeout_return_r": "NaN",
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        signal_timeout_return_rate(
+            signal,
+            entry=D("100.4"),
+            fallback=D("-0.002"),
+        )
