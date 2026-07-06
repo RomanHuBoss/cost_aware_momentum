@@ -1,6 +1,6 @@
 # Traceability
 
-Состояние: release 1.34.2, 2026-07-06. Таблица дополнена timezone-stable universe snapshot hashing; promotion-bound funding semantics, automatic experiment control и PostgreSQL-native universe replay сохраняются без регрессии.
+Состояние: release 1.35.0, 2026-07-06. Таблица дополнена full-horizon counterfactual outcome attribution для candidate/live attrition; timezone-stable universe hashing, promotion-bound funding semantics, automatic experiment control и PostgreSQL-native universe replay сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
@@ -48,11 +48,19 @@
 | UNIVERSE-LEDGER-01 | Каждый committed universe refresh оставляет полный immutable decision set | `app/services/universe.py`, migration `0015_universe_eligibility` | existing universe ledger tests | Проверено unit; PostgreSQL trigger integration SKIPPED |
 | TEMPORAL-01 | Future universe observation/commit не должен влиять на прошлое решение | availability semantics `recorded_at`, no forward join | commit-availability regression | Проверено red → green |
 | FAIL-CLOSED-01 | Invalid hashes, timestamps, arrays, duplicate availability или stale gaps блокируют run | validators in `app/services/universe.py` and `app/ml/universe_replay.py` | targeted replay/ledger tests | Проверено unit |
-| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.34.2 не добавляет migration/config/API/artifact schema и меняет только timezone canonicalization immutable universe record hash plus diagnostics; release 1.34.1 funding-policy separation сохраняется | full suite + diff inspection | Реализовано |
+| ATTRITION-OUTCOME-01 | Attrition report должен связывать blocker с exact persisted outcomes, а не только считать reason codes | `build_candidate_live_attrition_report` извлекает exact IDs из instrumented jobs и bounded batches загружает `MarketSignal`, `SignalOutcome`, `PlanOutcome` | `test_database_report_loads_exact_instrumented_outcome_rows` | Проверено unit; live PostgreSQL NOT RUN |
+| ATTRITION-OUTCOME-02 | Ранний TP/SL и outcome, разрешённый после cutoff, не должны создавать temporal leakage/right-censoring bias | `_build_outcome_attribution` требует `event_time + horizon_hours <= until` и timezone-aware `resolved_at <= until`; post-cutoff rows исключаются и считаются | `test_report_excludes_early_resolved_immature_outcomes`, `test_report_excludes_outcomes_resolved_after_report_cutoff` | Проверено red → green unit |
+| ATTRITION-OUTCOME-03 | Missing mature outcomes не должны превращаться в ложную прибыльность/убыточность группы | Mature signal/plan coverage, duplicate/conflict, outcome agreement и valuation/R consistency fail closed | `test_report_blocks_missing_mature_outcome_evidence` | Проверено red → green unit |
+| ATTRITION-OUTCOME-04 | Plan filters должны быть сопоставимы с post-horizon TP/SL/TIMEOUT и sized-plan R | `live.outcome_attribution.by_plan_status/by_terminal_stage/by_primary_reason`; `VALUED` R sign/mean/median/sum | `test_report_attributes_full_horizon_outcomes_to_plan_filters` | Проверено red → green unit |
+| ATTRITION-OUTCOME-05 | Counterfactual diagnostics нельзя выдавать за реальные fills или causal effect | Schema фиксирует `actual_execution_pnl=false`, `causal_claim=false`; immature и unavailable valuations раскрываются отдельно | outcome attribution regression suite + documentation | Проверено unit/static |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.35.0 не добавляет migration/config/model-artifact changes и меняет только reporting/read paths; releases 1.34.1–1.34.2 semantics сохраняются | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка
 
+- Actual PostgreSQL execution/performance of outcome ID batch queries was not run because an isolated integration database is unavailable.
+- The report is descriptive. Dependence-aware confidence intervals, causal treatment effects and attribution of the operator's actual manual fill PnL are not implemented.
+- Plans with `NOT_SIZED`, `FUNDING_UNAVAILABLE`, `PATH_UNAVAILABLE` or `INVALID_INPUT` have no invented `counterfactual_r`; only TP/SL/TIMEOUT counts remain available when signal outcomes mature.
 - PostgreSQL integration tests, actual migration/index execution and `EXPLAIN ANALYZE` were not run because an isolated PostgreSQL URL/server is unavailable.
 - Structural row reduction and streaming are tested, but wall-clock latency and peak RSS on a production-size multi-year ledger were not profiled.
 - Evidence before the first successful 1.29.0 snapshot cannot be reconstructed and is intentionally excluded.

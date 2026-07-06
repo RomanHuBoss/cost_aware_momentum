@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.34.2, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.35.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -23,7 +23,7 @@
 | Fail-closed model activation gate | Реализовано 1.28.0 | Normal activation требует passed model quality gate и experiment promotion gate v3 с passed cost-stress evidence. Selected preregistered trial должен совпасть по version/SHA-256/horizon и deployment-policy binding v2; изменение production fees/slippage/stop-gap/EV-RR thresholds или risk/max-open-risk/margin-reserve sizing policy после evidence блокирует activation. Fresh/legacy candidate без current binding остаётся inactive. Emergency rollback требует явного flag + reason и сохраняет исходные evidence в audit. |
 | Deferred background promotion reconciliation | Реализовано 1.33.0 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. Явная operator family имеет приоритет; иначе при `AUTO_TRAIN_AUTO_EXPERIMENT=true` создаётся deterministic candidate-specific family, immutable preregistration фиксируется до первого trial и bounded configurations выполняются последовательно под advisory lock. Пока family incomplete, новый candidate не обучается. `READY` evidence всё равно обязана совпасть с exact artifact/version/horizon и persisted deployment-policy binding; terminal governance rejection, bounded retry exhaustion или authenticated exact-target operator cancellation транзакционно закрывают activation request с audit/outbox evidence. Отмена/terminal rejection завершает текущий scheduling cycle и не запускает немедленно новый candidate. |
 | Operator-visible automatic experiment control | Реализовано 1.34.0 | Fresh trainer heartbeat публикует exact family/candidate, stage, configuration, attempt и `subprocess_active`. `CANCEL_EXPERIMENT` требует exact target и CSRF/authenticated operator context. Formal subprocess запускается в isolated POSIX session/process group или Windows `CREATE_NEW_PROCESS_GROUP`; cancel/timeout/failure завершает всю доступную group/tree и сохраняет `subprocess-tree-termination-v1`. Mismatched/stale requests fail closed; pending `CHECK_NOW`/`RECOVER_NOW` не блокирует cancel; open trial закрывается append-only `FAILED`; preregistration и прошлые results не удаляются. Linux descendant runtime доказан; Windows runtime и намеренно detached POSIX `setsid()` descendants остаются непроверенными/вне group guarantee. |
-| Candidate/live recommendation attrition diagnostics | Реализовано 1.26.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. Report v2 отдельно показывает model quality и experiment-promotion attrition. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или основание ослаблять gates. |
+| Candidate/live recommendation attrition diagnostics | Реализовано prospectively; mature outcome attribution 1.35.0 | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются. Report v3 exact-join связывает instrumented `signal_id`/`plan_id` с persisted `SignalOutcome`/`PlanOutcome`, использует только full-horizon mature cohort с `resolved_at <= report.until` и показывает TP/SL/TIMEOUT, ambiguity, valuation coverage и descriptive `counterfactual_r` по initial status/stage/reason. Missing/conflicting mature evidence блокируется. История до 1.24.0 не реконструируется; это counterfactual diagnostic, не actual execution PnL, causal decomposition или основание ослаблять gates. |
 
 
 ## Work package: timezone-stable universe snapshot hashing
@@ -351,9 +351,16 @@ Release 1.24.0 добавляет prospective audit trail для ответа н
 - background trainer attempts агрегируются как training failed, quality-gate failed, activated или activation skipped;
 - quality-gate reasons группируются по model quality, temporal validation, policy economics, incumbent-relative и evidence integrity;
 - exact denominators, duplicate/conflicting records и gate/activation consistency проверяются fail-closed;
-- CLI и daily report публикуют единый `candidate-live-attrition-report-v2` с отдельными experiment-promotion causes.
+- CLI и daily report публикуют единый `candidate-live-attrition-report-v3` с отдельными experiment-promotion causes;
+- release 1.35.0 загружает только exact entity IDs из instrumented jobs и связывает их с persisted `MarketSignal`, `SignalOutcome` и `PlanOutcome`;
+- outcome comparison использует только cohort с `event_time + horizon_hours <= report.until`, поэтому ранний TP/SL не создаёт right-censoring bias;
+- point-in-time availability требует timezone-aware `resolved_at <= report.until`; более поздние rows исключаются и считаются отдельно, а не протекают в исторический отчёт;
+- TP/SL/TIMEOUT и ambiguous outcome counts агрегируются по initial plan status, terminal stage и primary reason;
+- только `VALUED` sized plans входят в descriptive `counterfactual_r`; `NOT_SIZED`/funding/path/invalid outcomes раскрываются отдельно без фиктивного R;
+- missing mature signal/plan outcome, label mismatch, invalid valuation/R pair или duplicate evidence блокируют report;
+- `actual_execution_pnl=false` и `causal_claim=false` являются явной частью schema.
 
-Ограничения: evidence накапливается только после upgrade 1.24.0; report не является causal Shapley/decomposition model, не оценивает упущенную прибыль и не меняет thresholds, active artifact или risk policy. Multi-label contributing reasons нельзя суммировать как независимые потери.
+Ограничения: evidence накапливается только после upgrade 1.24.0; report не является causal Shapley/decomposition model, не восстанавливает фактические ручные fills и не меняет thresholds, active artifact или risk policy. `counterfactual_r` profile/plan-level и доступен только для sized plans; multi-label contributing reasons нельзя суммировать как независимые потери. Confidence intervals и dependence-aware comparison между reason groups остаются отдельным work package после накопления достаточной forward history.
 
 ## Work package: critical production-drift publication interlock
 

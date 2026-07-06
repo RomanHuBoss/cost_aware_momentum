@@ -34,7 +34,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build fail-closed candidate and live recommendation attrition diagnostics"
+        description="Build fail-closed attrition and mature counterfactual outcome attribution diagnostics"
     )
     parser.add_argument("--hours", type=int, default=168)
     parser.add_argument("--output", default="reports/candidate_live_attrition.json")

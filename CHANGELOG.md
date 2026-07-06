@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.35.0 — 2026-07-06
+
+### Added
+
+- Joined prospective candidate/live attrition evidence to exact `MarketSignal`, `SignalOutcome` and `PlanOutcome` rows.
+- Added full-horizon-only TP/SL/TIMEOUT attribution by initial plan status, terminal stage and primary reason.
+- Added descriptive valued-plan `counterfactual_r` counts, sign split, mean, median and sum without presenting them as actual execution PnL or causal estimates.
+- Added fail-closed coverage checks for missing mature outcomes, conflicting labels, invalid valuation status/R pairs and incomplete plan outcome evidence.
+- Added bounded database loading and regression coverage for outcome joins, maturity censoring, point-in-time `resolved_at` cutoffs and incomplete evidence.
+
 ## 1.34.2 — 2026-07-06
 
 ### Fixed
