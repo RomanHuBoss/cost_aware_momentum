@@ -22,11 +22,14 @@ from app.services.experiment_ledger import (
 
 EXPERIMENT_PROMOTION_GATE_SCHEMA = "model-promotion-experiment-governance-v3"
 EXPERIMENT_GOVERNANCE_REPORT_SCHEMA = "experiment-selection-preregistered-governance-v4"
-EXPERIMENT_POLICY_BINDING_SCHEMA = "model-promotion-policy-binding-v1"
+EXPERIMENT_POLICY_BINDING_SCHEMA = "model-promotion-policy-binding-v2"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 EXPERIMENT_POLICY_BINDING_KEYS = (
     "entry_spread_bps",
+    "risk_rate",
+    "max_total_open_risk_rate",
+    "margin_reserve_rate",
     "research_leverage",
     "liquidation_equity_reserve_fraction",
     "round_trip_cost_bps",
@@ -47,6 +50,9 @@ _POLICY_NULLABLE_NUMERIC_KEYS = {"timeout_return_rate_override"}
 def build_experiment_policy_binding(
     *,
     entry_spread_bps: float,
+    risk_rate: float,
+    max_total_open_risk_rate: float,
+    margin_reserve_rate: float,
     research_leverage: int,
     liquidation_equity_reserve_fraction: float,
     round_trip_cost_bps: float,
@@ -57,12 +63,15 @@ def build_experiment_policy_binding(
     minimum_net_rr: float,
     minimum_net_ev_r: float,
     policy_source: str = "cost_aware_ev_r_v1",
-    portfolio_accounting: str = "horizon_sleeves_single_active_symbol_v2",
+    portfolio_accounting: str = "risk_budgeted_hourly_mark_to_market_single_active_symbol_v4",
 ) -> dict[str, Any]:
     """Return the exact policy contract whose OOS evidence can authorize deployment."""
 
     values: dict[str, Any] = {
         "entry_spread_bps": entry_spread_bps,
+        "risk_rate": risk_rate,
+        "max_total_open_risk_rate": max_total_open_risk_rate,
+        "margin_reserve_rate": margin_reserve_rate,
         "research_leverage": research_leverage,
         "liquidation_equity_reserve_fraction": liquidation_equity_reserve_fraction,
         "round_trip_cost_bps": round_trip_cost_bps,
@@ -102,17 +111,28 @@ def build_experiment_policy_binding(
             raise ValueError(f"Experiment policy binding {key} must be finite")
         if key not in {"minimum_net_ev_r", "funding_rate_override"} and numeric < 0.0:
             raise ValueError(f"Experiment policy binding {key} must be non-negative")
-        if key == "liquidation_equity_reserve_fraction" and not 0.0 <= numeric < 1.0:
-            raise ValueError(
-                "Experiment policy binding liquidation_equity_reserve_fraction must be in [0, 1)"
-            )
+        if key in {"liquidation_equity_reserve_fraction", "margin_reserve_rate"} and not 0.0 <= numeric < 1.0:
+            raise ValueError(f"Experiment policy binding {key} must be in [0, 1)")
         normalized[key] = numeric
+    if normalized["risk_rate"] <= 0.0:
+        raise ValueError("Experiment policy binding risk_rate must be positive")
+    if normalized["max_total_open_risk_rate"] <= 0.0:
+        raise ValueError(
+            "Experiment policy binding max_total_open_risk_rate must be positive"
+        )
+    if normalized["risk_rate"] > normalized["max_total_open_risk_rate"]:
+        raise ValueError(
+            "Experiment policy binding risk_rate cannot exceed max_total_open_risk_rate"
+        )
     return json_compatible(normalized)
 
 
 def experiment_policy_binding_from_settings(settings: Settings) -> dict[str, Any]:
     return build_experiment_policy_binding(
         entry_spread_bps=settings.model_entry_spread_bps,
+        risk_rate=settings.default_risk_rate,
+        max_total_open_risk_rate=settings.max_total_open_risk_rate,
+        margin_reserve_rate=settings.margin_reserve_rate,
         research_leverage=settings.default_leverage,
         liquidation_equity_reserve_fraction=DEFAULT_EQUITY_RESERVE_FRACTION,
         round_trip_cost_bps=settings.fee_rate_taker * 2.0 * 10000.0,

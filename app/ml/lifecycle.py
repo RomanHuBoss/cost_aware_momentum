@@ -168,6 +168,9 @@ def policy_evaluation_config(settings: Settings) -> PolicyEvaluationConfig:
         bootstrap_samples=settings.auto_train_policy_bootstrap_samples,
         confidence_level=settings.auto_train_policy_confidence_level,
         research_leverage=settings.default_leverage,
+        risk_rate=settings.default_risk_rate,
+        max_total_open_risk_rate=settings.max_total_open_risk_rate,
+        margin_reserve_rate=settings.margin_reserve_rate,
         liquidation_equity_reserve_fraction=DEFAULT_EQUITY_RESERVE_FRACTION,
         require_intrahorizon_margin=True,
     )
@@ -775,6 +778,9 @@ def build_model_candidate(
         metrics.update(evaluate_policy_model(model, split, policy_config, horizon_hours=horizon))
         metrics["promotion_policy_binding"] = build_experiment_policy_binding(
             entry_spread_bps=entry_spread_bps,
+            risk_rate=policy_config.risk_rate,
+            max_total_open_risk_rate=policy_config.max_total_open_risk_rate,
+            margin_reserve_rate=policy_config.margin_reserve_rate,
             research_leverage=policy_config.research_leverage,
             liquidation_equity_reserve_fraction=(
                 policy_config.liquidation_equity_reserve_fraction

@@ -307,6 +307,9 @@ class PolicyEvaluationConfig:
     bootstrap_samples: int = 2000
     confidence_level: float = 0.95
     research_leverage: int = 3
+    risk_rate: float = 0.0035
+    max_total_open_risk_rate: float = 0.02
+    margin_reserve_rate: float = 0.20
     liquidation_equity_reserve_fraction: float = DEFAULT_EQUITY_RESERVE_FRACTION
     require_intrahorizon_margin: bool = False
 

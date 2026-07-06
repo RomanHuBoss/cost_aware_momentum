@@ -125,7 +125,12 @@ def _simulate_capital_sleeves_evidence(
     period_grid: pd.DatetimeIndex | None = None,
     cumulative_path_column: str | None = "intrahorizon_net_return_path",
 ) -> dict[str, object]:
-    """Compound horizon sleeves over cumulative hourly mark-to-market paths."""
+    """Replay the legacy equal-notional horizon-sleeve contract for regression tests.
+
+    Production experiment evidence must use
+    :func:`_simulate_risk_budgeted_portfolio_evidence`.  This helper remains only
+    to prove that the previous accounting can disagree with live risk sizing.
+    """
 
     if horizon_hours <= 0:
         raise ValueError("horizon_hours must be positive")
@@ -249,23 +254,314 @@ def _simulate_capital_sleeves_evidence(
     }
 
 
-def _simulate_capital_sleeves(
+
+def _simulate_risk_budgeted_portfolio_evidence(
     trades: pd.DataFrame,
     *,
     return_column: str,
-    horizon_hours: int,
-) -> tuple[float, float, int]:
-    evidence = _simulate_capital_sleeves_evidence(
-        trades,
-        return_column=return_column,
-        horizon_hours=horizon_hours,
-        cumulative_path_column=None,
+    risk_rate: float,
+    max_total_open_risk_rate: float,
+    research_leverage: int,
+    margin_reserve_rate: float,
+    period_grid: pd.DatetimeIndex | None = None,
+    cumulative_path_column: str | None = "intrahorizon_net_return_path",
+) -> dict[str, object]:
+    """Replay portfolio equity with the same risk and margin caps as live sizing.
+
+    Every simultaneous decision cohort receives equal *stress-risk* budgets, not
+    equal notionals.  Existing positions reserve their entry-time stress loss
+    until modeled exit; new cohorts are scaled proportionally to the remaining
+    aggregate risk and isolated-margin capacity.  This is intentionally
+    deterministic because historical operator ordering is unavailable.
+    """
+
+    per_trade_risk = _finite_nonnegative(risk_rate, "risk_rate")
+    total_risk_cap = _finite_nonnegative(
+        max_total_open_risk_rate,
+        "max_total_open_risk_rate",
     )
-    return (
-        float(evidence["net_return"]),
-        float(evidence["max_drawdown"]),
-        int(evidence["portfolio_periods"]),
+    reserve_rate = _finite_nonnegative(margin_reserve_rate, "margin_reserve_rate")
+    if per_trade_risk <= 0.0:
+        raise ValueError("risk_rate must be positive")
+    if total_risk_cap <= 0.0:
+        raise ValueError("max_total_open_risk_rate must be positive")
+    if per_trade_risk > total_risk_cap:
+        raise ValueError("risk_rate cannot exceed max_total_open_risk_rate")
+    if reserve_rate >= 1.0:
+        raise ValueError("margin_reserve_rate must be below one")
+    if isinstance(research_leverage, bool) or not isinstance(
+        research_leverage,
+        (int, np.integer),
+    ):
+        raise TypeError("research_leverage must be an integer")
+    leverage = int(research_leverage)
+    if leverage <= 0:
+        raise ValueError("research_leverage must be positive")
+
+    supplied_grid = pd.DatetimeIndex([]) if period_grid is None else pd.DatetimeIndex(period_grid)
+    if supplied_grid.hasnans or not supplied_grid.is_monotonic_increasing or not supplied_grid.is_unique:
+        raise ValueError("Experiment period grid must be valid, unique and chronological")
+
+    if trades.empty:
+        return {
+            "net_return": 0.0,
+            "max_drawdown": 0.0,
+            "portfolio_periods": 0,
+            "period_returns": [
+                {"timestamp": pd.Timestamp(item).isoformat(), "return": 0.0}
+                for item in supplied_grid
+            ],
+            "allocated_trades": 0,
+            "risk_limited_trades": 0,
+            "margin_limited_trades": 0,
+            "blocked_trades": 0,
+            "max_reserved_risk_rate": 0.0,
+            "max_margin_utilization_rate": 0.0,
+            "allocations": [],
+        }
+
+    required = {"decision_time", "exit_time", "stress_downside_rate", return_column}
+    missing = sorted(required - set(trades.columns))
+    if missing:
+        raise ValueError(f"Risk-budgeted portfolio accounting is missing columns: {missing}")
+    use_cumulative_path = (
+        cumulative_path_column is not None and cumulative_path_column in trades.columns
     )
+    if use_cumulative_path and trades[cumulative_path_column].isna().any():
+        raise ValueError(f"{cumulative_path_column} contains missing paths")
+
+    prepared: list[dict[str, object]] = []
+    event_timestamps: set[pd.Timestamp] = set()
+    for trade_id, (_, row) in enumerate(trades.reset_index(drop=True).iterrows()):
+        decision = pd.to_datetime(row["decision_time"], utc=True, errors="coerce")
+        exit_time = pd.to_datetime(row["exit_time"], utc=True, errors="coerce")
+        if pd.isna(decision) or pd.isna(exit_time):
+            raise ValueError("Risk-budgeted portfolio accounting requires valid timestamps")
+        decision_timestamp = pd.Timestamp(decision)
+        exit_timestamp = pd.Timestamp(exit_time)
+        if exit_timestamp < decision_timestamp:
+            raise ValueError("Trade exit_time cannot precede decision_time")
+        downside = float(pd.to_numeric(row["stress_downside_rate"], errors="coerce"))
+        terminal_return = float(pd.to_numeric(row[return_column], errors="coerce"))
+        if not math.isfinite(downside) or downside <= 0.0:
+            raise ValueError("stress_downside_rate must be finite and positive")
+        if not math.isfinite(terminal_return) or terminal_return <= -1.0:
+            raise ValueError(f"{return_column} must be finite and above -100%")
+
+        deltas: dict[pd.Timestamp, float] = {}
+        if use_cumulative_path:
+            raw_path = row[cumulative_path_column]
+            if not isinstance(raw_path, list) or not raw_path:
+                raise ValueError(f"{cumulative_path_column} must contain non-empty lists")
+            previous_cumulative_return = 0.0
+            path_timestamps: list[pd.Timestamp] = []
+            for item in raw_path:
+                if not isinstance(item, dict) or set(item) != {"timestamp", "return"}:
+                    raise ValueError(f"{cumulative_path_column} record is invalid")
+                timestamp = pd.to_datetime(item["timestamp"], utc=True, errors="coerce")
+                cumulative_return = pd.to_numeric(item["return"], errors="coerce")
+                if pd.isna(timestamp) or pd.isna(cumulative_return):
+                    raise ValueError(f"{cumulative_path_column} record is invalid")
+                point = pd.Timestamp(timestamp)
+                value = float(cumulative_return)
+                if not math.isfinite(value):
+                    raise ValueError(f"{cumulative_path_column} returns must be finite")
+                path_timestamps.append(point)
+                deltas[point] = value - previous_cumulative_return
+                previous_cumulative_return = value
+            if path_timestamps != sorted(set(path_timestamps)):
+                raise ValueError(
+                    f"{cumulative_path_column} timestamps must be unique and chronological"
+                )
+            if path_timestamps[0] != decision_timestamp or path_timestamps[-1] != exit_timestamp:
+                raise ValueError(
+                    f"{cumulative_path_column} must span decision_time through exit_time"
+                )
+            if not math.isclose(
+                previous_cumulative_return,
+                terminal_return,
+                rel_tol=1e-10,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(f"{cumulative_path_column} does not reconcile to {return_column}")
+        else:
+            deltas[exit_timestamp] = terminal_return
+
+        event_timestamps.update(deltas)
+        event_timestamps.add(decision_timestamp)
+        event_timestamps.add(exit_timestamp)
+        prepared.append(
+            {
+                "trade_id": trade_id,
+                "decision_time": decision_timestamp,
+                "exit_time": exit_timestamp,
+                "downside": downside,
+                "deltas": deltas,
+            }
+        )
+
+    if period_grid is None:
+        grid = pd.DatetimeIndex(sorted(event_timestamps))
+    else:
+        grid = supplied_grid
+        outside = pd.DatetimeIndex(sorted(event_timestamps)).difference(grid)
+        if len(outside):
+            raise ValueError("Risk-budgeted PnL events fall outside the experiment period grid")
+
+    entries: dict[pd.Timestamp, list[dict[str, object]]] = {}
+    for trade in prepared:
+        entries.setdefault(trade["decision_time"], []).append(trade)  # type: ignore[arg-type]
+
+    active: dict[int, dict[str, object]] = {}
+    current_equity = 1.0
+    peak_equity = 1.0
+    maximum_drawdown = 0.0
+    event_periods = 0
+    period_returns: list[dict[str, object]] = []
+    allocations: list[dict[str, object]] = []
+    allocated_trades = 0
+    risk_limited_trades = 0
+    margin_limited_trades = 0
+    blocked_trades = 0
+    max_reserved_risk_rate = 0.0
+    max_margin_utilization_rate = 0.0
+
+    for timestamp in grid:
+        point = pd.Timestamp(timestamp)
+        equity_before = current_equity
+        pnl = 0.0
+        had_event = False
+
+        for record in tuple(active.values()):
+            delta = record["deltas"].get(point)  # type: ignore[union-attr]
+            if delta is not None:
+                had_event = True
+                pnl += float(record["notional"]) * float(delta)
+
+        provisional_equity = equity_before + pnl
+        if not math.isfinite(provisional_equity) or provisional_equity <= 0.0:
+            raise ValueError("Risk-budgeted portfolio equity was exhausted before new entries")
+
+        for trade_id, record in tuple(active.items()):
+            if record["exit_time"] == point:
+                del active[trade_id]
+
+        cohort = entries.get(point, [])
+        if cohort:
+            active_risk = float(sum(float(item["risk_reserve"]) for item in active.values()))
+            active_notional = float(sum(float(item["notional"]) for item in active.values()))
+            available_risk = max(0.0, provisional_equity * total_risk_cap - active_risk)
+            available_notional = max(
+                0.0,
+                provisional_equity * (1.0 - reserve_rate) * leverage - active_notional,
+            )
+            desired_risk = provisional_equity * per_trade_risk
+            desired_total_risk = desired_risk * len(cohort)
+            desired_notionals = [desired_risk / float(item["downside"]) for item in cohort]
+            desired_total_notional = float(sum(desired_notionals))
+            risk_scale = (
+                min(1.0, available_risk / desired_total_risk)
+                if desired_total_risk > 0.0
+                else 0.0
+            )
+            margin_scale = (
+                min(1.0, available_notional / desired_total_notional)
+                if desired_total_notional > 0.0
+                else 0.0
+            )
+            scale = min(risk_scale, margin_scale)
+            risk_constrained = risk_scale < 1.0 - 1e-12
+            margin_constrained = margin_scale < 1.0 - 1e-12
+
+            for trade, desired_notional in zip(cohort, desired_notionals, strict=True):
+                allocated_notional = desired_notional * scale
+                allocated_risk = desired_risk * scale
+                limiting_cap = None
+                if scale <= 1e-15:
+                    blocked_trades += 1
+                    limiting_cap = "RISK" if risk_scale <= margin_scale else "MARGIN"
+                else:
+                    allocated_trades += 1
+                    if risk_constrained:
+                        risk_limited_trades += 1
+                    if margin_constrained:
+                        margin_limited_trades += 1
+                    if risk_constrained or margin_constrained:
+                        limiting_cap = "RISK" if risk_scale <= margin_scale else "MARGIN"
+                    record = {
+                        **trade,
+                        "notional": allocated_notional,
+                        "risk_reserve": allocated_risk,
+                    }
+                    active[int(trade["trade_id"])] = record
+                    decision_delta = record["deltas"].get(point)  # type: ignore[union-attr]
+                    if decision_delta is not None:
+                        had_event = True
+                        pnl += allocated_notional * float(decision_delta)
+
+                allocations.append(
+                    {
+                        "trade_id": int(trade["trade_id"]),
+                        "decision_time": point.isoformat(),
+                        "desired_risk": desired_risk,
+                        "allocated_risk": allocated_risk,
+                        "allocated_notional": allocated_notional,
+                        "scale": scale,
+                        "limiting_cap": limiting_cap,
+                    }
+                )
+
+            active_risk_after = float(
+                sum(float(item["risk_reserve"]) for item in active.values())
+            )
+            active_notional_after = float(
+                sum(float(item["notional"]) for item in active.values())
+            )
+            max_reserved_risk_rate = max(
+                max_reserved_risk_rate,
+                active_risk_after / provisional_equity,
+            )
+            margin_capacity = provisional_equity * (1.0 - reserve_rate) * leverage
+            if margin_capacity > 0.0:
+                max_margin_utilization_rate = max(
+                    max_margin_utilization_rate,
+                    active_notional_after / margin_capacity,
+                )
+
+            for trade_id, record in tuple(active.items()):
+                if record["exit_time"] == point:
+                    del active[trade_id]
+
+        current_equity = equity_before + pnl
+        if not math.isfinite(current_equity) or current_equity <= 0.0:
+            raise ValueError("Risk-budgeted portfolio period return is at or below -100%")
+        period_return = pnl / equity_before
+        if not math.isfinite(period_return) or period_return <= -1.0:
+            raise ValueError("Risk-budgeted experiment period return is invalid")
+        peak_equity = max(peak_equity, current_equity)
+        maximum_drawdown = min(maximum_drawdown, current_equity / peak_equity - 1.0)
+        if had_event:
+            event_periods += 1
+        period_returns.append({"timestamp": point.isoformat(), "return": period_return})
+
+    if active:
+        raise ValueError("Experiment period grid ended before all risk reservations were released")
+    compounded = float(np.prod(1.0 + np.asarray([item["return"] for item in period_returns])))
+    if not math.isclose(compounded, current_equity, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError("Risk-budgeted period returns do not reconcile to portfolio equity")
+    return {
+        "net_return": current_equity - 1.0,
+        "max_drawdown": maximum_drawdown,
+        "portfolio_periods": event_periods,
+        "period_returns": period_returns,
+        "allocated_trades": allocated_trades,
+        "risk_limited_trades": risk_limited_trades,
+        "margin_limited_trades": margin_limited_trades,
+        "blocked_trades": blocked_trades,
+        "max_reserved_risk_rate": max_reserved_risk_rate,
+        "max_margin_utilization_rate": max_margin_utilization_rate,
+        "allocations": allocations,
+    }
 
 
 def _active_trade_statistics(trades: pd.DataFrame) -> tuple[int, float]:
@@ -311,6 +607,9 @@ def policy_backtest(
     minimum_net_ev_r: float | None = None,
     minimum_predicted_edge: float | None = None,
     research_leverage: int = 3,
+    risk_rate: float = 0.0035,
+    max_total_open_risk_rate: float = 0.02,
+    margin_reserve_rate: float = 0.20,
     liquidation_equity_reserve_fraction: float = 0.10,
     require_intrahorizon_margin: bool = False,
     include_experiment_evidence: bool = False,
@@ -599,19 +898,25 @@ def policy_backtest(
         chosen,
         horizon_hours=horizon_hours,
     )
-    portfolio_evidence = _simulate_capital_sleeves_evidence(
+    portfolio_evidence = _simulate_risk_budgeted_portfolio_evidence(
         traded,
         return_column="net_return",
-        horizon_hours=horizon_hours,
+        risk_rate=risk_rate,
+        max_total_open_risk_rate=max_total_open_risk_rate,
+        research_leverage=research_leverage,
+        margin_reserve_rate=margin_reserve_rate,
         period_grid=period_grid,
     )
     stress_evidence: dict[str, dict[str, object]] = {}
     for scenario_name, (multiplier, return_column) in stress_columns.items():
         path_column = f"intrahorizon_{scenario_name}_cost_stress_return_path"
-        scenario_evidence = _simulate_capital_sleeves_evidence(
+        scenario_evidence = _simulate_risk_budgeted_portfolio_evidence(
             traded,
             return_column=return_column,
-            horizon_hours=horizon_hours,
+            risk_rate=risk_rate,
+            max_total_open_risk_rate=max_total_open_risk_rate,
+            research_leverage=research_leverage,
+            margin_reserve_rate=margin_reserve_rate,
             period_grid=period_grid,
             cumulative_path_column=path_column,
         )
@@ -624,11 +929,16 @@ def policy_backtest(
     net_return = float(portfolio_evidence["net_return"])
     max_drawdown = float(portfolio_evidence["max_drawdown"])
     portfolio_periods = int(portfolio_evidence["portfolio_periods"])
-    stress_return_with_stop_reserve, _, _ = _simulate_capital_sleeves(
+    stop_reserve_evidence = _simulate_risk_budgeted_portfolio_evidence(
         traded,
         return_column="stress_net_return_with_stop_reserve",
-        horizon_hours=horizon_hours,
+        risk_rate=risk_rate,
+        max_total_open_risk_rate=max_total_open_risk_rate,
+        research_leverage=research_leverage,
+        margin_reserve_rate=margin_reserve_rate,
+        cumulative_path_column=None,
     )
+    stress_return_with_stop_reserve = float(stop_reserve_evidence["net_return"])
     max_concurrent_trades, mean_concurrent_trades = _active_trade_statistics(traded)
 
     result = {
@@ -647,6 +957,20 @@ def policy_backtest(
         "portfolio_periods": portfolio_periods,
         "portfolio_cohorts": int(traded["decision_time"].nunique()),
         "capital_sleeves": horizon_hours,
+        "portfolio_accounting": (
+            "risk_budgeted_hourly_mark_to_market_single_active_symbol_v4"
+        ),
+        "risk_rate": float(risk_rate),
+        "max_total_open_risk_rate": float(max_total_open_risk_rate),
+        "margin_reserve_rate": float(margin_reserve_rate),
+        "risk_allocated_trades": int(portfolio_evidence["allocated_trades"]),
+        "risk_limited_trades": int(portfolio_evidence["risk_limited_trades"]),
+        "margin_limited_trades": int(portfolio_evidence["margin_limited_trades"]),
+        "risk_blocked_trades": int(portfolio_evidence["blocked_trades"]),
+        "max_reserved_risk_rate": float(portfolio_evidence["max_reserved_risk_rate"]),
+        "max_margin_utilization_rate": float(
+            portfolio_evidence["max_margin_utilization_rate"]
+        ),
         "max_concurrent_trades": max_concurrent_trades,
         "mean_concurrent_trades": mean_concurrent_trades,
         "cost_bps": round_trip_cost_bps,
@@ -703,8 +1027,9 @@ def policy_backtest(
         ),
         "warning": (
             "Barrier-policy research backtest with conservative hourly ambiguity and "
-            "non-overlapping horizon capital sleeves and the live one-active-plan-per-symbol "
-            "constraint. Capital drawdown and experiment returns include cumulative hourly "
+            "the live one-active-plan-per-symbol constraint and deterministic equal-risk "
+            "allocation under aggregate open-risk and margin caps. Capital drawdown and "
+            "experiment returns include cumulative hourly "
             "mark-close MTM, entry fee/slippage at decision time, terminal exit fees and "
             "historical funding under a "
             "conservative isolated-margin proxy; exact historical risk tiers, sub-hour mark "
@@ -835,6 +1160,9 @@ async def run(args) -> None:
             "label_path_schema_version": bundle.get("label_path_schema_version"),
             "temporal_split_schema": bundle.get("temporal_split_schema"),
             "entry_spread_bps": runtime.entry_spread_bps,
+            "risk_rate": settings.default_risk_rate,
+            "max_total_open_risk_rate": settings.max_total_open_risk_rate,
+            "margin_reserve_rate": settings.margin_reserve_rate,
             "intrahorizon_margin_schema": bundle.get("intrahorizon_margin_schema"),
             "research_leverage": runtime.research_leverage,
             "liquidation_equity_reserve_fraction": runtime.liquidation_equity_reserve_fraction,
@@ -848,7 +1176,7 @@ async def run(args) -> None:
             "minimum_net_ev_r": minimum_net_ev_r,
             "policy_source": "cost_aware_ev_r_v1",
             "portfolio_accounting": (
-                "horizon_sleeves_hourly_mark_to_market_single_active_symbol_v3"
+                "risk_budgeted_hourly_mark_to_market_single_active_symbol_v4"
             ),
             "intrahorizon_mark_to_market_schema": (
                 INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
@@ -922,6 +1250,9 @@ async def run(args) -> None:
             minimum_net_ev_r=minimum_net_ev_r,
             horizon_hours=horizon,
             research_leverage=runtime.research_leverage,
+            risk_rate=settings.default_risk_rate,
+            max_total_open_risk_rate=settings.max_total_open_risk_rate,
+            margin_reserve_rate=settings.margin_reserve_rate,
             liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
             require_intrahorizon_margin=True,
             include_experiment_evidence=True,

@@ -10,6 +10,10 @@ import pytest
 
 from app.ml.mtm import INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
 from app.ml.training import MODEL_FEATURE_NAMES, OUTCOME_CLASSES, DatasetSplit
+from app.research.overfitting import (
+    EXPERIMENT_COST_STRESS_SCHEMA_VERSION,
+    EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION,
+)
 from app.services.experiment_ledger import _trial_evidence_from_success
 from scripts.backtest import policy_backtest
 
@@ -136,9 +140,13 @@ def test_experiment_net_path_recognizes_entry_costs_before_exit() -> None:
     ]
     # 10 bps entry fee + 10 bps conservative slippage are recognized at decision.
     # The 11 bps exit fee on the 1.10 exit-notional ratio is recognized at exit.
-    assert returns[0] == pytest.approx(-0.002)
-    assert returns[1] == pytest.approx(0.0989 / 0.998)
-    assert metrics["net_return"] == pytest.approx(0.0969)
+    stress_downside = 0.05 + 0.001 * (1.0 + 0.95) + 0.001
+    notional = 0.0035 / stress_downside
+    entry_pnl = notional * -0.002
+    exit_pnl = notional * 0.0989
+    assert returns[0] == pytest.approx(entry_pnl)
+    assert returns[1] == pytest.approx(exit_pnl / (1.0 + entry_pnl))
+    assert metrics["net_return"] == pytest.approx(notional * 0.0969)
 
 
 def test_legacy_synthetic_calendar_return_schema_is_rejected() -> None:
@@ -244,12 +252,12 @@ def test_experiment_evidence_carries_aligned_cost_stress_paths() -> None:
 
     evidence = metrics["experiment_evidence"]
     stress = evidence["cost_stress"]
-    assert stress["schema"] == "hourly-mark-to-market-cost-stress-v1"
+    assert stress["schema"] == EXPERIMENT_COST_STRESS_SCHEMA_VERSION
     assert set(stress["scenarios"]) == {"x1_5", "x2"}
-    assert metrics["stress_net_return_cost_x1_5"] == pytest.approx(0.09535)
-    assert metrics["stress_net_return_cost_x2"] == pytest.approx(0.0938)
-    assert stress["scenarios"]["x1_5"]["period_returns"][0]["return"] == pytest.approx(-0.003)
-    assert stress["scenarios"]["x2"]["period_returns"][0]["return"] == pytest.approx(-0.004)
+    assert metrics["stress_net_return_cost_x1_5"] == pytest.approx(0.006302644003777003)
+    assert metrics["stress_net_return_cost_x2"] == pytest.approx(0.006200188857412581)
+    assert stress["scenarios"]["x1_5"]["period_returns"][0]["return"] == pytest.approx(-0.00019830028328611895)
+    assert stress["scenarios"]["x2"]["period_returns"][0]["return"] == pytest.approx(-0.00026440037771482527)
     nominal_timestamps = [row["timestamp"] for row in evidence["period_returns"]]
     for scenario_name, expected_total in (
         ("x1_5", metrics["stress_net_return_cost_x1_5"]),
@@ -271,9 +279,7 @@ def test_success_event_without_cost_stress_evidence_is_rejected() -> None:
         trial_id="11111111-1111-1111-1111-111111111111",
         configuration_hash="a" * 64,
         evidence={
-            "period_return_schema": (
-                "observed-opportunity-covered-hourly-mark-to-market-capital-return-path-v3"
-            ),
+            "period_return_schema": EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION,
             "period_returns": [
                 {"timestamp": start.isoformat(), "return": 0.0},
                 {"timestamp": (start + timedelta(hours=1)).isoformat(), "return": 0.01},

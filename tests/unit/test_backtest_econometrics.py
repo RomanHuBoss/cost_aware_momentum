@@ -116,7 +116,7 @@ def test_backtest_drawdown_includes_first_period_loss() -> None:
 
     metrics = _run(FixedEdgeModel(), meta)
 
-    assert metrics["max_drawdown"] == pytest.approx(-0.10)
+    assert metrics["max_drawdown"] == pytest.approx(-0.0035 / 0.05 * 0.10)
 
 
 def test_backtest_blocks_overlapping_positions_for_the_same_symbol() -> None:
@@ -154,7 +154,7 @@ def test_backtest_blocks_overlapping_positions_for_the_same_symbol() -> None:
     # The second hourly BTC candidate must therefore be blocked until the first exits.
     assert metrics["trades"] == 1
     assert metrics["overlap_blocked_trades"] == 1
-    assert metrics["net_return"] == pytest.approx(0.05)
+    assert metrics["net_return"] == pytest.approx(0.0035 / 0.05 * 0.10)
     assert metrics["capital_sleeves"] == 2
     assert metrics["max_concurrent_trades"] == 1
 
@@ -192,7 +192,7 @@ def test_direction_is_selected_by_ev_r_not_raw_expected_rate() -> None:
 
     # LONG has the larger raw expected rate (3% vs 2%), but SHORT has the larger
     # EV/R (1.0 vs 0.3) and therefore matches the deployed policy.
-    assert metrics["net_return"] == pytest.approx(0.02)
+    assert metrics["net_return"] == pytest.approx(0.0035 / 0.02 * 0.02)
     assert metrics["win_rate"] == pytest.approx(1.0)
 
 
@@ -218,7 +218,8 @@ def test_exit_fee_is_charged_on_actual_exit_notional() -> None:
 
     # 1% round trip means two 0.5% legs: 0.5% * (entry 1.0 + exit 1.1) = 1.05%.
     assert metrics["mean_net_return_per_trade"] == pytest.approx(0.0895)
-    assert metrics["net_return"] == pytest.approx(0.0895)
+    stress_downside = 0.05 + 0.005 * (1.0 + 0.95)
+    assert metrics["net_return"] == pytest.approx(0.0035 / stress_downside * 0.0895)
 
 
 def test_backtest_allows_same_symbol_reentry_at_modeled_exit_boundary() -> None:

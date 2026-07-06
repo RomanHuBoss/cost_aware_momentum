@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.27.0: подтверждённый `CRITICAL` production drift теперь ставит точную активную model version на сохраняемую между рестартами карантинную блокировку. Worker проверяет drift до новой часовой публикации, новые signals не создаются, execution plans становятся `NO_TRADE`, а ранее рассчитанный actionable plan нельзя принять; снять блокировку можно только активацией другой проверенной model version.
+> Версия 1.28.0: formal experiment/backtest capital path теперь использует ту же базовую семантику размера, что и execution plan: одинаковый stress-risk budget на сделку, общий лимит открытого риска, leverage и margin reserve. Equal-notional horizon sleeves больше не могут выбирать модель по экономике, отличающейся от production sizing; старые experiment-family paths и policy binding требуют пересчёта.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

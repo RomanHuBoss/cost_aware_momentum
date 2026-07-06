@@ -22,7 +22,7 @@ MODEL_SHA256 = "b" * 64
 
 def _passed_cost_stress() -> dict[str, object]:
     return {
-        "schema": "hourly-mark-to-market-cost-stress-v1",
+        "schema": "risk-budgeted-hourly-mark-to-market-cost-stress-v2",
         "minimum_terminal_return": 0.0,
         "scenarios": {
             "x1_5": {
@@ -59,6 +59,9 @@ class _Session:
 def _policy_values() -> dict[str, object]:
     return {
         "entry_spread_bps": 18.0,
+        "risk_rate": 0.0035,
+        "max_total_open_risk_rate": 0.02,
+        "margin_reserve_rate": 0.20,
         "research_leverage": 3,
         "liquidation_equity_reserve_fraction": 0.10,
         "round_trip_cost_bps": 11.0,
@@ -69,7 +72,7 @@ def _policy_values() -> dict[str, object]:
         "minimum_net_rr": 1.2,
         "minimum_net_ev_r": 0.05,
         "policy_source": "cost_aware_ev_r_v1",
-        "portfolio_accounting": "horizon_sleeves_single_active_symbol_v2",
+        "portfolio_accounting": "risk_budgeted_hourly_mark_to_market_single_active_symbol_v4",
     }
 
 
@@ -227,4 +230,20 @@ def test_activation_rejects_legacy_gate_without_policy_binding() -> None:
             expected_model_sha256=MODEL_SHA256,
             expected_horizon_hours=8,
             expected_policy_binding=_policy_binding(),
+        )
+
+
+def test_activation_rejects_gate_after_risk_budget_policy_changes() -> None:
+    original = _policy_binding()
+    changed = build_experiment_policy_binding(
+        **{**_policy_values(), "risk_rate": 0.0040}
+    )
+
+    with pytest.raises(RuntimeError, match="deployment policy mismatch"):
+        require_passed_experiment_promotion_gate(
+            _passed_gate(original),
+            expected_model_version="candidate-v1",
+            expected_model_sha256=MODEL_SHA256,
+            expected_horizon_hours=8,
+            expected_policy_binding=changed,
         )

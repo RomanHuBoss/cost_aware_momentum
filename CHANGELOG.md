@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.28.0 — 2026-07-06
+
+### Fixed
+
+- Formal experiment/backtest portfolio returns no longer allocate equal notional across simultaneous trades or fixed horizon sleeves while production sizes each plan by stress risk.
+- New deterministic accounting allocates equal per-trade stress-risk budgets, preserves open risk until modeled exit, and proportionally scales each simultaneous cohort to remaining `MAX_TOTAL_OPEN_RISK_RATE` and leverage/margin-reserve capacity.
+- Hourly nominal and mandatory ×1.5/×2 cost-stress paths use the same risk-budgeted allocation and continue to recognize intrahorizon mark-to-market, funding and terminal costs on observed periods only.
+- Experiment evidence exposes risk-, margin- and blocked-allocation counts plus maximum reserved-risk and margin-utilization rates.
+- Model promotion policy binding now includes `DEFAULT_RISK_RATE`, `MAX_TOTAL_OPEN_RISK_RATE` and `MARGIN_RESERVE_RATE`, preventing experiment evidence generated for a different sizing policy from authorizing activation.
+- Experiment return-path, cost-stress and promotion-policy-binding schemas were raised to risk-budgeted v4/v2/v2 contracts.
+
+### Compatibility
+
+- No database migration, public HTTP API change, `.env` addition, model feature/label/runtime artifact change or recommendation threshold change.
+- Already active artifacts remain runnable. Inactive candidates with policy-binding v1 and experiment families with equal-notional v3 paths must be retrained/rerun before normal promotion.
+- The accounting remains a research approximation: historical instrument minimums, exact depth/partial fills, operator ordering and profile-specific capital selection are not reconstructed.
+
+### Verification
+
+- Clean isolated baseline: 636 passed, 4 skipped, 62 warnings.
+- Red evidence: the new regression module failed collection because risk-budgeted accounting did not exist; the synthetic equal-notional path produced −1.5% while live-style equal-risk sizing produces +0.525%.
+- Post-change suite: 641 passed, 4 skipped, 62 warnings.
+
 ## 1.27.0 — 2026-07-06
 
 ### Fixed

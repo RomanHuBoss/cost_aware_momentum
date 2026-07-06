@@ -21,7 +21,7 @@ TRIAL_ID = UUID("11111111-1111-1111-1111-111111111111")
 
 def _passed_cost_stress() -> dict[str, object]:
     return {
-        "schema": "hourly-mark-to-market-cost-stress-v1",
+        "schema": "risk-budgeted-hourly-mark-to-market-cost-stress-v2",
         "minimum_terminal_return": 0.0,
         "scenarios": {
             "x1_5": {

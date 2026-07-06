@@ -91,8 +91,8 @@ def test_backtest_realized_return_does_not_book_unused_gap_reserve_as_cash_loss(
         horizon_hours=1,
     )
 
-    assert metrics["net_return"] == pytest.approx(-0.10)
-    assert metrics["stress_net_return_with_stop_gap_reserve"] == pytest.approx(-0.11)
+    assert metrics["net_return"] == pytest.approx(0.0035 / 0.11 * -0.10)
+    assert metrics["stress_net_return_with_stop_gap_reserve"] == pytest.approx(-0.0035)
 
 
 def test_horizon_uncertainty_partitions_all_hourly_phases_without_anchor_bias() -> None:

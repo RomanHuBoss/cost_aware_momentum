@@ -16,9 +16,9 @@ PBO_SCHEMA_VERSION = "cscv-pbo-contiguous-segments-v1"
 DSR_SCHEMA_VERSION = "deflated-sharpe-bailey-lopez-de-prado-hac-effective-n-v2"
 EXPERIMENT_REPORT_SCHEMA_VERSION = "experiment-selection-dependence-governance-v3"
 EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION = (
-    "observed-opportunity-covered-hourly-mark-to-market-capital-return-path-v3"
+    "observed-opportunity-covered-risk-budgeted-hourly-mark-to-market-capital-return-path-v4"
 )
-EXPERIMENT_COST_STRESS_SCHEMA_VERSION = "hourly-mark-to-market-cost-stress-v1"
+EXPERIMENT_COST_STRESS_SCHEMA_VERSION = "risk-budgeted-hourly-mark-to-market-cost-stress-v2"
 EXPERIMENT_MIN_COST_STRESS_TERMINAL_RETURN = 0.0
 
 

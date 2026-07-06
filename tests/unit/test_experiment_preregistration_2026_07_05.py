@@ -27,7 +27,7 @@ def _configuration() -> dict[str, object]:
         "minimum_net_rr": 1.2,
         "minimum_net_ev_r": 0.05,
         "policy_source": "cost_aware_ev_r_v1",
-        "portfolio_accounting": "horizon_sleeves_single_active_symbol_v2",
+        "portfolio_accounting": "risk_budgeted_hourly_mark_to_market_single_active_symbol_v4",
     }
 
 

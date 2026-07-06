@@ -269,7 +269,7 @@ def test_backtest_does_not_double_count_gap_already_in_realized_return() -> None
     )
 
     assert metrics["trades"] == 1
-    assert metrics["net_return"] == pytest.approx(-0.04)
+    assert metrics["net_return"] == pytest.approx(0.0035 / 0.03 * -0.04)
     assert metrics["mean_net_return_per_trade"] == pytest.approx(-0.04)
 
 
