@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.35.4, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.35.5, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -512,3 +512,21 @@ Implemented:
 These changes prevent future-dated records from masking older fresh state. They do not widen freshness windows, synthesize missing data, change model features/labels, relax candidate promotion, lower EV/RR requirements or increase risk limits.
 
 Limitations: no operator PostgreSQL database or actual candidate metrics were present, so the causes of specific quality-gate failures and realized losses remain unverified. Static typing is not clean and exact historical orderbook/operator-latency/exchange-liquidation mechanics remain incomplete.
+
+## Work package: decision-time ticker freshness barrier
+
+Release 1.35.5 closes the reproduced all-symbol stale-ticker availability defect without changing the freshness threshold.
+
+Implemented:
+
+- normal market sync no longer persists the initial universe-selection ticker payload before slow orderbook/backfill work;
+- after slow work it obtains a new public Bybit ticker response and persists that response as the final market-sync boundary;
+- each actual hourly inference attempt obtains and stores a new active-universe ticker batch in the same transaction immediately before signal publication;
+- universe catch-up inference uses the same contract;
+- a non-empty active universe with zero stored ticker rows aborts before publication;
+- partial refresh remains visible and per-symbol freshness checks continue to block missing/stale rows;
+- structured stale warnings disclose actual age, configured maximum, source time and receipt time.
+
+The change preserves latest-prior query semantics from 1.35.2 and does not widen `MAX_TICKER_AGE_SECONDS`, synthesize quotes, alter model features/labels, relax candidate promotion, lower EV/RR requirements or increase risk limits.
+
+Limitations: live PostgreSQL/Bybit execution was not available. The final barrier refreshes the single-call ticker batch; orderbook freshness remains independently fail-closed and exact historical market microstructure is still incomplete.

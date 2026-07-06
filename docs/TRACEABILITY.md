@@ -1,6 +1,6 @@
 # Traceability
 
-Состояние: release 1.35.4, 2026-07-06. Таблица дополнена изоляцией exposure-конфликтов, latest-prior orderbook/account state и cross-ledger evidence validation; trainer recovery, latest-prior ticker, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
+Состояние: release 1.35.5, 2026-07-07. Таблица дополнена decision-time ticker freshness barrier и диагностикой stale snapshots; point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
@@ -63,6 +63,10 @@
 | TICKER-PIT-01 | Future-dated ticker не должен маскировать более старую запись, доступную к cutoff | `app/services/market_snapshots.py::latest_available_ticker_query` фильтрует `source_time <= cutoff` и `received_at <= cutoff` до сортировки | `test_latest_ticker_uses_latest_row_available_at_cutoff` для signal/execution/API loaders | Проверено red → green unit |
 | TICKER-PIT-02 | Все live consumers должны использовать один point-in-time contract | wrappers в `app/services/signals.py`, `app/services/execution.py`, `app/api/v1/recommendations.py` делегируют shared loader и передают exact decision/request `now` | parametrized three-consumer regression + focused suites | Проверено unit |
 | TICKER-PIT-03 | Latest-prior selection не должна превращать stale data в valid | после DB selection сохраняются существующие `ticker_snapshot_is_fresh`/age checks; query только исключает unavailable future rows | existing stale/future ticker tests + full suite | Проверено unit/static |
+| TICKER-FRESH-01 | Фактический hourly/catch-up inference attempt не должен зависеть от давности предыдущего общего poll | `_refresh_tickers_for_symbols` вызывается внутри inference transaction непосредственно до `publish_hourly_signals` | `test_hourly_inference_refreshes_tickers_immediately_before_publication`, catch-up regression | Проверено red → green unit |
+| TICKER-FRESH-02 | Медленные orderbook/backfill операции не должны состарить только что записанный ticker batch | `market_job` выполняет slow work, затем получает новый all-tickers response и сохраняет его последним | `test_market_sync_fetches_a_new_ticker_payload_after_slow_snapshot_work` | Проверено red → green unit |
+| TICKER-FRESH-03 | Полностью пустой refresh не должен запускать inference на заведомо старых строках | non-empty active universe + `stored == 0` raises before publication | `test_zero_row_decision_ticker_refresh_blocks_inference_fail_closed` | Проверено red → green unit |
+| TICKER-OBS-01 | Stale warning должен содержать доказуемую freshness geometry | JSON allowlist сохраняет age/max/source/received timestamps; signal warning заполняет их | `test_json_logging_preserves_ticker_freshness_diagnostics` | Проверено red → green unit |
 | TIMEOUT-EXEC-01 | Conditional TIMEOUT estimate должен сохранять stop-risk `R` при изменении executable entry/VWAP | `signal_timeout_return_rate(..., entry=...)` reprojects bounded immutable `timeout_return_r` на current gross stop distance | `test_execution_reprojects_conditional_timeout_r_to_current_entry_geometry` | Проверено red → green LONG/SHORT unit |
 | TIMEOUT-EXEC-02 | Stale signal-reference absolute rate не должен давать ложный policy pass | Plan/acceptance call helper с current entry; independent boundary case сравнивает stale 0.0526R с current 0.0235R при gate 0.05R | `test_current_entry_timeout_repricing_prevents_false_positive_ev_gate` | Проверено unit |
 | TIMEOUT-EXEC-03 | Plan evidence должно отражать current depth VWAP semantics | converged `planning_entry` передаётся в TIMEOUT projection; schema `tp-sl-timeout-current-entry-r-v2` | `test_execution_plan_reprojects_timeout_r_at_current_vwap` | Проверено unit |
@@ -73,7 +77,7 @@
 ## Непроверенная трассировка
 
 - Live PostgreSQL execution of the latest-prior ticker query and query-plan performance were not run because an isolated integration database is unavailable.
-- Existing orderbook latest-row lookup remains outside this ticker-only work package and should receive an independent latest-prior audit.
+- Live decision-time ticker refresh was not executed against the operator PostgreSQL/Bybit environment; unit tests verify ordering, fail-closed behavior and diagnostics.
 
 - Actual PostgreSQL execution/performance of outcome ID batch queries was not run because an isolated integration database is unavailable.
 - The report is descriptive. Dependence-aware confidence intervals, causal treatment effects and attribution of the operator's actual manual fill PnL are not implemented.

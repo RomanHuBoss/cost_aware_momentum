@@ -1,57 +1,79 @@
 # QA Report
 
-Release: **1.35.4**
+Release: **1.35.5**
 
-Date: **2026-07-06**  
-Scope: **exposure conflict isolation, point-in-time orderbook/account state, evidence integrity**
+Date: **2026-07-07**
+Scope: **decision-time ticker freshness and stale-data diagnostics**
 
 ## Environment
 
 - Python: 3.13.5.
 - Project requirement: Python >=3.12.
-- Input archive: `cost_aware_momentum-1.35.3-trainer-recovery-deadlock(1).zip`.
-- Source version: 1.35.3.
+- Input archive: `cost_aware_momentum-main.zip`.
+- Input SHA-256: `5da181879da5accfb397d9b6907257d7f00d51b56f105215b247ac2018b77df6`.
+- Source version: 1.35.4.
 - Separate PostgreSQL integration database: not configured.
+
+The host-wide Python environment initially lacked project dependencies and had an unrelated MoviePy/Pillow conflict. A clean isolated virtual environment was created from `pyproject.toml`; the reproducible project baseline below was recorded there before production-code changes.
 
 ## Baseline
 
-After installing the declared PostgreSQL driver and development checks, the source tree produced `715 passed, 7 skipped, 1 failed`. The single failure was the Linux descendant-process timeout proof with a one-second subprocess timeout; the child could be terminated before writing its pid evidence in this environment. Ruff passed.
+| Check | Result |
+|---|---|
+| `python --version` | PASSED: Python 3.13.5 |
+| `python -m pip check` | PASSED in isolated project environment |
+| `python -m compileall -q app scripts tests manage.py` | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED: 725 passed, 7 skipped, 62 warnings |
+| `node --check web/js/app.js` | PASSED |
+| `python -m alembic heads` | PASSED: one head, `0016_universe_replay_asof` |
 
-## Red evidence
+## Confirmed defect and red evidence
 
-- Source inspection showed that any unknown/stale/conflicting exposure raised HTTP 409 before the batch commit, while the browser restarted dwell and generated a new event id for every item.
-- Point-in-time regression fakes returned the prior valid snapshot only when source and receipt cutoff predicates were present. The original orderbook and account-equity queries selected the future row.
-- Exposure self-hash validation passed independently of a different opportunity ledger before the cross-ledger validator was added.
-- The one-second process-tree timeout test failed repeatedly before adjustment.
+The worker performed general market polling before potentially long orderbook, candle-history, funding/OI, outcome and drift work. `hourly_inference` and `universe_catchup_inference` then published against whatever ticker row happened to remain in PostgreSQL. A cycle delayed longer than `MAX_TICKER_AGE_SECONDS=120` therefore skipped the whole universe with `stale_ticker`, matching the supplied simultaneous BTC/ETH/SOL/... warnings.
+
+The original normal `market_job` also persisted the ticker payload before slow orderbook/backfill work, so `last_market_sync` could be advanced only after the just-written rows were already stale. The JSON formatter discarded the already-computed `ticker_age_seconds`, leaving the operator without the age and timestamp evidence.
+
+Five new tests were run before the fix:
+
+- four decision-refresh tests failed: inference and catch-up published without a fresh fetch, zero-row refresh did not block, and market-sync order was `fetch → persist → slow work`;
+- the logging test failed with `KeyError: ticker_age_seconds` because freshness diagnostics were removed by the formatter.
 
 ## Implemented correction
 
-- Independent outcome classification for every exposure item; no batch rollback for permanent per-item conflicts.
-- Browser retries only network, 429 and 5xx failures and requeues the original event objects.
-- Shared cross-ledger exposure validator.
-- Shared latest-prior orderbook and account-equity queries.
-- Exact decision cutoff propagated to plan creation, acceptance, reconciliation and portfolio display.
-- Explicit fail-closed acceptance-validation evidence guard.
-- Timeout proof retains process-tree termination verification with a less startup-sensitive three-second deadline.
+- Shared `_refresh_tickers_for_symbols` performs a new public Bybit ticker GET, persists only the active set and returns bounded coverage diagnostics.
+- Every actual hourly inference attempt refreshes tickers inside its own database transaction immediately before `publish_hourly_signals`.
+- Universe catch-up inference uses the same barrier.
+- A non-empty universe with zero persisted ticker rows raises before publication; stale-data gates remain fail-closed and are not widened.
+- Normal market sync performs orderbook/new-symbol backfill first, then fetches a separate final ticker payload and persists it last.
+- Structured logs retain ticker age, configured maximum, source time, receipt time and partial-refresh evidence.
 
 ## Post-change checks
 
 | Check | Result |
 |---|---|
-| `python -m pip check` | ENVIRONMENT WARNING: unrelated preinstalled `moviepy 2.2.1` requires Pillow <12 while sandbox has Pillow 12.2.0; project checks continued |
+| `python -m pip check` | PASSED |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
-| `ruff check .` | PASSED |
-| `pytest -q` | PASSED: 725 passed, 7 skipped |
-| focused new/affected suites | PASSED |
+| `python -m ruff check .` | PASSED |
+| `python -m pytest -q` | PASSED: 730 passed, 7 skipped, 62 warnings |
+| focused affected suites | PASSED: 46 tests before final full suite; 5 new tests independently green |
 | `node --check web/js/app.js` | PASSED |
 | Alembic heads | PASSED: one head, `0016_universe_replay_asof` |
-| release integrity | PASSED after manifest rebuild |
+| source release manifest | PASSED after cache cleanup and checksum regeneration; final ZIP validation is reported externally because its hash cannot be embedded without changing the archive |
+
+## Compatibility and operator action
+
+- PostgreSQL migration: none.
+- New or changed `.env` variables: none.
+- Model artifact, feature, label, probability and policy schemas: unchanged.
+- Model quality, activation, EV/RR, leverage and risk thresholds: unchanged.
+- Restart the inference worker after replacing the project. API/trainer restart is optional unless deployed together.
 
 ## Not run / residual limitations
 
 - PostgreSQL integration tests and `manage.py test --require-integration`: not run because no isolated `TEST_DATABASE_URL` was supplied.
-- `manage.py doctor` against the user's runtime: not run because the archive contains no configured PostgreSQL/Bybit environment.
-- Candidate-gate diagnosis from real metric payloads and realized-loss attribution: unavailable without the operator database and artifacts.
-- Windows process-tree termination runtime: not run.
-- `mypy app scripts` is not clean: 306 errors remain, including missing third-party stubs and heterogeneous dynamic-data typing.
-- Profitability is not proven; no quality, activation, EV/RR or risk threshold was relaxed.
+- `manage.py doctor` against the operator runtime: not run because the archive contains no configured PostgreSQL/Bybit environment.
+- Real Bybit latency, partial all-tickers payloads and long-duration production worker behavior were not exercised.
+- Orderbook refresh still occurs in the normal market job, not inside the final ticker-only inference barrier; plan construction remains fail-closed if orderbook evidence ages out.
+- Candidate-gate diagnosis and realized-loss attribution remain unavailable without the operator database, artifacts, fills and outcome evidence.
+- Profitability is not proven.

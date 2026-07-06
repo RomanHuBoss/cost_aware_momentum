@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from collections.abc import Iterable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.asyncio_compat import run_with_compatible_event_loop
 from app.bybit.client import BybitClient
@@ -316,28 +318,79 @@ class Worker:
             or (now - self.last_universe_refresh).total_seconds() >= settings.universe_refresh_seconds
         )
 
+    async def _refresh_tickers_for_symbols(
+        self,
+        session: AsyncSession,
+        symbols: Iterable[str],
+        *,
+        purpose: str,
+    ) -> dict[str, object]:
+        requested_symbols = tuple(
+            dict.fromkeys(
+                str(symbol).strip().upper()
+                for symbol in symbols
+                if str(symbol).strip()
+            )
+        )
+        if not requested_symbols:
+            return {
+                "purpose": purpose,
+                "requested": 0,
+                "payload_items": 0,
+                "payload_symbols": 0,
+                "stored": 0,
+                "missing_from_payload": [],
+                "received_at": None,
+            }
+
+        items = await self.client.get_tickers("linear")
+        received_at = datetime.now(UTC)
+        requested_set = set(requested_symbols)
+        payload_symbols = {
+            str(item.get("symbol") or "").strip().upper()
+            for item in items
+            if str(item.get("symbol") or "").strip().upper() in requested_set
+        }
+        stored = await sync_tickers(
+            session,
+            self.client,
+            requested_set,
+            items=items,
+        )
+        details: dict[str, object] = {
+            "purpose": purpose,
+            "requested": len(requested_symbols),
+            "payload_items": len(items),
+            "payload_symbols": len(payload_symbols),
+            "stored": int(stored),
+            "missing_from_payload": sorted(requested_set - payload_symbols)[:25],
+            "received_at": received_at.isoformat(),
+        }
+        if stored <= 0:
+            raise RuntimeError(f"{purpose} ticker refresh stored no active symbols")
+        if stored < len(requested_symbols):
+            logger.warning(
+                "Ticker refresh stored only part of the active universe",
+                extra={"ticker_refresh": details},
+            )
+        return details
+
     async def market_job(self, backfill: bool = False) -> dict:
         scheduled = datetime.now(UTC).replace(second=0, microsecond=0)
 
         async def task(session):
             now = datetime.now(UTC)
-            ticker_items = await self.client.get_tickers("linear")
             selection: UniverseSelection | None = None
             previous_symbols = set(self.active_symbols)
             selected_symbols = self.active_symbols
 
             if self._universe_refresh_due(now, backfill):
-                selection = await resolve_universe(session, ticker_items, settings, now=now)
+                universe_ticker_items = await self.client.get_tickers("linear")
+                selection = await resolve_universe(session, universe_ticker_items, settings, now=now)
                 await persist_universe_selection(session, selection)
                 selected_symbols = selection.symbols
 
             selected = set(selected_symbols)
-            tickers = await sync_tickers(
-                session,
-                self.client,
-                selected,
-                items=ticker_items,
-            )
             orderbooks = await sync_orderbooks(
                 session,
                 self.client,
@@ -363,9 +416,15 @@ class Worker:
                 if settings.universe_enrich_funding_oi:
                     funding, oi = await sync_funding_and_oi(session, self.client, sorted(newly_admitted))
 
+            ticker_refresh = await self._refresh_tickers_for_symbols(
+                session,
+                selected,
+                purpose="market_sync",
+            )
             summary = selection.summary() if selection else self.universe_summary
             return {
-                "tickers": tickers,
+                "tickers": ticker_refresh["stored"],
+                "ticker_refresh": ticker_refresh,
                 "orderbooks": orderbooks,
                 "backfilled_symbols": len(newly_admitted),
                 "candles": candles,
@@ -595,6 +654,11 @@ class Worker:
 
     async def inference_job(self, event_time: datetime) -> dict:
         async def task(session):
+            decision_ticker_refresh = await self._refresh_tickers_for_symbols(
+                session,
+                self.active_symbols,
+                purpose="hourly_inference",
+            )
             diagnostics: dict[str, object] = {}
             published = await publish_hourly_signals(
                 session,
@@ -608,6 +672,7 @@ class Worker:
                 "universe_symbols": len(self.active_symbols),
                 "published": len(published),
                 "signal_ids": [str(item.id) for item in published],
+                "decision_ticker_refresh": decision_ticker_refresh,
                 **diagnostics,
             }
 
@@ -633,6 +698,11 @@ class Worker:
         scheduled = now.replace(second=0, microsecond=0)
 
         async def task(session):
+            decision_ticker_refresh = await self._refresh_tickers_for_symbols(
+                session,
+                self.active_symbols,
+                purpose="universe_catchup_inference",
+            )
             diagnostics: dict[str, object] = {}
             published = await publish_hourly_signals(
                 session,
@@ -648,6 +718,7 @@ class Worker:
                 "universe_symbols": len(self.active_symbols),
                 "published": len(published),
                 "signal_ids": [str(item.id) for item in published],
+                "decision_ticker_refresh": decision_ticker_refresh,
                 **diagnostics,
             }
 

@@ -15,7 +15,18 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for key in ("event", "job", "symbol", "recommendation_id", "error_code"):
+        for key in (
+            "event",
+            "job",
+            "symbol",
+            "recommendation_id",
+            "error_code",
+            "ticker_age_seconds",
+            "max_ticker_age_seconds",
+            "ticker_source_time",
+            "ticker_received_at",
+            "ticker_refresh",
+        ):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
         if record.exc_info:

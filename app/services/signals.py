@@ -600,7 +600,13 @@ async def publish_hourly_signals(
             record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="stale_ticker")
             logger.warning(
                 "Skipping symbol with stale ticker",
-                extra={"symbol": symbol, "ticker_age_seconds": ticker_age},
+                extra={
+                    "symbol": symbol,
+                    "ticker_age_seconds": ticker_age,
+                    "max_ticker_age_seconds": settings.max_ticker_age_seconds,
+                    "ticker_source_time": ticker.source_time.isoformat(),
+                    "ticker_received_at": ticker.received_at.isoformat(),
+                },
             )
             continue
         spec = await _latest_spec(session, symbol, available_cutoff=now)

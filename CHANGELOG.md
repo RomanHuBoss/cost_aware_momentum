@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.35.5 — 2026-07-07
+
+### Fixed
+
+- Added a fail-closed decision-time ticker refresh inside every actual hourly and universe-catchup inference transaction before signal publication.
+- Moved the normal market-sync ticker write behind orderbook and newly-admitted-symbol backfill work and fetches a new Bybit ticker payload at that final boundary.
+- Blocked inference before publication when a non-empty active universe produces zero persisted ticker rows instead of running against known-stale rows.
+- Added structured stale-ticker diagnostics with actual age, configured maximum, source time and receipt time.
+- Added five red → green regression tests; ticker freshness limits, model gates, EV/RR thresholds and risk limits are unchanged.
+
 ## 1.35.4 — 2026-07-06
 
 ### Fixed
