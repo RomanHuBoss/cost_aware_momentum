@@ -21,7 +21,6 @@ from app.db.models import (
     InstrumentSpecHistory,
     ModelRegistry,
     OpenInterest,
-    TickerSnapshot,
 )
 from app.json_utils import json_compatible
 from app.ml.context import (
@@ -192,44 +191,60 @@ async def _select_training_symbols(
     *,
     max_symbols: int,
     interval: str,
-) -> list[str]:
-    selected_symbols = list(dict.fromkeys(str(item).upper() for item in (symbols or []) if item))
-    if selected_symbols or max_symbols <= 0:
-        return selected_symbols
+    lookback_days: int | None = None,
+    horizon: int = 0,
+    minimum_rows_for_coverage: int = 1,
+) -> list[str] | None:
+    """Resolve a deterministic, label-eligible training cohort.
 
-    ranked_tickers = select(
-        TickerSnapshot.symbol.label("symbol"),
-        TickerSnapshot.turnover_24h.label("turnover_24h"),
-        func.row_number()
-        .over(
-            partition_by=TickerSnapshot.symbol,
-            order_by=TickerSnapshot.source_time.desc(),
-        )
-        .label("row_number"),
-    ).subquery()
-    selected_symbols = list(
-        (
-            await session.execute(
-                select(ranked_tickers.c.symbol)
-                .where(ranked_tickers.c.row_number == 1)
-                .order_by(desc(ranked_tickers.c.turnover_24h).nullslast())
-                .limit(max_symbols)
-            )
-        ).scalars()
-    )
-    if selected_symbols:
+    Explicit symbol lists are preserved exactly, including an explicit empty
+    list. Dynamic selection never uses a latest ticker snapshot: turnover at
+    the end of the sample is unavailable to older observations and can select
+    newly active contracts without enough history. Instead, symbols are ranked
+    by confirmed candle coverage ending at the label cutoff.
+    """
+
+    selected_symbols = list(dict.fromkeys(str(item).upper() for item in (symbols or []) if item))
+    if symbols is not None:
         return selected_symbols
+    if max_symbols <= 0:
+        return None
+
+    latest = (
+        await session.execute(
+            select(func.max(Candle.open_time)).where(
+                Candle.interval == interval,
+                Candle.price_type == "last",
+                Candle.confirmed.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if latest is None:
+        return []
+
+    label_cutoff = _as_datetime(latest) - timedelta(hours=max(0, horizon))
+    filters = [
+        Candle.interval == interval,
+        Candle.price_type == "last",
+        Candle.confirmed.is_(True),
+        Candle.open_time <= label_cutoff,
+    ]
+    if lookback_days and lookback_days > 0:
+        filters.append(Candle.open_time >= _as_datetime(latest) - timedelta(days=lookback_days))
+
+    row_count = func.count(Candle.id)
+    latest_eligible = func.max(Candle.open_time)
     return list(
         (
             await session.execute(
                 select(Candle.symbol)
-                .where(
-                    Candle.interval == interval,
-                    Candle.price_type == "last",
-                    Candle.confirmed.is_(True),
+                .where(*filters)
+                .group_by(Candle.symbol)
+                .having(
+                    row_count >= max(1, minimum_rows_for_coverage),
+                    latest_eligible >= label_cutoff,
                 )
-                .distinct()
-                .order_by(Candle.symbol)
+                .order_by(row_count.desc(), latest_eligible.desc(), Candle.symbol)
                 .limit(max_symbols)
             )
         ).scalars()
@@ -239,7 +254,7 @@ async def _select_training_symbols(
 async def _latest_training_candle_time(
     session,
     *,
-    selected_symbols: list[str],
+    selected_symbols: list[str] | None,
     interval: str,
 ) -> datetime | None:
     query = select(func.max(Candle.open_time)).where(
@@ -247,7 +262,7 @@ async def _latest_training_candle_time(
         Candle.price_type == "last",
         Candle.confirmed.is_(True),
     )
-    if selected_symbols:
+    if selected_symbols is not None:
         query = query.where(Candle.symbol.in_(selected_symbols))
     return (await session.execute(query)).scalar_one_or_none()
 
@@ -263,7 +278,13 @@ async def load_training_data_profile(
 ) -> TrainingDataProfile:
     async with SessionFactory() as session:
         selected_symbols = await _select_training_symbols(
-            session, symbols, max_symbols=max_symbols, interval=interval
+            session,
+            symbols,
+            max_symbols=max_symbols,
+            interval=interval,
+            lookback_days=lookback_days,
+            horizon=horizon,
+            minimum_rows_for_coverage=minimum_rows_for_coverage,
         )
         latest = await _latest_training_candle_time(
             session, selected_symbols=selected_symbols, interval=interval
@@ -282,7 +303,7 @@ async def load_training_data_profile(
             Candle.confirmed.is_(True),
             Candle.open_time <= label_cutoff,
         ]
-        if selected_symbols:
+        if selected_symbols is not None:
             filters.append(Candle.symbol.in_(selected_symbols))
         if lookback_cutoff is not None:
             filters.append(Candle.open_time >= lookback_cutoff)
@@ -300,7 +321,7 @@ async def load_training_data_profile(
                 .order_by(Candle.symbol)
             )
         ).all()
-        if selected_symbols:
+        if selected_symbols is not None:
             grouped_by_symbol = {str(row[0]): row for row in grouped}
             grouped = [grouped_by_symbol.get(symbol, (symbol, 0, None, None)) for symbol in selected_symbols]
         unique_timestamps = int(
@@ -322,10 +343,18 @@ async def load_training_market_data(
     lookback_days: int | None = None,
     max_symbols: int = 0,
     interval: str = "60",
+    horizon: int = 0,
+    minimum_rows_for_coverage: int = 1,
 ) -> TrainingMarketData:
     async with SessionFactory() as session:
         selected_symbols = await _select_training_symbols(
-            session, symbols, max_symbols=max_symbols, interval=interval
+            session,
+            symbols,
+            max_symbols=max_symbols,
+            interval=interval,
+            lookback_days=lookback_days,
+            horizon=horizon,
+            minimum_rows_for_coverage=minimum_rows_for_coverage,
         )
         latest = await _latest_training_candle_time(
             session, selected_symbols=selected_symbols, interval=interval
@@ -339,7 +368,7 @@ async def load_training_market_data(
             Candle.price_type == "last",
             Candle.confirmed.is_(True),
         )
-        if selected_symbols:
+        if selected_symbols is not None:
             query = query.where(Candle.symbol.in_(selected_symbols))
         if cutoff is not None:
             query = query.where(Candle.open_time >= cutoff)
@@ -350,7 +379,7 @@ async def load_training_market_data(
             Candle.price_type == "mark",
             Candle.confirmed.is_(True),
         )
-        if selected_symbols:
+        if selected_symbols is not None:
             mark_query = mark_query.where(Candle.symbol.in_(selected_symbols))
         if cutoff is not None:
             mark_query = mark_query.where(Candle.open_time >= cutoff)
@@ -363,7 +392,7 @@ async def load_training_market_data(
             Candle.price_type == "index",
             Candle.confirmed.is_(True),
         )
-        if selected_symbols:
+        if selected_symbols is not None:
             index_query = index_query.where(Candle.symbol.in_(selected_symbols))
         if cutoff is not None:
             index_query = index_query.where(Candle.open_time >= cutoff)
@@ -375,7 +404,7 @@ async def load_training_market_data(
             InstrumentSpecHistory.symbol,
             desc(InstrumentSpecHistory.valid_from),
         )
-        if selected_symbols:
+        if selected_symbols is not None:
             spec_query = spec_query.where(InstrumentSpecHistory.symbol.in_(selected_symbols))
         spec_rows = (await session.execute(spec_query)).scalars().all()
         funding_intervals: dict[str, int] = {}
@@ -407,7 +436,7 @@ async def load_training_market_data(
                 OpenInterest.event_time >= earliest_candle - timedelta(hours=24),
                 OpenInterest.event_time <= latest_candle_close,
             )
-            if selected_symbols:
+            if selected_symbols is not None:
                 oi_query = oi_query.where(OpenInterest.symbol.in_(selected_symbols))
             open_interest_rows = (
                 (await session.execute(oi_query.order_by(OpenInterest.event_time, OpenInterest.symbol)))
@@ -423,7 +452,7 @@ async def load_training_market_data(
                 FundingRate.funding_time >= earliest_candle - timedelta(minutes=max_interval),
                 FundingRate.funding_time <= latest_candle_close,
             )
-            if selected_symbols:
+            if selected_symbols is not None:
                 funding_query = funding_query.where(FundingRate.symbol.in_(selected_symbols))
             funding_rows = (
                 (await session.execute(funding_query.order_by(FundingRate.funding_time, FundingRate.symbol)))
@@ -518,6 +547,8 @@ async def load_training_candles(
     lookback_days: int | None = None,
     max_symbols: int = 0,
     interval: str = "60",
+    horizon: int = 0,
+    minimum_rows_for_coverage: int = 1,
 ) -> pd.DataFrame:
     return (
         await load_training_market_data(
@@ -525,6 +556,8 @@ async def load_training_candles(
             lookback_days=lookback_days,
             max_symbols=max_symbols,
             interval=interval,
+            horizon=horizon,
+            minimum_rows_for_coverage=minimum_rows_for_coverage,
         )
     ).candles
 

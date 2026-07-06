@@ -1,12 +1,13 @@
 # Specification Compliance
 
-Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.28.1, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.28.2, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
 | Advisory-only, read-only Bybit | Реализовано | `app/bybit/client.py` содержит GET market/account reads; order mutation methods отсутствуют. |
 | PostgreSQL-only | Реализовано | SQLAlchemy/PostgreSQL models и Alembic; SQLite fallback отсутствует. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
+| Point-in-time dynamic training cohort | Реализовано 1.28.2 для candle-history cohort | При ограничении `AUTO_TRAIN_MAX_SYMBOLS` cohort выбирается только по confirmed candle coverage до `latest - horizon`, требует minimum history и reach-to-cutoff; latest 24h ticker turnover исключён. Exact preflight symbol list закрепляется до fit. Полная историческая reconstruction фактического live-universe membership/eligibility до начала локального хранения по-прежнему отсутствует. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках на стабильных участках и после наблюдаемой смены cadence. Будущая фактическая ставка не участвует в ex-ante selection. Historical forecast snapshots и interval до первой локально наблюдаемой spec-записи не реконструируются. |
@@ -22,6 +23,24 @@
 | Fail-closed model activation gate | Реализовано 1.28.0 | Normal activation требует passed model quality gate и experiment promotion gate v3 с passed cost-stress evidence. Selected preregistered trial должен совпасть по version/SHA-256/horizon и deployment-policy binding v2; изменение production fees/slippage/stop-gap/EV-RR thresholds или risk/max-open-risk/margin-reserve sizing policy после evidence блокирует activation. Fresh/legacy candidate без current binding остаётся inactive. Emergency rollback требует явного flag + reason и сохраняет исходные evidence в audit. |
 | Deferred background promotion reconciliation | Реализовано 1.26.3 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. `READY` family должна быть связана с exact artifact и persisted deployment-policy binding; current production settings также обязаны совпасть. Missing/non-READY/mismatched/legacy evidence оставляет candidate inactive. Experiment family сама автоматически не запускается. |
 | Candidate/live recommendation attrition diagnostics | Реализовано 1.26.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. Report v2 отдельно показывает model quality и experiment-promotion attrition. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или основание ослаблять gates. |
+
+
+## Work package: point-in-time training universe integrity
+
+Release 1.28.2 закрывает econometric и operational mismatch в dynamic trainer. До исправления `_select_training_symbols` ранжировал symbols по самому свежему `TickerSnapshot.turnover_24h`, а затем использовал этот современный список для исторического lookback. Latest turnover находился позже label cutoff для части выборки, недавно разогретые контракты могли не иметь minimum history, а повторное разрешение universe перед fit могло отличаться от preflight `training_data_profile`.
+
+Реализовано:
+
+- capped dynamic cohort строится только из confirmed hourly last-price candles;
+- selection window ограничен configured lookback и заканчивается на `latest confirmed candle - horizon`;
+- symbol должен иметь не меньше configured minimum bars и достигать label cutoff;
+- ordering детерминирован: eligible row count, latest eligible candle, symbol;
+- latest ticker turnover полностью исключён из historical training selection;
+- explicit empty cohort остаётся empty/fail-closed, а `None` отдельно означает unrestricted mode;
+- background trainer переносит exact symbols из trigger profile в data load и fit;
+- manual trainer передаёт horizon/minimum-history contract в тот же loader.
+
+Ограничения: release не реконструирует историческую membership фактического live dynamic universe, исторические spread/turnover eligibility до локального хранения или delisting state. Coverage-based cohort устраняет post-cutoff turnover selection и TOCTOU drift, но не доказывает прибыльность, не повышает signal frequency и не объясняет причинно прошлые убытки. Default quality gates не ослаблены: 24 часа данных недостаточно против requirement 1206 unique hourly timestamps.
 
 
 ## Work package: critical drift evidence precedence

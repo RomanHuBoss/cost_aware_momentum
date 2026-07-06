@@ -797,6 +797,14 @@ class BackgroundTrainer:
                             extra={"incumbent_recovery": incumbent_recovery},
                         )
                     symbols = settings.symbols if settings.universe_mode == "static" else None
+                    trigger_profile = trigger.get("training_data_profile")
+                    expected_symbols = (
+                        [str(item) for item in trigger_profile.get("symbols", []) if item]
+                        if isinstance(trigger_profile, dict)
+                        else None
+                    )
+                    load_symbols = expected_symbols if expected_symbols is not None else symbols
+                    load_max_symbols = 0 if expected_symbols is not None else settings.auto_train_max_symbols
                     self.state.update(
                         {
                             "phase": "LOADING_DATA",
@@ -806,15 +814,11 @@ class BackgroundTrainer:
                         }
                     )
                     market_data = await load_training_market_data(
-                        symbols,
+                        load_symbols,
                         lookback_days=settings.auto_train_lookback_days,
-                        max_symbols=settings.auto_train_max_symbols,
-                    )
-                    trigger_profile = trigger.get("training_data_profile")
-                    expected_symbols = (
-                        [str(item) for item in trigger_profile.get("symbols", []) if item]
-                        if isinstance(trigger_profile, dict)
-                        else None
+                        max_symbols=load_max_symbols,
+                        horizon=settings.default_horizon_hours,
+                        minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
                     )
                     self.state["phase"] = "FITTING"
                     candidate = await asyncio.to_thread(

@@ -48,6 +48,8 @@ async def run(args: argparse.Namespace) -> None:
         symbols,
         lookback_days=args.lookback_days,
         max_symbols=settings.auto_train_max_symbols,
+        horizon=args.horizon,
+        minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
     )
     candidate = build_model_candidate(
         market_data.candles,

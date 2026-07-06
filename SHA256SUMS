@@ -1,7 +1,7 @@
 bc20a9d882cfc5b1fe5bdf43e623aed10b257a17fd03c3bb134352fd555d9f0b  ./.env.example
 6a3f1e9a9bc85bcb41c2abb5abae49858661f8b42347649eefafebc689c2db19  ./.github/workflows/ci.yml
 a9f24e43c585d89b03bc14d57e7347b0baa9ccf5987d3bc8935489aac9146842  ./.gitignore
-7d10903797204fb0ce85353e5b8d5b9d8054d47e81bafb9615083ad104d3a9a9  ./CHANGELOG.md
+892e8c197016716b1233ecbc2d63a5651113432f0448bf37724fab4d4f15e09d  ./CHANGELOG.md
 f684d9cbbeb0c83fd5172f108bdb85888a827fc52e106e55731c11f5b7b39445  ./Makefile
 837a39b095e6f50068c654990ac16ec0cf399594e61d149a1a5216eb18714f97  ./PATCH_1.26.2.md
 bbd79750b729f5dd4c1248bd0a1a850ee5b17b80c6d246282d20d48fd54001e5  ./PATCH_1.26.3.md
@@ -12,9 +12,10 @@ fd284041d0d9e88598115ecea43b0b001fda80a2397699f1cf133cbe225af119  ./PATCH_1.26.6
 e03ad627b7efd917cdca4f822427bb75a6ef74f3a394eea10202dd48f2c35cfd  ./PATCH_1.27.0.md
 4352314e1a321aaabc5a4ac0b24b8dfbadb67060dced74753336243767f97fb2  ./PATCH_1.28.0.md
 fe082bfe5f0d30535ce7a1c2fb9155fce0b15e6d4bc848e8c722f32af834fd95  ./PATCH_1.28.1.md
-e91002c21446f7bc21eab75ee1d006228a83515fc70ebdefef1aa5e22c3b2b1c  ./README.md
+61a5e320e75e9fc7f9c777dc564b1c7f823ddc03bfa5d06b8698afda884a910d  ./PATCH_1.28.2.md
+185dbb932e23998bb5c9e13af87f583f30249db3099bd5f830c0c7faf80bc54c  ./README.md
 c7957d8dc92aa0acf8ba2d80501ee776b263b248a5f01a9d1836375d6ded52bb  ./alembic.ini
-f431af112e6cb0f06fb5d40e5f0adcdb9ffb13304e266acd8e77f6d338471655  ./app/__init__.py
+e7f1e169b398a992cdae67c356c3f74d7d17bfb64be5dbbb649ee45e21e62ced  ./app/__init__.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./app/api/__init__.py
 31fe91eaef1707af9c9348819b82f395aaaff5b5642c6e3c6752f45535e8a88d  ./app/api/deps.py
 a3fc365483343914c55d23563b8dde033267a67ac5086bc8a776d811745915ce  ./app/api/schemas.py
@@ -51,7 +52,7 @@ be6af4ba88d97fcbc94cbcf40b54c9bb3873602cea739b2a1339a01652bcc2cc  ./app/ml/drift
 8a4ebcc4a18734a2c5249a8d98410c0d8cd23e41394a67a75c002b4a51a4a965  ./app/ml/features.py
 d2c87a608f7438023efc20d95c94534dd6c39f3b0c47121ffa123c3708879b29  ./app/ml/funding.py
 435b05c6380f4e862b5faf337535e30ccc5da26b05cd98368be15aed632e1825  ./app/ml/labels.py
-73c39f0ed82dfce841595a3257319cbb78489b76031d15156add87658f21cd52  ./app/ml/lifecycle.py
+966e46e0c534227d7476a796a97f62cde5862b9657af07b6e2075190eb6d15a0  ./app/ml/lifecycle.py
 91d3304ca0f211f9bf94642c26d5e00962fd6694c3c89a8b3b0619a371a6f53d  ./app/ml/mtm.py
 07144469ae7c177f1b81ed11765c0c5444c471c8fbd179097690b86becf7f909  ./app/ml/runtime.py
 ea0a8016f0445c3a79d6ae20449388b505bf34b53cd530864cb626572d41b930  ./app/ml/runtime_selection.py
@@ -86,7 +87,7 @@ cc099ad7f2352748833cd0220497125478f6153bb9c3c470c66c6eeb65143762  ./app/services
 2498502a623a0c6ac73829116e5717d1a1685f621e9e29ca88ce4e6886a15c06  ./app/services/universe.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./app/workers/__init__.py
 84ea7409c9226d33e4f9043fa060c40194132c382d30b4fe6efc5e7bc36f0c45  ./app/workers/runner.py
-0222410c9f6c76f91e04a5c9f46350cbb748053259fd554ab6b303d795541c32  ./app/workers/trainer.py
+d7e0b71b3417bf2317781eb2562b6e7c65b465efa52bf8e477516f39678cd043  ./app/workers/trainer.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./backups/.gitkeep
 3f1c96233a68695601589c7fbe67d6edadd800d8198bc591434ceef47ad38afb  ./docs/ITERATION_REPORT_2026-07-05_deferred-model-promotion.md
 a5d401336c3d85fb71477598f83f440db89df2ff49861f6ace752e46ae9bc156  ./docs/ITERATION_REPORT_2026-07-05_experiment-period-support.md
@@ -97,9 +98,10 @@ c99061a208e02acea625f05c2707e863898cc0e00756288916fb3d4aa7a75349  ./docs/ITERATI
 730c2841fcfb54d37e34bae507c8a1b152f17be79cfd36d3f67ade9f72ae30bd  ./docs/ITERATION_REPORT_2026-07-06_critical-drift-evidence-precedence.md
 bcdc77f71c2f9d7c9589a3b15837f686ab4076f191670124a7d8e6a3ee02fc51  ./docs/ITERATION_REPORT_2026-07-06_critical-drift-interlock.md
 a69d04d40a1923abd40d3f9e27c43d5ab962de9deefffa9ca108dc300bd0d2e7  ./docs/ITERATION_REPORT_2026-07-06_risk-budgeted-experiment-accounting.md
-41f17827b2102e224459f87867e4a4ee638538e35ac8fb31c3ce4204746aea2f  ./docs/QA_REPORT.md
-010710464ce84eb3cbca941b954b91e7a2b0c3e68a90437fc373008fc6d46cff  ./docs/SPEC_COMPLIANCE.md
-879d7b3996fa89331285c2f5cec64b1468068bdda1d42c958dbf08187980098d  ./docs/TRACEABILITY.md
+56c0f10b4f1ff1b336fb8c615b937f580619639cdf7a328aae367e87c26480af  ./docs/ITERATION_REPORT_2026-07-06_training-universe-integrity.md
+49950501bc678d112643c899dc23da3bb53ed890f7c0bf8379c3dab19c349284  ./docs/QA_REPORT.md
+f77690889d00542c01509d0fe029a49bc53c0b57682ce2bcfbecaa0ab97a0f2d  ./docs/SPEC_COMPLIANCE.md
+9791d5ce09410d7a172fd5cd8b32c20ff6826237be5c74ededd67b1996f5bc9f  ./docs/TRACEABILITY.md
 b0159a96b085dc9dab9898a85dc6836e831267efefb7979f61c75eb01908eb84  ./docs/source/Cost_aware_hourly_ML_momentum_specification.docx
 26170e06ec50e6867ecf173ad1e81fb24940a5cc6e5a474acde7335c38e9e278  ./manage.py
 d2db851a7b5c477365224a9eb8e0bdd459d6b0ad415ef52402345f7819e4f37c  ./migrations/env.py
@@ -119,7 +121,7 @@ a897a259223051e5b45b705bf626f914cd783b270d0692f7dc33386d7b13d1d2  ./migrations/v
 1eb7e0b390df10738df38da566dd45ad0bb2c92a9729d0c8e92fc558413f2d17  ./migrations/versions/0013_experiment_preregistration.py
 fc66522273e5de600ef18457d934e620fdeb6d18cd7f6b13dc8c53029e296147  ./migrations/versions/0014_ui_exposure_ledger.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./models/.gitkeep
-51570b5f48569376b4aff05647982d98eecc531692e4d54ba666144f69006451  ./pyproject.toml
+7074c0872b8daad12bb43aea0991ab9ade2325e3537ee030ab2bb2121d8e5b12  ./pyproject.toml
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./reports/.gitkeep
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./scripts/__init__.py
 14c1d52fabadfc4223de898313c78a263d6788fce26f873ffd79e873d550304b  ./scripts/attrition_report.py
@@ -140,7 +142,7 @@ a67feb860e47e7e3ba76d85f3b7b797275d9111edf9c66a06d0cf75ac90200bc  ./scripts/mode
 c59f82a8c98fc85873b0320cd3fa261065185be0095461b95cb65b621d7770ff  ./scripts/run_local.py
 1ff107104ffa94ecbd89b0c261319c837a0a4adac297d5e6327dda97f9645bea  ./scripts/selection_report.py
 4910a6108c9802889fe1f1c7b398a452054090168d50ac3e74af8730207ec864  ./scripts/test_runner.py
-c27cf20fc23493accb3d61a0218e584ef8a41fe456e8b1ae2ef80cd15faf204b  ./scripts/train.py
+5d476917e6d56c40f3b1bea37acfdc686aae70d7ba0a7bccc71d84a85e6c9d83  ./scripts/train.py
 d0a5179e44e0206108b1fd09e2ecc8c792aae09903c85a3cd4cbf4aaf2335bd9  ./tests/conftest.py
 59c97a0a2ecb80c0a360372b17b371512d0dd0cdcb21fe063e8da63eb853fbcf  ./tests/drift_reference.py
 3107adf28694beaca2a2881637cff0fb910045a910f480a3870af3b8ba29ff1d  ./tests/integration_postgres/test_migrations_and_audit.py
@@ -224,6 +226,7 @@ b8f0487c57458aa434f42ed6649d49c2d71f452ef4c0f45b25208e3074d5e90b  ./tests/unit/t
 b2986e52181a3feefc33455d2462c1ddb7a49bdbaa4ecc3e1eb6398517989392  ./tests/unit/test_training.py
 ea2dbb8b3004279bf6050fd651208da49359466bd32266ed6fdb40956aedd9d4  ./tests/unit/test_training_data_profile.py
 f8846ce76dc059e30e4b2fd04589b9920972491afd257c1c74b0d19a21d84729  ./tests/unit/test_training_evidence_integrity_2026_07_02.py
+eddf39d8abf28d636386c315863ceb4b81281366646a09c2f59879367d862dd0  ./tests/unit/test_training_universe_integrity_2026_07_06.py
 f8b38ede3daeb459ffd2ca42985915579302814d1c54ad7e4f8f140e307bfbd7  ./tests/unit/test_ui_exposure_ledger_2026_07_05.py
 e8edc6420c8903c3c2b0ae17cb726796ba0fd85cc7f5f664a1794fe23257f6b4  ./tests/unit/test_universe.py
 272e31fbebc26a4bb8a634bdbb2514027e81c2b3bdec25f7a2bd4199014597da  ./tests/unit/test_walk_forward_validation_2026_07_05.py

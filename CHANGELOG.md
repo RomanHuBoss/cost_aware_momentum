@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.28.2 — 2026-07-06
+
+### Fixed
+
+- Dynamic model-training symbols are no longer selected from the latest 24-hour ticker turnover and projected backward over the historical lookback.
+- The capped training cohort now uses confirmed last-price candle coverage ending at the label cutoff, requires the configured minimum rows per symbol and excludes stale symbols that do not reach the cutoff.
+- Background training pins the exact symbol list from its preflight `training_data_profile` through data loading and fit, eliminating a time-of-check/time-of-use universe race.
+- An explicit empty cohort remains empty and fails closed; it no longer has the same internal meaning as unrestricted symbol loading.
+- Manual training uses the same horizon and minimum-history selection contract as the background trainer.
+
+### Compatibility
+
+- No database migration, public HTTP API change, `.env` addition, model artifact schema change or recommendation-threshold change.
+- Existing active artifacts remain valid. Retrain a candidate to obtain evidence under the corrected historical cohort-selection contract.
+- Default gates remain unchanged: approximately one day of hourly data still cannot satisfy the configured minimum of 1206 unique timestamps.
+
+### Verification
+
+- Clean isolated baseline: 644 passed, 4 skipped, 62 warnings.
+- Red evidence: dynamic selection returned the latest-turnover `HOT_NEW_USDT` instead of the label-eligible mature-history cohort.
+- Post-change suite: 645 passed, 4 skipped, 62 warnings.
+
 ## 1.28.1 — 2026-07-06
 
 ### Fixed

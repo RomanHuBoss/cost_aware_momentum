@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.28.1: подтверждённая критическая production-drift evidence больше не подавляется одновременно неполным coverage, warm-up или outcome evidence. Отчёт явно разделяет critical, blocking и warning причины; независимый critical PSI/missingness/probability/calibration/actionability signal получает `CRITICAL` и включает quarantine, тогда как incomplete-only evidence остаётся `BLOCKED` без bootstrap deadlock.
+> Версия 1.28.2: dynamic training cohort больше не определяется последним 24-часовым turnover, который находится после label cutoff для части исторической выборки. Trainer выбирает только symbols с достаточной confirmed candle history до cutoff и использует один и тот же immutable список между preflight profile и фактическим fit. Пороги качества и требование минимум 1206 часовых timestamps не ослаблены.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -23,6 +23,7 @@
 - Promotion gate отдельно проверяет raw trades, неперекрывающиеся по label horizon временные когорты и минимум 168 часов final holdout; число символов не заменяет временную глубину. До final holdout candidate обязан пройти три последовательных purged expanding walk-forward folds с независимым переобучением и калибровкой.
 - Экономический promotion gate использует не только point mean R, но и 95% one-sided lower confidence bound. Для горизонта `H` часов отдельно оцениваются все `H` неперекрывающихся часовых фаз; gate использует худшую фазовую LCB и требует полного покрытия фаз. Default требует `LCB > 0`.
 - До запуска bootstrap trainer вычисляет необходимую часовую историю из feature warm-up, horizon, temporal split и holdout gates. При defaults требуется не менее 1206 уникальных часовых timestamps; это необходимое, но не достаточное условие при гэпах/невалидных свечах.
+- При `AUTO_TRAIN_MAX_SYMBOLS > 0` dynamic training cohort ранжируется по confirmed label-eligible candle coverage внутри configured lookback, требует `AUTO_TRAIN_MIN_BARS_PER_SYMBOL` и свежую свечу не старше label cutoff. Latest ticker turnover не участвует в историческом cohort selection. Background trainer переносит exact symbols из preflight `training_data_profile` в fit, поэтому смена market universe между проверкой и загрузкой не меняет candidate dataset.
 - Кандидат обязан иметь строго положительный `log_loss_skill_vs_prior`; модель хуже простого class-prior прогноза не может быть auto-activated даже при прохождении абсолютного `log_loss` лимита.
 - После `quality_gate_failed` bootstrap/recovery повторяется только при достаточном числе новых timestamps или материальном изменении training-data profile; operator recovery остаётся явным override.
 - Decimal-арифметика для денежных и контрактных расчётов.
