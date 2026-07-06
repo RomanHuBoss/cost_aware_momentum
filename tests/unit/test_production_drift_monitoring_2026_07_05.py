@@ -170,7 +170,9 @@ def test_low_coverage_and_missing_features_block_monitor() -> None:
         thresholds=_thresholds(),
     )
 
-    assert report["status"] == "BLOCKED"
+    assert report["status"] == "CRITICAL"
+    assert "feature_missingness_above_limit" in report["critical_evidence"]
+    assert "insufficient_inference_coverage" in report["blocking_evidence"]
     assert report["coverage"]["rate"] == pytest.approx(0.4)
     assert report["features"]["by_feature"]["ret_1h"]["missing_rate"] == pytest.approx(0.25)
     assert "insufficient_inference_coverage" in report["alerts"]

@@ -14,6 +14,7 @@ from app.ml.drift import (
     PRODUCTION_DRIFT_REPORT_SCHEMA,
     DriftThresholds,
     evaluate_production_drift,
+    resolve_production_drift_status,
     validate_production_drift_reference,
 )
 
@@ -149,6 +150,9 @@ def _blocked_report(*, now: datetime, window_start: datetime, alerts: list[str])
     return {
         "schema": PRODUCTION_DRIFT_REPORT_SCHEMA,
         "status": "BLOCKED",
+        "critical_evidence": [],
+        "blocking_evidence": list(alerts),
+        "warning_evidence": [],
         "generated_at": now.isoformat(),
         "window_start": window_start.isoformat(),
         "window_end": now.isoformat(),
@@ -451,25 +455,58 @@ async def build_production_drift_report(
     if not isinstance(report_alerts, list):
         report_alerts = []
         report["alerts"] = report_alerts
+    critical_evidence = report.get("critical_evidence")
+    blocking_evidence = report.get("blocking_evidence")
+    warning_evidence = report.get("warning_evidence")
+    if not isinstance(critical_evidence, list):
+        critical_evidence = []
+        report["critical_evidence"] = critical_evidence
+    if not isinstance(blocking_evidence, list):
+        blocking_evidence = []
+        report["blocking_evidence"] = blocking_evidence
+    if not isinstance(warning_evidence, list):
+        warning_evidence = []
+        report["warning_evidence"] = warning_evidence
+
+    def add_blocker(reason: str) -> None:
+        if reason not in report_alerts:
+            report_alerts.append(reason)
+        if reason not in blocking_evidence:
+            blocking_evidence.append(reason)
+
     if failed_inference_jobs:
-        report["status"] = "BLOCKED"
-        report_alerts.append("failed_inference_jobs_in_window")
+        add_blocker("failed_inference_jobs_in_window")
     if invalid_coverage_jobs:
-        report["status"] = "BLOCKED"
-        report_alerts.append("invalid_inference_coverage_accounting")
+        add_blocker("invalid_inference_coverage_accounting")
     if outcome_alerts:
-        report["status"] = "BLOCKED"
         for alert in outcome_alerts:
-            if alert not in report_alerts:
-                report_alerts.append(alert)
+            add_blocker(alert)
         calibration = report.get("calibration")
         if isinstance(calibration, dict):
             calibration["status"] = "BLOCKED"
             calibration["maturity_evidence_complete"] = False
+        # Incomplete/invalid maturity evidence invalidates calibration-only drift,
+        # but must not suppress independently confirmed feature/probability/actionability drift.
+        critical_evidence[:] = [
+            reason for reason in critical_evidence if reason != "calibration_drift"
+        ]
+        warning_evidence[:] = [
+            reason for reason in warning_evidence if reason != "calibration_warning"
+        ]
+        report_alerts[:] = [
+            reason
+            for reason in report_alerts
+            if reason not in {"calibration_drift", "calibration_warning"}
+        ]
     elif isinstance(report.get("calibration"), dict):
         report["calibration"]["maturity_evidence_complete"] = (
             outcome_coverage["status"] == "OK"
         )
+    report["status"] = resolve_production_drift_status(
+        critical_evidence=critical_evidence,
+        blocking_evidence=blocking_evidence,
+        warning_evidence=warning_evidence,
+    )
     report.update(
         {
             "generated_at": resolved_now.isoformat(),

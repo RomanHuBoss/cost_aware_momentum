@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.28.1 — 2026-07-06
+
+### Fixed
+
+- Production drift status no longer lets incomplete coverage, warm-up or maturity evidence overwrite independently confirmed `CRITICAL` drift.
+- Drift report v3 records separate `critical_evidence`, `blocking_evidence` and `warning_evidence` lists and resolves overall safety status deterministically: critical evidence first, then blocked, warning and OK.
+- Feature missingness is considered critical only when the configured feature-observation denominator is available; a completely empty warm-up window remains `BLOCKED` rather than becoming a false critical alarm.
+- Incomplete/invalid mature-outcome coverage invalidates calibration-only drift evidence, while preserving independent feature, probability and actionability critical evidence.
+- Report post-processing for failed inference jobs, invalid coverage accounting and incomplete outcomes now adds blocking evidence without suppressing an already confirmed independent critical condition.
+
+### Compatibility
+
+- No database migration, public HTTP API change, `.env` addition, model artifact change or recommendation-threshold change.
+- Persisted drift report schema is raised from `production-drift-report-v2` to `production-drift-report-v3`; the existing quarantine guard still recognizes previously persisted v2 reports with status `CRITICAL`.
+- Pure insufficient-observation reports remain non-quarantining to avoid monitor bootstrap deadlock. Any report with valid independent critical evidence now quarantines the exact active model version even when another evidence dimension is blocked.
+
+### Verification
+
+- Clean isolated baseline: 641 passed, 4 skipped, 62 warnings.
+- Red evidence: 2 of 3 new regression tests failed because critical PSI was returned as `BLOCKED` when coverage or mature-outcome evidence was incomplete.
+- Post-change suite: 644 passed, 4 skipped, 62 warnings.
+
 ## 1.28.0 — 2026-07-06
 
 ### Fixed

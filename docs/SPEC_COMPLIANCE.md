@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.28.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.28.1, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -18,10 +18,27 @@
 | Unconditional observed-opportunity policy inference | Реализовано 1.26.4 | Economic mean, horizon phases and moving-block LCB use every observed decision hour. A real hour with `NO TRADE` contributes zero; missing market hours are not synthesized. Trade/no-trade cohort counts are explicit and fail-closed validated for candidate and incumbent. This corrects selection-conditioned inference but does not establish profitability. |
 | OI/basis/funding/liquidity/context features | Частично реализовано 1.22.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age с interval effective at decision time и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.28.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Nominal и cost-stress ×1,5/×2 paths используют union реально наблюдавшихся decision-to-horizon окон, cumulative hourly mark-close MTM и deterministic risk-budgeted sizing с aggregate risk/margin caps; timestamps, terminal return и max drawdown сверяются fail-closed. Выбранная конфигурация получает `REJECTED_COST_STRESS`, если любой обязательный stress-path compounds ниже 0%. Genuine `NO TRADE`/holding hours остаются нулями, недоступные календарные разрывы исключаются и раскрываются counts. Новая family требует immutable preregistration; normal activation требует report v4/gate v3, exact artifact/deployment-policy binding и passed cost-stress evidence. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding, experiments outside ledger и автоматический запуск experiment family отсутствуют. |
-| Production drift monitoring | Частично реализовано 1.27.0 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют evidence. Persisted `CRITICAL` report для exact active version создаёт restart-persistent quarantine: hourly drift выполняется до inference, новые signals не публикуются, plans получают `NO_TRADE`, acceptance старого actionable plan блокируется до recalculation. Runtime/signal version обязана совпадать с current active registry; mismatch fail-closed. Активация другой version снимает старый latch; повторная activation той же immutable version и отключение новых monitor jobs его не удаляют. `BLOCKED` при недостатке warm-up evidence не карантинит публикацию во избежание bootstrap deadlock. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
+| Production drift monitoring | Частично реализовано 1.28.1 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют и инвалидируют calibration evidence. Report v3 раздельно сохраняет critical/blocking/warning evidence: independent critical feature/probability/actionability drift или valid calibration drift не может быть подавлен одновременно низким coverage, warm-up или другим blocker и создаёт restart-persistent quarantine exact active version. Empty/sub-minimum warm-up остаётся `BLOCKED` без ложного missingness critical и без bootstrap deadlock. Runtime/signal version обязана совпадать с current active registry; latch снимается только другой model version. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
 | Fail-closed model activation gate | Реализовано 1.28.0 | Normal activation требует passed model quality gate и experiment promotion gate v3 с passed cost-stress evidence. Selected preregistered trial должен совпасть по version/SHA-256/horizon и deployment-policy binding v2; изменение production fees/slippage/stop-gap/EV-RR thresholds или risk/max-open-risk/margin-reserve sizing policy после evidence блокирует activation. Fresh/legacy candidate без current binding остаётся inactive. Emergency rollback требует явного flag + reason и сохраняет исходные evidence в audit. |
 | Deferred background promotion reconciliation | Реализовано 1.26.3 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. `READY` family должна быть связана с exact artifact и persisted deployment-policy binding; current production settings также обязаны совпасть. Missing/non-READY/mismatched/legacy evidence оставляет candidate inactive. Experiment family сама автоматически не запускается. |
 | Candidate/live recommendation attrition diagnostics | Реализовано 1.26.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. Report v2 отдельно показывает model quality и experiment-promotion attrition. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или основание ослаблять gates. |
+
+
+## Work package: critical drift evidence precedence
+
+Release 1.28.1 закрывает fail-open конфликт статусов внутри production drift report. До исправления `BLOCKED` имел более высокий внутренний приоритет, чем `CRITICAL`. Поэтому independently confirmed critical PSI, missingness, probability, calibration или actionability evidence могла быть перезаписана низким coverage, неполным warm-up, failed inference job или incomplete mature outcomes. Publication guard сохранял quarantine только для persisted overall status `CRITICAL`, и такой report не включал interlock.
+
+Реализовано:
+
+- report schema повышена до `production-drift-report-v3`;
+- evidence разделена на `critical_evidence`, `blocking_evidence` и `warning_evidence`;
+- общий статус вычисляется независимо от порядка проверок: CRITICAL при любой валидной independent critical evidence, затем BLOCKED, WARN и OK;
+- failed inference jobs, invalid coverage accounting и incomplete maturity добавляют blockers, но не подавляют feature/probability/actionability critical evidence;
+- incomplete/invalid maturity удаляет calibration-only critical/warning evidence и переводит calibration section в `BLOCKED`;
+- missingness становится critical только при наличии configured minimum denominator; empty warm-up остаётся blocked;
+- существующий exact-version persisted quarantine автоматически применяется к новым v3 reports со статусом `CRITICAL`; старые persisted v2 critical reports также продолжают учитываться guard.
+
+Ограничения: monitor по-прежнему использует univariate PSI и aggregate calibration/actionability. Он не реализует symbol/regime-conditional drift, multivariate tests, adaptive thresholds, automatic rollback или causal attribution losses. Critical precedence не доказывает отрицательный edge, но предотвращает публикацию после независимо подтверждённой критической деградации.
 
 
 ## Work package: risk-budgeted experiment portfolio accounting
@@ -227,7 +244,7 @@ Release 1.23.0 устраняет right-censoring production calibration: TP/SL 
 - calibration cohort включает только сигналы с `event_time + horizon_hours <= generated_at`;
 - early resolved outcomes незрелых сигналов исключаются и отдельно считаются;
 - каждый mature signal обязан иметь один outcome, иначе report/calibration получают `BLOCKED`;
-- report schema `production-drift-report-v2` раскрывает `full-horizon-mature-signal-outcomes-v1` coverage;
+- report schema, начиная с release 1.28.1 `production-drift-report-v3`, раскрывает `full-horizon-mature-signal-outcomes-v1` coverage и разделённые evidence severities;
 - invalid maturity metadata и duplicate outcome evidence блокируются fail-closed;
 - active model, artifact contract, thresholds, training и execution semantics не изменены.
 

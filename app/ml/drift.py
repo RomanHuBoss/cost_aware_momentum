@@ -8,13 +8,12 @@ from typing import Any
 import numpy as np
 
 PRODUCTION_DRIFT_REFERENCE_SCHEMA = "final-holdout-feature-probability-selected-calibration-reference-v2"
-PRODUCTION_DRIFT_REPORT_SCHEMA = "production-drift-report-v2"
+PRODUCTION_DRIFT_REPORT_SCHEMA = "production-drift-report-v3"
 PRODUCTION_DRIFT_OUTCOME_COHORT_SCHEMA = "full-horizon-mature-signal-outcomes-v1"
 DIRECTIONAL_PREDICTION_SCHEMA = "both-directional-probabilities-v1"
 PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA = "selected-direction-final-holdout-v1"
 PRODUCTION_DRIFT_UNSELECTED_CALIBRATION_COHORT_SCHEMA = "all-direction-final-holdout-v0"
 
-_STATUS_RANK = {"OK": 0, "WARN": 1, "CRITICAL": 2, "BLOCKED": 3}
 
 
 @dataclass(frozen=True)
@@ -337,8 +336,21 @@ def directional_prediction_snapshot(predictions: Iterable[Any]) -> dict[str, obj
     }
 
 
-def _status_max(current: str, candidate: str) -> str:
-    return candidate if _STATUS_RANK[candidate] > _STATUS_RANK[current] else current
+def resolve_production_drift_status(
+    *,
+    critical_evidence: Sequence[str],
+    blocking_evidence: Sequence[str],
+    warning_evidence: Sequence[str],
+) -> str:
+    """Resolve safety status without allowing incomplete evidence to mask CRITICAL drift."""
+
+    if critical_evidence:
+        return "CRITICAL"
+    if blocking_evidence:
+        return "BLOCKED"
+    if warning_evidence:
+        return "WARN"
+    return "OK"
 
 
 def _status_for_psi(value: float, thresholds: DriftThresholds) -> str:
@@ -373,15 +385,28 @@ def evaluate_production_drift(
         raise ValueError("actionable_flags must contain booleans")
 
     alerts: list[str] = []
-    overall_status = "OK"
+    critical_evidence: list[str] = []
+    blocking_evidence: list[str] = []
+    warning_evidence: list[str] = []
+
+    def record(reason: str, *, severity: str) -> None:
+        if reason not in alerts:
+            alerts.append(reason)
+        target = {
+            "CRITICAL": critical_evidence,
+            "BLOCKED": blocking_evidence,
+            "WARN": warning_evidence,
+        }[severity]
+        if reason not in target:
+            target.append(reason)
+
     coverage_rate = (
         float(published_opportunities / expected_opportunities) if expected_opportunities else 0.0
     )
     coverage_status = "OK"
     if expected_opportunities <= 0 or coverage_rate < thresholds.minimum_coverage_rate:
         coverage_status = "BLOCKED"
-        overall_status = "BLOCKED"
-        alerts.append("insufficient_inference_coverage")
+        record("insufficient_inference_coverage", severity="BLOCKED")
 
     feature_names = list(validated_reference["feature_names"])
     feature_reference = validated_reference["features"]
@@ -389,8 +414,7 @@ def evaluate_production_drift(
     maximum_feature_psi = 0.0
     valid_feature_rows = 0
     if len(feature_rows) < thresholds.minimum_feature_observations:
-        overall_status = "BLOCKED"
-        alerts.append("insufficient_feature_observations")
+        record("insufficient_feature_observations", severity="BLOCKED")
     for name in feature_names:
         values: list[float] = []
         missing = 0
@@ -406,19 +430,19 @@ def evaluate_production_drift(
                 continue
             values.append(value)
         missing_rate = float(missing / len(feature_rows)) if feature_rows else 1.0
-        if missing_rate > thresholds.maximum_missing_rate:
-            overall_status = _status_max(overall_status, "CRITICAL")
-            if "feature_missingness_above_limit" not in alerts:
-                alerts.append("feature_missingness_above_limit")
+        if (
+            len(feature_rows) >= thresholds.minimum_feature_observations
+            and missing_rate > thresholds.maximum_missing_rate
+        ):
+            record("feature_missingness_above_limit", severity="CRITICAL")
         if len(values) >= thresholds.minimum_feature_observations:
             psi = _population_stability_index(feature_reference[name], np.asarray(values, dtype=float))
             status = _status_for_psi(psi, thresholds)
-            overall_status = _status_max(overall_status, status)
             maximum_feature_psi = max(maximum_feature_psi, psi)
         else:
             psi = None
             status = "BLOCKED"
-            overall_status = "BLOCKED"
+            record("insufficient_valid_feature_observations", severity="BLOCKED")
         by_feature[name] = {
             "observations": len(values),
             "missing": missing,
@@ -436,9 +460,9 @@ def evaluate_production_drift(
             for row in feature_rows
         )
     if maximum_feature_psi >= thresholds.critical_psi:
-        alerts.append("feature_distribution_drift")
+        record("feature_distribution_drift", severity="CRITICAL")
     elif maximum_feature_psi >= thresholds.warning_psi:
-        alerts.append("feature_distribution_warning")
+        record("feature_distribution_warning", severity="WARN")
 
     classes = list(validated_reference["classes"])
     probability_reference = validated_reference["probabilities"]
@@ -455,14 +479,12 @@ def evaluate_production_drift(
     by_probability: dict[str, dict[str, object]] = {}
     maximum_probability_psi = 0.0
     if len(probability_vectors) < thresholds.minimum_feature_observations:
-        overall_status = "BLOCKED"
-        alerts.append("insufficient_probability_observations")
+        record("insufficient_probability_observations", severity="BLOCKED")
     else:
         probability_matrix = np.asarray(probability_vectors, dtype=float)
         for index, label in enumerate(classes):
             psi = _population_stability_index(probability_reference[label], probability_matrix[:, index])
             status = _status_for_psi(psi, thresholds)
-            overall_status = _status_max(overall_status, status)
             maximum_probability_psi = max(maximum_probability_psi, psi)
             by_probability[label] = {
                 "observations": len(probability_matrix),
@@ -483,9 +505,9 @@ def evaluate_production_drift(
             for label in classes
         }
     if maximum_probability_psi >= thresholds.critical_psi:
-        alerts.append("probability_distribution_drift")
+        record("probability_distribution_drift", severity="CRITICAL")
     elif maximum_probability_psi >= thresholds.warning_psi:
-        alerts.append("probability_distribution_warning")
+        record("probability_distribution_warning", severity="WARN")
 
     valid_outcomes: list[str] = []
     outcome_probabilities: list[list[float]] = []
@@ -536,15 +558,13 @@ def evaluate_production_drift(
             or brier_delta > thresholds.maximum_brier_delta
         ):
             calibration_status = "CRITICAL"
-            overall_status = _status_max(overall_status, "CRITICAL")
-            alerts.append("calibration_drift")
+            record("calibration_drift", severity="CRITICAL")
         elif (
             log_loss_delta > thresholds.maximum_log_loss_delta / 2
             or brier_delta > thresholds.maximum_brier_delta / 2
         ):
             calibration_status = "WARN"
-            overall_status = _status_max(overall_status, "WARN")
-            alerts.append("calibration_warning")
+            record("calibration_warning", severity="WARN")
         calibration = {
             "status": calibration_status,
             "observations": len(valid_outcomes),
@@ -568,16 +588,22 @@ def evaluate_production_drift(
     actionability_status = "OK"
     if actionability_delta > thresholds.maximum_actionability_rate_delta:
         actionability_status = "CRITICAL"
-        overall_status = _status_max(overall_status, "CRITICAL")
-        alerts.append("actionability_density_drift")
+        record("actionability_density_drift", severity="CRITICAL")
     elif actionability_delta > thresholds.maximum_actionability_rate_delta / 2:
         actionability_status = "WARN"
-        overall_status = _status_max(overall_status, "WARN")
-        alerts.append("actionability_density_warning")
+        record("actionability_density_warning", severity="WARN")
 
+    overall_status = resolve_production_drift_status(
+        critical_evidence=critical_evidence,
+        blocking_evidence=blocking_evidence,
+        warning_evidence=warning_evidence,
+    )
     return {
         "schema": PRODUCTION_DRIFT_REPORT_SCHEMA,
         "status": overall_status,
+        "critical_evidence": critical_evidence,
+        "blocking_evidence": blocking_evidence,
+        "warning_evidence": warning_evidence,
         "coverage": {
             "status": coverage_status,
             "expected_opportunities": int(expected_opportunities),
@@ -608,7 +634,7 @@ def evaluate_production_drift(
             "min_net_rr": float(validated_reference["actionability"]["min_net_rr"]),
             "min_net_ev_r": float(validated_reference["actionability"]["min_net_ev_r"]),
         },
-        "alerts": list(dict.fromkeys(alerts)),
+        "alerts": alerts,
         "thresholds": {
             "minimum_feature_observations": thresholds.minimum_feature_observations,
             "minimum_outcome_observations": thresholds.minimum_outcome_observations,

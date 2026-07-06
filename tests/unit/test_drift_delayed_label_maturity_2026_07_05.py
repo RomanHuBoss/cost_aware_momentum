@@ -124,8 +124,11 @@ async def test_unresolved_mature_signal_blocks_calibration_evidence() -> None:
 
     report = await build_production_drift_report(session, _settings(), now=now)
 
-    assert report["status"] == "BLOCKED"
+    assert report["status"] == "CRITICAL"
     assert report["calibration"]["status"] == "BLOCKED"
+    assert "feature_distribution_drift" in report["critical_evidence"]
+    assert "incomplete_mature_outcome_coverage" in report["blocking_evidence"]
+    assert report["automatic_model_action"] == "quarantine_new_signals_and_plans"
     assert report["outcome_coverage"]["unresolved_mature_signals"] == 1
     assert report["outcome_coverage"]["rate"] == pytest.approx(0.5)
     assert "incomplete_mature_outcome_coverage" in report["alerts"]

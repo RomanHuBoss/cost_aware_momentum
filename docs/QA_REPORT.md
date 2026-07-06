@@ -1,60 +1,63 @@
 # QA Report
 
-Release: **1.28.0**
+Release: **1.28.1**
 
 Date: **2026-07-06**  
-Scope: **risk-budgeted experiment portfolio accounting**
+Scope: **critical drift evidence precedence**
 
 ## Environment
 
-- Python: 3.13.5 in isolated virtual environment `/mnt/data/cam_venv`.
+- Python: 3.13.5 in isolated virtual environment `/mnt/data/cam_iter2/venv`.
 - Project requirement: Python >=3.12.
 - Node syntax check available.
 - Separate PostgreSQL integration database: not configured.
-- Host/global Python was unsuitable: `ruff`/`psycopg` were absent and global `pip check` had an unrelated MoviePy/Pillow conflict.
+- Input archive SHA-256: `f85389e3753cbd4bb24034cfbcae7479e260300066dbf58545338a3eb0eb2b3d`.
 
 ## Baseline before changes
 
 | Check | Result |
 |---|---|
-| input ZIP SHA-256 | `2fac93ab04fb012b7d29027c33e3931d6b54ef5a211963aa600224df654d2f70` |
-| source version | 1.27.0 |
-| source inventory | 228 files; 94 production Python, 84 test Python, 11 docs; 14 migration revisions; head `0014_ui_exposure_ledger` |
+| source version | 1.28.0 |
+| source inventory | 231 files; 93 production Python, 85 test Python, 12 docs; 14 migration revisions; head `0014_ui_exposure_ledger` |
 | `python --version` | PASSED: Python 3.13.5 |
-| `python -m pip check` | PASSED in isolated venv |
+| `python -m pip check` | PASSED: no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 636 passed, 4 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED: 641 passed, 4 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED |
 
 ## Confirmed defect and red evidence
 
-`scripts/backtest.py::_simulate_capital_sleeves_evidence` assigned each simultaneous trade the same notional share of a fixed horizon sleeve. `app/risk/math.py::calculate_position_plan` instead derives notional from `risk_budget / stress_downside_rate` and applies portfolio-risk and margin caps. Formal Sharpe/DSR/PBO/cost-stress evidence therefore measured a different portfolio than the execution-plan contract.
+`app/ml/drift.py` assigned `BLOCKED` a higher status rank than `CRITICAL`, and `app/services/drift_monitor.py` directly overwrote an evaluated report with `BLOCKED` when failed jobs, invalid coverage or incomplete mature outcomes were present.
 
-Independent counterexample:
+Reproduced counterexample:
 
-- trade A: downside 1%, realized return +2%;
-- trade B: downside 10%, realized return -5%;
-- old equal-notional result: `(2% - 5%) / 2 = -1.5%`;
-- live-style equal 0.35% risk budgets: `0.0035/0.01×0.02 + 0.0035/0.10×(-0.05) = +0.525%`.
+- feature PSI: `11.512865346214785`;
+- alert: `feature_distribution_drift`;
+- inference coverage: 60% against required 80%;
+- baseline overall status: `BLOCKED`;
+- publication consequence: no critical quarantine latch.
 
 Original red command:
 
 ```text
-python -m pytest -q tests/unit/test_risk_budgeted_experiment_accounting_2026_07_06.py
+python -m pytest -q tests/unit/test_critical_drift_evidence_precedence_2026_07_06.py
 ```
 
-Before production implementation: collection failed because `_simulate_risk_budgeted_portfolio_evidence` did not exist. After implementation and extensions: **4 passed** in that module.
+Result before implementation:
+
+```text
+2 failed, 1 passed
+expected CRITICAL, actual BLOCKED
+```
 
 ## Added/extended regression coverage
 
-- Equal-risk sizing reproduces independent arithmetic and exposes the equal-notional sign reversal.
-- Overlapping cohorts are scaled to the remaining aggregate open-risk budget.
-- Margin reserve and leverage proportionally limit a simultaneous cohort.
-- Hourly period returns reconcile exactly to terminal risk-budgeted equity.
-- Existing backtest fee, open-gap, stop-reserve, MTM and cost-stress tests were updated to assert portfolio PnL after risk sizing while retaining independent trade-level or fee formulas.
-- Promotion rejects evidence after `risk_rate`, aggregate-risk or margin-reserve policy changes.
-- Legacy cost-stress/policy-binding/period-return contracts remain fail-closed.
+- Critical feature PSI dominates incomplete inference coverage while both evidence types remain disclosed.
+- Incomplete mature outcomes cannot suppress independent critical feature drift.
+- Incomplete outcomes without independent critical evidence remain `BLOCKED` and non-quarantining.
+- Existing low-coverage/missingness and delayed-label tests now assert the stronger fail-closed status semantics.
+- Existing persisted critical quarantine, worker ordering and plan/signal interlock tests remain green.
 
 ## Post-change checks
 
@@ -63,19 +66,21 @@ Before production implementation: collection failed because `_simulate_risk_budg
 | `python -m pip check` | PASSED: no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 641 passed, 4 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED: 644 passed, 4 skipped, 62 warnings |
+| targeted drift/interlock suite | PASSED: 20 passed |
 | `node --check web/js/app.js` | PASSED |
-| application/package version consistency | PASSED: 1.28.0 |
+| application/package version consistency | PASSED: 1.28.1 |
 | Alembic heads | PASSED: one head, `0014_ui_exposure_ledger` |
-| release manifest | PASSED after regeneration |
-| clean ZIP/re-extraction | PASSED: one root directory, archive test and forbidden-artifact scan clean |
+| release integrity | PASSED: 233 eligible files checked against 233 manifest entries |
+| final ZIP test/re-extraction | PASSED: one root directory, compressed data clean, re-extracted manifest verified |
+| final release inventory | PASSED: 234 files including `SHA256SUMS`; 93 production Python, 86 test Python, 13 documentation files |
 
 ## Environment-dependent checks
 
 | Check | Result |
 |---|---|
-| `python manage.py doctor` | FAILED preflight: project-local managed virtualenv is absent; `.env`/PostgreSQL runtime checks were not reached in the isolated external venv workflow |
-| `python manage.py test --require-integration` | FAILED preflight for the same managed-virtualenv requirement; separate PostgreSQL integration tests were not executed |
+| `python manage.py doctor` | FAILED preflight: project-local managed virtualenv is absent; `.env`/PostgreSQL checks were not reached |
+| `python manage.py test --require-integration` | FAILED preflight for the same managed-virtualenv requirement; PostgreSQL integration tests were not executed |
 
 ## Warnings
 
@@ -85,10 +90,9 @@ Before production implementation: collection failed because `_simulate_risk_budg
 
 - Database migration: none.
 - Public HTTP request/response schema: unchanged.
-- `.env` variables: unchanged.
+- `.env` variables/defaults: unchanged.
 - Model feature/label/runtime artifact schemas: unchanged.
-- Signal direction, entry geometry, TP/SL and actionability thresholds: unchanged.
-- Experiment return schema: v3 → risk-budgeted v4.
-- Cost-stress schema: v1 → risk-budgeted v2.
-- Promotion policy binding: v1 → v2 with risk/max-open-risk/margin-reserve fields.
-- Active artifacts remain runnable; stale inactive candidates and experiment-family evidence require regeneration for normal activation.
+- Drift reference schema: unchanged at v2.
+- Drift report schema: v2 → v3 with separated critical/blocking/warning evidence.
+- Signal direction, execution-plan sizing, TP/SL and actionability thresholds: unchanged.
+- Existing persisted v2 critical reports remain effective in the status/model-version based guard.
