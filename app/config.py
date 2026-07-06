@@ -152,6 +152,18 @@ class Settings(BaseSettings):
     # rechecks this exact SHA/version/horizon on later scheduling iterations and activates
     # only after the preregistered experiment report becomes READY.
     auto_train_experiment_family: str | None = None
+    # When no explicit family is configured, the trainer can preregister and execute a
+    # bounded policy-threshold grid for the exact quality-passed artifact. The grid is
+    # declared before the first trial and never adapts to observed returns.
+    auto_train_auto_experiment: bool = True
+    auto_train_experiment_rr_multipliers: Annotated[list[float], NoDecode] = Field(
+        default_factory=lambda: [1.0, 1.25]
+    )
+    auto_train_experiment_ev_additions: Annotated[list[float], NoDecode] = Field(
+        default_factory=lambda: [0.0, 0.05]
+    )
+    auto_train_experiment_timeout_seconds: int = 7200
+    auto_train_experiment_max_attempts_per_configuration: int = 2
     auto_train_model_type: Literal["logistic", "hist_gradient_boosting"] = "logistic"
     auto_train_interval_hours: int = 168
     auto_train_retry_hours: int = 6
@@ -227,6 +239,17 @@ class Settings(BaseSettings):
     def parse_horizons(cls, value: object) -> object:
         if isinstance(value, str):
             return [int(item) for item in cls._parse_env_list(value)]
+        return value
+
+    @field_validator(
+        "auto_train_experiment_rr_multipliers",
+        "auto_train_experiment_ev_additions",
+        mode="before",
+    )
+    @classmethod
+    def parse_automatic_experiment_grid(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [float(item) for item in cls._parse_env_list(value)]
         return value
 
     @field_validator("active_model_path", mode="before")
@@ -361,6 +384,38 @@ class Settings(BaseSettings):
             raise ValueError("EXPERIMENT_PBO_SEGMENTS must be an even integer of at least four")
         if self.experiment_min_trials < 2:
             raise ValueError("EXPERIMENT_MIN_TRIALS must be at least two")
+        rr_multipliers = [float(item) for item in self.auto_train_experiment_rr_multipliers]
+        ev_additions = [float(item) for item in self.auto_train_experiment_ev_additions]
+        if not rr_multipliers or not ev_additions:
+            raise ValueError("Automatic experiment RR/EV grids cannot be empty")
+        if any(not math.isfinite(item) or item <= 0.0 for item in rr_multipliers):
+            raise ValueError("AUTO_TRAIN_EXPERIMENT_RR_MULTIPLIERS must be finite and positive")
+        if any(not math.isfinite(item) or item < 0.0 for item in ev_additions):
+            raise ValueError("AUTO_TRAIN_EXPERIMENT_EV_ADDITIONS must be finite and non-negative")
+        if len(set(rr_multipliers)) != len(rr_multipliers):
+            raise ValueError("AUTO_TRAIN_EXPERIMENT_RR_MULTIPLIERS cannot contain duplicates")
+        if len(set(ev_additions)) != len(ev_additions):
+            raise ValueError("AUTO_TRAIN_EXPERIMENT_EV_ADDITIONS cannot contain duplicates")
+        if 1.0 not in rr_multipliers or 0.0 not in ev_additions:
+            raise ValueError(
+                "Automatic experiment grid must contain the exact deployment policy "
+                "(RR multiplier 1.0 and EV addition 0.0)"
+            )
+        automatic_configuration_count = len(rr_multipliers) * len(ev_additions)
+        if self.auto_train_auto_experiment:
+            if automatic_configuration_count < self.experiment_min_trials:
+                raise ValueError(
+                    "Automatic experiment grid must contain at least EXPERIMENT_MIN_TRIALS "
+                    "unique configurations"
+                )
+            if automatic_configuration_count > 16:
+                raise ValueError("Automatic experiment grid is limited to 16 configurations")
+        if self.auto_train_experiment_timeout_seconds < 60:
+            raise ValueError("AUTO_TRAIN_EXPERIMENT_TIMEOUT_SECONDS must be at least 60")
+        if not 1 <= self.auto_train_experiment_max_attempts_per_configuration <= 3:
+            raise ValueError(
+                "AUTO_TRAIN_EXPERIMENT_MAX_ATTEMPTS_PER_CONFIGURATION must be between 1 and 3"
+            )
         if self.experiment_min_periods < self.experiment_pbo_segments * 2:
             raise ValueError(
                 "EXPERIMENT_MIN_PERIODS must provide at least two rows per PBO segment"

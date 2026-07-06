@@ -338,6 +338,33 @@ function trainerResultMarkup(status, trainer) {
   </dl>${reasons.length ? `<ul class="trainer-reasons">${reasons.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}`;
 }
 
+function automaticExperimentMarkup(experiment) {
+  if (!experiment) {
+    return '<p class="trainer-message">Automatic experiment для текущего candidate не запущен.</p>';
+  }
+  const status = experiment.status || 'UNKNOWN';
+  const stage = experiment.stage || '—';
+  const index = Number(experiment.configuration_index || 0);
+  const total = Number(experiment.configuration_count || 0);
+  const configurationProgress = index > 0 && total > 0 ? `${index} из ${total}` : '—';
+  const configuration = experiment.configuration || {};
+  const thresholdText = configuration.minimum_net_rr !== undefined
+    ? `RR ≥ ${fmt(configuration.minimum_net_rr, 3)}; EV/R ≥ ${fmt(configuration.minimum_net_ev_r, 3)}`
+    : '—';
+  return `<dl class="trainer-result-list">
+    <dt>Статус</dt><dd>${escapeHtml(status)}</dd>
+    <dt>Этап</dt><dd>${escapeHtml(stage)}</dd>
+    <dt>Candidate</dt><dd>${escapeHtml(experiment.candidate_version || '—')}</dd>
+    <dt>Experiment family</dt><dd>${escapeHtml(experiment.experiment_family || '—')}</dd>
+    <dt>Конфигурация</dt><dd>${escapeHtml(configurationProgress)}</dd>
+    <dt>Пороговая policy</dt><dd>${escapeHtml(thresholdText)}</dd>
+    <dt>Попытка</dt><dd>${escapeHtml(experiment.attempt || '—')}</dd>
+    <dt>Запущен</dt><dd>${escapeHtml(trainerDate(experiment.started_at))}</dd>
+    <dt>Обновлён</dt><dd>${escapeHtml(trainerDate(experiment.updated_at))}</dd>
+    <dt>Subprocess</dt><dd>${experiment.subprocess_active === true ? 'выполняется' : 'не выполняется'}</dd>
+  </dl>`;
+}
+
 function renderTrainerDialog(status = state.systemStatus) {
   const content = $('#trainer-content');
   if (!content || !status) return;
@@ -356,6 +383,7 @@ function renderTrainerDialog(status = state.systemStatus) {
   const notice = active.worker_notice || {};
   const latestRequest = control.latest_request || null;
   const requestActive = latestRequest && ['PENDING', 'RUNNING'].includes(latestRequest.status);
+  const automaticExperiment = control.automatic_experiment || details.automatic_experiment || null;
   const artifactState = active.type === 'deterministic_baseline'
     ? 'registry baseline'
     : active.artifact_exists === true ? 'файл доступен' : active.version ? 'файл отсутствует' : 'активной модели нет';
@@ -389,17 +417,23 @@ function renderTrainerDialog(status = state.systemStatus) {
       <dt>Причина</dt><dd>${escapeHtml(recoveryReasonLabels[control.recovery_reason] || control.recovery_reason || '—')}</dd>
     </dl>
   </section>
+  <section class="trainer-section"><h3>Automatic experiment</h3>${automaticExperimentMarkup(automaticExperiment)}</section>
   <section class="trainer-section"><h3>Последняя попытка обучения</h3>${trainerResultMarkup(status, trainer)}</section>
   ${latestRequest ? `<div class="trainer-request"><strong>Последняя команда оператора:</strong> ${escapeHtml(latestRequest.action || '—')} · ${escapeHtml(latestRequest.status || '—')} · ${escapeHtml(trainerDate(latestRequest.requested_at || latestRequest.started_at))}</div>` : ''}`;
 
   const checkButton = $('#trainer-check-button');
   const recoverButton = $('#trainer-recover-button');
+  const cancelButton = $('#trainer-cancel-experiment-button');
   checkButton.disabled = !enabled || !online || requestActive;
   recoverButton.disabled = !enabled || !online || control.recovery_available !== true || requestActive;
+  cancelButton.disabled = !enabled || !online || control.cancellation_available !== true || requestActive;
   checkButton.title = !online ? 'Trainer не запущен или heartbeat устарел' : requestActive ? 'Предыдущая команда еще выполняется' : '';
   recoverButton.title = control.recovery_available === true
     ? (requestActive ? 'Предыдущая команда еще выполняется' : '')
     : (recoveryReasonLabels[control.recovery_reason] || 'Восстановительное обучение сейчас не требуется');
+  cancelButton.title = control.cancellation_available === true
+    ? (requestActive ? 'Предыдущая команда еще выполняется' : 'Будет остановлен только указанный текущий subprocess; evidence останется в журнале')
+    : (control.cancellation_reason || 'Сейчас нет выполняющегося automatic experiment subprocess');
 }
 
 function startTrainerStatusPolling() {
@@ -426,12 +460,29 @@ function startTrainerStatusPolling() {
 async function requestTrainerControl(action) {
   const checkButton = $('#trainer-check-button');
   const recoverButton = $('#trainer-recover-button');
+  const cancelButton = $('#trainer-cancel-experiment-button');
+  const body = { action };
+  if (action === 'CANCEL_EXPERIMENT') {
+    const experiment = state.systemStatus?.trainer_control?.automatic_experiment || null;
+    if (!experiment?.experiment_family || !experiment?.candidate_version) {
+      toast('Текущий automatic experiment не имеет точной цели для отмены', 'error');
+      return;
+    }
+    const confirmed = window.confirm(
+      `Остановить subprocess experiment family ${experiment.experiment_family} для candidate ${experiment.candidate_version}? ` +
+      'Preregistration и уже записанные результаты останутся неизменными.'
+    );
+    if (!confirmed) return;
+    body.experiment_family = experiment.experiment_family;
+    body.candidate_version = experiment.candidate_version;
+  }
   checkButton.disabled = true;
   recoverButton.disabled = true;
+  cancelButton.disabled = true;
   try {
     const result = await api('/api/v1/admin/trainer-control', {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(body),
     });
     toast(result.created ? 'Команда передана фоновому trainer' : 'Команда trainer уже ожидает выполнения');
     await loadStatus();
@@ -883,6 +934,7 @@ $('#trainer-button').addEventListener('click', async () => { $('#trainer-dialog'
 $('#trainer-refresh-button').addEventListener('click', loadStatus);
 $('#trainer-check-button').addEventListener('click', () => requestTrainerControl('CHECK_NOW'));
 $('#trainer-recover-button').addEventListener('click', () => requestTrainerControl('RECOVER_NOW'));
+$('#trainer-cancel-experiment-button').addEventListener('click', () => requestTrainerControl('CANCEL_EXPERIMENT'));
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
 $('#refresh-button').addEventListener('click', loadAll);
 $('#symbol-filter').addEventListener('input', debounce(loadRecommendations, 300));

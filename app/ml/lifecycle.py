@@ -73,6 +73,10 @@ from app.ml.training import (
     timeout_return_r_targets,
     zero_market_context_split,
 )
+from app.ml.universe_replay import (
+    apply_point_in_time_universe_replay,
+    load_point_in_time_universe_snapshots,
+)
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.model_promotion import (
     build_experiment_policy_binding,
@@ -124,6 +128,7 @@ class TrainingMarketData:
     funding: pd.DataFrame
     funding_interval_minutes: dict[str, int]
     funding_interval_history: pd.DataFrame
+    universe_eligibility: pd.DataFrame | None = None
 
 MODEL_ACTIVATION_QUALITY_GATE_SCHEMA = "model-activation-quality-gate-v1"
 
@@ -275,7 +280,61 @@ async def load_training_data_profile(
     horizon: int,
     minimum_rows_for_coverage: int,
     interval: str = "60",
+    require_universe_replay: bool = False,
+    universe_replay_max_age_seconds: int = 600,
 ) -> TrainingDataProfile:
+    if require_universe_replay:
+        market_data = await load_training_market_data(
+            symbols,
+            lookback_days=lookback_days,
+            max_symbols=0,
+            interval=interval,
+            horizon=horizon,
+            minimum_rows_for_coverage=minimum_rows_for_coverage,
+            require_universe_replay=True,
+            universe_replay_max_age_seconds=universe_replay_max_age_seconds,
+        )
+        if market_data.candles.empty:
+            return profile_from_symbol_rows(
+                [], unique_timestamps=0, minimum_rows_for_coverage=minimum_rows_for_coverage
+            )
+        eligible = market_data.candles.copy()
+        eligible["open_time"] = pd.to_datetime(eligible["open_time"], utc=True, errors="coerce")
+        eligible["close_time"] = pd.to_datetime(eligible["close_time"], utc=True, errors="coerce")
+        if eligible[["open_time", "close_time"]].isna().any().any():
+            raise ValueError("Training profile contains invalid candle timestamps")
+        label_cutoff = eligible["open_time"].max() - pd.Timedelta(horizon, unit="h")
+        eligible = eligible[eligible["open_time"] <= label_cutoff].copy()
+        eligible["decision_time"] = eligible["close_time"]
+        try:
+            eligible, _ = apply_point_in_time_universe_replay(
+                eligible,
+                market_data.universe_eligibility,
+                max_snapshot_age_seconds=universe_replay_max_age_seconds,
+                required=True,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if any(
+                token in message
+                for token in (
+                    "requires universe eligibility snapshots",
+                    "no decision rows at or after the prospective rollout",
+                    "produced no production-eligible decision rows",
+                )
+            ):
+                return profile_from_symbol_rows(
+                    [],
+                    unique_timestamps=0,
+                    minimum_rows_for_coverage=minimum_rows_for_coverage,
+                )
+            raise
+        return profile_training_frame(
+            eligible,
+            label_cutoff=None,
+            minimum_rows_for_coverage=minimum_rows_for_coverage,
+        )
+
     async with SessionFactory() as session:
         selected_symbols = await _select_training_symbols(
             session,
@@ -345,6 +404,8 @@ async def load_training_market_data(
     interval: str = "60",
     horizon: int = 0,
     minimum_rows_for_coverage: int = 1,
+    require_universe_replay: bool = False,
+    universe_replay_max_age_seconds: int = 600,
 ) -> TrainingMarketData:
     async with SessionFactory() as session:
         selected_symbols = await _select_training_symbols(
@@ -460,6 +521,22 @@ async def load_training_market_data(
                 .all()
             )
 
+        universe_eligibility = pd.DataFrame(
+            columns=[
+                "observed_at",
+                "recorded_at",
+                "selected_symbols",
+                "policy_hash",
+                "record_hash",
+            ]
+        )
+        if require_universe_replay and candle_rows:
+            universe_eligibility = await load_point_in_time_universe_snapshots(
+                session,
+                (row.close_time for row in candle_rows),
+                expected_mode="dynamic",
+            )
+
     candles = pd.DataFrame(
         [
             {
@@ -538,6 +615,7 @@ async def load_training_market_data(
         funding=funding,
         funding_interval_minutes=funding_intervals,
         funding_interval_history=funding_interval_history,
+        universe_eligibility=universe_eligibility,
     )
 
 
@@ -746,6 +824,9 @@ def build_model_candidate(
     minimum_rows_for_coverage: int = 300,
     policy_config: PolicyEvaluationConfig | None = None,
     expected_symbols: list[str] | tuple[str, ...] | None = None,
+    universe_eligibility: pd.DataFrame | None = None,
+    require_universe_replay: bool = False,
+    universe_replay_max_age_seconds: int = 600,
 ) -> ModelCandidate:
     if candles.empty:
         raise RuntimeError("No confirmed hourly candles are available for model training")
@@ -772,6 +853,12 @@ def build_model_candidate(
     )
     if dataset.empty:
         raise RuntimeError("No direction-specific barrier labels could be built from PostgreSQL candles")
+    dataset, universe_replay = apply_point_in_time_universe_replay(
+        dataset,
+        universe_eligibility,
+        max_snapshot_age_seconds=universe_replay_max_age_seconds,
+        required=require_universe_replay,
+    )
     split = chronological_split(dataset, purge_rows=horizon)
     if split.train_meta is None:
         raise RuntimeError("Chronological split did not expose training metadata")
@@ -806,6 +893,7 @@ def build_model_candidate(
     metrics["intrahorizon_margin_path"] = json_compatible(dataset.attrs.get("intrahorizon_margin_path") or {})
     metrics["market_context"] = json_compatible(dataset.attrs.get("market_context") or {})
     metrics["hourly_continuity"] = json_compatible(dataset.attrs.get("hourly_continuity") or {})
+    metrics["universe_replay"] = json_compatible(universe_replay)
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
         metrics.update(evaluate_policy_model(model, split, policy_config, horizon_hours=horizon))
@@ -1006,6 +1094,7 @@ def build_model_candidate(
         "symbol_sample": list(symbol_values[:25]),
         "symbols": list(symbol_values),
         "training_data_profile": training_data_profile.to_dict(),
+        "universe_replay": json_compatible(universe_replay),
         "source": source,
         "created_at": created_at.isoformat(),
     }

@@ -23,6 +23,7 @@ from app.db.models import (
 from app.ml.runtime_selection import CONTROLLED_BASELINE_NOTICE_CODES
 from app.services.trainer_control import (
     TRAINER_CONTROL_JOB_NAME,
+    automatic_experiment_cancel_availability,
     control_job_payload,
     recovery_availability,
     trainer_control_stale_after_seconds,
@@ -377,6 +378,13 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
     worker_heartbeat = latest_service_heartbeat(heartbeats, "worker")
     worker_details = worker_heartbeat.details if worker_heartbeat else {}
     recovery_available, recovery_reason = recovery_availability(model, settings)
+    cancellation_available, cancellation_reason, automatic_experiment = (
+        automatic_experiment_cancel_availability(
+            trainer_heartbeat,
+            settings,
+            now=now,
+        )
+    )
     artifact_path = Path(model.artifact_path).expanduser() if model and model.artifact_path else None
     artifact_exists = bool(
         model
@@ -499,6 +507,9 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "trainer_online": trainer_heartbeat_is_fresh(trainer_heartbeat, settings),
             "recovery_available": recovery_available,
             "recovery_reason": recovery_reason,
+            "automatic_experiment": automatic_experiment,
+            "cancellation_available": cancellation_available,
+            "cancellation_reason": cancellation_reason,
             "stale_after_seconds": trainer_control_stale_after_seconds(settings),
             "latest_request": control_job_payload(latest_control_job),
             "latest_training_job": job_run_payload(latest_training_job),

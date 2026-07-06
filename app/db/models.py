@@ -112,6 +112,72 @@ class TickerSnapshot(Base):
     raw: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
 
+class UniverseEligibilitySnapshot(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "universe_eligibility_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('static', 'dynamic')",
+            name="mode",
+        ),
+        CheckConstraint(
+            "total_instruments >= 0 AND ticker_count >= 0 "
+            "AND eligible_before_limit >= 0 AND selected_count >= 0",
+            name="counts_nonnegative",
+        ),
+        CheckConstraint(
+            "selected_count <= eligible_before_limit "
+            "AND eligible_before_limit <= total_instruments",
+            name="count_order",
+        ),
+        CheckConstraint(
+            "length(policy_hash) = 64",
+            name="policy_hash_length",
+        ),
+        CheckConstraint(
+            "length(record_hash) = 64",
+            name="record_hash_length",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(policy) = 'object'",
+            name="policy_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(decisions) = 'array'",
+            name="decisions_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(selected_symbols) = 'array'",
+            name="selected_array",
+        ),
+        CheckConstraint(
+            "observed_at <= recorded_at + interval '5 seconds'",
+            name="record_time",
+        ),
+        Index("ix_universe_eligibility_observed", "observed_at"),
+        Index(
+            "ix_universe_eligibility_mode_recorded_at",
+            "mode",
+            "recorded_at",
+        ),
+        {"schema": "market"},
+    )
+
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    eligibility_schema: Mapped[str] = mapped_column(String(80), nullable=False)
+    policy: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decisions: Mapped[list] = mapped_column(JSONB, nullable=False)
+    selected_symbols: Mapped[list] = mapped_column(JSONB, nullable=False)
+    total_instruments: Mapped[int] = mapped_column(Integer, nullable=False)
+    ticker_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    eligible_before_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    release_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    record_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+
+
 class OrderBookSnapshot(Base):
     __tablename__ = "orderbook_snapshots"
     __table_args__ = (

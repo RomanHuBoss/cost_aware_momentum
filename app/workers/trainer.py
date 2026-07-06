@@ -33,10 +33,16 @@ from app.ml.lifecycle import (
 from app.ml.runtime_selection import recoverable_registry_artifact_notice
 from app.ml.training import minimum_hourly_history_timestamps_for_quality_gate
 from app.services.audit import publish_outbox
+from app.services.automatic_experiment import (
+    close_candidate_activation_request,
+    experiment_gate_is_terminal,
+    orchestrate_automatic_experiment,
+)
 from app.services.model_activation import activate_registered_model
 from app.services.model_promotion import (
     blocked_experiment_promotion_gate,
     evaluate_experiment_promotion_gate,
+    experiment_policy_binding_from_settings,
     require_experiment_policy_binding,
 )
 from app.services.trainer_control import (
@@ -89,6 +95,7 @@ class BackgroundTrainer:
             "next_check_at": None,
             "control_request": None,
             "last_control_result": None,
+            "automatic_experiment": None,
         }
 
     def request_stop(self) -> None:
@@ -186,24 +193,6 @@ class BackgroundTrainer:
             return None
 
         metrics = candidate.metrics if isinstance(candidate.metrics, dict) else {}
-        persisted_gate = metrics.get("experiment_promotion_gate")
-        stored_family = (
-            persisted_gate.get("experiment_family")
-            if isinstance(persisted_gate, dict)
-            else None
-        )
-        configured_family = (settings.auto_train_experiment_family or "").strip() or None
-        # The configured family is an explicit operator selection for this staged
-        # candidate. Exact version/SHA/horizon binding below prevents a stale or
-        # unrelated family from authorizing activation.
-        experiment_family = configured_family or stored_family
-        if experiment_family is None:
-            return {
-                "status": "WAITING",
-                "reason": "missing_auto_train_experiment_family",
-                "candidate_version": candidate.version,
-            }
-
         horizon = metrics.get("horizon_hours")
         if isinstance(horizon, bool):
             horizon = None
@@ -229,8 +218,6 @@ class BackgroundTrainer:
         try:
             policy_binding = require_experiment_policy_binding(
                 metrics.get("promotion_policy_binding")
-                if isinstance(metrics, dict)
-                else None
             )
         except RuntimeError as exc:
             return {
@@ -238,6 +225,142 @@ class BackgroundTrainer:
                 "reason": "candidate_policy_binding_missing_or_invalid",
                 "candidate_version": candidate.version,
                 "error": str(exc),
+            }
+        configured_policy_binding = experiment_policy_binding_from_settings(settings)
+        if policy_binding != configured_policy_binding:
+            failure_gate = {
+                "schema": "automatic-experiment-failure-gate-v1",
+                "passed": False,
+                "report_status": "CANDIDATE_POLICY_BINDING_STALE",
+                "reasons": ["candidate_policy_binding_mismatch_current_settings"],
+                "experiment_family": None,
+                "expected_policy_binding": policy_binding,
+                "configured_policy_binding": configured_policy_binding,
+            }
+            closure = await close_candidate_activation_request(
+                candidate_version=candidate.version,
+                experiment_family=None,
+                experiment_gate=failure_gate,
+                actor=settings.trainer_id,
+            )
+            return {
+                "status": "REJECTED",
+                "reason": "candidate_policy_binding_mismatch_current_settings",
+                "candidate_version": candidate.version,
+                "experiment_promotion_gate": failure_gate,
+                "closure": closure,
+            }
+
+        persisted_gate = metrics.get("experiment_promotion_gate")
+        stored_family = (
+            persisted_gate.get("experiment_family")
+            if isinstance(persisted_gate, dict)
+            else None
+        )
+        configured_family = (settings.auto_train_experiment_family or "").strip() or None
+        # The configured family is an explicit operator selection for this staged
+        # candidate. Exact version/SHA/horizon binding below prevents a stale or
+        # unrelated family from authorizing activation.
+        experiment_family = configured_family or stored_family
+        automatic_experiment: dict[str, object] | None = None
+        if experiment_family is None and settings.auto_train_auto_experiment:
+            self.state["phase"] = "RUNNING_EXPERIMENT"
+
+            async def update_automatic_experiment_status(
+                payload: dict[str, object],
+            ) -> None:
+                self.state["automatic_experiment"] = payload
+                if payload.get("subprocess_active") is True:
+                    self.state["phase"] = "RUNNING_EXPERIMENT"
+                await self.heartbeat_best_effort()
+
+            automatic_experiment = await orchestrate_automatic_experiment(
+                candidate,
+                settings=settings,
+                actor=settings.trainer_id,
+                status_callback=update_automatic_experiment_status,
+            )
+            resolved_family = automatic_experiment.get("experiment_family")
+            experiment_family = (
+                str(resolved_family).strip()
+                if isinstance(resolved_family, str) and resolved_family.strip()
+                else None
+            )
+            automatic_status = str(automatic_experiment.get("status") or "WAITING")
+            automatic_reason = str(
+                automatic_experiment.get("reason") or "automatic_experiment_incomplete"
+            )
+            if automatic_status == "CANCELLED":
+                failure_gate = {
+                    "schema": "automatic-experiment-failure-gate-v1",
+                    "passed": False,
+                    "report_status": "AUTOMATIC_EXPERIMENT_OPERATOR_CANCELLED",
+                    "reasons": [automatic_reason],
+                    "experiment_family": experiment_family,
+                    "cancel_request_id": automatic_experiment.get("cancel_request_id"),
+                    "requested_by": automatic_experiment.get("requested_by"),
+                    "closed_trial_ids": automatic_experiment.get("closed_trial_ids"),
+                }
+                closure = automatic_experiment.get("closure")
+                if not isinstance(closure, dict):
+                    closure = await close_candidate_activation_request(
+                        candidate_version=candidate.version,
+                        experiment_family=experiment_family,
+                        experiment_gate=failure_gate,
+                        actor=settings.trainer_id,
+                    )
+                return {
+                    "status": "REJECTED",
+                    "reason": automatic_reason,
+                    "candidate_version": candidate.version,
+                    "experiment_family": experiment_family,
+                    "automatic_experiment": automatic_experiment,
+                    "closure": closure,
+                }
+            if automatic_status == "REJECTED":
+                if experiment_family is None:
+                    return {
+                        "status": "BLOCKED",
+                        "reason": "automatic_experiment_rejected_without_family",
+                        "candidate_version": candidate.version,
+                        "automatic_experiment": automatic_experiment,
+                    }
+                failure_gate = {
+                    "schema": "automatic-experiment-failure-gate-v1",
+                    "passed": False,
+                    "report_status": "AUTOMATIC_EXPERIMENT_FAILED",
+                    "reasons": [automatic_reason],
+                    "experiment_family": experiment_family,
+                    "configuration_hash": automatic_experiment.get("configuration_hash"),
+                    "attempts": automatic_experiment.get("attempts"),
+                }
+                closure = await close_candidate_activation_request(
+                    candidate_version=candidate.version,
+                    experiment_family=experiment_family,
+                    experiment_gate=failure_gate,
+                    actor=settings.trainer_id,
+                )
+                return {
+                    "status": "REJECTED",
+                    "reason": automatic_reason,
+                    "candidate_version": candidate.version,
+                    "experiment_family": experiment_family,
+                    "automatic_experiment": automatic_experiment,
+                    "closure": closure,
+                }
+            if automatic_status != "COMPLETE":
+                return {
+                    "status": automatic_status,
+                    "reason": automatic_reason,
+                    "candidate_version": candidate.version,
+                    "experiment_family": experiment_family,
+                    "automatic_experiment": automatic_experiment,
+                }
+        if experiment_family is None:
+            return {
+                "status": "WAITING",
+                "reason": "missing_auto_train_experiment_family",
+                "candidate_version": candidate.version,
             }
 
         async with SessionFactory() as promotion_session:
@@ -250,11 +373,29 @@ class BackgroundTrainer:
                 expected_policy_binding=policy_binding,
             )
         if experiment_gate.get("passed") is not True:
+            if experiment_gate_is_terminal(experiment_gate):
+                closure = await close_candidate_activation_request(
+                    candidate_version=candidate.version,
+                    experiment_family=experiment_family,
+                    experiment_gate=experiment_gate,
+                    actor=settings.trainer_id,
+                )
+                return {
+                    "status": "REJECTED",
+                    "reason": "experiment_promotion_terminal_rejection",
+                    "candidate_version": candidate.version,
+                    "experiment_family": experiment_family,
+                    "experiment_promotion_gate": experiment_gate,
+                    "automatic_experiment": automatic_experiment,
+                    "closure": closure,
+                }
             return {
                 "status": "WAITING",
                 "reason": "experiment_promotion_gate_failed",
                 "candidate_version": candidate.version,
+                "experiment_family": experiment_family,
                 "experiment_promotion_gate": experiment_gate,
+                "automatic_experiment": automatic_experiment,
             }
 
         active = await self.active_model()
@@ -268,7 +409,9 @@ class BackgroundTrainer:
         return {
             "status": "ACTIVATED",
             "candidate_version": candidate.version,
+            "experiment_family": experiment_family,
             "experiment_promotion_gate": experiment_gate,
+            "automatic_experiment": automatic_experiment,
             "activation": activation,
         }
 
@@ -320,6 +463,11 @@ class BackgroundTrainer:
             max_symbols=settings.auto_train_max_symbols,
             horizon=settings.default_horizon_hours,
             minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
+            require_universe_replay=settings.universe_mode == "dynamic",
+            universe_replay_max_age_seconds=getattr(
+                settings, "universe_refresh_seconds", 300
+            )
+            * 2,
         )
 
     async def due_reason(
@@ -650,6 +798,32 @@ class BackgroundTrainer:
             await self.heartbeat_best_effort()
             return
 
+        if action == "CANCEL_EXPERIMENT":
+            result = {
+                "action": action,
+                "training_started": False,
+                "cancelled": False,
+                "error": "automatic_experiment_subprocess_not_running",
+                "experiment_family": details.get("experiment_family"),
+                "candidate_version": details.get("candidate_version"),
+            }
+            self.state.update(
+                {
+                    "phase": "WAITING",
+                    "healthy": True,
+                    "last_control_result": result,
+                    "control_request": None,
+                }
+            )
+            await self.finish_control_request(
+                job.id,
+                status="FAILED",
+                result=result,
+                claim_token=claim_token,
+            )
+            await self.heartbeat_best_effort()
+            return
+
         try:
             due, trigger = await self.due_reason(force_recovery=action == "RECOVER_NOW")
             if due:
@@ -728,6 +902,40 @@ class BackgroundTrainer:
                     }
                 )
                 return
+            if promotion.get("status") in {"WAITING", "BLOCKED"}:
+                self.state.update(
+                    {
+                        "phase": "WAITING",
+                        "healthy": promotion.get("status") == "WAITING",
+                        "wait_reason": {
+                            key: value
+                            for key, value in {
+                                "reason": promotion.get("reason"),
+                                "candidate_version": promotion.get("candidate_version"),
+                                "experiment_family": promotion.get("experiment_family"),
+                            }.items()
+                            if value is not None
+                        },
+                    }
+                )
+                return
+            if promotion.get("status") == "REJECTED":
+                self.state.update(
+                    {
+                        "phase": "WAITING",
+                        "healthy": True,
+                        "wait_reason": {
+                            key: value
+                            for key, value in {
+                                "reason": promotion.get("reason"),
+                                "candidate_version": promotion.get("candidate_version"),
+                                "experiment_family": promotion.get("experiment_family"),
+                            }.items()
+                            if value is not None
+                        },
+                    }
+                )
+                return
         self.state["phase"] = "CHECKING_DATA"
         due, trigger = await self.due_reason()
         if due:
@@ -800,11 +1008,14 @@ class BackgroundTrainer:
                     trigger_profile = trigger.get("training_data_profile")
                     expected_symbols = (
                         [str(item) for item in trigger_profile.get("symbols", []) if item]
-                        if isinstance(trigger_profile, dict)
+                        if settings.universe_mode == "static" and isinstance(trigger_profile, dict)
                         else None
                     )
                     load_symbols = expected_symbols if expected_symbols is not None else symbols
-                    load_max_symbols = 0 if expected_symbols is not None else settings.auto_train_max_symbols
+                    load_max_symbols = (
+                        0 if settings.universe_mode == "dynamic" or expected_symbols is not None
+                        else settings.auto_train_max_symbols
+                    )
                     self.state.update(
                         {
                             "phase": "LOADING_DATA",
@@ -819,6 +1030,8 @@ class BackgroundTrainer:
                         max_symbols=load_max_symbols,
                         horizon=settings.default_horizon_hours,
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
+                        require_universe_replay=settings.universe_mode == "dynamic",
+                        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
                     )
                     self.state["phase"] = "FITTING"
                     candidate = await asyncio.to_thread(
@@ -839,6 +1052,9 @@ class BackgroundTrainer:
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
                         policy_config=policy_evaluation_config(settings),
                         expected_symbols=expected_symbols,
+                        universe_eligibility=getattr(market_data, "universe_eligibility", None),
+                        require_universe_replay=settings.universe_mode == "dynamic",
+                        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
                     )
                     gate = evaluate_quality_gate(candidate, settings)
                     candidate_digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()

@@ -47,9 +47,11 @@ async def run(args: argparse.Namespace) -> None:
     market_data = await load_training_market_data(
         symbols,
         lookback_days=args.lookback_days,
-        max_symbols=settings.auto_train_max_symbols,
+        max_symbols=(0 if settings.universe_mode == "dynamic" else settings.auto_train_max_symbols),
         horizon=args.horizon,
         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
+        require_universe_replay=settings.universe_mode == "dynamic",
+        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
     )
     candidate = build_model_candidate(
         market_data.candles,
@@ -69,6 +71,9 @@ async def run(args: argparse.Namespace) -> None:
         source="manual_cli",
         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
         policy_config=policy_evaluation_config(settings),
+        universe_eligibility=getattr(market_data, "universe_eligibility", None),
+        require_universe_replay=settings.universe_mode == "dynamic",
+        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
     )
     quality_gate = evaluate_quality_gate(candidate, settings)
     candidate_digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()

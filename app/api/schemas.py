@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -96,7 +96,26 @@ class TradeCloseRequest(BaseModel):
 
 
 class TrainerControlRequest(BaseModel):
-    action: Literal["CHECK_NOW", "RECOVER_NOW"]
+    action: Literal["CHECK_NOW", "RECOVER_NOW", "CANCEL_EXPERIMENT"]
+    experiment_family: str | None = Field(default=None, min_length=1, max_length=160)
+    candidate_version: str | None = Field(default=None, min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_exact_experiment_target(self) -> TrainerControlRequest:
+        family = (self.experiment_family or "").strip() or None
+        candidate = (self.candidate_version or "").strip() or None
+        if self.action == "CANCEL_EXPERIMENT":
+            if family is None or candidate is None:
+                raise ValueError(
+                    "CANCEL_EXPERIMENT requires experiment_family and candidate_version"
+                )
+        elif family is not None or candidate is not None:
+            raise ValueError(
+                "Experiment target fields are only valid for CANCEL_EXPERIMENT"
+            )
+        self.experiment_family = family
+        self.candidate_version = candidate
+        return self
 
 
 class DemoSeedRequest(BaseModel):

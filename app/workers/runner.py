@@ -36,7 +36,11 @@ from app.services.market_data import (
 )
 from app.services.outcomes import find_ambiguous_intrabar_windows, resolve_counterfactual_outcomes
 from app.services.signals import expire_old_signals, publish_hourly_signals
-from app.services.universe import UniverseSelection, resolve_universe
+from app.services.universe import (
+    UniverseSelection,
+    persist_universe_selection,
+    resolve_universe,
+)
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -320,14 +324,14 @@ class Worker:
             ticker_items = await self.client.get_tickers("linear")
             selection: UniverseSelection | None = None
             previous_symbols = set(self.active_symbols)
+            selected_symbols = self.active_symbols
 
             if self._universe_refresh_due(now, backfill):
                 selection = await resolve_universe(session, ticker_items, settings, now=now)
-                self.active_symbols = selection.symbols
-                self.universe_summary = selection.summary()
-                self.last_universe_refresh = now
+                await persist_universe_selection(session, selection)
+                selected_symbols = selection.symbols
 
-            selected = set(self.active_symbols)
+            selected = set(selected_symbols)
             tickers = await sync_tickers(
                 session,
                 self.client,
@@ -370,7 +374,21 @@ class Worker:
                 "universe": summary,
             }
 
-        return await self.run_job("market_sync", scheduled, task)
+        result = await self.run_job("market_sync", scheduled, task)
+        committed = result.get("previous_details") if result.get("skipped") == "already_completed" else result
+        summary = committed.get("universe") if isinstance(committed, dict) else None
+        if isinstance(summary, dict):
+            symbols = summary.get("selected_symbols")
+            if isinstance(symbols, list) and all(isinstance(symbol, str) for symbol in symbols):
+                self.active_symbols = tuple(symbols)
+                self.universe_summary = summary
+            observed_at = summary.get("observed_at")
+            if isinstance(observed_at, str):
+                try:
+                    self.last_universe_refresh = datetime.fromisoformat(observed_at)
+                except ValueError:
+                    logger.warning("Invalid persisted universe observed_at", extra={"value": observed_at})
+        return result
 
     async def hourly_market_close_job(self, event_time: datetime) -> dict:
         async def task(session):

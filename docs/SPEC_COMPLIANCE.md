@@ -1,13 +1,13 @@
 # Specification Compliance
 
-Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.28.2, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-06. Статусы основаны на фактическом коде release 1.34.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
 | Advisory-only, read-only Bybit | Реализовано | `app/bybit/client.py` содержит GET market/account reads; order mutation methods отсутствуют. |
 | PostgreSQL-only | Реализовано | SQLAlchemy/PostgreSQL models и Alembic; SQLite fallback отсутствует. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
-| Point-in-time dynamic training cohort | Реализовано 1.28.2 для candle-history cohort | При ограничении `AUTO_TRAIN_MAX_SYMBOLS` cohort выбирается только по confirmed candle coverage до `latest - horizon`, требует minimum history и reach-to-cutoff; latest 24h ticker turnover исключён. Exact preflight symbol list закрепляется до fit. Полная историческая reconstruction фактического live-universe membership/eligibility до начала локального хранения по-прежнему отсутствует. |
+| Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; snapshot hashes и `dynamic` mode повторно проверяются; static-mode evidence исключено. Начиная с 1.31.0 PostgreSQL выбирает только first-rollout и latest-prior snapshots для фактических hourly decision timestamps, full rows потоково валидируются, а в памяти остаются compact replay fields. Pre-1.29.0/pre-rollout rows исключаются, stale/missing post-rollout evidence блокирует run. Exact membership до начала ledger не реконструируется. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках на стабильных участках и после наблюдаемой смены cadence. Будущая фактическая ставка не участвует в ex-ante selection. Historical forecast snapshots и interval до первой локально наблюдаемой spec-записи не реконструируются. |
@@ -18,11 +18,99 @@
 | Risk-budgeted experiment portfolio accounting | Реализовано 1.28.0 | Nominal и cost-stress experiment paths распределяют simultaneous cohort по одинаковому stress-risk budget, сохраняют абсолютный open-risk reserve до exit и пропорционально ограничивают новые entries остатком `MAX_TOTAL_OPEN_RISK_RATE` и leverage/margin-reserve capacity. Evidence раскрывает risk/margin limiting и exact policy binding. Historical min order, depth, operator ordering и profile-specific account state не реконструируются. |
 | Unconditional observed-opportunity policy inference | Реализовано 1.26.4 | Economic mean, horizon phases and moving-block LCB use every observed decision hour. A real hour with `NO TRADE` contributes zero; missing market hours are not synthesized. Trade/no-trade cohort counts are explicit and fail-closed validated for candidate and incumbent. This corrects selection-conditioned inference but does not establish profitability. |
 | OI/basis/funding/liquidity/context features | Частично реализовано 1.22.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age с interval effective at decision time и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
-| PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.28.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Nominal и cost-stress ×1,5/×2 paths используют union реально наблюдавшихся decision-to-horizon окон, cumulative hourly mark-close MTM и deterministic risk-budgeted sizing с aggregate risk/margin caps; timestamps, terminal return и max drawdown сверяются fail-closed. Выбранная конфигурация получает `REJECTED_COST_STRESS`, если любой обязательный stress-path compounds ниже 0%. Genuine `NO TRADE`/holding hours остаются нулями, недоступные календарные разрывы исключаются и раскрываются counts. Новая family требует immutable preregistration; normal activation требует report v4/gate v3, exact artifact/deployment-policy binding и passed cost-stress evidence. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, automated exclusion coding, experiments outside ledger и автоматический запуск experiment family отсутствуют. |
+| PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.34.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Nominal и cost-stress ×1,5/×2 paths используют union реально наблюдавшихся decision-to-horizon окон, cumulative hourly mark-close MTM и deterministic risk-budgeted sizing с aggregate risk/margin caps; timestamps, terminal return и max drawdown сверяются fail-closed. Выбранная конфигурация получает `REJECTED_COST_STRESS`, если любой обязательный stress-path compounds ниже 0%. Genuine `NO TRADE`/holding hours остаются нулями, недоступные календарные разрывы исключаются и раскрываются counts. Новая family требует immutable preregistration; normal activation требует report v4/gate v3, exact artifact/deployment-policy binding и passed cost-stress evidence. Automatic bounded RR/EV family объявляется до trial и не адаптируется к returns. Release 1.33.0 добавляет exact-target operator cancellation; release 1.34.0 запускает formal subprocess в изолированном process tree и завершает POSIX process group либо Windows tree при cancel, timeout, non-zero exit и control failure. Structured tree evidence попадает в append-only `FAILED`, control result и candidate terminal gate; preregistration/предыдущие events не изменяются, candidate activation request закрывается, incumbent сохраняется. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, arbitrary hyperparameter search, experiments outside ledger и независимая external replication отсутствуют. |
 | Production drift monitoring | Частично реализовано 1.28.1 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют и инвалидируют calibration evidence. Report v3 раздельно сохраняет critical/blocking/warning evidence: independent critical feature/probability/actionability drift или valid calibration drift не может быть подавлен одновременно низким coverage, warm-up или другим blocker и создаёт restart-persistent quarantine exact active version. Empty/sub-minimum warm-up остаётся `BLOCKED` без ложного missingness critical и без bootstrap deadlock. Runtime/signal version обязана совпадать с current active registry; latch снимается только другой model version. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
 | Fail-closed model activation gate | Реализовано 1.28.0 | Normal activation требует passed model quality gate и experiment promotion gate v3 с passed cost-stress evidence. Selected preregistered trial должен совпасть по version/SHA-256/horizon и deployment-policy binding v2; изменение production fees/slippage/stop-gap/EV-RR thresholds или risk/max-open-risk/margin-reserve sizing policy после evidence блокирует activation. Fresh/legacy candidate без current binding остаётся inactive. Emergency rollback требует явного flag + reason и сохраняет исходные evidence в audit. |
-| Deferred background promotion reconciliation | Реализовано 1.26.3 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. `READY` family должна быть связана с exact artifact и persisted deployment-policy binding; current production settings также обязаны совпасть. Missing/non-READY/mismatched/legacy evidence оставляет candidate inactive. Experiment family сама автоматически не запускается. |
+| Deferred background promotion reconciliation | Реализовано 1.33.0 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. Явная operator family имеет приоритет; иначе при `AUTO_TRAIN_AUTO_EXPERIMENT=true` создаётся deterministic candidate-specific family, immutable preregistration фиксируется до первого trial и bounded configurations выполняются последовательно под advisory lock. Пока family incomplete, новый candidate не обучается. `READY` evidence всё равно обязана совпасть с exact artifact/version/horizon и persisted deployment-policy binding; terminal governance rejection, bounded retry exhaustion или authenticated exact-target operator cancellation транзакционно закрывают activation request с audit/outbox evidence. Отмена/terminal rejection завершает текущий scheduling cycle и не запускает немедленно новый candidate. |
+| Operator-visible automatic experiment control | Реализовано 1.34.0 | Fresh trainer heartbeat публикует exact family/candidate, stage, configuration, attempt и `subprocess_active`. `CANCEL_EXPERIMENT` требует exact target и CSRF/authenticated operator context. Formal subprocess запускается в isolated POSIX session/process group или Windows `CREATE_NEW_PROCESS_GROUP`; cancel/timeout/failure завершает всю доступную group/tree и сохраняет `subprocess-tree-termination-v1`. Mismatched/stale requests fail closed; pending `CHECK_NOW`/`RECOVER_NOW` не блокирует cancel; open trial закрывается append-only `FAILED`; preregistration и прошлые results не удаляются. Linux descendant runtime доказан; Windows runtime и намеренно detached POSIX `setsid()` descendants остаются непроверенными/вне group guarantee. |
 | Candidate/live recommendation attrition diagnostics | Реализовано 1.26.0 prospectively | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются, incomplete/legacy/conflicting evidence блокируется. Report v2 отдельно показывает model quality и experiment-promotion attrition. История до 1.24.0 не реконструируется; это diagnostic attribution, а не causal decomposition или основание ослаблять gates. |
+
+
+## Work package: automatic-experiment process-tree containment
+
+Release 1.34.0 закрывает подтверждённый operational defect release 1.33.0. Exact-target cancellation завершала direct Python child, но не его descendants. Реальный regression на исходном release создавал sleeping grandchild с отдельными `DEVNULL` streams: после `CANCEL_EXPERIMENT` direct child завершался, а grandchild продолжал жить. Такой процесс мог продолжить CPU/IO и писать research evidence после terminal operator action.
+
+Реализовано:
+
+- subprocess создаётся только с поддерживаемым containment contract: POSIX `start_new_session=True` или Windows `CREATE_NEW_PROCESS_GROUP`; неизвестная OS блокирует запуск;
+- POSIX cleanup адресует весь process group через `SIGTERM`, проверяет live non-zombie group members и при необходимости применяет `SIGKILL`;
+- Windows contract использует built-in `taskkill /PID <root> /T`, затем `/F`; ненулевой результат обоих вызовов не считается подтверждённой остановкой;
+- одинаковый cleanup применяется при authenticated cancel, timeout, non-zero root exit, exception в cancellation/control probe и task cancellation;
+- termination result имеет immutable JSON-compatible schema `subprocess-tree-termination-v1` с platform, scope, root/group PID, graceful/force action, verification method и `tree_termination_verified`;
+- process-tree evidence передаётся в append-only failed trial, trainer status, control completion и candidate terminal gate;
+- regression tests запускают настоящий grandchild и доказывают его отсутствие после cancel, timeout, non-zero root exit и probe failure.
+
+Ограничения: Linux runtime proof относится к descendants, наследующим process group. Процесс, который намеренно вызывает `setsid()`/создаёт отдельную session, может выйти из POSIX group containment. Windows branch проверена unit-контрактом flags/`taskkill`, но реальный Windows smoke не выполнялся. Это operational safety, а не доказательство прибыльности или качества модели.
+
+
+## Work package: automatic preregistered candidate experiment lifecycle
+
+Release 1.32.0 closes the operational gap between a quality-passed inactive background candidate and the existing experiment-promotion gate. Previously the trainer could only poll an externally prepared family; with an empty `AUTO_TRAIN_EXPERIMENT_FAMILY`, the candidate remained inactive indefinitely and later scheduling iterations could train additional candidates without completing governance for the exact artifact.
+
+Implemented contract:
+
+1. An explicit operator-provided family still has precedence.
+2. Otherwise, a deterministic family name is bound to candidate version, artifact SHA-256, immutable governance defaults and the complete bounded RR/EV plan.
+3. `scripts.backtest --prepare-preregistration` derives the exact final-test cohort and fixed configuration without starting a trial.
+4. Every placeholder is replaced, the full search space and stopping rule are fixed, and registration commits before the first `STARTED` event.
+5. Configurations run sequentially; observed returns cannot add, delete or reorder grid values.
+6. The exact deployment thresholds must be one preregistered configuration, and activation remains impossible unless that exact policy is selected and every existing quality/PBO/DSR/dependence/cost-stress gate passes.
+7. Successful trials are idempotently skipped, failed trials have a bounded retry budget, subprocess aborts close any open ledger attempt append-only, and stale open attempts are recovered after the configured timeout.
+8. Pending governance suppresses creation of another candidate; terminal rejection closes only the inactive candidate request and never deactivates the incumbent.
+
+The implementation is not generic AutoML, nested hyperparameter optimization or evidence of profitability. It explores only the declared RR/EV threshold grid and deliberately rejects adaptive search based on observed trial returns.
+
+
+## Work package: PostgreSQL-native as-of universe replay loading
+
+Release 1.31.0 устраняет масштабируемый, но семантически скрытый дефект реализации replay. Версия 1.30.0 запрашивала все пятиминутные `UniverseEligibilitySnapshot` в lookback-окне и материализовала их ORM-объекты вместе с крупными JSON `policy` и `decisions`, хотя research dataset принимает решения почасово и для каждого timestamp использует только один latest-prior snapshot. При годовом lookback это создавало примерно двенадцатикратное избыточное число snapshot rows до учёта размера JSON evidence.
+
+Реализовано:
+
+- `app/ml/universe_replay.py::load_point_in_time_universe_snapshots` передаёт PostgreSQL unique UTC decision timestamps одним `TIMESTAMPTZ[]`;
+- correlated `LEFT JOIN LATERAL` выбирает commit availability `recorded_at <= decision_time`, а не observation-time range;
+- query возвращает первый rollout snapshot и только distinct `recorded_at`, реально требуемые hourly decisions; все строки с одинаковым выбранным `recorded_at` сохраняются, чтобы ambiguity по-прежнему блокировалась fail-closed;
+- full immutable rows читаются через streaming result с bounded fetch batch, затем повторно проверяются schema, policy hash, record hash и selected-symbol consistency;
+- после проверки retained DataFrame содержит только `observed_at`, `recorded_at`, `selected_symbols`, `policy_hash` и `record_hash`; bulky `policy`/`decisions` не накапливаются в process memory;
+- migration `0016_universe_replay_asof` добавляет индекс `(mode, recorded_at)`, используемый latest-prior lookup;
+- replay evidence раскрывает loader schema, число requested decision timestamps и число streamed/retained snapshots.
+
+Структурная граница результата без duplicate availability: не более `N + 1` snapshot rows для `N` unique decision timestamps вместо всех пятиминутных rows lookback. Actual PostgreSQL `EXPLAIN ANALYZE`, latency и RSS на production-size ledger не измерены из-за отсутствия отдельной PostgreSQL среды; integration test для reduced result и index plan добавлен, но в этой итерации пропущен. Изменение не меняет membership semantics, thresholds или доказательность прибыли.
+
+
+## Work package: fail-closed point-in-time universe replay
+
+Release 1.30.0 соединяет prospective eligibility ledger 1.29.0 с model training, background preflight и formal backtest. До исправления наличие ledger не влияло на research dataset: labels по-прежнему строились из candle-coverage cohort, поэтому instrument мог попасть в train/holdout даже когда production filters исключали его по turnover, spread, age, status или rank limit.
+
+Реализовано:
+
+- `app/ml/universe_replay.py` выполняет deterministic as-of join по **commit availability** `recorded_at <= decision_time`, а не по времени наблюдения;
+- для каждого decision timestamp используется ровно один latest committed snapshot; duplicate availability, invalid hashes/timestamps/symbol arrays и contradictory persisted evidence блокируются;
+- rows до первого committed prospective snapshot исключаются и раскрываются отдельно, без фиктивной реконструкции;
+- после rollout любой snapshot старше `2 × UNIVERSE_REFRESH_SECONDS` блокирует весь run, а не создаёт silent fallback;
+- dataset сохраняет только symbols из `selected_symbols` соответствующего snapshot; LONG/SHORT pair остаётся атомарной, потому что фильтрация выполняется по `symbol × decision_time`;
+- dynamic loader загружает все symbols в bounded lookback перед replay, поэтому current coverage ranking не может заранее выбросить исторически выбранный instrument;
+- background `training_data_profile` использует тот же replay и честно ждёт minimum prospective timestamps;
+- candidate artifact, quality metrics, backtest report и preregistered trial configuration сохраняют schema, bounds, row attrition, snapshot age, policy hashes и exact record hashes.
+
+Ограничения: evidence до migration/первого successful 1.29.0 refresh отсутствует и не восстанавливается. Snapshot cadence остаётся worker-observed REST evidence, а не exchange-native historical universe feed. Replay не реконструирует historical orderbook, min order, latency, operator action или delisted instruments до local observation. Он устраняет selection look-ahead и cohort mismatch, но не доказывает прибыльность и не увеличивает частоту рекомендаций.
+
+
+## Work package: prospective universe eligibility ledger
+
+Release 1.29.0 создаёт воспроизводимый point-in-time источник для будущей exact production-universe reconstruction. До исправления dynamic universe вычислялся из текущих instrument/ticker responses, сохранялся только в памяти worker и попадал лишь в агрегированный `JobRun.details`; при этом detailed ticker snapshots удалялись retention job. После нескольких часов нельзя было доказать, какой конкретно инструмент был eligible, исключён или отсечён лимитом и на основании каких observed значений.
+
+Реализовано:
+
+- каждый static/dynamic refresh формирует полный decision set по всем рассматриваемым instrument rows, включая `eligible_before_limit`, final `selected`, deterministic rank и stable reason code;
+- evidence содержит instrument category/status/launch time/age/pre-listing/contract/symbol type и observed ticker last/bid/ask/turnover/spread;
+- exact selection policy нормализуется, хешируется SHA-256 и сохраняется вместе с selected symbols и coverage counts;
+- migration `0015_universe_eligibility` добавляет `market.universe_eligibility_snapshots`; record hash, JSON shape/count constraints и PostgreSQL trigger делают snapshot append-only;
+- snapshot, ticker/orderbook writes, initial backfill и `market_sync` terminal status находятся в одной PostgreSQL transaction;
+- worker обновляет `active_symbols`, summary и refresh timestamp только после successful commit, а не во время незавершённой transaction;
+- restart в ту же scheduled minute может восстановить committed universe из previous successful `market_sync` details.
+
+Ограничения: ledger начинает накапливаться только после migration/upgrade; exchange server timestamp для all-tickers response недоступен в текущем client contract, поэтому `observed_at` является UTC временем получения/решения worker. Static mode сохраняет configuration decision, но не пытается выдать рыночные поля за eligibility inputs. Начиная с 1.30.0 training/backtest потребляют ledger через fail-closed point-in-time replay. До первого prospective snapshot история остаётся intentionally unavailable.
 
 
 ## Work package: point-in-time training universe integrity

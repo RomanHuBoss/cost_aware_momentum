@@ -31,4 +31,4 @@ def test_alembic_graph_has_one_expected_head() -> None:
     config.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["0014_ui_exposure_ledger"]
+    assert script.get_heads() == ["0016_universe_replay_asof"]

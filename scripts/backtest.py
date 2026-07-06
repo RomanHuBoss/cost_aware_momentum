@@ -29,6 +29,7 @@ from app.ml.training import (
     validate_outcome_probability_matrix,
     validate_policy_evaluation_metadata,
 )
+from app.ml.universe_replay import apply_point_in_time_universe_replay
 from app.research.overfitting import (
     EXPERIMENT_COST_STRESS_SCHEMA_VERSION,
     EXPERIMENT_PERIOD_RETURN_SCHEMA_VERSION,
@@ -1066,6 +1067,8 @@ async def run(args) -> None:
             symbols,
             lookback_days=None,
             max_symbols=0,
+            require_universe_replay=settings.universe_mode == "dynamic",
+            universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
         )
         frame = market_data.candles
         runtime = load_validated_artifact(
@@ -1098,6 +1101,12 @@ async def run(args) -> None:
             require_mark_timeline=True,
             liquidation_leverage=runtime.research_leverage,
             liquidation_equity_reserve_fraction=(runtime.liquidation_equity_reserve_fraction),
+        )
+        dataset, universe_replay = apply_point_in_time_universe_replay(
+            dataset,
+            market_data.universe_eligibility,
+            max_snapshot_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+            required=settings.universe_mode == "dynamic",
         )
         split = chronological_split(dataset, purge_rows=horizon)
         round_trip_cost_bps = (
@@ -1181,6 +1190,10 @@ async def run(args) -> None:
             "intrahorizon_mark_to_market_schema": (
                 INTRAHORIZON_MTM_PATH_SCHEMA_VERSION
             ),
+            "universe_replay_schema": universe_replay["schema"],
+            "universe_replay_required": universe_replay["required"],
+            "universe_replay_policy_hashes": universe_replay["policy_hashes"],
+            "universe_replay_record_hashes": universe_replay["record_hashes"],
         }
         if args.prepare_preregistration:
             template = build_preregistration_template(
@@ -1262,6 +1275,7 @@ async def run(args) -> None:
             "prediction": prediction_metrics,
             "policy": trade_metrics,
             "hourly_continuity": dataset.attrs.get("hourly_continuity") or {},
+            "universe_replay": universe_replay,
             "artifact": runtime.metadata(),
             "experiment": {
                 "trial_id": str(trial_id),

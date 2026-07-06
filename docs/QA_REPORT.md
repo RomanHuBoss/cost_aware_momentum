@@ -1,96 +1,123 @@
 # QA Report
 
-Release: **1.28.2**
+Release: **1.34.0**
 
-Date: **2026-07-06**  
-Scope: **point-in-time training universe integrity**
+Date: **2026-07-06**
+Scope: **automatic-experiment process-tree containment**
 
 ## Environment
 
-- Python: 3.13.5 in isolated project virtual environment `/mnt/data/cam_work/cost_aware_momentum-main/.venv`.
+- Python: 3.13.5 in an isolated virtual environment.
 - Project requirement: Python >=3.12.
 - Node syntax check available.
 - Separate PostgreSQL integration database: not configured.
-- Input archive SHA-256: `8552ca31c0879d8556754f92f34b58506e1ae2865e0cb96424124e79e7919ec4`.
-- Input documentation limitation: files named in the generic iteration prompt (`docs/ARCHITECTURE.md`, `MODEL_CARD.md`, `CONFIGURATION.md`, `SECURITY.md`, `INCIDENT_RUNBOOK.md`, `OPERATOR_MANUAL.md`) were absent from the supplied archive; code and available repository evidence were used instead.
+- Windows runner: not available.
+- Input archive: `cost_aware_momentum-1.33.0-automatic-experiment-operator-control.zip`.
+- Input archive SHA-256: `a4abefe4a3b54ebea572d8a6af70e50984f18865c60bcc9ac4c476ca0dc89266`.
 
 ## Baseline before changes
 
 | Check | Result |
 |---|---|
-| source version | 1.28.1 |
-| source inventory | 234 files; 93 `app/scripts` Python + `manage.py`; 86 test Python; 12 `docs/*.md` + README; 14 migration revisions; head `0014_ui_exposure_ledger` |
+| source version | 1.33.0 |
+| source inventory | 256 release files including manifest; 95 production Python files; 92 test Python files; 16 migration revisions; head `0016_universe_replay_asof` |
 | `python --version` | PASSED: Python 3.13.5 |
-| `python -m pip check` | PASSED in isolated venv: no broken requirements |
+| `python -m pip check` | PASSED: no broken requirements |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 644 passed, 4 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED: 684 passed, 7 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED |
+| Alembic heads | PASSED: one head, `0016_universe_replay_asof` |
 
-The host/global Python environment was not used as release evidence because project dependencies were initially absent and an unrelated global Pillow/MoviePy conflict existed. The isolated project venv passed `pip check`.
+## Confirmed defects/gap
 
-## Confirmed defect and red evidence
+1. Exact operator cancellation terminated only the direct Python child; a grandchild with detached streams survived and could continue research work after terminal cancellation evidence.
+2. Timeout and internal control-probe cleanup reused the same direct-child-only logic.
+3. A non-zero direct child could exit while a descendant remained alive because the old exception cleanup skipped an already-finished root process.
+4. No explicit Windows descendant-tree spawn/termination contract existed.
+5. Terminal cancellation/failure evidence did not disclose whether a tree-aware mechanism had been used or verified.
 
-`app/ml/lifecycle.py::_select_training_symbols` selected the current top-turnover symbols from the newest `TickerSnapshot`, then applied that list to the historical lookback. This used selection information later than the label cutoff and could prefer a newly active high-turnover symbol without enough historical rows.
+No model quality, PBO, DSR, dependence, cost-stress, risk, artifact or deployment-policy gate was lowered.
 
-A second time-of-check/time-of-use inconsistency existed in `app/workers/trainer.py`: `due_reason()` persisted a profile for one symbol set, but `run_training_once()` resolved the dynamic ranking again before loading data. The candidate could therefore be fit on a different cohort than the trigger profile.
+## Red evidence
 
-Original red command:
+Behavioral reproduction on the unmodified 1.33.0 archive:
 
 ```text
-python -m pytest -q tests/unit/test_training_universe_integrity_2026_07_06.py
+AssertionError: grandchild 28366 survived old direct-child cancellation
+1 failed
 ```
 
-Result before implementation:
+Initial regression collection:
 
 ```text
-1 failed
-actual: ['HOT_NEW_USDT']
-expected: ['BTCUSDT', 'ETHUSDT']
+ModuleNotFoundError: No module named 'app.services.process_tree'
+1 collection error
 ```
 
 ## Added regression coverage
 
-- Dynamic capped selection does not query `ticker_snapshots`.
-- Selection query is bounded by lookback and label cutoff.
-- Minimum eligible rows and reach-to-cutoff requirements are present.
-- Deterministic mature-history cohort replaces the artificial latest-turnover symbol.
-- Existing lifecycle, activation, recovery and data-profile tests remain green.
+- POSIX subprocess isolation requires `start_new_session=True`.
+- Windows subprocess isolation requires `CREATE_NEW_PROCESS_GROUP`.
+- Unsupported platforms fail before spawn.
+- Windows commands target descendants via `/T` and use `/F` fallback.
+- Windows termination branch emits verified tree evidence under mocked host execution.
+- A real Linux grandchild is absent after exact operator cancellation.
+- A real Linux grandchild is absent after timeout.
+- A real Linux grandchild is absent after control-probe failure.
+- A real Linux grandchild is absent after non-zero root exit.
+- Process-tree evidence reaches failed trial/candidate/control/status paths.
 
 ## Post-change checks
 
 | Check | Result |
 |---|---|
-| `python -m pip check` | PASSED: no broken requirements |
+| `python -m pip check` | PASSED |
 | `python -m compileall -q app scripts tests manage.py` | PASSED |
 | `python -m ruff check .` | PASSED |
-| `python -m pytest -q` | PASSED: 645 passed, 4 skipped, 62 warnings |
-| targeted training-universe regression | PASSED: 1 passed |
-| related trainer/lifecycle suite | PASSED: 24 passed |
+| `python -m pytest -q` | PASSED: 691 passed, 7 skipped, 62 warnings |
+| targeted process-tree/operator-control | PASSED: 15 passed |
 | `node --check web/js/app.js` | PASSED |
-| Alembic heads | PASSED: one head, `0014_ui_exposure_ledger` |
-| application/package version consistency | PASSED: 1.28.2 |
-| release integrity | PASSED: 236 eligible files checked against 236 manifest entries |
-| final ZIP test/re-extraction | PASSED: one root directory; `unzip -t` clean; re-extracted manifest verified |
-| final release inventory | PASSED: 237 files including `SHA256SUMS`; 94 production Python including `manage.py`; 87 test Python; 13 `docs/*.md` |
+| Alembic heads | PASSED: one head, `0016_universe_replay_asof` |
+| application/package version | PASSED: 1.34.0 |
 
 ## Environment-dependent checks
 
 | Check | Result |
 |---|---|
-| `python manage.py doctor` | FAILED environment preflight: `.env` absent; default secrets; `psql`/`pg_dump`/`pg_restore` absent; PostgreSQL connection refused |
-| `python manage.py test --require-integration` | NOT RUN: `POSTGRES_ADMIN_URL` or `TEST_DATABASE_URL` is required |
-
-## Warnings
-
-62 warnings are existing Joblib/NumPy and pandas timedelta deprecations. No new warning category was introduced.
+| direct PostgreSQL integration collection | SKIPPED: 7 tests; `TEST_DATABASE_URL` unavailable |
+| exact cancel claim/finish against PostgreSQL | NOT RUN: no isolated PostgreSQL test database |
+| concurrent API/trainer advisory-lock contention | NOT RUN |
+| actual Windows `CREATE_NEW_PROCESS_GROUP` + `taskkill` | NOT RUN: no Windows host |
+| intentionally detached POSIX `setsid()` descendant | NOT COVERED: outside process-group contract |
+| `python manage.py doctor` | NOT RUN successfully: no project `.env`, PostgreSQL server or PostgreSQL command-line tools |
+| `python manage.py test --require-integration` | NOT RUN: no isolated integration database |
+| real Bybit forward cycle | NOT RUN |
 
 ## Release boundary
 
-- Database migration: none.
-- Public HTTP request/response schema: unchanged.
-- `.env` variables/defaults: unchanged.
-- Model feature/label/runtime artifact schemas: unchanged.
-- Risk, cost, direction, TP/SL, actionability and activation thresholds: unchanged.
-- Dynamic training-universe selection semantics changed from latest-turnover ranking to label-eligible historical coverage ranking.
-- Existing active artifacts remain runnable; retraining is recommended for new governed evidence under the corrected cohort contract.
+- Database migration: **none**; head remains `0016_universe_replay_asof`.
+- New `.env` settings: **none**.
+- HTTP request/status schema: **unchanged**.
+- Model features, labels, artifact schema and prediction contract: unchanged.
+- Risk, cost, directional, TP/SL and activation thresholds: unchanged.
+- New runtime dependency: none.
+- Bybit client remains read-only and advisory-only.
+
+## Residual limitations
+
+- POSIX protection is process-group based; a deliberately self-detaching child can escape it.
+- The Windows branch is unit-tested but not run on a Windows host.
+- Process-tree evidence does not prove that an external OS/container resource escaped nowhere outside the group contract.
+- Cancellation remains terminal and does not delete or rewrite prior experiment evidence.
+- The change does not prove profitability, improve model quality or increase recommendation frequency.
+
+## Release archive verification
+
+- Clean release inventory: 260 files including `SHA256SUMS`.
+- SHA-256 manifest: 259/259 source entries verified after re-extraction.
+- ZIP integrity: PASSED.
+- Archive structure: one root directory, `cost_aware_momentum-1.34.0`.
+- Release-boundary scan: no `.env`, credentials, virtual environment, caches, bytecode, egg-info, build/dist output or real model artifacts.
+- Full suite from the re-extracted release: 691 passed, 7 skipped, 62 warnings.
+- Re-extracted Ruff, compileall, JavaScript syntax, dependency and Alembic single-head checks: PASSED.

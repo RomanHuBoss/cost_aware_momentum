@@ -182,9 +182,10 @@
     <div id="trainer-content" class="trainer-content" aria-live="polite">
       <div class="trainer-loading">Загрузка состояния обучателя…</div>
     </div>
-    <p class="trainer-safety-note">Операторский запуск не отключает минимальную историю, coverage, temporal validation, quality gate и защиту активной модели.</p>
+    <p class="trainer-safety-note">Операторский запуск не отключает минимальную историю, coverage, temporal validation, quality gate и защиту активной модели. Отмена останавливает только exact текущий subprocess; preregistration и append-only evidence не удаляются.</p>
     <div class="dialog-actions trainer-actions">
       <button id="trainer-refresh-button" class="button secondary" type="button">Обновить состояние</button>
+      <button id="trainer-cancel-experiment-button" class="button danger" type="button">Остановить experiment</button>
       <span class="action-spacer"></span>
       <button id="trainer-check-button" class="button secondary" type="button">Проверить данные сейчас</button>
       <button id="trainer-recover-button" class="button primary" type="button">Запустить восстановительное обучение</button>

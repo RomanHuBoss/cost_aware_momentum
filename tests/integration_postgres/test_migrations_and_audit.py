@@ -6,9 +6,11 @@ import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from app.config import Settings
 from app.db.engine import rebuild_engine
@@ -24,15 +26,21 @@ from app.db.models import (
     ServiceHeartbeat,
     SignalOutcome,
     UIGlossary,
+    UniverseEligibilitySnapshot,
 )
+from app.ml.universe_replay import load_point_in_time_universe_snapshots
 from app.services.audit import append_audit_event
 from app.services.idempotency import IdempotencyConflict, get_cached, store_cached
 from app.services.outcomes import resolve_counterfactual_outcomes
 from app.services.trainer_control import (
     TRAINER_CONTROL_JOB_NAME,
     acquire_trainer_control_lock,
+    claim_automatic_experiment_cancel,
+    enqueue_trainer_control,
+    finish_automatic_experiment_cancel,
     recover_stale_trainer_control,
 )
+from app.services.universe import persist_universe_selection, select_dynamic_universe
 
 pytestmark = pytest.mark.integration
 
@@ -71,7 +79,7 @@ async def test_seeded_reference_data(database_url: str) -> None:
         assert (await session.execute(select(CapitalProfile))).scalars().all()
         assert len((await session.execute(select(UIGlossary))).scalars().all()) >= 10
         revision = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert revision == "0009_candle_receipt_availability"
+        assert revision == "0016_universe_replay_asof"
         account_column = (
             await session.execute(
                 text(
@@ -161,6 +169,52 @@ async def test_seeded_reference_data(database_url: str) -> None:
         ).scalar_one()
         assert "INVALID_INPUT" in valuation_constraint
         assert "PATH_UNAVAILABLE" in valuation_constraint
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_universe_eligibility_snapshot_is_append_only(database_url: str) -> None:
+    settings = Settings(database_url=database_url)
+    engine, factory = rebuild_engine(settings)
+    observed_at = datetime.now(UTC)
+    snapshot = UniverseEligibilitySnapshot(
+        observed_at=observed_at,
+        recorded_at=observed_at,
+        mode="static",
+        eligibility_schema="universe-eligibility-snapshot-v1",
+        policy={"schema": "universe-selection-policy-v1", "mode": "static"},
+        policy_hash="a" * 64,
+        decisions=[
+            {
+                "symbol": "PYTESTUSDT",
+                "eligible_before_limit": True,
+                "selected": True,
+                "rank": 1,
+                "reason_code": "static_configured",
+            }
+        ],
+        selected_symbols=["PYTESTUSDT"],
+        total_instruments=1,
+        ticker_count=0,
+        eligible_before_limit=1,
+        selected_count=1,
+        release_version="integration-test",
+        record_hash="b" * 64,
+    )
+    async with factory() as session, session.begin():
+        session.add(snapshot)
+        await session.flush()
+        snapshot_id = snapshot.id
+
+    async with factory() as session:
+        with pytest.raises(DBAPIError, match="universe eligibility snapshots are immutable"):
+            await session.execute(
+                update(UniverseEligibilitySnapshot)
+                .where(UniverseEligibilitySnapshot.id == snapshot_id)
+                .values(selected_count=0)
+            )
+            await session.commit()
+        await session.rollback()
     await engine.dispose()
 
 
@@ -256,6 +310,123 @@ async def test_stale_trainer_control_is_failed_and_requeued_atomically(database_
             "TRAINER_CONTROL_REQUEUED",
         }
         assert outbox_types == audit_types
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_exact_automatic_experiment_cancel_claim_is_audited_and_terminal(
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import trainer_control as trainer_control_module
+
+    settings = Settings(database_url=database_url)
+    engine, factory = rebuild_engine(settings)
+    family = "auto-integration-family"
+    candidate = "candidate-integration-v1"
+    now = datetime.now(UTC)
+    async with factory() as session, session.begin():
+        await session.execute(delete(JobRun).where(JobRun.job_name == TRAINER_CONTROL_JOB_NAME))
+        pending_check = JobRun(
+            job_name=TRAINER_CONTROL_JOB_NAME,
+            scheduled_for=now - timedelta(seconds=1),
+            started_at=now - timedelta(seconds=1),
+            status="PENDING",
+            worker_id="operator:integration",
+            details={
+                "action": "CHECK_NOW",
+                "requested_by": "integration-operator",
+                "requested_at": (now - timedelta(seconds=1)).isoformat(),
+            },
+        )
+        session.add(pending_check)
+        await session.flush()
+        pending_check_id = pending_check.id
+        request, created = await enqueue_trainer_control(
+            session,
+            action="CANCEL_EXPERIMENT",
+            operator="integration-operator",
+            settings=settings,
+            experiment_family=family,
+            candidate_version=candidate,
+        )
+        assert created is True
+        request_id = request.id
+
+    monkeypatch.setattr(trainer_control_module, "SessionFactory", factory)
+    claim = await claim_automatic_experiment_cancel(
+        experiment_family=family,
+        candidate_version=candidate,
+        accepted_by="trainer-integration",
+    )
+    assert claim is not None
+    assert claim.request_id == request_id
+    assert claim.experiment_family == family
+    assert claim.candidate_version == candidate
+
+    completed = await finish_automatic_experiment_cancel(
+        claim,
+        status="SUCCESS",
+        result={"action": "CANCEL_EXPERIMENT", "cancelled": True},
+        actor="trainer-integration",
+    )
+    assert completed is True
+
+    async with factory() as session:
+        row = await session.get(JobRun, request_id)
+        assert row is not None
+        assert row.status == "SUCCESS"
+        assert row.details["result"]["cancelled"] is True
+        superseded = await session.get(JobRun, pending_check_id)
+        assert superseded is not None
+        assert superseded.status == "FAILED"
+        assert superseded.details["result"]["error"] == (
+            "superseded_by_automatic_experiment_cancel"
+        )
+        audit_types = set(
+            (
+                await session.execute(
+                    select(AuditEvent.event_type).where(AuditEvent.entity_id == str(request_id))
+                )
+            ).scalars()
+        )
+        outbox_types = set(
+            (
+                await session.execute(
+                    select(OutboxEvent.event_type).where(
+                        OutboxEvent.aggregate_id == str(request_id)
+                    )
+                )
+            ).scalars()
+        )
+        assert {
+            "AUTOMATIC_EXPERIMENT_CANCEL_ACCEPTED",
+            "AUTOMATIC_EXPERIMENT_CANCEL_COMPLETED",
+        }.issubset(audit_types)
+        assert {
+            "AUTOMATIC_EXPERIMENT_CANCEL_ACCEPTED",
+            "AUTOMATIC_EXPERIMENT_CANCEL_COMPLETED",
+        }.issubset(outbox_types)
+        superseded_audit = set(
+            (
+                await session.execute(
+                    select(AuditEvent.event_type).where(
+                        AuditEvent.entity_id == str(pending_check_id)
+                    )
+                )
+            ).scalars()
+        )
+        superseded_outbox = set(
+            (
+                await session.execute(
+                    select(OutboxEvent.event_type).where(
+                        OutboxEvent.aggregate_id == str(pending_check_id)
+                    )
+                )
+            ).scalars()
+        )
+        assert "TRAINER_CONTROL_SUPERSEDED" in superseded_audit
+        assert "TRAINER_CONTROL_SUPERSEDED" in superseded_outbox
     await engine.dispose()
 
 
@@ -430,4 +601,102 @@ async def test_counterfactual_outcome_is_idempotent_for_all_plan_versions(
         assert len(outcomes) == 2
         assert {row.plan_version for row in outcomes} == {1, 2}
 
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_postgres_native_universe_asof_loader_is_indexed_and_reduced(
+    database_url: str,
+) -> None:
+    settings = Settings(
+        database_url=database_url,
+        universe_mode="dynamic",
+        universe_min_age_days=7,
+        universe_min_turnover_24h=1,
+        universe_max_spread_bps=100,
+        universe_max_symbols=1,
+    )
+    engine, factory = rebuild_engine(settings)
+    start = datetime(2040, 1, 1, 9, tzinfo=UTC)
+    instrument = SimpleNamespace(
+        symbol="PGASOFUSDT",
+        category="linear",
+        base_coin="PGASOF",
+        quote_coin="USDT",
+        settle_coin="USDT",
+        status="Trading",
+        launch_time=start - timedelta(days=100),
+        delivery_time=None,
+        is_pre_listing=False,
+        raw={"contractType": "LinearPerpetual", "symbolType": ""},
+    )
+    ticker = {
+        "symbol": "PGASOFUSDT",
+        "lastPrice": "100",
+        "bid1Price": "99.9",
+        "ask1Price": "100.1",
+        "turnover24h": "1000000",
+    }
+
+    async with factory() as session:
+        transaction = await session.begin()
+        try:
+            for offset in range(24):
+                observed_at = start + timedelta(minutes=5 * offset)
+                selection = select_dynamic_universe(
+                    [instrument],
+                    [ticker],
+                    settings,
+                    now=observed_at,
+                )
+                await persist_universe_selection(
+                    session,
+                    selection,
+                    recorded_at=observed_at + timedelta(seconds=1),
+                    release_version="integration-test",
+                )
+
+            decision_times = [
+                start + timedelta(hours=1),
+                start + timedelta(hours=2),
+            ]
+            compact = await load_point_in_time_universe_snapshots(
+                session,
+                decision_times,
+                expected_mode="dynamic",
+            )
+
+            assert len(compact) == 3
+            assert compact.attrs["universe_snapshot_loader"] == {
+                "schema": "postgresql-native-universe-asof-loader-v1",
+                "requested_decision_timestamps": 2,
+                "snapshot_rows_streamed": 3,
+                "compact_rows_retained": 3,
+            }
+            assert list(compact["recorded_at"]) == [
+                start + timedelta(seconds=1),
+                start + timedelta(minutes=55, seconds=1),
+                start + timedelta(minutes=115, seconds=1),
+            ]
+
+            await session.execute(text("SET LOCAL enable_seqscan = off"))
+            plan = (
+                await session.execute(
+                    text(
+                        """
+                        EXPLAIN (FORMAT JSON)
+                        SELECT recorded_at
+                        FROM market.universe_eligibility_snapshots
+                        WHERE mode = 'dynamic'
+                          AND recorded_at <= :decision_time
+                        ORDER BY recorded_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"decision_time": decision_times[0]},
+                )
+            ).scalar_one()
+            assert "ix_universe_eligibility_mode_recorded_at" in str(plan)
+        finally:
+            await transaction.rollback()
     await engine.dispose()
