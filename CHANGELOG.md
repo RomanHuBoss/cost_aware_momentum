@@ -2,6 +2,23 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.1 — 2026-07-08
+
+### Fixed
+
+- Недостаток post-feature/post-label history для purged expanding walk-forward больше не считается аварийным падением background trainer.
+- Walk-forward capacity теперь рассчитывается одним общим контрактом и сообщает actual/required timestamps, block size, initial train и purge requirements.
+- Candidate build проверяет capacity до основного model fit, когда final holdout metadata доступна.
+- Expected data shortage завершается как `SUCCESS` job с внутренним статусом `DEFERRED`, сохраняет incumbent и переводит trainer в healthy `WAITING`.
+- Повторная bootstrap-попытка после deferral ждёт новых timestamps или material dataset change вместо tight error loop.
+- JSON formatter больше не отбрасывает безопасные decision-time contract diagnostics; warning содержит reason code, lag, limit и sanitized contract mismatch values.
+
+### Compatibility
+
+- Миграций БД, новых переменных окружения и API-breaking changes нет.
+- Walk-forward, purge, holdout, quality, policy и promotion thresholds не снижены.
+- После обновления требуется перезапуск worker и trainer.
+
 ## 1.52.0 — 2026-07-07
 
 ### Fixed

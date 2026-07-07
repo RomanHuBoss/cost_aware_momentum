@@ -16,9 +16,11 @@
 
 Не используйте `create_all` или SQLite fallback. Проверьте URL отдельной PostgreSQL, Alembic head и backup/restore evidence.
 
-## Model/trainer failed
+## Model/trainer failed or deferred
 
 Не деактивируйте incumbent. Сохраните job/audit evidence, artifact SHA, data profile и gate reasons. Повторное обучение допускается только по scheduler/recovery contract или явному operator action.
+
+Если job имеет PostgreSQL status `SUCCESS`, но `details.status=DEFERRED`, это ожидаемая fail-closed остановка до регистрации candidate, а не повреждение trainer. Для `insufficient_walk_forward_history_after_filtering` сравните `walk_forward_capacity.actual_timestamps` и `required_timestamps`, затем проверьте gaps, context/spec/funding/mark coverage и symbol attrition. Не уменьшайте folds, purge или holdout. Scheduler повторит попытку только после новых timestamps или material data-profile change.
 
 ## Stale/invalid market or account state
 

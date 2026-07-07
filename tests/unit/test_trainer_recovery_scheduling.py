@@ -271,6 +271,38 @@ async def test_rejected_bootstrap_waits_for_new_training_data_after_cooldown(
 
 
 @pytest.mark.asyncio
+async def test_deferred_bootstrap_waits_for_new_training_data_after_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    profile = training_profile(now)
+    latest = attempt(
+        status="SUCCESS",
+        started_at=now - timedelta(hours=7),
+        trigger_reason="bootstrap_training",
+        active_version=None,
+        activation_skipped="insufficient_walk_forward_history_after_filtering",
+        profile=profile,
+    )
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=None,
+        latest=latest,
+        profile=profile,
+    )
+
+    due, reason = await trainer.due_reason()
+
+    assert due is False
+    assert reason["reason"] == "training_deferred_waiting_for_new_data"
+    assert reason["previous_activation_skipped"] == (
+        "insufficient_walk_forward_history_after_filtering"
+    )
+    assert reason["new_timestamps"] == 0
+    assert reason["required_new_timestamps"] == trainer_module.settings.auto_train_min_new_timestamps
+
+
+@pytest.mark.asyncio
 async def test_rejected_bootstrap_retries_after_required_new_timestamps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

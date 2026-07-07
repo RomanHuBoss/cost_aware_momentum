@@ -26,6 +26,16 @@ class JsonFormatter(logging.Formatter):
             "ticker_source_time",
             "ticker_received_at",
             "ticker_refresh",
+            "reason_code",
+            "contract_error",
+            "event_time",
+            "publish_time",
+            "publication_lag_seconds",
+            "maximum_delay_seconds",
+            "retryable",
+            "actual_timestamps",
+            "required_timestamps",
+            "walk_forward_capacity",
         ):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)

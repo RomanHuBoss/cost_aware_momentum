@@ -122,6 +122,136 @@ POLICY_PATH_METADATA_COLUMNS = (
 
 
 @dataclass(frozen=True)
+class WalkForwardCapacity:
+    actual_timestamps: int
+    required_timestamps: int
+    folds: int
+    purge_hours: int
+    block_size: int
+    minimum_block_timestamps: int
+    initial_train_timestamps: int
+    minimum_initial_train_timestamps: int
+    feasible: bool
+    reason_code: str | None
+
+    def to_dict(self) -> dict[str, int | bool | str | None]:
+        return {
+            "actual_timestamps": self.actual_timestamps,
+            "required_timestamps": self.required_timestamps,
+            "folds": self.folds,
+            "purge_hours": self.purge_hours,
+            "block_size": self.block_size,
+            "minimum_block_timestamps": self.minimum_block_timestamps,
+            "initial_train_timestamps": self.initial_train_timestamps,
+            "minimum_initial_train_timestamps": self.minimum_initial_train_timestamps,
+            "feasible": self.feasible,
+            "reason_code": self.reason_code,
+        }
+
+
+class InsufficientWalkForwardHistoryError(ValueError):
+    def __init__(self, capacity: WalkForwardCapacity, *, detail: str | None = None) -> None:
+        self.capacity = capacity
+        message = (
+            "Insufficient history for walk-forward validation after purge: "
+            f"{capacity.actual_timestamps} development timestamps are available, "
+            f"at least {capacity.required_timestamps} are required; "
+            f"each rolling block requires at least {capacity.minimum_block_timestamps} timestamps "
+            f"and the initial training region at least "
+            f"{capacity.minimum_initial_train_timestamps}"
+        )
+        if detail:
+            message = f"{message} ({detail})"
+        super().__init__(message)
+
+
+def _validate_walk_forward_parameters(*, folds: int, purge_hours: int) -> tuple[int, int]:
+    if isinstance(folds, bool) or not isinstance(folds, (int, np.integer)):
+        raise TypeError("walk-forward folds must be an integer")
+    resolved_folds = int(folds)
+    if resolved_folds < 2 or resolved_folds > 8:
+        raise ValueError("walk-forward folds must be between 2 and 8")
+    if isinstance(purge_hours, bool) or not isinstance(purge_hours, (int, np.integer)):
+        raise TypeError("purge_hours must be an integer number of hours")
+    resolved_purge = int(purge_hours)
+    if resolved_purge < 0:
+        raise ValueError("purge_hours must be non-negative")
+    return resolved_folds, resolved_purge
+
+
+def minimum_walk_forward_development_timestamps(*, folds: int, purge_hours: int) -> int:
+    resolved_folds, resolved_purge = _validate_walk_forward_parameters(
+        folds=folds,
+        purge_hours=purge_hours,
+    )
+    minimum_block = 45 + 2 * resolved_purge
+    minimum_initial = max(90, 45 + resolved_purge)
+    timestamps = (resolved_folds + 3) * minimum_block
+    while True:
+        block_size = timestamps // (resolved_folds + 3)
+        initial_train = timestamps - (resolved_folds + 1) * block_size
+        if block_size >= minimum_block and initial_train >= minimum_initial:
+            return timestamps
+        timestamps += 1
+
+
+def walk_forward_capacity(
+    actual_timestamps: int,
+    *,
+    folds: int = DEFAULT_WALK_FORWARD_FOLDS,
+    purge_hours: int = 12,
+) -> WalkForwardCapacity:
+    resolved_folds, resolved_purge = _validate_walk_forward_parameters(
+        folds=folds,
+        purge_hours=purge_hours,
+    )
+    if isinstance(actual_timestamps, bool) or not isinstance(actual_timestamps, (int, np.integer)):
+        raise TypeError("actual_timestamps must be an integer")
+    actual = int(actual_timestamps)
+    if actual < 0:
+        raise ValueError("actual_timestamps must be non-negative")
+    minimum_block = 45 + 2 * resolved_purge
+    minimum_initial = max(90, 45 + resolved_purge)
+    block_size = actual // (resolved_folds + 3)
+    initial_train = actual - (resolved_folds + 1) * block_size
+    required = minimum_walk_forward_development_timestamps(
+        folds=resolved_folds,
+        purge_hours=resolved_purge,
+    )
+    feasible = block_size >= minimum_block and initial_train >= minimum_initial
+    return WalkForwardCapacity(
+        actual_timestamps=actual,
+        required_timestamps=required,
+        folds=resolved_folds,
+        purge_hours=resolved_purge,
+        block_size=block_size,
+        minimum_block_timestamps=minimum_block,
+        initial_train_timestamps=initial_train,
+        minimum_initial_train_timestamps=minimum_initial,
+        feasible=feasible,
+        reason_code=None if feasible else "insufficient_walk_forward_history_after_filtering",
+    )
+
+
+def require_walk_forward_capacity(
+    frame: pd.DataFrame,
+    *,
+    folds: int = DEFAULT_WALK_FORWARD_FOLDS,
+    purge_hours: int = 12,
+) -> WalkForwardCapacity:
+    if "decision_time" not in frame.columns:
+        raise ValueError("Walk-forward capacity requires decision_time")
+    decision_times = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
+    if decision_times.isna().any():
+        raise ValueError("Walk-forward capacity contains invalid decision_time values")
+    actual = int(decision_times.nunique())
+    capacity = walk_forward_capacity(actual, folds=folds, purge_hours=purge_hours)
+    if not capacity.feasible:
+        raise InsufficientWalkForwardHistoryError(capacity)
+    return capacity
+
+
+@dataclass(frozen=True)
 class PointInTimeTickSize:
     tick_size: Decimal
     valid_from: pd.Timestamp
@@ -517,6 +647,10 @@ def minimum_hourly_history_timestamps_for_quality_gate(
         45,  # chronological_split requires at least 90 LONG/SHORT test rows
     )
 
+    required_development_timestamps = minimum_walk_forward_development_timestamps(
+        folds=DEFAULT_WALK_FORWARD_FOLDS,
+        purge_hours=horizon,
+    )
     labeled_timestamps = 300
     while True:
         train_index = int(labeled_timestamps * 0.70)
@@ -525,18 +659,11 @@ def minimum_hourly_history_timestamps_for_quality_gate(
         calibration_timestamps = calibration_index - train_index - 2 * horizon
         test_timestamps = labeled_timestamps - calibration_index - horizon
         development_timestamps = calibration_index
-        walk_forward_block = development_timestamps // (DEFAULT_WALK_FORWARD_FOLDS + 3)
-        walk_forward_initial_train = (
-            development_timestamps - (DEFAULT_WALK_FORWARD_FOLDS + 1) * walk_forward_block
-        )
-        walk_forward_ready = walk_forward_block >= 45 + 2 * horizon and walk_forward_initial_train >= max(
-            90, 45 + horizon
-        )
         if (
             train_timestamps >= 45
             and calibration_timestamps >= 45
             and test_timestamps >= required_test_timestamps
-            and walk_forward_ready
+            and development_timestamps >= required_development_timestamps
         ):
             return labeled_timestamps + FEATURE_LOOKBACK_HOURS + horizon
         labeled_timestamps += 1
@@ -1637,16 +1764,10 @@ def expanding_walk_forward_splits(
     whole decision timestamps and all label-end overlap is purged.
     """
 
-    if isinstance(folds, bool) or not isinstance(folds, (int, np.integer)):
-        raise TypeError("walk-forward folds must be an integer")
-    folds = int(folds)
-    if folds < 2 or folds > 8:
-        raise ValueError("walk-forward folds must be between 2 and 8")
-    if isinstance(purge_hours, bool) or not isinstance(purge_hours, (int, np.integer)):
-        raise TypeError("purge_hours must be an integer number of hours")
-    purge_hours = int(purge_hours)
-    if purge_hours < 0:
-        raise ValueError("purge_hours must be non-negative")
+    folds, purge_hours = _validate_walk_forward_parameters(
+        folds=folds,
+        purge_hours=purge_hours,
+    )
 
     required_columns = {"decision_time", "label_end_time", "exit_at_open"}
     missing_columns = sorted(required_columns - set(frame.columns))
@@ -1671,16 +1792,15 @@ def expanding_walk_forward_splits(
 
     unique_times = pd.Index(ordered["decision_time"].drop_duplicates().sort_values())
     n_times = len(unique_times)
-    block_size = n_times // (folds + 3)
-    initial_train_times = n_times - (folds + 1) * block_size
-    minimum_block_times = 45 + 2 * purge_hours
-    minimum_initial_train_times = max(90, 45 + purge_hours)
-    if block_size < minimum_block_times or initial_train_times < minimum_initial_train_times:
-        raise ValueError(
-            "Insufficient history for walk-forward validation after purge: "
-            f"each rolling block requires at least {minimum_block_times} timestamps "
-            f"and the initial training region at least {minimum_initial_train_times}"
-        )
+    capacity = walk_forward_capacity(
+        n_times,
+        folds=folds,
+        purge_hours=purge_hours,
+    )
+    if not capacity.feasible:
+        raise InsufficientWalkForwardHistoryError(capacity)
+    block_size = capacity.block_size
+    initial_train_times = capacity.initial_train_timestamps
 
     embargo = pd.Timedelta(purge_hours, unit="h")
     terminal_boundary = ordered["label_end_time"].max() + pd.Timedelta(nanoseconds=1)
@@ -1706,7 +1826,17 @@ def expanding_walk_forward_splits(
             & (ordered["label_end_time"] < test_end_boundary)
         ]
         if min(len(train), len(cal), len(test)) < 90:
-            raise ValueError(f"Walk-forward fold {fold_index + 1} produced an undersized window")
+            insufficient = WalkForwardCapacity(
+                **{
+                    **capacity.to_dict(),
+                    "feasible": False,
+                    "reason_code": "walk_forward_fold_undersized_after_purge",
+                }
+            )
+            raise InsufficientWalkForwardHistoryError(
+                insufficient,
+                detail=f"fold {fold_index + 1} produced an undersized row window",
+            )
         if train["label_end_time"].max() >= cal["decision_time"].min():
             raise AssertionError("Walk-forward train labels overlap calibration features")
         if cal["label_end_time"].max() >= test["decision_time"].min():

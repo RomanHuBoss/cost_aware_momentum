@@ -14,6 +14,8 @@
 | Bootstrap preflight/artifact provenance | `require_training_universe_scope`, `evaluate_quality_gate` | bootstrap evidence/profile integrity tests |
 | Exact prospective replay without full-sample symbol selection | `load_training_data_profile(require_universe_replay=True)` | `test_exact_dynamic_profile_never_applies_full_sample_symbol_cap` |
 | Model lifecycle fail-closed | `app/ml/lifecycle.py`, promotion/activation services | lifecycle, activation, experiment governance tests |
+| Post-filter walk-forward shortage is deferred, not fatal | `WalkForwardCapacity`, `InsufficientWalkForwardHistoryError`, `BackgroundTrainer.run_training_once` | `test_fail_closed_incident_diagnostics_2026_07_08.py`, trainer recovery scheduling test |
+| Decision-time contract warning preserves safe diagnostics | `app/logging.py::JsonFormatter`, `app/services/signals.py` | `test_json_formatter_preserves_safe_contract_diagnostics` |
 | PostgreSQL migration head | `migrations/versions/0018_inference_observations.py` | Alembic head check; integration upgrade not run here |
 
 Точное число и результат выполненных проверок фиксируются в `docs/QA_REPORT.md`; неподтверждённые external/live свойства не считаются закрытыми.

@@ -84,6 +84,7 @@ from app.ml.training import (
     evaluate_policy_model,
     expanding_walk_forward_splits,
     make_barrier_dataset,
+    require_walk_forward_capacity,
     timeout_return_r_targets,
     validate_policy_cluster_robustness,
     validate_policy_direction_robustness,
@@ -1051,6 +1052,20 @@ def evaluate_market_context_ablation(
     }
 
 
+def _walk_forward_development_frame(dataset: pd.DataFrame, final_split) -> pd.DataFrame:
+    if final_split.test_meta is None or final_split.test_meta.empty:
+        raise ValueError("Final holdout metadata is required for walk-forward validation")
+    final_holdout_times = pd.to_datetime(final_split.test_meta["decision_time"], utc=True, errors="coerce")
+    if final_holdout_times.isna().any():
+        raise ValueError("Final holdout contains invalid decision_time values")
+    final_holdout_start = final_holdout_times.min()
+
+    label_end_times = pd.to_datetime(dataset["label_end_time"], utc=True, errors="coerce")
+    if label_end_times.isna().any():
+        raise ValueError("Dataset contains invalid label_end_time values")
+    return dataset[label_end_times < final_holdout_start].copy()
+
+
 def evaluate_walk_forward_validation(
     dataset: pd.DataFrame,
     final_split,
@@ -1067,17 +1082,12 @@ def evaluate_walk_forward_validation(
     temporal stability rather than repeatedly scoring one model on several slices.
     """
 
-    if final_split.test_meta is None or final_split.test_meta.empty:
-        raise ValueError("Final holdout metadata is required for walk-forward validation")
-    final_holdout_times = pd.to_datetime(final_split.test_meta["decision_time"], utc=True, errors="coerce")
-    if final_holdout_times.isna().any():
-        raise ValueError("Final holdout contains invalid decision_time values")
-    final_holdout_start = final_holdout_times.min()
-
-    label_end_times = pd.to_datetime(dataset["label_end_time"], utc=True, errors="coerce")
-    if label_end_times.isna().any():
-        raise ValueError("Dataset contains invalid label_end_time values")
-    development = dataset[label_end_times < final_holdout_start].copy()
+    development = _walk_forward_development_frame(dataset, final_split)
+    final_holdout_start = pd.to_datetime(
+        final_split.test_meta["decision_time"],
+        utc=True,
+        errors="raise",
+    ).min()
     fold_splits = expanding_walk_forward_splits(
         development,
         folds=folds,
@@ -1293,6 +1303,13 @@ def build_model_candidate(
     split = chronological_split(dataset, purge_rows=horizon)
     if split.train_meta is None:
         raise RuntimeError("Chronological split did not expose training metadata")
+    if getattr(split, "test_meta", None) is not None:
+        development = _walk_forward_development_frame(dataset, split)
+        require_walk_forward_capacity(
+            development,
+            folds=DEFAULT_WALK_FORWARD_FOLDS,
+            purge_hours=horizon,
+        )
 
     model = TemporalCalibratedBarrierModel(model_type).fit(
         split.x_train,

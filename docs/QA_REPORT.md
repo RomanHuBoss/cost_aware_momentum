@@ -1,44 +1,17 @@
-# QA Report — 1.52.0
+# QA Report — 1.52.1
 
-Дата проверки: 2026-07-07.
+Дата проверки: 2026-07-08.
 
 ## Окружение
 
 - Python: 3.13.5.
 - Project Python requirement: `>=3.12`.
+- Node.js: доступен; `node --check` выполнен.
 - Alembic head: `0018_inference_observations`.
-- Проверки выполнялись в отдельном virtual environment `/mnt/data/cam_work/venv`; project-local `.venv` не создавался.
+- Проверки выполнялись из отдельного virtual environment `/mnt/data/cam_work/testenv`; project-local `.venv` намеренно не создавался.
+- Безопасная отдельная PostgreSQL `TEST_DATABASE_URL` не была настроена; production/user database не использовалась.
 
-## Baseline до production-правок
-
-| Проверка | Статус | Результат |
-|---|---|---|
-| `python --version` | PASSED | Python 3.13.5 |
-| `python -m pip check` | PASSED | No broken requirements found |
-| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
-| `python -m ruff check .` | PASSED | All checks passed |
-| `python -m pytest -q` | PASSED | 836 passed, 8 skipped, 62 warnings |
-| `node --check web/js/app.js` | PASSED | exit 0 |
-| `python manage.py release-check` | FAILED | manifest отсутствовал; после baseline также обнаружены сгенерированные caches/egg-info |
-| `python manage.py doctor` | NOT RUN | baseline запускался в external venv без project-local `.venv` и рабочей DB-конфигурации |
-| `python manage.py test --require-integration` | NOT RUN | отдельная безопасная `TEST_DATABASE_URL` не была настроена |
-
-До запуска тестов inventory входного ZIP отдельно подтвердил отсутствие `SHA256SUMS`, `CHANGELOG.md`, `PATCH_*.md`, `docs/QA_REPORT.md`, `docs/SPEC_COMPLIANCE.md` и `docs/TRACEABILITY.md`.
-
-## Red → green
-
-Команда:
-
-```bash
-python -m pytest -q \
-  tests/unit/test_release_contract_2026_07_07.py \
-  tests/unit/test_release_integrity.py
-```
-
-- Red на исходном production code: 2 failed. `verify_release_tree()` возвращал `ok=True` для неполного tree и для version drift.
-- Green после исправления: 5 passed.
-
-## Post-check
+## Baseline 1.52.0 до production-правок
 
 | Проверка | Статус | Результат |
 |---|---|---|
@@ -46,34 +19,65 @@ python -m pytest -q \
 | `python -m pip check` | PASSED | No broken requirements found |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
 | `python -m ruff check .` | PASSED | All checks passed |
-| `python -m pytest -q` | PASSED | 846 passed, 8 skipped |
+| `python -m pytest -q` | PASSED | 846 passed, 8 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED | exit 0 |
 | `alembic heads` | PASSED | `0018_inference_observations (head)` |
-| `python manage.py doctor` | FAILED | ожидает project-local `.venv`; external venv не распознан |
-| `python manage.py test --require-integration` | NOT RUN | отдельная безопасная PostgreSQL test DB отсутствовала |
-| `python -B manage.py release-check --write` | PASSED | manifest создан после очистки release tree |
-| `python -B manage.py release-check` | PASSED | полный contract, version markers и checksums проверены |
-| ZIP integrity / clean re-extract | PASSED | итоговый архив протестирован и повторно распакован |
+| `python manage.py doctor` | FAILED / environment limitation | external venv не признаётся project-local runtime: `Виртуальная среда не найдена` |
+| `python manage.py test --require-integration` | NOT RUN | wrapper остановился до тестов из-за отсутствия project-local `.venv`; безопасная PostgreSQL test DB также не настроена |
+
+Входной ZIP содержал 270 файлов, 98 production/script Python-файлов, 120 test Python-файлов, 13 documentation-файлов и 18 Alembic revisions. Release-мусор, `.env`, caches, bytecode, virtual environments и `*.egg-info` во входном архиве не обнаружены.
+
+## Red → green evidence
+
+Новый regression module:
+
+```text
+tests/unit/test_fail_closed_incident_diagnostics_2026_07_08.py
+```
+
+Red-команда на исходном production code 1.52.0:
+
+```bash
+python -m pytest -q tests/unit/test_fail_closed_incident_diagnostics_2026_07_08.py
+```
+
+Red-результат: `3 failed`.
+
+- generic `ValueError` не имел структурированного `capacity`;
+- background trainer завершал ожидаемый дефицит истории как `FAILED` и `ERROR`;
+- `JsonFormatter` отбрасывал `reason_code` и остальные безопасные contract diagnostics.
+
+Green после исправления: `3 passed`.
+
+Дополнительный scheduler regression test:
+
+```text
+tests/unit/test_trainer_recovery_scheduling.py::test_deferred_bootstrap_waits_for_new_training_data_after_cooldown
+```
+
+Он подтверждает, что `DEFERRED`-bootstrap не создаёт tight retry loop и ждёт новых timestamps или material profile change.
+
+## Post-check 1.52.1
+
+| Проверка | Статус | Результат |
+|---|---|---|
+| `python --version` | PASSED | Python 3.13.5 |
+| `python -m pip check` | PASSED | No broken requirements found |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
+| `python -m ruff check .` | PASSED | All checks passed |
+| `python -m pytest -q` | PASSED | 850 passed, 8 skipped, 62 warnings |
+| `node --check web/js/app.js` | PASSED | exit 0 |
+| `alembic heads` | PASSED | `0018_inference_observations (head)` |
+| `python manage.py doctor` | FAILED / environment limitation | external venv не признаётся project-local runtime: `Виртуальная среда не найдена` |
+| `python manage.py test --require-integration` | NOT RUN | wrapper остановился до тестов из-за отсутствия project-local `.venv`; безопасная PostgreSQL test DB не настроена |
+| `python -B manage.py release-check --write` | PASSED | clean manifest создан; после финального изменения docs пересчитан повторно |
+| `python -B manage.py release-check` | PASSED | полный release contract и checksums подтверждены |
+| ZIP integrity / clean re-extract | PASSED | архив протестирован, повторно распакован; один root и отсутствие запрещённых артефактов подтверждены |
 
 ## Warnings
 
-62 существующих `DeprecationWarning` связаны преимущественно с pandas/NumPy timedelta semantics. Они не стали failures, но требуют отдельной совместимой cleanup-итерации до обновления зависимостей, где warning станет error.
-
-## Проверки 1.52.0
-
-| Проверка | Статус | Результат |
-|---|---|---|
-| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
-| `ruff check app tests scripts manage.py` | PASSED | All checks passed |
-| `pytest -q` | PASSED | 846 passed, 8 skipped |
-| `node --check web/js/app.js` | PASSED | exit 0 |
-| `alembic heads` | PASSED | `0018_inference_observations (head)` |
-| `mypy app scripts --ignore-missing-imports` | FAILED / known debt | 449 errors in 42 files; release не объявляется mypy-clean |
-| PostgreSQL integration suite | NOT RUN | отдельная безопасная `TEST_DATABASE_URL` отсутствовала |
-| Live Bybit/network smoke | NOT RUN | credentials и внешняя сеть не использовались |
-
-Новые regression tests покрывают frozen dynamic bootstrap, conservative pre-observation tick resolution, profile/evidence integrity, automatic prospective upgrade и запрет full-sample symbol cap в exact replay.
+62 существующих `DeprecationWarning` происходят преимущественно из `joblib`/NumPy shape semantics и pandas/NumPy timedelta semantics. Они не стали failures и не вызваны текущим patch, но требуют отдельной dependency-compatibility итерации до обновления библиотек, где warning может стать error.
 
 ## Scope statement
 
-В 1.52.0 изменены background training lifecycle, historical label tick geometry и model provenance. Ни один quality, calibration, policy, experiment, cost-stress, EV/RR или risk threshold не снижен. Проверка технической целостности не является доказательством прибыльности стратегии.
+В 1.52.1 изменены только fail-closed walk-forward capacity/deferral и безопасная incident diagnostics. Ни один walk-forward fold, purge, holdout, feature, calibration, policy, experiment, cost-stress, EV/RR, risk или promotion threshold не снижен. Unit/static integrity не является доказательством прибыльности, экономической устойчивости или production readiness без PostgreSQL integration и forward evidence.

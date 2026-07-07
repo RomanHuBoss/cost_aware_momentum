@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.0: clean-install dynamic trainer использует hash-bound frozen-cohort historical bootstrap вместо обязательного ожидания примерно 50 суток, не ослабляя temporal, calibration, policy, cost-stress и promotion gates. Параллельно продолжает накапливаться exact prospective universe evidence; при достижении достаточной глубины trainer автоматически переходит на point-in-time dynamic replay и переобучает модель.
+> Версия 1.52.1: недостаток post-filter истории для purged walk-forward больше не переводит background trainer в аварийный `ERROR`: задача завершается fail-closed как диагностируемый `DEFERRED`, сохраняет exact capacity и ждёт новых данных. Decision-time execution contract теперь выводит безопасные структурированные причины и сравниваемые параметры в JSON-логах.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

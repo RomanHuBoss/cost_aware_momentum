@@ -193,9 +193,19 @@ def resolve_decision_execution_contract(
     )
     artifact_delay = int(getattr(runtime, "maximum_signal_publication_delay_seconds", 0))
     if artifact_zone > 1 or artifact_delay <= 0:
-        raise ValueError("Active model artifact has an invalid decision execution contract")
+        raise ValueError(
+            "Active model artifact has an invalid decision execution contract: "
+            f"entry_zone_atr_fraction={artifact_zone}, "
+            f"maximum_signal_publication_delay_seconds={artifact_delay}"
+        )
     if artifact_zone != configured_zone or artifact_delay != configured_delay:
-        raise ValueError("Active model artifact decision execution contract does not match runtime settings")
+        raise ValueError(
+            "Active model artifact decision execution contract does not match runtime settings: "
+            f"artifact_entry_zone_atr_fraction={artifact_zone}, "
+            f"runtime_entry_zone_atr_fraction={configured_zone}, "
+            f"artifact_maximum_signal_publication_delay_seconds={artifact_delay}, "
+            f"runtime_maximum_signal_publication_delay_seconds={configured_delay}"
+        )
     return artifact_zone, artifact_delay
 
 
@@ -772,8 +782,14 @@ async def publish_hourly_signals(
             extra={
                 "event_time": event_time.isoformat(),
                 "publish_time": now.isoformat(),
-                "error": str(exc),
+                "contract_error": str(exc),
                 "reason_code": reason_code,
+                "publication_lag_seconds": (now - event_time).total_seconds(),
+                "maximum_delay_seconds": getattr(
+                    settings,
+                    "max_signal_publication_delay_seconds",
+                    None,
+                ),
             },
         )
         return []

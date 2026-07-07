@@ -38,7 +38,10 @@ from app.ml.lifecycle import (
     require_passed_quality_gate,
 )
 from app.ml.runtime_selection import registry_artifact_recovery_notice
-from app.ml.training import minimum_hourly_history_timestamps_for_quality_gate
+from app.ml.training import (
+    InsufficientWalkForwardHistoryError,
+    minimum_hourly_history_timestamps_for_quality_gate,
+)
 from app.services.audit import publish_outbox
 from app.services.automatic_experiment import (
     CandidateArtifactContractError,
@@ -66,6 +69,13 @@ configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 BOOTSTRAP_TRIGGER_REASONS = frozenset({"bootstrap_training", "bootstrap_recovery", "operator_recovery"})
+DATA_DEPENDENT_TRAINING_SKIPS = frozenset(
+    {
+        "quality_gate_failed",
+        "insufficient_walk_forward_history_after_filtering",
+        "walk_forward_fold_undersized_after_purge",
+    }
+)
 TRAINER_CONTROL_POLL_SECONDS = 2.0
 
 
@@ -920,7 +930,7 @@ class BackgroundTrainer:
             elif trigger_kind == "data_change" or (
                 trigger_kind == "bootstrap"
                 and isinstance(latest.details, dict)
-                and latest.details.get("activation_skipped") == "quality_gate_failed"
+                and latest.details.get("activation_skipped") in DATA_DEPENDENT_TRAINING_SKIPS
             ):
                 wait_hours = settings.auto_train_data_change_cooldown_hours
             else:
@@ -940,7 +950,7 @@ class BackgroundTrainer:
                 trigger_kind == "bootstrap"
                 and latest.status == "SUCCESS"
                 and isinstance(latest.details, dict)
-                and latest.details.get("activation_skipped") == "quality_gate_failed"
+                and latest.details.get("activation_skipped") in DATA_DEPENDENT_TRAINING_SKIPS
                 and _same_bootstrap_episode(latest, trigger)
             ):
                 previous_trigger = _job_trigger(latest.details)
@@ -965,8 +975,15 @@ class BackgroundTrainer:
                         not retry_comparison["material_change"]
                         and retry_new_timestamps < settings.auto_train_min_new_timestamps
                     ):
+                        previous_skip = str(latest.details.get("activation_skipped") or "")
+                        wait_reason = (
+                            "quality_gate_failed_waiting_for_new_data"
+                            if previous_skip == "quality_gate_failed"
+                            else "training_deferred_waiting_for_new_data"
+                        )
                         return False, {
-                            "reason": "quality_gate_failed_waiting_for_new_data",
+                            "reason": wait_reason,
+                            "previous_activation_skipped": previous_skip,
                             "pending_trigger": trigger,
                             "last_started_at": latest.started_at.isoformat(),
                             "new_timestamps": retry_new_timestamps,
@@ -1526,6 +1543,42 @@ class BackgroundTrainer:
                         },
                     )
                     return result
+                except InsufficientWalkForwardHistoryError as exc:
+                    capacity = exc.capacity.to_dict()
+                    reason_code = str(
+                        capacity.get("reason_code")
+                        or "insufficient_walk_forward_history_after_filtering"
+                    )
+                    details = {
+                        "trigger": trigger,
+                        "status": "DEFERRED",
+                        "activation_skipped": reason_code,
+                        "reason_code": reason_code,
+                        "retryable": True,
+                        "message": str(exc),
+                        "walk_forward_capacity": capacity,
+                    }
+                    await self.finish_job(job.id, status="SUCCESS", details=details)
+                    self.state.update(
+                        {
+                            "phase": "WAITING",
+                            "healthy": True,
+                            "wait_reason": details,
+                            "last_result": details,
+                            "active_version_before_training": None,
+                        }
+                    )
+                    logger.warning(
+                        "Background model training deferred by walk-forward history contract",
+                        extra={
+                            "reason_code": reason_code,
+                            "retryable": True,
+                            "actual_timestamps": capacity["actual_timestamps"],
+                            "required_timestamps": capacity["required_timestamps"],
+                            "walk_forward_capacity": capacity,
+                        },
+                    )
+                    return details
                 except Exception as exc:
                     details = {"trigger": trigger, "error": str(exc)}
                     await self.finish_job(job.id, status="FAILED", details=details)
