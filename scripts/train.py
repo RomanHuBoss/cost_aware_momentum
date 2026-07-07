@@ -70,6 +70,7 @@ async def run(args: argparse.Namespace) -> None:
         funding_history=market_data.funding,
         funding_interval_minutes=market_data.funding_interval_minutes,
         funding_interval_history=market_data.funding_interval_history,
+        instrument_spec_history=getattr(market_data, "instrument_spec_history", None),
         version=args.version,
         output=args.output,
         incumbent=incumbent_from_registry(incumbent_model),

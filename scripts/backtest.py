@@ -1096,6 +1096,8 @@ async def run(args) -> None:
             funding_interval_minutes=market_data.funding_interval_minutes,
             funding_interval_history=market_data.funding_interval_history,
             require_funding_timeline=True,
+            instrument_spec_history=market_data.instrument_spec_history,
+            require_instrument_spec_timeline=True,
             mark_candles=market_data.mark_candles,
             index_candles=market_data.index_candles,
             open_interest=market_data.open_interest,

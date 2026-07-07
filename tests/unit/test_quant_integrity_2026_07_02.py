@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -178,7 +179,7 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
         "entry_zone_atr_fraction": 0.12,
         "maximum_signal_publication_delay_seconds": 600,
         "entry_execution_model": {
-            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+            "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
             "entry_spread_bps": 18.0,
             "entry_zone_atr_fraction": 0.12,
         },
@@ -260,7 +261,7 @@ def test_runtime_rejects_inconsistent_entry_execution_metadata(tmp_path: Path) -
 
     inconsistent = _artifact_bundle(
         entry_execution_model={
-            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+            "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
             "entry_spread_bps": 12.0,
         }
     )
@@ -337,7 +338,7 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
         },
         "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
-            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+            "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
             "entry_spread_bps": 18.0,
             "entry_zone_atr_fraction": 0.12,
         },
@@ -400,7 +401,7 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25",
+        "policy_metric_schema": "decision-close-tick-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v26",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",
@@ -485,6 +486,38 @@ class _TrainableArtifactModel(_ArtifactModel):
 
     def predict_proba(self, values) -> np.ndarray:
         return np.repeat(np.array([[0.34, 0.33, 0.33]], dtype=float), len(values), axis=0)
+
+
+def test_previous_tick_geometry_artifact_is_benchmark_only(tmp_path: Path) -> None:
+    incumbent_path = tmp_path / "previous-schema-incumbent.joblib"
+    joblib.dump(
+        _artifact_bundle(
+            version="incumbent-v1",
+            model=_TrainableArtifactModel(),
+            label_path_schema_version=lifecycle.PREVIOUS_LABEL_PATH_SCHEMA_VERSION,
+            entry_execution_model={
+                "schema": lifecycle.PREVIOUS_ENTRY_EXECUTION_MODEL_SCHEMA,
+                "entry_spread_bps": 18.0,
+                "entry_zone_atr_fraction": 0.12,
+            },
+        ),
+        incumbent_path,
+    )
+    snapshot = IncumbentSnapshot(
+        version="incumbent-v1",
+        model_type="logistic",
+        artifact_path=str(incumbent_path),
+        artifact_sha256=hashlib.sha256(incumbent_path.read_bytes()).hexdigest(),
+        training_end=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+
+    benchmark = lifecycle.load_incumbent_benchmark_artifact(snapshot)
+
+    assert benchmark.label_path_schema_version == lifecycle.PREVIOUS_LABEL_PATH_SCHEMA_VERSION
+    assert benchmark.entry_execution_schema == lifecycle.PREVIOUS_ENTRY_EXECUTION_MODEL_SCHEMA
+    assert callable(benchmark.model.predict_proba)
+    with pytest.raises(ValueError, match="label path schema mismatch"):
+        ModelRuntime(incumbent_path, allow_baseline=False).load()
 
 
 def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_labels(

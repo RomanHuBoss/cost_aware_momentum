@@ -132,9 +132,18 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
             "entry_zone_atr_fraction": 0.12,
             "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+                "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
                 "entry_spread_bps": 18.0,
                 "entry_zone_atr_fraction": 0.12,
+                "instrument_spec_timeline_schema": (
+                    "instrument-spec-valid-received-at-tick-rounding-v1"
+                ),
+            },
+            "instrument_spec_timeline": {
+                "schema": "instrument-spec-valid-received-at-tick-rounding-v1",
+                "status": "complete",
+                "rows": 3,
+                "symbols": 1,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
@@ -222,7 +231,7 @@ def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) 
             "entry_zone_atr_fraction": 0.12,
             "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+                "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
                 "entry_spread_bps": 18.0,
                 "entry_zone_atr_fraction": 0.12,
             },

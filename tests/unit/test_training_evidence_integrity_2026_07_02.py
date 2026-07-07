@@ -85,7 +85,7 @@ def _passing_metrics() -> dict[str, object]:
         },
         "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
-            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+            "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
             "entry_spread_bps": 18.0,
             "entry_zone_atr_fraction": 0.12,
         },
@@ -148,7 +148,7 @@ def _passing_metrics() -> dict[str, object]:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25",
+        "policy_metric_schema": "decision-close-tick-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v26",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",

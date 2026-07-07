@@ -1145,6 +1145,7 @@ class BackgroundTrainer:
                         funding_history=market_data.funding,
                         funding_interval_minutes=market_data.funding_interval_minutes,
                         funding_interval_history=market_data.funding_interval_history,
+                        instrument_spec_history=getattr(market_data, "instrument_spec_history", None),
                         incumbent=incumbent,
                         source="background_trainer",
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,

@@ -92,9 +92,18 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         },
         "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
-            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+            "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
             "entry_spread_bps": 18.0,
             "entry_zone_atr_fraction": 0.12,
+            "instrument_spec_timeline_schema": (
+                "instrument-spec-valid-received-at-tick-rounding-v1"
+            ),
+        },
+        "instrument_spec_timeline": {
+            "schema": "instrument-spec-valid-received-at-tick-rounding-v1",
+            "status": "complete",
+            "rows": 3,
+            "symbols": 3,
         },
         "historical_funding_schema": "bybit-settlement-timestamp-replay-v2",
         "historical_funding_timeline": {
@@ -155,7 +164,7 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25",
+        "policy_metric_schema": "decision-close-tick-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v26",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",

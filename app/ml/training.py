@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 
 import numpy as np
 import pandas as pd
@@ -49,13 +50,18 @@ DEFAULT_TP_ATR_MULTIPLIER = 2.20
 MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-market-context-v5"
 MARKET_CONTEXT_ABLATION_SCHEMA_VERSION = "same-split-zeroed-context-v1"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
-LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
-ENTRY_EXECUTION_MODEL_SCHEMA = "decision-close-zone-next-hour-open-directional-half-spread-v2"
+LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-tick-aligned-entry-ohlc-path-v4"
+ENTRY_EXECUTION_MODEL_SCHEMA = (
+    "decision-close-tick-zone-next-hour-open-directional-half-spread-v3"
+)
+INSTRUMENT_SPEC_TIMELINE_SCHEMA = "instrument-spec-valid-received-at-tick-rounding-v1"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "final-holdout-plus-expanding-walk-forward-v4"
 WALK_FORWARD_SCHEMA_VERSION = "expanding-train-rolling-calibration-purged-v1"
 DEFAULT_WALK_FORWARD_FOLDS = 3
 MIN_WALK_FORWARD_POSITIVE_FRACTION = 2.0 / 3.0
-POLICY_METRIC_SCHEMA = "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25"
+POLICY_METRIC_SCHEMA = (
+    "decision-close-tick-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v26"
+)
 POLICY_ACTIONABLE_CALIBRATION_SCHEMA = "actionable-policy-trades-final-holdout-v1"
 POLICY_DIRECTION_ROBUSTNESS_SCHEMA = "actionable-policy-direction-opportunity-cohort-v1"
 POLICY_DIRECTION_MIN_TRADES = 5
@@ -113,6 +119,86 @@ POLICY_PATH_METADATA_COLUMNS = (
     *INTRAHORIZON_MARGIN_POLICY_METADATA_COLUMNS,
     *INTRAHORIZON_MTM_POLICY_METADATA_COLUMNS,
 )
+
+
+@dataclass(frozen=True)
+class PointInTimeTickSize:
+    tick_size: Decimal
+    valid_from: pd.Timestamp
+    received_at: pd.Timestamp
+
+
+class PointInTimeInstrumentSpecTimeline:
+    """Resolve exchange tick sizes without looking past the model decision time."""
+
+    REQUIRED_COLUMNS = {"symbol", "valid_from", "received_at", "tick_size"}
+
+    def __init__(self, history: pd.DataFrame) -> None:
+        missing = sorted(self.REQUIRED_COLUMNS - set(history.columns))
+        if missing:
+            raise ValueError(f"Instrument spec history is missing columns: {missing}")
+        frame = history.loc[:, sorted(self.REQUIRED_COLUMNS)].copy()
+        frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+        if frame["symbol"].eq("").any():
+            raise ValueError("Instrument spec history contains an empty symbol")
+        for column in ("valid_from", "received_at"):
+            frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce")
+        if frame[["valid_from", "received_at"]].isna().any().any():
+            raise ValueError("Instrument spec history contains invalid timestamps")
+        if frame.duplicated(["symbol", "valid_from"], keep=False).any():
+            raise ValueError("Instrument spec history contains duplicate symbol/valid_from rows")
+
+        records: dict[str, list[PointInTimeTickSize]] = {}
+        for row in frame.itertuples(index=False):
+            try:
+                tick_size = Decimal(str(row.tick_size))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError("Instrument spec tick_size must be positive and finite") from exc
+            if not tick_size.is_finite() or tick_size <= 0:
+                raise ValueError("Instrument spec tick_size must be positive and finite")
+            records.setdefault(str(row.symbol), []).append(
+                PointInTimeTickSize(
+                    tick_size=tick_size,
+                    valid_from=pd.Timestamp(row.valid_from),
+                    received_at=pd.Timestamp(row.received_at),
+                )
+            )
+        self._records = {
+            symbol: tuple(sorted(items, key=lambda item: (item.valid_from, item.received_at)))
+            for symbol, items in records.items()
+        }
+        self._row_count = len(frame)
+
+    def resolve(self, symbol: str, decision_time: object) -> PointInTimeTickSize | None:
+        timestamp = pd.Timestamp(decision_time)
+        timestamp = (
+            timestamp.tz_localize("UTC")
+            if timestamp.tzinfo is None
+            else timestamp.tz_convert("UTC")
+        )
+        eligible = [
+            item
+            for item in self._records.get(str(symbol).strip().upper(), ())
+            if item.valid_from <= timestamp and item.received_at <= timestamp
+        ]
+        return max(eligible, key=lambda item: (item.valid_from, item.received_at), default=None)
+
+    def describe(self) -> dict[str, object]:
+        return {
+            "schema": INSTRUMENT_SPEC_TIMELINE_SCHEMA,
+            "status": "complete",
+            "rows": self._row_count,
+            "symbols": len(self._records),
+            "selection": "valid_from_and_received_at_not_after_decision_time",
+        }
+
+
+def _floor_to_tick(value: Decimal, tick_size: Decimal) -> Decimal:
+    return (value / tick_size).to_integral_value(rounding=ROUND_FLOOR) * tick_size
+
+
+def _ceil_to_tick(value: Decimal, tick_size: Decimal) -> Decimal:
+    return (value / tick_size).to_integral_value(rounding=ROUND_CEILING) * tick_size
 
 
 class TemporalCalibratedBarrierModel:
@@ -429,6 +515,8 @@ def make_barrier_dataset(
     funding_interval_minutes: dict[str, int] | None = None,
     funding_interval_history: pd.DataFrame | None = None,
     require_funding_timeline: bool = False,
+    instrument_spec_history: pd.DataFrame | None = None,
+    require_instrument_spec_timeline: bool = False,
     mark_candles: pd.DataFrame | None = None,
     require_mark_timeline: bool = False,
     index_candles: pd.DataFrame | None = None,
@@ -482,6 +570,12 @@ def make_barrier_dataset(
         )
     elif require_funding_timeline:
         raise ValueError("Historical funding timeline is required for research training")
+
+    instrument_spec_timeline: PointInTimeInstrumentSpecTimeline | None = None
+    if instrument_spec_history is not None:
+        instrument_spec_timeline = PointInTimeInstrumentSpecTimeline(instrument_spec_history)
+    elif require_instrument_spec_timeline:
+        raise ValueError("Point-in-time instrument spec timeline is required for research training")
 
     if (
         isinstance(liquidation_leverage, bool)
@@ -588,6 +682,8 @@ def make_barrier_dataset(
         "skipped_label_gap_timestamps": 0,
         "skipped_invalid_label_bar_timestamps": 0,
         "skipped_entry_zone_timestamps": 0,
+        "skipped_missing_instrument_spec_timestamps": 0,
+        "skipped_unexecutable_tick_geometry_timestamps": 0,
         "skipped_incomplete_direction_pair_timestamps": 0,
         "skipped_incomplete_funding_timeline_timestamps": 0,
         "skipped_incomplete_mark_timeline_timestamps": 0,
@@ -673,6 +769,13 @@ def make_barrier_dataset(
             if any(value is None or not np.isfinite(float(value)) for value in values):
                 diagnostics["skipped_incomplete_market_context_timestamps"] += 1
                 continue
+
+            point_in_time_spec: PointInTimeTickSize | None = None
+            if instrument_spec_timeline is not None:
+                point_in_time_spec = instrument_spec_timeline.resolve(symbol, decision_time)
+                if point_in_time_spec is None:
+                    diagnostics["skipped_missing_instrument_spec_timestamps"] += 1
+                    continue
             # A signal can only be acted on after the source candle has closed.
             # Hourly OHLC exposes a last-trade/open proxy rather than executable
             # bid/ask. Production enters LONG at ask and SHORT at bid, therefore
@@ -691,13 +794,49 @@ def make_barrier_dataset(
                 or atr_pct <= 0
             ):
                 continue
-            entry_zone_half = (
-                decision_entry_anchor * atr_pct * parsed_entry_zone_atr_fraction
+            tick_size: Decimal | None = (
+                point_in_time_spec.tick_size if point_in_time_spec is not None else None
             )
-            entry_zone_low = decision_entry_anchor - entry_zone_half
-            entry_zone_high = decision_entry_anchor + entry_zone_half
-            stressed_long_entry = entry_mid_proxy * (1.0 + half_spread_rate)
-            stressed_short_entry = entry_mid_proxy * (1.0 - half_spread_rate)
+            if tick_size is not None:
+                entry_mid_decimal = Decimal(str(entry_mid_proxy))
+                decision_anchor_decimal = Decimal(str(decision_entry_anchor))
+                atr_pct_decimal = Decimal(str(atr_pct))
+                zone_fraction_decimal = Decimal(str(parsed_entry_zone_atr_fraction))
+                half_spread_decimal = Decimal(str(half_spread_rate))
+                entry_zone_half_decimal = (
+                    decision_anchor_decimal * atr_pct_decimal * zone_fraction_decimal
+                )
+                entry_zone_low_decimal = _ceil_to_tick(
+                    decision_anchor_decimal - entry_zone_half_decimal,
+                    tick_size,
+                )
+                entry_zone_high_decimal = _floor_to_tick(
+                    decision_anchor_decimal + entry_zone_half_decimal,
+                    tick_size,
+                )
+                if entry_zone_low_decimal > entry_zone_high_decimal:
+                    diagnostics["skipped_unexecutable_tick_geometry_timestamps"] += 1
+                    continue
+                stressed_long_entry_decimal = _ceil_to_tick(
+                    entry_mid_decimal * (Decimal("1") + half_spread_decimal),
+                    tick_size,
+                )
+                stressed_short_entry_decimal = _floor_to_tick(
+                    entry_mid_decimal * (Decimal("1") - half_spread_decimal),
+                    tick_size,
+                )
+                entry_zone_low = float(entry_zone_low_decimal)
+                entry_zone_high = float(entry_zone_high_decimal)
+                stressed_long_entry = float(stressed_long_entry_decimal)
+                stressed_short_entry = float(stressed_short_entry_decimal)
+            else:
+                entry_zone_half = (
+                    decision_entry_anchor * atr_pct * parsed_entry_zone_atr_fraction
+                )
+                entry_zone_low = decision_entry_anchor - entry_zone_half
+                entry_zone_high = decision_entry_anchor + entry_zone_half
+                stressed_long_entry = entry_mid_proxy * (1.0 + half_spread_rate)
+                stressed_short_entry = entry_mid_proxy * (1.0 - half_spread_rate)
             if not (
                 entry_zone_low <= stressed_long_entry <= entry_zone_high
                 and entry_zone_low <= stressed_short_entry <= entry_zone_high
@@ -708,23 +847,61 @@ def make_barrier_dataset(
 
             direction_rows: list[dict] = []
             for direction, direction_code in (("LONG", 1.0), ("SHORT", -1.0)):
-                entry = entry_mid_proxy * (
-                    1.0 + half_spread_rate if direction == "LONG" else 1.0 - half_spread_rate
-                )
-                atr = entry * atr_pct
-                if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
-                    direction_rows = []
-                    break
-                if direction == "LONG":
-                    stop = entry - atr * stop_atr_multiplier
-                    take_profit = entry + atr * tp_atr_multiplier
-                    sign = 1.0
+                entry = stressed_long_entry if direction == "LONG" else stressed_short_entry
+                if tick_size is not None:
+                    entry_decimal = Decimal(str(entry))
+                    atr_decimal = entry_decimal * Decimal(str(atr_pct))
+                    if not atr_decimal.is_finite() or atr_decimal <= 0:
+                        direction_rows = []
+                        break
+                    if direction == "LONG":
+                        stop_decimal = _floor_to_tick(
+                            entry_decimal
+                            - atr_decimal * Decimal(str(stop_atr_multiplier)),
+                            tick_size,
+                        )
+                        take_profit_decimal = _floor_to_tick(
+                            entry_decimal
+                            + atr_decimal * Decimal(str(tp_atr_multiplier)),
+                            tick_size,
+                        )
+                        sign = 1.0
+                    else:
+                        stop_decimal = _ceil_to_tick(
+                            entry_decimal
+                            + atr_decimal * Decimal(str(stop_atr_multiplier)),
+                            tick_size,
+                        )
+                        take_profit_decimal = _ceil_to_tick(
+                            entry_decimal
+                            - atr_decimal * Decimal(str(tp_atr_multiplier)),
+                            tick_size,
+                        )
+                        sign = -1.0
+                    stop = float(stop_decimal)
+                    take_profit = float(take_profit_decimal)
                 else:
-                    stop = entry + atr * stop_atr_multiplier
-                    take_profit = entry - atr * tp_atr_multiplier
-                    sign = -1.0
-                if stop <= 0 or take_profit <= 0:
+                    atr = entry * atr_pct
+                    if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
+                        direction_rows = []
+                        break
+                    if direction == "LONG":
+                        stop = entry - atr * stop_atr_multiplier
+                        take_profit = entry + atr * tp_atr_multiplier
+                        sign = 1.0
+                    else:
+                        stop = entry + atr * stop_atr_multiplier
+                        take_profit = entry - atr * tp_atr_multiplier
+                        sign = -1.0
+                valid_geometry = (
+                    stop < entry < take_profit
+                    if direction == "LONG"
+                    else take_profit < entry < stop
+                )
+                if stop <= 0 or take_profit <= 0 or not valid_geometry:
                     direction_rows = []
+                    if tick_size is not None:
+                        diagnostics["skipped_unexecutable_tick_geometry_timestamps"] += 1
                     break
                 execution_path = future.copy()
                 first_index = execution_path.index[0]
@@ -919,7 +1096,27 @@ def make_barrier_dataset(
                         "entry_zone_atr_fraction": parsed_entry_zone_atr_fraction,
                         "entry_price": float(entry),
                         "entry_spread_bps": parsed_entry_spread_bps,
-                        "entry_price_source": "next_hour_open_directional_half_spread_stress",
+                        "entry_price_source": (
+                            "next_hour_open_directional_half_spread_tick_aligned_stress"
+                            if tick_size is not None
+                            else "next_hour_open_directional_half_spread_stress"
+                        ),
+                        "tick_size": float(tick_size) if tick_size is not None else None,
+                        "instrument_spec_valid_from": (
+                            point_in_time_spec.valid_from
+                            if point_in_time_spec is not None
+                            else pd.NaT
+                        ),
+                        "instrument_spec_received_at": (
+                            point_in_time_spec.received_at
+                            if point_in_time_spec is not None
+                            else pd.NaT
+                        ),
+                        "price_rounding_schema": (
+                            INSTRUMENT_SPEC_TIMELINE_SCHEMA if tick_size is not None else None
+                        ),
+                        "stop_price": float(stop),
+                        "take_profit_price": float(take_profit),
                         "target": result.outcome,
                         "ambiguous": bool(result.ambiguous),
                         "exit_index": int(result.exit_index),
@@ -946,6 +1143,15 @@ def make_barrier_dataset(
     dataset.attrs["hourly_continuity"] = diagnostics
     dataset.attrs["market_context"] = context_metadata
     dataset.attrs["label_path_schema"] = LABEL_PATH_SCHEMA_VERSION
+    dataset.attrs["instrument_spec_timeline"] = (
+        instrument_spec_timeline.describe()
+        if instrument_spec_timeline is not None
+        else {
+            "schema": INSTRUMENT_SPEC_TIMELINE_SCHEMA,
+            "required": bool(require_instrument_spec_timeline),
+            "status": "not_provided",
+        }
+    )
     dataset.attrs["historical_funding_timeline"] = (
         funding_timeline.describe()
         if funding_timeline is not None
@@ -968,18 +1174,33 @@ def make_barrier_dataset(
         "same_bar_ordering": "liquidation_before_unordered_last_price_exit",
         "liquidation_loss": "full_initial_margin",
     }
-    dataset.attrs["entry_execution_model"] = {
+    entry_execution_model: dict[str, object] = {
         "schema": ENTRY_EXECUTION_MODEL_SCHEMA,
         "entry_spread_bps": parsed_entry_spread_bps,
         "entry_zone_atr_fraction": parsed_entry_zone_atr_fraction,
         "decision_anchor_source": "confirmed_decision_candle_close",
-        "entry_price_source": "next_hour_open_directional_half_spread_stress",
+        "entry_price_source": (
+            "next_hour_open_directional_half_spread_tick_aligned_stress"
+            if instrument_spec_timeline is not None
+            else "next_hour_open_directional_half_spread_stress"
+        ),
         "residual_limitations": [
             "historical_bid_ask_unavailable",
             "operator_latency_within_zone_unmodeled",
             "historical_depth_and_partial_fill_unmodeled",
         ],
     }
+    if instrument_spec_timeline is not None:
+        entry_execution_model.update(
+            {
+                "instrument_spec_timeline_schema": INSTRUMENT_SPEC_TIMELINE_SCHEMA,
+                "exchange_rounding": (
+                    "LONG entry ceil, SHORT entry floor; "
+                    "LONG stop/tp floor, SHORT stop/tp ceil"
+                ),
+            }
+        )
+    dataset.attrs["entry_execution_model"] = entry_execution_model
     return dataset
 
 

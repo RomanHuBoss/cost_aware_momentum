@@ -16,7 +16,7 @@ from tests.unit.test_model_lifecycle import _candidate, _metrics
 INTERACTION_SCHEMA_V2 = "symbol-direction-regime-supported-cells-sparse-pool-jackknife-v2"
 SPARSE_JACKKNIFE_SCHEMA = "leave-one-sparse-interaction-cell-out-v1"
 POLICY_SCHEMA_V25 = (
-    "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25"
+    "decision-close-tick-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v26"
 )
 
 

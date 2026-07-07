@@ -69,7 +69,7 @@ def test_policy_evaluation_blocks_same_symbol_overlap_like_live_acceptance() -> 
     )
     assert (
         metrics["policy_metric_schema"]
-        == "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25"
+        == "decision-close-tick-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v26"
     )
     assert metrics["policy_capital_sleeves"] == 2
     assert metrics["policy_trades"] == 1

@@ -120,7 +120,7 @@ def test_training_persists_decision_anchor_entry_contract() -> None:
     assert pair["entry_zone_atr_fraction"].tolist() == pytest.approx([0.12, 0.12])
     assert pair["entry_zone_low"].iloc[0] < 100.10 < pair["entry_zone_high"].iloc[0]
     assert dataset.attrs["entry_execution_model"] == {
-        "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+        "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
         "entry_spread_bps": pytest.approx(20.0),
         "entry_zone_atr_fraction": pytest.approx(0.12),
         "decision_anchor_source": "confirmed_decision_candle_close",

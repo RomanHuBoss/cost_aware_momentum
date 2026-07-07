@@ -128,7 +128,7 @@ def test_runtime_rejects_artifact_without_timeout_return_schema(tmp_path: Path) 
             "entry_zone_atr_fraction": 0.12,
             "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+                "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
                 "entry_spread_bps": 18.0,
                 "entry_zone_atr_fraction": 0.12,
             },
@@ -194,7 +194,7 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
             "entry_zone_atr_fraction": 0.12,
             "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+                "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
                 "entry_spread_bps": 18.0,
                 "entry_zone_atr_fraction": 0.12,
             },

@@ -59,6 +59,7 @@ from app.ml.training import (
     MODEL_BASE_FEATURE_NAMES,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
+    OUTCOME_CLASSES,
     POLICY_ACTIONABLE_CALIBRATION_SCHEMA,
     POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
     POLICY_DIRECTION_MIN_TRADES,
@@ -118,6 +119,199 @@ class IncumbentSnapshot:
 
 
 @dataclass(frozen=True)
+class IncumbentBenchmarkArtifact:
+    model: Any
+    horizon_hours: int
+    stop_atr_multiplier: float
+    tp_atr_multiplier: float
+    entry_spread_bps: float
+    entry_zone_atr_fraction: float
+    research_leverage: int
+    liquidation_equity_reserve_fraction: float
+    label_path_schema_version: str
+    entry_execution_schema: str
+
+
+PREVIOUS_LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
+PREVIOUS_ENTRY_EXECUTION_MODEL_SCHEMA = (
+    "decision-close-zone-next-hour-open-directional-half-spread-v2"
+)
+
+
+def _finite_artifact_float(
+    bundle: dict[str, Any],
+    key: str,
+    *,
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> float:
+    try:
+        value = float(bundle[key])
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Incumbent artifact {key} must be finite") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"Incumbent artifact {key} must be finite")
+    if positive and value <= 0:
+        raise ValueError(f"Incumbent artifact {key} must be positive")
+    if nonnegative and value < 0:
+        raise ValueError(f"Incumbent artifact {key} must be non-negative")
+    return value
+
+
+def load_incumbent_benchmark_artifact(
+    incumbent: IncumbentSnapshot,
+) -> IncumbentBenchmarkArtifact:
+    """Load a current or immediately previous artifact for same-holdout comparison only.
+
+    This deliberately does not make a legacy artifact deployable. It validates the
+    exact bytes, model/task/feature contract and numeric geometry, then exposes only
+    the estimator required to recompute incumbent metrics on the candidate's current
+    tick-aligned holdout.
+    """
+
+    path = Path(incumbent.artifact_path or "").expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        raise RuntimeError(f"Incumbent artifact does not exist: {path}")
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if incumbent.artifact_sha256 and digest.lower() != incumbent.artifact_sha256.lower():
+        raise RuntimeError(
+            "Incumbent artifact SHA256 mismatch: "
+            f"expected {incumbent.artifact_sha256}, got {digest}"
+        )
+    bundle = joblib.load(path)
+    if not isinstance(bundle, dict) or "model" not in bundle:
+        raise ValueError("Invalid incumbent model bundle")
+    if bundle.get("task") != "barrier_outcome_v1":
+        raise ValueError("Incumbent artifact task is not barrier_outcome_v1")
+    if str(bundle.get("version") or "") != incumbent.version:
+        raise ValueError("Incumbent artifact version does not match registry version")
+    if str(bundle.get("model_type") or "") != incumbent.model_type:
+        raise ValueError("Incumbent artifact model type does not match registry model type")
+    if list(bundle.get("feature_names") or []) != MODEL_FEATURE_NAMES:
+        raise ValueError("Incumbent artifact feature names are incompatible")
+    if bundle.get("feature_schema_version") != MODEL_FEATURE_SCHEMA_VERSION:
+        raise ValueError("Incumbent artifact feature schema is incompatible")
+    if bundle.get("market_context_schema") != MARKET_CONTEXT_SCHEMA_VERSION:
+        raise ValueError("Incumbent artifact market-context schema is incompatible")
+    if (
+        bundle.get("market_context_availability_schema")
+        != MARKET_CONTEXT_AVAILABILITY_SCHEMA
+    ):
+        raise ValueError("Incumbent artifact market-context availability is incompatible")
+    market_context = bundle.get("market_context")
+    if not isinstance(market_context, dict):
+        raise ValueError("Incumbent artifact market-context metadata is required")
+    if market_context.get("schema") != MARKET_CONTEXT_SCHEMA_VERSION:
+        raise ValueError("Incumbent artifact nested market-context schema is incompatible")
+    if market_context.get("availability_schema") != MARKET_CONTEXT_AVAILABILITY_SCHEMA:
+        raise ValueError("Incumbent artifact nested market-context availability is incompatible")
+    if bundle.get("timeout_return_schema_version") != TIMEOUT_RETURN_SCHEMA_VERSION:
+        raise ValueError("Incumbent artifact TIMEOUT-return schema is incompatible")
+
+    label_schema = str(bundle.get("label_path_schema_version") or "")
+    if label_schema not in {
+        LABEL_PATH_SCHEMA_VERSION,
+        PREVIOUS_LABEL_PATH_SCHEMA_VERSION,
+    }:
+        raise ValueError("Incumbent artifact label path is not benchmark-compatible")
+    entry_execution = bundle.get("entry_execution_model")
+    if not isinstance(entry_execution, dict):
+        raise ValueError("Incumbent artifact entry execution metadata is required")
+    entry_schema = str(entry_execution.get("schema") or "")
+    if entry_schema not in {
+        ENTRY_EXECUTION_MODEL_SCHEMA,
+        PREVIOUS_ENTRY_EXECUTION_MODEL_SCHEMA,
+    }:
+        raise ValueError("Incumbent artifact entry execution schema is not benchmark-compatible")
+    if (label_schema, entry_schema) not in {
+        (LABEL_PATH_SCHEMA_VERSION, ENTRY_EXECUTION_MODEL_SCHEMA),
+        (PREVIOUS_LABEL_PATH_SCHEMA_VERSION, PREVIOUS_ENTRY_EXECUTION_MODEL_SCHEMA),
+    }:
+        raise ValueError("Incumbent artifact research execution schemas are contradictory")
+
+    model = bundle["model"]
+    if [str(value) for value in getattr(model, "classes_", [])] != [
+        str(value) for value in OUTCOME_CLASSES
+    ]:
+        raise ValueError("Incumbent artifact outcome classes are incompatible")
+    raw_horizon = bundle.get("horizon_hours")
+    if isinstance(raw_horizon, bool):
+        raise ValueError("Incumbent artifact horizon_hours must be a positive integer")
+    try:
+        horizon_hours = int(raw_horizon)
+        if float(raw_horizon) != float(horizon_hours) or horizon_hours <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Incumbent artifact horizon_hours must be a positive integer") from exc
+
+    stop_atr_multiplier = _finite_artifact_float(
+        bundle, "stop_atr_multiplier", positive=True
+    )
+    tp_atr_multiplier = _finite_artifact_float(bundle, "tp_atr_multiplier", positive=True)
+    entry_spread_bps = _finite_artifact_float(bundle, "entry_spread_bps", nonnegative=True)
+    entry_zone_atr_fraction = _finite_artifact_float(
+        bundle, "entry_zone_atr_fraction", positive=True
+    )
+    if entry_zone_atr_fraction > 1.0:
+        raise ValueError("Incumbent artifact entry_zone_atr_fraction must not exceed one ATR")
+    nested_spread = _finite_artifact_float(
+        entry_execution, "entry_spread_bps", nonnegative=True
+    )
+    nested_zone = _finite_artifact_float(
+        entry_execution, "entry_zone_atr_fraction", positive=True
+    )
+    if not math.isclose(nested_spread, entry_spread_bps, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("Incumbent artifact entry spread metadata is contradictory")
+    if not math.isclose(nested_zone, entry_zone_atr_fraction, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("Incumbent artifact entry zone metadata is contradictory")
+
+    margin_path = bundle.get("intrahorizon_margin_path")
+    if not isinstance(margin_path, dict):
+        raise ValueError("Incumbent artifact intrahorizon margin metadata is required")
+    raw_leverage = bundle.get("research_leverage", margin_path.get("research_leverage"))
+    if isinstance(raw_leverage, bool):
+        raise ValueError("Incumbent artifact research_leverage must be a positive integer")
+    try:
+        research_leverage = int(raw_leverage)
+        if float(raw_leverage) != float(research_leverage) or research_leverage <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Incumbent artifact research_leverage must be a positive integer") from exc
+    raw_reserve = bundle.get(
+        "liquidation_equity_reserve_fraction",
+        margin_path.get("equity_reserve_fraction"),
+    )
+    try:
+        reserve_fraction = float(raw_reserve)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Incumbent artifact liquidation reserve must be finite") from exc
+    if not math.isfinite(reserve_fraction) or not 0 <= reserve_fraction < 1.0:
+        raise ValueError("Incumbent artifact liquidation reserve must be in [0, 1)")
+    if margin_path.get("research_leverage") != research_leverage:
+        raise ValueError("Incumbent artifact research leverage metadata is contradictory")
+    try:
+        nested_reserve = float(margin_path.get("equity_reserve_fraction"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Incumbent artifact liquidation reserve metadata is invalid") from exc
+    if not math.isclose(nested_reserve, reserve_fraction, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("Incumbent artifact liquidation reserve metadata is contradictory")
+
+    return IncumbentBenchmarkArtifact(
+        model=model,
+        horizon_hours=horizon_hours,
+        stop_atr_multiplier=stop_atr_multiplier,
+        tp_atr_multiplier=tp_atr_multiplier,
+        entry_spread_bps=entry_spread_bps,
+        entry_zone_atr_fraction=entry_zone_atr_fraction,
+        research_leverage=research_leverage,
+        liquidation_equity_reserve_fraction=reserve_fraction,
+        label_path_schema_version=label_schema,
+        entry_execution_schema=entry_schema,
+    )
+
+
+@dataclass(frozen=True)
 class ModelCandidate:
     path: Path
     version: str
@@ -145,6 +339,7 @@ class TrainingMarketData:
     funding: pd.DataFrame
     funding_interval_minutes: dict[str, int]
     funding_interval_history: pd.DataFrame
+    instrument_spec_history: pd.DataFrame
     universe_eligibility: pd.DataFrame | None = None
 
 MODEL_ACTIVATION_QUALITY_GATE_SCHEMA = "model-activation-quality-gate-v1"
@@ -505,13 +700,22 @@ async def load_training_market_data(
         spec_rows = (await session.execute(spec_query)).scalars().all()
         funding_intervals: dict[str, int] = {}
         funding_interval_history_records: list[dict[str, object]] = []
+        instrument_spec_history_records: list[dict[str, object]] = []
         for row in spec_rows:
+            symbol = str(row.symbol).strip().upper()
+            instrument_spec_history_records.append(
+                {
+                    "symbol": symbol,
+                    "valid_from": row.valid_from,
+                    "received_at": row.received_at,
+                    "tick_size": row.tick_size,
+                }
+            )
             if row.funding_interval_minutes is None:
                 continue
             interval_minutes = int(row.funding_interval_minutes)
             if interval_minutes <= 0:
                 continue
-            symbol = str(row.symbol).strip().upper()
             funding_interval_history_records.append(
                 {
                     "symbol": symbol,
@@ -646,6 +850,10 @@ async def load_training_market_data(
         funding_interval_history_records,
         columns=["symbol", "valid_from", "funding_interval_minutes"],
     )
+    instrument_spec_history = pd.DataFrame.from_records(
+        instrument_spec_history_records,
+        columns=["symbol", "valid_from", "received_at", "tick_size"],
+    )
     return TrainingMarketData(
         candles=candles,
         mark_candles=mark_candles,
@@ -654,6 +862,7 @@ async def load_training_market_data(
         funding=funding,
         funding_interval_minutes=funding_intervals,
         funding_interval_history=funding_interval_history,
+        instrument_spec_history=instrument_spec_history,
         universe_eligibility=universe_eligibility,
     )
 
@@ -899,6 +1108,8 @@ def build_model_candidate(
     funding_history: pd.DataFrame | None = None,
     funding_interval_minutes: dict[str, int] | None = None,
     funding_interval_history: pd.DataFrame | None = None,
+    instrument_spec_history: pd.DataFrame | None = None,
+    require_instrument_spec_timeline: bool = True,
     version: str | None = None,
     output: Path | None = None,
     incumbent: IncumbentSnapshot | None = None,
@@ -923,6 +1134,8 @@ def build_model_candidate(
         funding_interval_minutes=funding_interval_minutes,
         funding_interval_history=funding_interval_history,
         require_funding_timeline=True,
+        instrument_spec_history=instrument_spec_history,
+        require_instrument_spec_timeline=require_instrument_spec_timeline,
         mark_candles=mark_candles,
         require_mark_timeline=True,
         index_candles=index_candles,
@@ -974,6 +1187,9 @@ def build_model_candidate(
     metrics["entry_execution_model"] = json_compatible(dataset.attrs.get("entry_execution_model") or {})
     metrics["historical_funding_timeline"] = json_compatible(
         dataset.attrs.get("historical_funding_timeline") or {}
+    )
+    metrics["instrument_spec_timeline"] = json_compatible(
+        dataset.attrs.get("instrument_spec_timeline") or {}
     )
     metrics["intrahorizon_margin_path"] = json_compatible(dataset.attrs.get("intrahorizon_margin_path") or {})
     metrics["market_context"] = json_compatible(dataset.attrs.get("market_context") or {})
@@ -1054,46 +1270,41 @@ def build_model_candidate(
     incumbent_metrics: dict[str, Any] | None = None
     if incumbent and incumbent.is_artifact_model:
         try:
-            runtime = ModelRuntime(Path(incumbent.artifact_path or ""), allow_baseline=False)
-            runtime.load(
-                expected_sha256=incumbent.artifact_sha256,
-                expected_version=incumbent.version,
-                source="training_benchmark",
-            )
-            if runtime.horizon_hours != horizon or runtime.bundle is None:
+            benchmark = load_incumbent_benchmark_artifact(incumbent)
+            if benchmark.horizon_hours != horizon:
                 incumbent_metrics = {
                     "comparison_skipped": "incumbent_horizon_mismatch",
-                    "incumbent_horizon_hours": runtime.horizon_hours,
+                    "incumbent_horizon_hours": benchmark.horizon_hours,
                 }
             elif not (
                 math.isclose(
-                    runtime.stop_atr_multiplier,
+                    benchmark.stop_atr_multiplier,
                     DEFAULT_STOP_ATR_MULTIPLIER,
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
                 and math.isclose(
-                    runtime.tp_atr_multiplier,
+                    benchmark.tp_atr_multiplier,
                     DEFAULT_TP_ATR_MULTIPLIER,
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
                 and math.isclose(
-                    runtime.entry_spread_bps,
+                    benchmark.entry_spread_bps,
                     entry_spread_bps,
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
                 and math.isclose(
-                    runtime.entry_zone_atr_fraction,
+                    benchmark.entry_zone_atr_fraction,
                     entry_zone_atr_fraction,
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
                 and policy_config is not None
-                and runtime.research_leverage == policy_config.research_leverage
+                and benchmark.research_leverage == policy_config.research_leverage
                 and math.isclose(
-                    runtime.liquidation_equity_reserve_fraction,
+                    benchmark.liquidation_equity_reserve_fraction,
                     policy_config.liquidation_equity_reserve_fraction,
                     rel_tol=0.0,
                     abs_tol=1e-12,
@@ -1105,29 +1316,33 @@ def build_model_candidate(
                     "candidate_tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,
                     "candidate_entry_spread_bps": float(entry_spread_bps),
                     "candidate_entry_zone_atr_fraction": float(entry_zone_atr_fraction),
-                    "incumbent_entry_zone_atr_fraction": runtime.entry_zone_atr_fraction,
-                    "incumbent_stop_atr_multiplier": runtime.stop_atr_multiplier,
-                    "incumbent_tp_atr_multiplier": runtime.tp_atr_multiplier,
-                    "incumbent_entry_spread_bps": runtime.entry_spread_bps,
+                    "incumbent_entry_zone_atr_fraction": benchmark.entry_zone_atr_fraction,
+                    "incumbent_stop_atr_multiplier": benchmark.stop_atr_multiplier,
+                    "incumbent_tp_atr_multiplier": benchmark.tp_atr_multiplier,
+                    "incumbent_entry_spread_bps": benchmark.entry_spread_bps,
                     "candidate_research_leverage": (
                         policy_config.research_leverage if policy_config is not None else None
                     ),
-                    "incumbent_research_leverage": runtime.research_leverage,
+                    "incumbent_research_leverage": benchmark.research_leverage,
                     "candidate_liquidation_equity_reserve_fraction": (
                         policy_config.liquidation_equity_reserve_fraction
                         if policy_config is not None
                         else None
                     ),
                     "incumbent_liquidation_equity_reserve_fraction": (
-                        runtime.liquidation_equity_reserve_fraction
+                        benchmark.liquidation_equity_reserve_fraction
                     ),
                 }
+            elif not callable(getattr(benchmark.model, "predict_proba", None)):
+                incumbent_metrics = {
+                    "comparison_skipped": "incumbent_predict_proba_unavailable",
+                }
             else:
-                incumbent_metrics = evaluate_model(runtime.bundle["model"], split)
+                incumbent_metrics = evaluate_model(benchmark.model, split)
                 if policy_config is not None:
                     incumbent_metrics.update(
                         evaluate_policy_model(
-                            runtime.bundle["model"],
+                            benchmark.model,
                             split,
                             policy_config,
                             horizon_hours=horizon,
@@ -1173,6 +1388,7 @@ def build_model_candidate(
             maximum_signal_publication_delay_seconds
         ),
         "entry_execution_model": metrics["entry_execution_model"],
+        "instrument_spec_timeline": metrics["instrument_spec_timeline"],
         "historical_funding_schema": HISTORICAL_FUNDING_SCHEMA_VERSION,
         "historical_funding_timeline": metrics["historical_funding_timeline"],
         "intrahorizon_margin_schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION,

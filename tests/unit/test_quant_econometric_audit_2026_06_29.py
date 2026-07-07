@@ -597,7 +597,7 @@ def _artifact_bundle(**overrides: object) -> dict[str, object]:
         "entry_zone_atr_fraction": 0.12,
         "maximum_signal_publication_delay_seconds": 600,
         "entry_execution_model": {
-            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
+            "schema": "decision-close-tick-zone-next-hour-open-directional-half-spread-v3",
             "entry_spread_bps": 18.0,
             "entry_zone_atr_fraction": 0.12,
         },
