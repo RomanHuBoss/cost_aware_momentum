@@ -1,11 +1,12 @@
 # Specification Compliance
 
-Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.49.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.49.1, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
 | Advisory-only, read-only Bybit | Реализовано | `app/bybit/client.py` содержит GET market/account reads; order mutation methods отсутствуют. |
 | PostgreSQL-only | Реализовано | SQLAlchemy/PostgreSQL models и Alembic; SQLite fallback отсутствует. |
+| Reproducible clean PostgreSQL migration chain | Исправлено 1.49.1; live confirmation pending | `0001_initial` создаёт current metadata, поэтому overlap revisions `0006`, `0007`, `0017` теперь guard-ят уже существующие objects, сохраняют данные и повторно утверждают constraints/defaults. Unit regression и PostgreSQL offline SQL прошли; фактический rerun на изолированной PostgreSQL в build environment не выполнялся. |
 | Durable immutable model artifacts | Реализовано 1.36.0 | Exact bytes каждого нового candidate, version, SHA-256 и size атомарно сохраняются в `model.model_artifact_blobs`; UPDATE/DELETE запрещены trigger. Worker/trainer/activation service архивируют surviving legacy file или SHA-verified атомарно восстанавливают runtime copy до selection/activation. Уже удалённый pre-1.36.0 artifact без другой копии не реконструируется. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
 | Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; executable-spread alignment 1.37.0; immutable preflight scope 1.38.0 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; full snapshot hashes и `dynamic` mode повторно проверяются. Release 1.37.0 пересекает broad membership с точным live `MAX_SPREAD_BPS`. Release 1.38.0 заставляет background fit использовать exact symbols из persisted preflight profile и ограничивает last/mark/index raw history верхней границей `profile.end_time + horizon`; quality gate повторно сверяет symbol scope, temporal cutoff и post-feature coverage. Pre-ledger rows исключаются; stale/missing/corrupt evidence блокирует run. Exact membership до начала ledger и static-mode historical spread cohort не реконструируются. |

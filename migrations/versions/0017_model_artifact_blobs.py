@@ -20,7 +20,7 @@ def upgrade() -> None:
     op.execute(
         text(
             """
-            CREATE TABLE model.model_artifact_blobs (
+            CREATE TABLE IF NOT EXISTS model.model_artifact_blobs (
                 model_registry_id UUID NOT NULL,
                 version VARCHAR(80) NOT NULL,
                 artifact_sha256 VARCHAR(64) NOT NULL,
@@ -48,7 +48,15 @@ def upgrade() -> None:
     op.execute(
         text(
             """
-            CREATE FUNCTION model.reject_model_artifact_blob_mutation()
+            ALTER TABLE model.model_artifact_blobs
+            ALTER COLUMN created_at SET DEFAULT now()
+            """
+        )
+    )
+    op.execute(
+        text(
+            """
+            CREATE OR REPLACE FUNCTION model.reject_model_artifact_blob_mutation()
             RETURNS trigger
             LANGUAGE plpgsql
             AS $$

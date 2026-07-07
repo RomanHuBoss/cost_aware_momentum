@@ -7,7 +7,6 @@ Create Date: 2026-06-30
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import text
 
@@ -18,10 +17,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "position_snapshots",
-        sa.Column("account_id", sa.String(length=120), nullable=True),
-        schema="advisory",
+    # Fresh databases receive the current ORM column/index in revision 0001.
+    # IF NOT EXISTS also makes recovery from a partially prepared schema safe.
+    op.execute(
+        text(
+            """
+            ALTER TABLE advisory.position_snapshots
+            ADD COLUMN IF NOT EXISTS account_id VARCHAR(120)
+            """
+        )
     )
     op.execute(
         text(
@@ -35,26 +39,31 @@ def upgrade() -> None:
             """
         )
     )
-    op.alter_column(
-        "position_snapshots",
-        "account_id",
-        existing_type=sa.String(length=120),
-        nullable=False,
-        schema="advisory",
+    op.execute(
+        text(
+            """
+            ALTER TABLE advisory.position_snapshots
+            ALTER COLUMN account_id SET NOT NULL
+            """
+        )
     )
-    op.create_index(
-        "ix_position_account_time",
-        "position_snapshots",
-        ["account_id", "source_time"],
-        unique=False,
-        schema="advisory",
+    op.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_position_account_time
+            ON advisory.position_snapshots (account_id, source_time)
+            """
+        )
     )
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_position_account_time",
-        table_name="position_snapshots",
-        schema="advisory",
+    op.execute(text("DROP INDEX IF EXISTS advisory.ix_position_account_time"))
+    op.execute(
+        text(
+            """
+            ALTER TABLE advisory.position_snapshots
+            DROP COLUMN IF EXISTS account_id
+            """
+        )
     )
-    op.drop_column("position_snapshots", "account_id", schema="advisory")

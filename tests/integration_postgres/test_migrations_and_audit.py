@@ -153,6 +153,67 @@ async def test_seeded_reference_data(database_url: str) -> None:
             )
         ).scalar_one()
         assert artifact_table == "model_artifact_blobs"
+        artifact_created_default = (
+            await session.execute(
+                text(
+                    """
+                    SELECT column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = 'model'
+                      AND table_name = 'model_artifact_blobs'
+                      AND column_name = 'created_at'
+                    """
+                )
+            )
+        ).scalar_one()
+        assert artifact_created_default is not None
+        assert "now()" in artifact_created_default.lower()
+        manual_risk_columns = {
+            row[0]: row[1]
+            for row in (
+                await session.execute(
+                    text(
+                        """
+                        SELECT column_name, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'advisory'
+                          AND table_name = 'manual_trades'
+                          AND column_name IN (
+                              'initial_stress_loss',
+                              'remaining_stress_loss'
+                          )
+                        """
+                    )
+                )
+            ).all()
+        }
+        assert manual_risk_columns == {
+            "initial_stress_loss": "NO",
+            "remaining_stress_loss": "NO",
+        }
+        manual_risk_constraints = {
+            row[0]
+            for row in (
+                await session.execute(
+                    text(
+                        """
+                        SELECT conname
+                        FROM pg_constraint
+                        WHERE conname IN (
+                            'ck_manual_trades_initial_stress_loss_non_negative',
+                            'ck_manual_trades_remaining_stress_loss_non_negative',
+                            'ck_manual_trades_remaining_stress_loss_lte_initial'
+                        )
+                        """
+                    )
+                )
+            ).all()
+        }
+        assert manual_risk_constraints == {
+            "ck_manual_trades_initial_stress_loss_non_negative",
+            "ck_manual_trades_remaining_stress_loss_non_negative",
+            "ck_manual_trades_remaining_stress_loss_lte_initial",
+        }
         tables = {
             row[0]
             for row in (

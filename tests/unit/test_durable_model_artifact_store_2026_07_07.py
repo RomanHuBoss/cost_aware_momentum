@@ -25,7 +25,9 @@ def test_model_artifact_blob_migration_matches_orm_contract() -> None:
     ).read_text(encoding="utf-8")
     assert 'revision = "0017_model_artifact_blobs"' in migration
     assert 'down_revision = "0016_universe_replay_asof"' in migration
-    assert "CREATE TABLE model.model_artifact_blobs" in migration
+    assert "CREATE TABLE IF NOT EXISTS model.model_artifact_blobs" in migration
+    assert "ALTER COLUMN created_at SET DEFAULT now()" in migration
+    assert "CREATE OR REPLACE FUNCTION model.reject_model_artifact_blob_mutation" in migration
     assert "CHECK (size_bytes <= 268435456)" in migration
     assert "CHECK (octet_length(payload) = size_bytes)" in migration
     assert "BEFORE UPDATE OR DELETE" in migration

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.49.1 — 2026-07-07
+
+### Fixed
+
+- Reproduced and fixed a clean-install Alembic failure where `0001_initial` created current ORM columns and `0006_manual_trade_remaining_risk` attempted to add them again.
+- Made `0006` preserve existing risk values, backfill only missing values, recreate exact check constraints transactionally and tolerate already-present columns.
+- Made `0007_position_account_scope` tolerate an existing `account_id` column and index while retaining fail-closed non-null enforcement.
+- Made `0017_model_artifact_blobs` tolerate the table/function created or prepared earlier and restore the intended PostgreSQL `created_at DEFAULT now()` contract.
+- Added a non-PostgreSQL-skippable migration compatibility regression plus stronger live integration assertions.
+- Kept the Alembic head at `0017_model_artifact_blobs`; no `.env`, model, risk, trading-policy or API contract changed.
+
 ## 1.49.0 — 2026-07-07
 
 ### Fixed
