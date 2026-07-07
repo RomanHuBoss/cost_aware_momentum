@@ -174,6 +174,13 @@ class Settings(BaseSettings):
     auto_train_initial_delay_seconds: int = 120
     auto_train_lookback_days: int = 365
     auto_train_max_symbols: int = 100
+    # A clean dynamic installation can train on a hash-bound frozen cohort while
+    # exact prospective universe snapshots accumulate. No promotion threshold is
+    # relaxed; the bootstrap path is explicitly marked and later superseded by
+    # full point-in-time dynamic replay.
+    auto_train_dynamic_bootstrap_enabled: bool = True
+    auto_train_bootstrap_min_symbols: int = 3
+    auto_train_bootstrap_instrument_spec_extra_ticks: int = 1
     auto_train_min_new_timestamps: int = 168
     auto_train_data_change_cooldown_hours: int = 6
     auto_train_min_new_rows: int = 10000
@@ -490,6 +497,19 @@ class Settings(BaseSettings):
             raise ValueError("AUTO_TRAIN_LOOKBACK_DAYS must be at least 30")
         if self.auto_train_max_symbols < 0:
             raise ValueError("AUTO_TRAIN_MAX_SYMBOLS cannot be negative")
+        if self.auto_train_bootstrap_min_symbols < 1:
+            raise ValueError("AUTO_TRAIN_BOOTSTRAP_MIN_SYMBOLS must be positive")
+        if (
+            self.auto_train_max_symbols > 0
+            and self.auto_train_bootstrap_min_symbols > self.auto_train_max_symbols
+        ):
+            raise ValueError(
+                "AUTO_TRAIN_BOOTSTRAP_MIN_SYMBOLS cannot exceed AUTO_TRAIN_MAX_SYMBOLS"
+            )
+        if not 1 <= self.auto_train_bootstrap_instrument_spec_extra_ticks <= 5:
+            raise ValueError(
+                "AUTO_TRAIN_BOOTSTRAP_INSTRUMENT_SPEC_EXTRA_TICKS must be in [1, 5]"
+            )
         if self.auto_train_min_new_timestamps < 1:
             raise ValueError("AUTO_TRAIN_MIN_NEW_TIMESTAMPS must be positive")
         if self.auto_train_data_change_cooldown_hours < 1:

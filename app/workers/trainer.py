@@ -21,9 +21,15 @@ from app.logging import configure_logging
 from app.ml.artifact_store import ensure_registry_artifact_durable
 from app.ml.data_profile import TrainingDataProfile, compare_training_profiles
 from app.ml.lifecycle import (
+    TRAINING_UNIVERSE_MODE_BOOTSTRAP,
+    TRAINING_UNIVERSE_MODE_PROSPECTIVE,
+    TRAINING_UNIVERSE_MODE_STATIC,
+    TRAINING_UNIVERSE_MODES,
     build_model_candidate,
     evaluate_quality_gate,
     incumbent_from_registry,
+    load_dynamic_bootstrap_cohort,
+    load_dynamic_universe_rollout_evidence,
     load_training_data_profile,
     load_training_market_data,
     policy_evaluation_config,
@@ -101,6 +107,33 @@ def require_training_trigger_profile(
     return profile, symbols, maximum_open_time
 
 
+def require_training_universe_scope(
+    trigger: dict[str, object],
+) -> tuple[str, dict[str, object]]:
+    mode = str(trigger.get("training_universe_mode") or "").strip()
+    if mode not in TRAINING_UNIVERSE_MODES:
+        raise RuntimeError("Background training requires a valid training_universe_mode")
+    raw_evidence = trigger.get("training_universe_evidence")
+    evidence = dict(raw_evidence) if isinstance(raw_evidence, dict) else {}
+    if mode == TRAINING_UNIVERSE_MODE_BOOTSTRAP:
+        if evidence.get("schema") != "historical-frozen-dynamic-bootstrap-v1":
+            raise RuntimeError("Historical bootstrap requires hash-bound universe evidence")
+        if evidence.get("status") != "frozen":
+            raise RuntimeError("Historical bootstrap universe evidence is not frozen")
+        for field in ("record_hash", "policy_hash"):
+            raw_hash = str(evidence.get(field) or "").lower()
+            if len(raw_hash) != 64 or any(ch not in "0123456789abcdef" for ch in raw_hash):
+                raise RuntimeError(f"Historical bootstrap universe evidence has invalid {field}")
+        raw_symbols = evidence.get("symbols")
+        if not isinstance(raw_symbols, list):
+            raise RuntimeError("Historical bootstrap universe evidence has no symbol cohort")
+        symbols = sorted(str(item).strip().upper() for item in raw_symbols)
+        if not symbols or any(not item for item in symbols) or len(symbols) != len(set(symbols)):
+            raise RuntimeError("Historical bootstrap universe evidence has invalid symbols")
+        evidence["symbols"] = symbols
+    return mode, evidence
+
+
 def _same_bootstrap_episode(latest: JobRun, trigger: dict[str, object]) -> bool:
     """Return whether a prior job belongs to the current no-model recovery episode.
 
@@ -121,6 +154,7 @@ def _same_bootstrap_episode(latest: JobRun, trigger: dict[str, object]) -> bool:
 class BackgroundTrainer:
     def __init__(self) -> None:
         self.stop_event = asyncio.Event()
+        self._last_training_scope: tuple[TrainingDataProfile, str, dict[str, object]] | None = None
         self.state: dict[str, object] = {
             "phase": "STARTING",
             "healthy": True,
@@ -200,17 +234,21 @@ class BackgroundTrainer:
 
         async with SessionFactory() as session, session.begin():
             candidates = (
-                await session.execute(
-                    select(ModelRegistry)
-                    .where(
-                        ModelRegistry.active.is_(False),
-                        ModelRegistry.model_type != "deterministic_baseline",
+                (
+                    await session.execute(
+                        select(ModelRegistry)
+                        .where(
+                            ModelRegistry.active.is_(False),
+                            ModelRegistry.model_type != "deterministic_baseline",
+                        )
+                        .order_by(desc(ModelRegistry.created_at))
+                        .limit(50)
+                        .with_for_update()
                     )
-                    .order_by(desc(ModelRegistry.created_at))
-                    .limit(50)
-                    .with_for_update()
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for candidate in candidates:
                 metrics = candidate.metrics if isinstance(candidate.metrics, dict) else {}
                 if metrics.get("source") != "background_trainer":
@@ -219,9 +257,7 @@ class BackgroundTrainer:
                     continue
                 quality_gate = metrics.get("quality_gate")
                 try:
-                    require_passed_quality_gate(
-                        quality_gate if isinstance(quality_gate, dict) else None
-                    )
+                    require_passed_quality_gate(quality_gate if isinstance(quality_gate, dict) else None)
                 except RuntimeError:
                     continue
                 await ensure_registry_artifact_durable(
@@ -308,9 +344,7 @@ class BackgroundTrainer:
             )
         artifact_sha256 = str(candidate.artifact_sha256).strip().lower()
         try:
-            policy_binding = require_experiment_policy_binding(
-                metrics.get("promotion_policy_binding")
-            )
+            policy_binding = require_experiment_policy_binding(metrics.get("promotion_policy_binding"))
         except RuntimeError as exc:
             return await self._close_unusable_candidate(
                 candidate,
@@ -344,11 +378,7 @@ class BackgroundTrainer:
             }
 
         persisted_gate = metrics.get("experiment_promotion_gate")
-        stored_family = (
-            persisted_gate.get("experiment_family")
-            if isinstance(persisted_gate, dict)
-            else None
-        )
+        stored_family = persisted_gate.get("experiment_family") if isinstance(persisted_gate, dict) else None
         configured_family = (settings.auto_train_experiment_family or "").strip() or None
         # The configured family is an explicit operator selection for this staged
         # candidate. Exact version/SHA/horizon binding below prevents a stale or
@@ -379,9 +409,7 @@ class BackgroundTrainer:
                 else None
             )
             automatic_status = str(automatic_experiment.get("status") or "WAITING")
-            automatic_reason = str(
-                automatic_experiment.get("reason") or "automatic_experiment_incomplete"
-            )
+            automatic_reason = str(automatic_experiment.get("reason") or "automatic_experiment_incomplete")
             if automatic_status == "CANCELLED":
                 failure_gate = {
                     "schema": "automatic-experiment-failure-gate-v1",
@@ -534,6 +562,7 @@ class BackgroundTrainer:
         self,
         after: datetime | None = None,
         before_or_at: datetime | None = None,
+        symbols: tuple[str, ...] | list[str] | None = None,
     ) -> int:
         async with SessionFactory() as session:
             query = select(func.count(func.distinct(Candle.open_time))).where(
@@ -545,23 +574,135 @@ class BackgroundTrainer:
                 query = query.where(Candle.open_time > after)
             if before_or_at is not None:
                 query = query.where(Candle.open_time <= before_or_at)
+            if symbols is not None:
+                normalized = [str(item).strip().upper() for item in symbols if item]
+                if not normalized:
+                    return 0
+                query = query.where(Candle.symbol.in_(normalized))
             return int((await session.execute(query)).scalar_one() or 0)
 
-    async def current_training_profile(self) -> TrainingDataProfile:
-        symbols = settings.symbols if settings.universe_mode == "static" else None
-        return await load_training_data_profile(
-            symbols,
-            lookback_days=settings.auto_train_lookback_days,
-            max_symbols=settings.auto_train_max_symbols,
-            horizon=settings.default_horizon_hours,
-            minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
-            require_universe_replay=settings.universe_mode == "dynamic",
-            universe_replay_max_age_seconds=getattr(
-                settings, "universe_refresh_seconds", 300
+    async def current_training_scope(
+        self,
+        *,
+        minimum_bootstrap_timestamps: int,
+    ) -> tuple[TrainingDataProfile, str, dict[str, object]]:
+        async def profile_for(
+            symbols: list[str] | tuple[str, ...] | None,
+            *,
+            max_symbols: int,
+            require_universe_replay: bool,
+        ) -> TrainingDataProfile:
+            return await load_training_data_profile(
+                symbols,
+                lookback_days=settings.auto_train_lookback_days,
+                max_symbols=max_symbols,
+                horizon=settings.default_horizon_hours,
+                minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
+                require_universe_replay=require_universe_replay,
+                universe_replay_max_age_seconds=(getattr(settings, "universe_refresh_seconds", 300) * 2),
+                maximum_executable_spread_bps=settings.max_spread_bps,
             )
-            * 2,
-            maximum_executable_spread_bps=settings.max_spread_bps,
+
+        if settings.universe_mode == "static":
+            profile = await profile_for(
+                settings.symbols,
+                max_symbols=settings.auto_train_max_symbols,
+                require_universe_replay=False,
+            )
+            return (
+                profile,
+                TRAINING_UNIVERSE_MODE_STATIC,
+                {
+                    "schema": "static-configured-training-cohort-v1",
+                    "status": "configured",
+                    "symbols": list(profile.symbols),
+                },
+            )
+
+        rollout = await load_dynamic_universe_rollout_evidence()
+        # Before the prospective ledger can possibly cover the temporal quality
+        # gate, avoid loading a year of candles merely to rediscover that fact.
+        prospective_possible = float(rollout.get("span_hours") or 0.0) >= float(
+            max(0, minimum_bootstrap_timestamps - 1)
         )
+        prospective_profile: TrainingDataProfile | None = None
+        if prospective_possible:
+            prospective_profile = await profile_for(
+                None,
+                max_symbols=settings.auto_train_max_symbols,
+                require_universe_replay=True,
+            )
+            if (
+                prospective_profile.unique_timestamps >= minimum_bootstrap_timestamps
+                and prospective_profile.coverage_ratio >= settings.auto_train_min_symbol_coverage_ratio
+            ):
+                return (
+                    prospective_profile,
+                    TRAINING_UNIVERSE_MODE_PROSPECTIVE,
+                    {
+                        **rollout,
+                        "status": "eligible",
+                        "profile": prospective_profile.to_dict(),
+                    },
+                )
+
+        if not settings.auto_train_dynamic_bootstrap_enabled:
+            empty_or_prospective = prospective_profile or await profile_for(
+                None,
+                max_symbols=settings.auto_train_max_symbols,
+                require_universe_replay=True,
+            )
+            return (
+                empty_or_prospective,
+                TRAINING_UNIVERSE_MODE_PROSPECTIVE,
+                {
+                    **rollout,
+                    "status": "bootstrap_disabled",
+                },
+            )
+
+        cohort = await load_dynamic_bootstrap_cohort(
+            max_symbols=settings.auto_train_max_symbols,
+            maximum_executable_spread_bps=settings.max_spread_bps,
+            max_snapshot_age_seconds=(getattr(settings, "universe_refresh_seconds", 300) * 2),
+        )
+        if len(cohort.symbols) < settings.auto_train_bootstrap_min_symbols:
+            empty = await profile_for(
+                cohort.symbols,
+                max_symbols=0,
+                require_universe_replay=False,
+            )
+            evidence: dict[str, object] = {
+                **cohort.evidence,
+                "status": "insufficient_execution_eligible_symbols",
+                "required_symbols": settings.auto_train_bootstrap_min_symbols,
+                "prospective_rollout": rollout,
+            }
+            return empty, TRAINING_UNIVERSE_MODE_BOOTSTRAP, evidence
+
+        profile = await profile_for(
+            cohort.symbols,
+            max_symbols=0,
+            require_universe_replay=False,
+        )
+        evidence = {
+            **cohort.evidence,
+            "prospective_rollout": rollout,
+            "prospective_profile": (
+                prospective_profile.to_dict() if prospective_profile is not None else None
+            ),
+        }
+        return profile, TRAINING_UNIVERSE_MODE_BOOTSTRAP, evidence
+
+    async def current_training_profile(self) -> TrainingDataProfile:
+        minimum_bootstrap = minimum_hourly_history_timestamps_for_quality_gate(
+            horizon_hours=settings.default_horizon_hours,
+            minimum_holdout_rows=settings.auto_train_min_holdout_rows,
+            minimum_holdout_span_hours=settings.auto_train_min_holdout_span_hours,
+        )
+        scope = await self.current_training_scope(minimum_bootstrap_timestamps=minimum_bootstrap)
+        self._last_training_scope = scope
+        return scope[0]
 
     async def due_reason(
         self,
@@ -571,12 +712,44 @@ class BackgroundTrainer:
         now = datetime.now(UTC)
         active = await self.active_model()
         latest = await self.latest_attempt()
-        profile = await self.current_training_profile()
         minimum_bootstrap = minimum_hourly_history_timestamps_for_quality_gate(
             horizon_hours=settings.default_horizon_hours,
             minimum_holdout_rows=settings.auto_train_min_holdout_rows,
             minimum_holdout_span_hours=settings.auto_train_min_holdout_span_hours,
         )
+        profile = await self.current_training_profile()
+        cached_scope = self._last_training_scope
+        if cached_scope is not None and cached_scope[0] == profile:
+            _, training_universe_mode, training_universe_evidence = cached_scope
+        else:
+            # Unit-test/legacy overrides may replace current_training_profile. Keep
+            # scheduling testable without a database; production uses the cached
+            # scope populated by the method above.
+            training_universe_mode = (
+                TRAINING_UNIVERSE_MODE_STATIC
+                if settings.universe_mode == "static"
+                else TRAINING_UNIVERSE_MODE_PROSPECTIVE
+            )
+            training_universe_evidence = {
+                "schema": "legacy-profile-override-v1",
+                "status": "profile_only",
+            }
+        training_scope = {
+            "training_data_profile": profile.to_dict(),
+            "training_universe_mode": training_universe_mode,
+            "training_universe_evidence": json_compatible(training_universe_evidence),
+        }
+        if (
+            training_universe_mode == TRAINING_UNIVERSE_MODE_BOOTSTRAP
+            and training_universe_evidence.get("status") != "frozen"
+        ):
+            return False, {
+                "reason": "dynamic_bootstrap_universe_not_ready",
+                "bootstrap_status": training_universe_evidence.get("status"),
+                "required_symbols": settings.auto_train_bootstrap_min_symbols,
+                "available_symbols": profile.symbol_count,
+                **training_scope,
+            }
         if profile.unique_timestamps < minimum_bootstrap:
             return False, {
                 "reason": "not_enough_history_for_bootstrap",
@@ -585,7 +758,7 @@ class BackgroundTrainer:
                 "required_holdout_rows": settings.auto_train_min_holdout_rows,
                 "required_holdout_span_hours": (settings.auto_train_min_holdout_span_hours),
                 "horizon_hours": settings.default_horizon_hours,
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
         if profile.coverage_ratio < settings.auto_train_min_symbol_coverage_ratio:
             return False, {
@@ -595,7 +768,7 @@ class BackgroundTrainer:
                 "covered_symbols": profile.covered_symbols,
                 "symbol_count": profile.symbol_count,
                 "minimum_rows_per_symbol": settings.auto_train_min_bars_per_symbol,
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
 
         recovery_notice = (
@@ -607,8 +780,16 @@ class BackgroundTrainer:
                 app_mode=settings.app_mode,
             )
         )
+        active_metrics = active.metrics if active and isinstance(active.metrics, dict) else {}
         active_profile = TrainingDataProfile.from_mapping(
-            (active.metrics or {}).get("training_data_profile") if active else None
+            active_metrics.get("training_data_profile") if active else None
+        )
+        active_universe_mode = str(active_metrics.get("training_universe_mode") or "")
+        universe_mode_changed = bool(
+            active
+            and active.model_type != "deterministic_baseline"
+            and active_universe_mode
+            and active_universe_mode != training_universe_mode
         )
         comparison = compare_training_profiles(
             profile,
@@ -620,15 +801,21 @@ class BackgroundTrainer:
         )
         label_cutoff = profile.end_time
         new_timestamps = 0
-        if active and active.training_end and label_cutoff:
-            new_timestamps = await self.timestamp_count(active.training_end, label_cutoff)
+        if active_profile is not None and active_profile.symbols == profile.symbols:
+            new_timestamps = max(0, profile.unique_timestamps - active_profile.unique_timestamps)
+        elif active and active.training_end and label_cutoff:
+            new_timestamps = await self.timestamp_count(
+                active.training_end,
+                label_cutoff,
+                symbols=profile.symbols,
+            )
 
         if force_recovery:
             if settings.active_model_path is not None:
                 return False, {
                     "reason": "operator_recovery_blocked_by_active_model_path",
                     "active_model_path": str(settings.active_model_path),
-                    "training_data_profile": profile.to_dict(),
+                    **training_scope,
                 }
             if recovery_notice is not None:
                 recovery_reason = "bootstrap_recovery"
@@ -638,7 +825,7 @@ class BackgroundTrainer:
                 return False, {
                     "reason": "operator_recovery_not_required",
                     "active_version": active.version,
-                    "training_data_profile": profile.to_dict(),
+                    **training_scope,
                 }
             trigger = {
                 "reason": "operator_recovery",
@@ -646,7 +833,7 @@ class BackgroundTrainer:
                 "active_version": active.version if active else None,
                 "recovery_notice": recovery_notice,
                 "requested_at": now.isoformat(),
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
             trigger_kind = "bootstrap"
         elif recovery_notice is not None:
@@ -654,23 +841,33 @@ class BackgroundTrainer:
                 "reason": "bootstrap_recovery",
                 "active_version": active.version if active else None,
                 "recovery_notice": recovery_notice,
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
             trigger_kind = "bootstrap"
         elif active is None or active.model_type == "deterministic_baseline":
             trigger = {
                 "reason": "bootstrap_training",
                 "active_version": active.version if active else None,
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
             trigger_kind = "bootstrap"
+        elif universe_mode_changed:
+            trigger = {
+                "reason": "training_universe_evidence_upgrade",
+                "active_version": active.version,
+                "active_training_universe_mode": active_universe_mode or None,
+                "new_training_universe_mode": training_universe_mode,
+                "dataset_change": comparison,
+                **training_scope,
+            }
+            trigger_kind = "data_change"
         elif comparison["material_change"]:
             trigger = {
                 "reason": "material_training_dataset_change",
                 "active_version": active.version,
                 "new_timestamps": new_timestamps,
                 "dataset_change": comparison,
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
             trigger_kind = "data_change"
         elif new_timestamps >= settings.auto_train_min_new_timestamps:
@@ -682,7 +879,7 @@ class BackgroundTrainer:
                 "required_new_timestamps": settings.auto_train_min_new_timestamps,
                 "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
                 "dataset_change": comparison,
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
             trigger_kind = "scheduled"
         else:
@@ -694,7 +891,7 @@ class BackgroundTrainer:
                 "required_new_timestamps": settings.auto_train_min_new_timestamps,
                 "label_cutoff": label_cutoff.isoformat() if label_cutoff else None,
                 "dataset_change": comparison,
-                "training_data_profile": profile.to_dict(),
+                **training_scope,
             }
 
         if force_recovery:
@@ -776,7 +973,7 @@ class BackgroundTrainer:
                             "required_new_timestamps": (settings.auto_train_min_new_timestamps),
                             "dataset_change": retry_comparison,
                             "previous_training_data_profile": previous_profile.to_dict(),
-                            "training_data_profile": profile.to_dict(),
+                            **training_scope,
                         }
         return True, trigger
 
@@ -1106,6 +1303,20 @@ class BackgroundTrainer:
                         trigger,
                         horizon_hours=settings.default_horizon_hours,
                     )
+                    training_universe_mode, training_universe_evidence = require_training_universe_scope(
+                        trigger
+                    )
+                    if training_universe_mode == TRAINING_UNIVERSE_MODE_BOOTSTRAP:
+                        raw_evidence_symbols = training_universe_evidence.get("symbols")
+                        if not isinstance(raw_evidence_symbols, list):
+                            raise RuntimeError("Historical bootstrap universe evidence has no symbol cohort")
+                        evidence_symbols = tuple(str(item).strip().upper() for item in raw_evidence_symbols)
+                        if evidence_symbols != preflight_profile.symbols:
+                            raise RuntimeError(
+                                "Historical bootstrap cohort differs from the preflight training profile"
+                            )
+                    require_universe_replay = training_universe_mode == TRAINING_UNIVERSE_MODE_PROSPECTIVE
+                    historical_bootstrap = training_universe_mode == TRAINING_UNIVERSE_MODE_BOOTSTRAP
                     load_symbols = expected_symbols
                     load_max_symbols = 0
                     self.state.update(
@@ -1122,8 +1333,9 @@ class BackgroundTrainer:
                         max_symbols=load_max_symbols,
                         horizon=settings.default_horizon_hours,
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
-                        require_universe_replay=settings.universe_mode == "dynamic",
-                        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+                        require_universe_replay=require_universe_replay,
+                        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300)
+                        * 2,
                         maximum_executable_spread_bps=settings.max_spread_bps,
                         maximum_open_time=maximum_open_time,
                     )
@@ -1146,14 +1358,21 @@ class BackgroundTrainer:
                         funding_interval_minutes=market_data.funding_interval_minutes,
                         funding_interval_history=market_data.funding_interval_history,
                         instrument_spec_history=getattr(market_data, "instrument_spec_history", None),
+                        allow_pre_observation_instrument_spec_bootstrap=historical_bootstrap,
+                        bootstrap_instrument_spec_extra_ticks=(
+                            settings.auto_train_bootstrap_instrument_spec_extra_ticks
+                        ),
+                        training_universe_mode=training_universe_mode,
+                        training_universe_evidence=training_universe_evidence,
                         incumbent=incumbent,
                         source="background_trainer",
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
                         policy_config=policy_evaluation_config(settings),
                         expected_symbols=expected_symbols,
                         universe_eligibility=getattr(market_data, "universe_eligibility", None),
-                        require_universe_replay=settings.universe_mode == "dynamic",
-                        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+                        require_universe_replay=require_universe_replay,
+                        universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300)
+                        * 2,
                         maximum_executable_spread_bps=settings.max_spread_bps,
                     )
                     gate = evaluate_quality_gate(

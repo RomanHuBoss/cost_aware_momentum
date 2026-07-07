@@ -36,7 +36,8 @@ const trainerPhaseLabels = {
 };
 
 const trainerWaitLabels = {
-  not_enough_history_for_bootstrap: 'Недостаточно полной часовой истории для первой или восстановительной модели.',
+  not_enough_history_for_bootstrap: 'Исторический bootstrap cohort ещё не набрал минимальную часовую глубину.',
+  dynamic_bootstrap_universe_not_ready: 'Нет свежего dynamic snapshot или недостаточно execution-eligible инструментов для безопасного historical bootstrap.',
   insufficient_symbol_history_coverage: 'Недостаточно инструментов с требуемой глубиной истории.',
   not_enough_new_or_changed_training_data: 'После активной модели накоплено недостаточно новых размеченных часов или изменений набора данных.',
   not_enough_new_labeled_time: 'После активной модели накоплено недостаточно новых размеченных часов.',
@@ -299,6 +300,9 @@ function trainerWaitDescription(waitReason) {
   if (reason === 'not_enough_history_for_bootstrap') {
     progress += trainerProgressRow('Уникальные часовые точки', waitReason.timestamps, waitReason.required_timestamps);
   }
+  if (reason === 'dynamic_bootstrap_universe_not_ready') {
+    progress += trainerProgressRow('Execution-eligible инструменты', waitReason.available_symbols, waitReason.required_symbols);
+  }
   if (reason === 'insufficient_symbol_history_coverage') {
     progress += trainerProgressRow('Инструменты с достаточной историей', waitReason.covered_symbols, waitReason.symbol_count);
     progress += trainerProgressRow('Покрытие universe', Number(waitReason.coverage_ratio || 0) * 100, Number(waitReason.required_coverage_ratio || 0) * 100, value => `${fmt(value, 1)}%`);
@@ -405,6 +409,14 @@ function renderTrainerDialog(status = state.systemStatus) {
   const artifactState = active.type === 'deterministic_baseline'
     ? 'registry baseline'
     : active.artifact_exists === true ? 'файл доступен' : active.version ? 'файл отсутствует' : 'активной модели нет';
+  const trainingModeLabels = {
+    static_configured: 'static configured cohort',
+    historical_frozen_dynamic_bootstrap: 'historical frozen dynamic bootstrap',
+    prospective_dynamic_replay: 'exact prospective dynamic replay',
+  };
+  const waitScope = details.wait_reason || {};
+  const trainingMode = waitScope.training_universe_mode || '—';
+  const trainingEvidence = waitScope.training_universe_evidence || {};
   const recoveryReasonLabels = {
     no_active_model: 'активная модель не зарегистрирована',
     registry_baseline_active: 'активен baseline',
@@ -433,6 +445,8 @@ function renderTrainerDialog(status = state.systemStatus) {
       <dt>Fallback notice</dt><dd>${escapeHtml(notice.code || 'нет')}</dd>
       <dt>PostgreSQL archive</dt><dd>${escapeHtml(archiveState)}</dd>
       <dt>Проверка artifact</dt><dd>${escapeHtml(durabilityState)}</dd>
+      <dt>Training universe mode</dt><dd>${escapeHtml(trainingModeLabels[trainingMode] || trainingMode)}</dd>
+      <dt>Universe evidence</dt><dd>${escapeHtml(trainingEvidence.status || '—')}</dd>
       <dt>Восстановление доступно</dt><dd>${control.recovery_available === true ? 'да' : 'нет'}</dd>
       <dt>Причина</dt><dd>${escapeHtml(recoveryReasonLabels[control.recovery_reason] || control.recovery_reason || '—')}</dd>
     </dl>

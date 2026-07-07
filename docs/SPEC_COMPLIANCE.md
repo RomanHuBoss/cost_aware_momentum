@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.51.1; они не означают полную production/economic validation.
+Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.0; они не означают полную production/economic validation.
 
 | Требование | Статус | Evidence / ограничение |
 |---|---|---|
@@ -12,10 +12,11 @@
 | Cost-aware fee/slippage/funding math | Implemented, unit tested | Decimal risk math и policy/backtest tests |
 | Safe qty rounding и min order blocking | Implemented, unit tested | floor-to-step и post-round checks |
 | Point-in-time features/specs | Implemented, unit tested | training/context/spec timeline tests |
+| Clean-install dynamic historical bootstrap | Implemented, unit tested | frozen hash-validated cohort, immutable preflight scope, conservative tick fallback, automatic prospective upgrade |
 | Purged temporal split/final holdout | Implemented, unit tested | `chronological_split`, walk-forward tests |
 | Immutable artifact + guarded activation | Implemented, unit tested | lifecycle/artifact/promotion tests |
 | Drift/attrition/selection governance | Implemented, unit tested | соответствующие services и tests |
 | Full PostgreSQL integration evidence | Not verified this iteration | отдельная TEST_DATABASE_URL не была настроена |
 | Live Bybit/network smoke evidence | Not verified this iteration | внешняя сеть/credentials не использовались |
 | Economic profitability | Not claimed | требуется paper/shadow/forward evidence |
-| Complete release attestation | Implemented in 1.51.1 | required docs, version agreement, patch/report, SHA256SUMS |
+| Complete release attestation | Implemented since 1.51.1 | required docs, version agreement, patch/report, SHA256SUMS |

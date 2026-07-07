@@ -15,9 +15,11 @@
 - Реальный вход и выход регистрируются вручную в fills/trades journal.
 - Не обходите `NO_TRADE`, stale, risk, margin, liquidity, reconciliation или model quarantine блокировки.
 
-## Обновление 1.51.1
+## Обновление 1.52.0
 
-Миграций и новых `.env`-переменных нет. После распаковки до запуска выполните:
+Миграций нет. Новые bootstrap-параметры уже имеют безопасные defaults в `.env.example`. После обновления перезапустите worker и trainer. В окне trainer ожидайте режим `historical_frozen_dynamic_bootstrap`; счётчик истории должен начать отражать загруженные historical hours, а не только часы после установки. После накопления полной prospective history режим автоматически сменится на `prospective_dynamic_replay`.
+
+До запуска выполните:
 
 ```bash
 python manage.py release-check

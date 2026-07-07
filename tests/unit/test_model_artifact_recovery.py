@@ -9,6 +9,7 @@ import pytest
 
 from app.config import Settings
 from app.ml.artifact_recovery import load_recovery_candidate
+from app.ml.data_profile import profile_from_symbol_rows
 from app.ml.lifecycle import evaluate_quality_gate
 from app.ml.training import (
     LABEL_PATH_SCHEMA_VERSION,
@@ -186,6 +187,14 @@ def _passing_metrics() -> dict[str, object]:
 def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8) -> None:
     now = datetime.now(UTC)
     resolved_version = version or path.stem
+    profile = profile_from_symbol_rows(
+        [
+            ("BTCUSDT", 900, now, now),
+            ("ETHUSDT", 900, now, now),
+        ],
+        unique_timestamps=900,
+        minimum_rows_for_coverage=300,
+    )
     joblib.dump(
         {
             "task": "barrier_outcome_v1",
@@ -255,22 +264,7 @@ def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8)
             "symbol_count": 2,
             "symbol_sample": ["BTCUSDT", "ETHUSDT"],
             "symbols": ["BTCUSDT", "ETHUSDT"],
-            "training_data_profile": {
-                "candle_rows": 1800,
-                "unique_timestamps": 900,
-                "symbol_count": 2,
-                "symbols": ["BTCUSDT", "ETHUSDT"],
-                "start_time": now.isoformat(),
-                "end_time": now.isoformat(),
-                "min_rows_per_symbol": 900,
-                "median_rows_per_symbol": 900,
-                "max_rows_per_symbol": 900,
-                "covered_symbols": 2,
-                "coverage_ratio": 1.0,
-                "minimum_rows_for_coverage": 300,
-                "symbols_sha256": "symbols",
-                "coverage_sha256": "coverage",
-            },
+            "training_data_profile": profile.to_dict(),
             "source": "background_trainer",
             "created_at": now.isoformat(),
         },

@@ -1,4 +1,4 @@
-# QA Report — 1.51.1
+# QA Report — 1.52.0
 
 Дата проверки: 2026-07-07.
 
@@ -46,7 +46,7 @@ python -m pytest -q \
 | `python -m pip check` | PASSED | No broken requirements found |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
 | `python -m ruff check .` | PASSED | All checks passed |
-| `python -m pytest -q` | PASSED | 838 passed, 8 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED | 846 passed, 8 skipped |
 | `node --check web/js/app.js` | PASSED | exit 0 |
 | `alembic heads` | PASSED | `0018_inference_observations (head)` |
 | `python manage.py doctor` | FAILED | ожидает project-local `.venv`; external venv не распознан |
@@ -59,6 +59,21 @@ python -m pytest -q \
 
 62 существующих `DeprecationWarning` связаны преимущественно с pandas/NumPy timedelta semantics. Они не стали failures, но требуют отдельной совместимой cleanup-итерации до обновления зависимостей, где warning станет error.
 
+## Проверки 1.52.0
+
+| Проверка | Статус | Результат |
+|---|---|---|
+| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
+| `ruff check app tests scripts manage.py` | PASSED | All checks passed |
+| `pytest -q` | PASSED | 846 passed, 8 skipped |
+| `node --check web/js/app.js` | PASSED | exit 0 |
+| `alembic heads` | PASSED | `0018_inference_observations (head)` |
+| `mypy app scripts --ignore-missing-imports` | FAILED / known debt | 449 errors in 42 files; release не объявляется mypy-clean |
+| PostgreSQL integration suite | NOT RUN | отдельная безопасная `TEST_DATABASE_URL` отсутствовала |
+| Live Bybit/network smoke | NOT RUN | credentials и внешняя сеть не использовались |
+
+Новые regression tests покрывают frozen dynamic bootstrap, conservative pre-observation tick resolution, profile/evidence integrity, automatic prospective upgrade и запрет full-sample symbol cap в exact replay.
+
 ## Scope statement
 
-В 1.51.1 изменён только release/security governance layer. Risk math, signal selection, ML training, database schema и API contracts не менялись. Проверка технической целостности не является доказательством прибыльности стратегии.
+В 1.52.0 изменены background training lifecycle, historical label tick geometry и model provenance. Ни один quality, calibration, policy, experiment, cost-stress, EV/RR или risk threshold не снижен. Проверка технической целостности не является доказательством прибыльности стратегии.

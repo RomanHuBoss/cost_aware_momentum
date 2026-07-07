@@ -126,6 +126,7 @@ class PointInTimeTickSize:
     tick_size: Decimal
     valid_from: pd.Timestamp
     received_at: pd.Timestamp
+    selection: str = "point_in_time"
 
 
 class PointInTimeInstrumentSpecTimeline:
@@ -133,7 +134,12 @@ class PointInTimeInstrumentSpecTimeline:
 
     REQUIRED_COLUMNS = {"symbol", "valid_from", "received_at", "tick_size"}
 
-    def __init__(self, history: pd.DataFrame) -> None:
+    def __init__(
+        self,
+        history: pd.DataFrame,
+        *,
+        allow_pre_observation_bootstrap: bool = False,
+    ) -> None:
         missing = sorted(self.REQUIRED_COLUMNS - set(history.columns))
         if missing:
             raise ValueError(f"Instrument spec history is missing columns: {missing}")
@@ -168,6 +174,9 @@ class PointInTimeInstrumentSpecTimeline:
             for symbol, items in records.items()
         }
         self._row_count = len(frame)
+        self._allow_pre_observation_bootstrap = bool(allow_pre_observation_bootstrap)
+        self._point_in_time_resolutions = 0
+        self._bootstrap_resolutions = 0
 
     def resolve(self, symbol: str, decision_time: object) -> PointInTimeTickSize | None:
         timestamp = pd.Timestamp(decision_time)
@@ -176,12 +185,34 @@ class PointInTimeInstrumentSpecTimeline:
             if timestamp.tzinfo is None
             else timestamp.tz_convert("UTC")
         )
+        records = self._records.get(str(symbol).strip().upper(), ())
         eligible = [
             item
-            for item in self._records.get(str(symbol).strip().upper(), ())
+            for item in records
             if item.valid_from <= timestamp and item.received_at <= timestamp
         ]
-        return max(eligible, key=lambda item: (item.valid_from, item.received_at), default=None)
+        selected = max(
+            eligible,
+            key=lambda item: (item.valid_from, item.received_at),
+            default=None,
+        )
+        if selected is not None:
+            self._point_in_time_resolutions += 1
+            return selected
+        if not self._allow_pre_observation_bootstrap or not records:
+            return None
+        earliest = min(records, key=lambda item: (item.received_at, item.valid_from))
+        # The fallback is only valid before any local specification observation. It
+        # must never bridge a later gap or overwrite an older exact specification.
+        if timestamp >= min(item.received_at for item in records):
+            return None
+        self._bootstrap_resolutions += 1
+        return PointInTimeTickSize(
+            tick_size=earliest.tick_size,
+            valid_from=earliest.valid_from,
+            received_at=earliest.received_at,
+            selection="pre_observation_bootstrap",
+        )
 
     def describe(self) -> dict[str, object]:
         return {
@@ -190,6 +221,14 @@ class PointInTimeInstrumentSpecTimeline:
             "rows": self._row_count,
             "symbols": len(self._records),
             "selection": "valid_from_and_received_at_not_after_decision_time",
+            "pre_observation_bootstrap_enabled": self._allow_pre_observation_bootstrap,
+            "point_in_time_resolutions": self._point_in_time_resolutions,
+            "pre_observation_bootstrap_resolutions": self._bootstrap_resolutions,
+            "bootstrap_semantics": (
+                "earliest_locally_observed_tick_with_adverse_extra_tick_stress"
+                if self._allow_pre_observation_bootstrap
+                else None
+            ),
         }
 
 
@@ -517,6 +556,8 @@ def make_barrier_dataset(
     require_funding_timeline: bool = False,
     instrument_spec_history: pd.DataFrame | None = None,
     require_instrument_spec_timeline: bool = False,
+    allow_pre_observation_instrument_spec_bootstrap: bool = False,
+    bootstrap_instrument_spec_extra_ticks: int = 1,
     mark_candles: pd.DataFrame | None = None,
     require_mark_timeline: bool = False,
     index_candles: pd.DataFrame | None = None,
@@ -571,9 +612,21 @@ def make_barrier_dataset(
     elif require_funding_timeline:
         raise ValueError("Historical funding timeline is required for research training")
 
+    if (
+        isinstance(bootstrap_instrument_spec_extra_ticks, bool)
+        or not isinstance(bootstrap_instrument_spec_extra_ticks, (int, np.integer))
+        or not 1 <= int(bootstrap_instrument_spec_extra_ticks) <= 5
+    ):
+        raise ValueError("bootstrap_instrument_spec_extra_ticks must be an integer in [1, 5]")
+    bootstrap_instrument_spec_extra_ticks = int(bootstrap_instrument_spec_extra_ticks)
     instrument_spec_timeline: PointInTimeInstrumentSpecTimeline | None = None
     if instrument_spec_history is not None:
-        instrument_spec_timeline = PointInTimeInstrumentSpecTimeline(instrument_spec_history)
+        instrument_spec_timeline = PointInTimeInstrumentSpecTimeline(
+            instrument_spec_history,
+            allow_pre_observation_bootstrap=(
+                allow_pre_observation_instrument_spec_bootstrap
+            ),
+        )
     elif require_instrument_spec_timeline:
         raise ValueError("Point-in-time instrument spec timeline is required for research training")
 
@@ -683,6 +736,7 @@ def make_barrier_dataset(
         "skipped_invalid_label_bar_timestamps": 0,
         "skipped_entry_zone_timestamps": 0,
         "skipped_missing_instrument_spec_timestamps": 0,
+        "bootstrap_instrument_spec_timestamps": 0,
         "skipped_unexecutable_tick_geometry_timestamps": 0,
         "skipped_incomplete_direction_pair_timestamps": 0,
         "skipped_incomplete_funding_timeline_timestamps": 0,
@@ -776,6 +830,8 @@ def make_barrier_dataset(
                 if point_in_time_spec is None:
                     diagnostics["skipped_missing_instrument_spec_timestamps"] += 1
                     continue
+                if point_in_time_spec.selection == "pre_observation_bootstrap":
+                    diagnostics["bootstrap_instrument_spec_timestamps"] += 1
             # A signal can only be acted on after the source candle has closed.
             # Hourly OHLC exposes a last-trade/open proxy rather than executable
             # bid/ask. Production enters LONG at ask and SHORT at bid, therefore
@@ -825,6 +881,13 @@ def make_barrier_dataset(
                     entry_mid_decimal * (Decimal("1") - half_spread_decimal),
                     tick_size,
                 )
+                if point_in_time_spec.selection == "pre_observation_bootstrap":
+                    extra_tick_stress = tick_size * bootstrap_instrument_spec_extra_ticks
+                    stressed_long_entry_decimal += extra_tick_stress
+                    stressed_short_entry_decimal -= extra_tick_stress
+                    if stressed_short_entry_decimal <= 0:
+                        diagnostics["skipped_unexecutable_tick_geometry_timestamps"] += 1
+                        continue
                 entry_zone_low = float(entry_zone_low_decimal)
                 entry_zone_high = float(entry_zone_high_decimal)
                 stressed_long_entry = float(stressed_long_entry_decimal)
@@ -1097,7 +1160,10 @@ def make_barrier_dataset(
                         "entry_price": float(entry),
                         "entry_spread_bps": parsed_entry_spread_bps,
                         "entry_price_source": (
-                            "next_hour_open_directional_half_spread_tick_aligned_stress"
+                            "next_hour_open_directional_half_spread_tick_aligned_bootstrap_stress"
+                            if point_in_time_spec is not None
+                            and point_in_time_spec.selection == "pre_observation_bootstrap"
+                            else "next_hour_open_directional_half_spread_tick_aligned_stress"
                             if tick_size is not None
                             else "next_hour_open_directional_half_spread_stress"
                         ),
@@ -1111,6 +1177,17 @@ def make_barrier_dataset(
                             point_in_time_spec.received_at
                             if point_in_time_spec is not None
                             else pd.NaT
+                        ),
+                        "instrument_spec_selection": (
+                            point_in_time_spec.selection
+                            if point_in_time_spec is not None
+                            else None
+                        ),
+                        "bootstrap_instrument_spec_extra_ticks": (
+                            bootstrap_instrument_spec_extra_ticks
+                            if point_in_time_spec is not None
+                            and point_in_time_spec.selection == "pre_observation_bootstrap"
+                            else 0
                         ),
                         "price_rounding_schema": (
                             INSTRUMENT_SPEC_TIMELINE_SCHEMA if tick_size is not None else None
@@ -1188,8 +1265,22 @@ def make_barrier_dataset(
             "historical_bid_ask_unavailable",
             "operator_latency_within_zone_unmodeled",
             "historical_depth_and_partial_fill_unmodeled",
+            *(
+                ["historical_tick_size_assumed_from_earliest_local_observation"]
+                if allow_pre_observation_instrument_spec_bootstrap
+                else []
+            ),
         ],
     }
+    if allow_pre_observation_instrument_spec_bootstrap:
+        entry_execution_model.update(
+            {
+                "pre_observation_instrument_spec_bootstrap": True,
+                "bootstrap_instrument_spec_extra_ticks": (
+                    bootstrap_instrument_spec_extra_ticks
+                ),
+            }
+        )
     if instrument_spec_timeline is not None:
         entry_execution_model.update(
             {

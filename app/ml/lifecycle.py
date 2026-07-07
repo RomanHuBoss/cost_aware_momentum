@@ -21,6 +21,7 @@ from app.db.models import (
     InstrumentSpecHistory,
     ModelRegistry,
     OpenInterest,
+    UniverseEligibilitySnapshot,
 )
 from app.json_utils import json_compatible
 from app.ml.artifact_store import archive_model_artifact_bytes
@@ -93,6 +94,7 @@ from app.ml.training import (
 )
 from app.ml.universe_replay import (
     apply_point_in_time_universe_replay,
+    execution_symbols_from_snapshot,
     load_point_in_time_universe_snapshots,
 )
 from app.services.audit import append_audit_event, publish_outbox
@@ -103,6 +105,146 @@ from app.services.model_promotion import (
     require_experiment_policy_binding,
     require_passed_experiment_promotion_gate,
 )
+from app.services.universe import validate_universe_eligibility_snapshot_record
+
+TRAINING_UNIVERSE_MODE_STATIC = "static_configured"
+TRAINING_UNIVERSE_MODE_PROSPECTIVE = "prospective_dynamic_replay"
+TRAINING_UNIVERSE_MODE_BOOTSTRAP = "historical_frozen_dynamic_bootstrap"
+TRAINING_UNIVERSE_MODES = frozenset(
+    {
+        TRAINING_UNIVERSE_MODE_STATIC,
+        TRAINING_UNIVERSE_MODE_PROSPECTIVE,
+        TRAINING_UNIVERSE_MODE_BOOTSTRAP,
+    }
+)
+
+
+@dataclass(frozen=True)
+class DynamicBootstrapCohort:
+    symbols: tuple[str, ...]
+    evidence: dict[str, Any]
+
+
+async def load_dynamic_bootstrap_cohort(
+    *,
+    max_symbols: int,
+    maximum_executable_spread_bps: float,
+    max_snapshot_age_seconds: int,
+) -> DynamicBootstrapCohort:
+    """Freeze the latest committed dynamic execution cohort for historical bootstrap.
+
+    The function deliberately does not fabricate historical universe membership.  It
+    binds one currently observable, hash-validated cohort and records the exact
+    snapshot used.  Historical model validation then remains temporal inside this
+    frozen cohort, while prospective universe replay continues accumulating in
+    parallel and supersedes the bootstrap path once it is sufficiently long.
+    """
+
+    async with SessionFactory() as session:
+        snapshot = (
+            await session.execute(
+                select(UniverseEligibilitySnapshot)
+                .where(UniverseEligibilitySnapshot.mode == "dynamic")
+                .order_by(
+                    desc(UniverseEligibilitySnapshot.recorded_at),
+                    desc(UniverseEligibilitySnapshot.observed_at),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if snapshot is None:
+        return DynamicBootstrapCohort(
+            symbols=(),
+            evidence={
+                "schema": "historical-frozen-dynamic-bootstrap-v1",
+                "status": "missing_dynamic_snapshot",
+                "symbols": [],
+            },
+        )
+    validate_universe_eligibility_snapshot_record(snapshot, expected_mode="dynamic")
+    if isinstance(max_snapshot_age_seconds, bool) or max_snapshot_age_seconds <= 0:
+        raise ValueError("max_snapshot_age_seconds must be a positive integer")
+    snapshot_age_seconds = (datetime.now(UTC) - _as_datetime(snapshot.recorded_at)).total_seconds()
+    if snapshot_age_seconds < 0 or snapshot_age_seconds > max_snapshot_age_seconds:
+        return DynamicBootstrapCohort(
+            symbols=(),
+            evidence=json_compatible(
+                {
+                    "schema": "historical-frozen-dynamic-bootstrap-v1",
+                    "status": "stale_dynamic_snapshot",
+                    "snapshot_observed_at": snapshot.observed_at,
+                    "snapshot_recorded_at": snapshot.recorded_at,
+                    "snapshot_age_seconds": snapshot_age_seconds,
+                    "max_snapshot_age_seconds": max_snapshot_age_seconds,
+                    "policy_hash": snapshot.policy_hash,
+                    "record_hash": snapshot.record_hash,
+                    "symbols": [],
+                }
+            ),
+        )
+    eligible, spread_ineligible = execution_symbols_from_snapshot(
+        snapshot,
+        maximum_executable_spread_bps=maximum_executable_spread_bps,
+    )
+    eligible_before_cap = len(eligible)
+    if max_symbols > 0:
+        eligible = eligible[:max_symbols]
+    ranked_symbols = tuple(dict.fromkeys(str(item).strip().upper() for item in eligible if item))
+    symbols = tuple(sorted(ranked_symbols))
+    return DynamicBootstrapCohort(
+        symbols=symbols,
+        evidence=json_compatible(
+            {
+                "schema": "historical-frozen-dynamic-bootstrap-v1",
+                "status": "frozen",
+                "snapshot_observed_at": snapshot.observed_at,
+                "snapshot_recorded_at": snapshot.recorded_at,
+                "policy_hash": snapshot.policy_hash,
+                "record_hash": snapshot.record_hash,
+                "selected_count": snapshot.selected_count,
+                "execution_eligible_count_before_cap": eligible_before_cap,
+                "maximum_executable_spread_bps": maximum_executable_spread_bps,
+                "snapshot_age_seconds": snapshot_age_seconds,
+                "max_snapshot_age_seconds": max_snapshot_age_seconds,
+                "spread_ineligible_symbols": spread_ineligible,
+                "max_symbols": max_symbols,
+                "symbols": list(symbols),
+                "ranked_symbols": list(ranked_symbols),
+                "limitations": [
+                    "frozen_current_cohort_not_historical_dynamic_membership",
+                    "prospective_replay_required_for_full_dynamic_universe_evidence",
+                ],
+            }
+        ),
+    )
+
+
+async def load_dynamic_universe_rollout_evidence() -> dict[str, Any]:
+    """Return cheap committed-snapshot coverage before any candle replay is loaded."""
+
+    async with SessionFactory() as session:
+        row = (
+            await session.execute(
+                select(
+                    func.min(UniverseEligibilitySnapshot.recorded_at),
+                    func.max(UniverseEligibilitySnapshot.recorded_at),
+                    func.count(UniverseEligibilitySnapshot.id),
+                ).where(UniverseEligibilitySnapshot.mode == "dynamic")
+            )
+        ).one()
+    start, end, count = row
+    span_hours = 0.0
+    if start is not None and end is not None:
+        span_hours = max(0.0, (_as_datetime(end) - _as_datetime(start)).total_seconds() / 3600.0)
+    return json_compatible(
+        {
+            "schema": "dynamic-universe-rollout-coverage-v1",
+            "snapshot_count": int(count or 0),
+            "rollout_start": start,
+            "rollout_end": end,
+            "span_hours": span_hours,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -133,9 +275,7 @@ class IncumbentBenchmarkArtifact:
 
 
 PREVIOUS_LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
-PREVIOUS_ENTRY_EXECUTION_MODEL_SCHEMA = (
-    "decision-close-zone-next-hour-open-directional-half-spread-v2"
-)
+PREVIOUS_ENTRY_EXECUTION_MODEL_SCHEMA = "decision-close-zone-next-hour-open-directional-half-spread-v2"
 
 
 def _finite_artifact_float(
@@ -176,8 +316,7 @@ def load_incumbent_benchmark_artifact(
     digest = hashlib.sha256(raw).hexdigest()
     if incumbent.artifact_sha256 and digest.lower() != incumbent.artifact_sha256.lower():
         raise RuntimeError(
-            "Incumbent artifact SHA256 mismatch: "
-            f"expected {incumbent.artifact_sha256}, got {digest}"
+            f"Incumbent artifact SHA256 mismatch: expected {incumbent.artifact_sha256}, got {digest}"
         )
     bundle = joblib.load(path)
     if not isinstance(bundle, dict) or "model" not in bundle:
@@ -194,10 +333,7 @@ def load_incumbent_benchmark_artifact(
         raise ValueError("Incumbent artifact feature schema is incompatible")
     if bundle.get("market_context_schema") != MARKET_CONTEXT_SCHEMA_VERSION:
         raise ValueError("Incumbent artifact market-context schema is incompatible")
-    if (
-        bundle.get("market_context_availability_schema")
-        != MARKET_CONTEXT_AVAILABILITY_SCHEMA
-    ):
+    if bundle.get("market_context_availability_schema") != MARKET_CONTEXT_AVAILABILITY_SCHEMA:
         raise ValueError("Incumbent artifact market-context availability is incompatible")
     market_context = bundle.get("market_context")
     if not isinstance(market_context, dict):
@@ -231,9 +367,7 @@ def load_incumbent_benchmark_artifact(
         raise ValueError("Incumbent artifact research execution schemas are contradictory")
 
     model = bundle["model"]
-    if [str(value) for value in getattr(model, "classes_", [])] != [
-        str(value) for value in OUTCOME_CLASSES
-    ]:
+    if [str(value) for value in getattr(model, "classes_", [])] != [str(value) for value in OUTCOME_CLASSES]:
         raise ValueError("Incumbent artifact outcome classes are incompatible")
     raw_horizon = bundle.get("horizon_hours")
     if isinstance(raw_horizon, bool):
@@ -245,22 +379,14 @@ def load_incumbent_benchmark_artifact(
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("Incumbent artifact horizon_hours must be a positive integer") from exc
 
-    stop_atr_multiplier = _finite_artifact_float(
-        bundle, "stop_atr_multiplier", positive=True
-    )
+    stop_atr_multiplier = _finite_artifact_float(bundle, "stop_atr_multiplier", positive=True)
     tp_atr_multiplier = _finite_artifact_float(bundle, "tp_atr_multiplier", positive=True)
     entry_spread_bps = _finite_artifact_float(bundle, "entry_spread_bps", nonnegative=True)
-    entry_zone_atr_fraction = _finite_artifact_float(
-        bundle, "entry_zone_atr_fraction", positive=True
-    )
+    entry_zone_atr_fraction = _finite_artifact_float(bundle, "entry_zone_atr_fraction", positive=True)
     if entry_zone_atr_fraction > 1.0:
         raise ValueError("Incumbent artifact entry_zone_atr_fraction must not exceed one ATR")
-    nested_spread = _finite_artifact_float(
-        entry_execution, "entry_spread_bps", nonnegative=True
-    )
-    nested_zone = _finite_artifact_float(
-        entry_execution, "entry_zone_atr_fraction", positive=True
-    )
+    nested_spread = _finite_artifact_float(entry_execution, "entry_spread_bps", nonnegative=True)
+    nested_zone = _finite_artifact_float(entry_execution, "entry_zone_atr_fraction", positive=True)
     if not math.isclose(nested_spread, entry_spread_bps, rel_tol=0.0, abs_tol=1e-12):
         raise ValueError("Incumbent artifact entry spread metadata is contradictory")
     if not math.isclose(nested_zone, entry_zone_atr_fraction, rel_tol=0.0, abs_tol=1e-12):
@@ -341,6 +467,7 @@ class TrainingMarketData:
     funding_interval_history: pd.DataFrame
     instrument_spec_history: pd.DataFrame
     universe_eligibility: pd.DataFrame | None = None
+
 
 MODEL_ACTIVATION_QUALITY_GATE_SCHEMA = "model-activation-quality-gate-v1"
 
@@ -497,6 +624,9 @@ async def load_training_data_profile(
     maximum_executable_spread_bps: float = 0.0,
 ) -> TrainingDataProfile:
     if require_universe_replay:
+        # Exact dynamic replay must not preselect symbols by full-sample candle
+        # coverage: doing so would introduce survivorship/selection look-ahead.
+        # The explicit max-symbol cap is reserved for the frozen bootstrap cohort.
         market_data = await load_training_market_data(
             symbols,
             lookback_days=lookback_days,
@@ -634,9 +764,7 @@ async def load_training_market_data(
             horizon=horizon,
             minimum_rows_for_coverage=minimum_rows_for_coverage,
         )
-        bounded_open_time = (
-            _as_datetime(maximum_open_time) if maximum_open_time is not None else None
-        )
+        bounded_open_time = _as_datetime(maximum_open_time) if maximum_open_time is not None else None
         latest = (
             bounded_open_time
             if bounded_open_time is not None
@@ -744,8 +872,7 @@ async def load_training_market_data(
                 .all()
             )
             historical_intervals = [
-                int(item["funding_interval_minutes"])
-                for item in funding_interval_history_records
+                int(item["funding_interval_minutes"]) for item in funding_interval_history_records
             ]
             max_interval = max([*funding_intervals.values(), *historical_intervals], default=1440)
             funding_query = select(FundingRate).where(
@@ -975,11 +1102,9 @@ def evaluate_walk_forward_validation(
         )
         fold_metrics["market_context_ablation_schema"] = MARKET_CONTEXT_ABLATION_SCHEMA_VERSION
         fold_metrics["market_context_core_log_loss"] = fold_ablation["core_log_loss"]
-        fold_metrics["market_context_core_multiclass_brier"] = fold_ablation[
-            "core_multiclass_brier"
-        ]
-        fold_metrics["market_context_log_loss_benefit"] = (
-            float(fold_ablation["core_log_loss"]) - float(fold_metrics["log_loss"])
+        fold_metrics["market_context_core_multiclass_brier"] = fold_ablation["core_multiclass_brier"]
+        fold_metrics["market_context_log_loss_benefit"] = float(fold_ablation["core_log_loss"]) - float(
+            fold_metrics["log_loss"]
         )
         if policy_config is not None:
             fold_metrics.update(
@@ -1068,9 +1193,7 @@ def training_profile_from_model_dataset(
     required = {"symbol", "source_open_time"}
     missing = required.difference(dataset.columns)
     if missing:
-        raise ValueError(
-            f"Model dataset is missing training profile columns: {sorted(missing)}"
-        )
+        raise ValueError(f"Model dataset is missing training profile columns: {sorted(missing)}")
     if dataset.empty:
         return profile_from_symbol_rows(
             [],
@@ -1079,9 +1202,7 @@ def training_profile_from_model_dataset(
         )
     frame = dataset[["symbol", "source_open_time"]].copy()
     frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
-    frame["open_time"] = pd.to_datetime(
-        frame.pop("source_open_time"), utc=True, errors="coerce"
-    )
+    frame["open_time"] = pd.to_datetime(frame.pop("source_open_time"), utc=True, errors="coerce")
     if (frame["symbol"] == "").any() or frame["open_time"].isna().any():
         raise ValueError("Model dataset contains invalid training profile identity")
     frame = frame.drop_duplicates(["symbol", "open_time"])
@@ -1110,6 +1231,10 @@ def build_model_candidate(
     funding_interval_history: pd.DataFrame | None = None,
     instrument_spec_history: pd.DataFrame | None = None,
     require_instrument_spec_timeline: bool = True,
+    allow_pre_observation_instrument_spec_bootstrap: bool = False,
+    bootstrap_instrument_spec_extra_ticks: int = 1,
+    training_universe_mode: str | None = None,
+    training_universe_evidence: dict[str, Any] | None = None,
     version: str | None = None,
     output: Path | None = None,
     incumbent: IncumbentSnapshot | None = None,
@@ -1122,6 +1247,12 @@ def build_model_candidate(
     universe_replay_max_age_seconds: int = 600,
     maximum_executable_spread_bps: float = 0.0,
 ) -> ModelCandidate:
+    if training_universe_mode is None:
+        training_universe_mode = (
+            TRAINING_UNIVERSE_MODE_PROSPECTIVE if require_universe_replay else TRAINING_UNIVERSE_MODE_STATIC
+        )
+    if training_universe_mode not in TRAINING_UNIVERSE_MODES:
+        raise ValueError(f"Unsupported training_universe_mode: {training_universe_mode}")
     if candles.empty:
         raise RuntimeError("No confirmed hourly candles are available for model training")
 
@@ -1136,6 +1267,8 @@ def build_model_candidate(
         require_funding_timeline=True,
         instrument_spec_history=instrument_spec_history,
         require_instrument_spec_timeline=require_instrument_spec_timeline,
+        allow_pre_observation_instrument_spec_bootstrap=(allow_pre_observation_instrument_spec_bootstrap),
+        bootstrap_instrument_spec_extra_ticks=bootstrap_instrument_spec_extra_ticks,
         mark_candles=mark_candles,
         require_mark_timeline=True,
         index_candles=index_candles,
@@ -1188,13 +1321,14 @@ def build_model_candidate(
     metrics["historical_funding_timeline"] = json_compatible(
         dataset.attrs.get("historical_funding_timeline") or {}
     )
-    metrics["instrument_spec_timeline"] = json_compatible(
-        dataset.attrs.get("instrument_spec_timeline") or {}
-    )
+    metrics["instrument_spec_timeline"] = json_compatible(dataset.attrs.get("instrument_spec_timeline") or {})
     metrics["intrahorizon_margin_path"] = json_compatible(dataset.attrs.get("intrahorizon_margin_path") or {})
     metrics["market_context"] = json_compatible(dataset.attrs.get("market_context") or {})
     metrics["hourly_continuity"] = json_compatible(dataset.attrs.get("hourly_continuity") or {})
     metrics["universe_replay"] = json_compatible(universe_replay)
+    metrics["source"] = source
+    metrics["training_universe_mode"] = training_universe_mode
+    metrics["training_universe_evidence"] = json_compatible(training_universe_evidence or {})
     metrics["label_data_end"] = label_data_end.isoformat()
     if policy_config is not None:
         metrics.update(evaluate_policy_model(model, split, policy_config, horizon_hours=horizon))
@@ -1202,16 +1336,12 @@ def build_model_candidate(
             entry_spread_bps=entry_spread_bps,
             maximum_executable_spread_bps=maximum_executable_spread_bps,
             entry_zone_atr_fraction=entry_zone_atr_fraction,
-            maximum_signal_publication_delay_seconds=(
-                maximum_signal_publication_delay_seconds
-            ),
+            maximum_signal_publication_delay_seconds=(maximum_signal_publication_delay_seconds),
             risk_rate=policy_config.risk_rate,
             max_total_open_risk_rate=policy_config.max_total_open_risk_rate,
             margin_reserve_rate=policy_config.margin_reserve_rate,
             research_leverage=policy_config.research_leverage,
-            liquidation_equity_reserve_fraction=(
-                policy_config.liquidation_equity_reserve_fraction
-            ),
+            liquidation_equity_reserve_fraction=(policy_config.liquidation_equity_reserve_fraction),
             round_trip_cost_bps=policy_config.fee_rate_round_trip * 10000.0,
             slippage_bps=policy_config.slippage_rate * 10000.0,
             stop_gap_reserve_bps=policy_config.stop_gap_reserve_rate * 10000.0,
@@ -1227,9 +1357,7 @@ def build_model_candidate(
     # Production telemetry contains only final published policy signals.  Bind the
     # reference density to the same post-actionability/post-overlap cohort rather
     # than the wider pre-overlap actionable-candidate set.
-    actionability_rate = (
-        float(policy_trades / policy_candidates) if policy_candidates > 0 else 0.0
-    )
+    actionability_rate = float(policy_trades / policy_candidates) if policy_candidates > 0 else 0.0
     calibration_reference = None
     calibration_cohort_schema = None
     if policy_config is not None:
@@ -1384,9 +1512,7 @@ def build_model_candidate(
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": float(entry_spread_bps),
         "entry_zone_atr_fraction": float(entry_zone_atr_fraction),
-        "maximum_signal_publication_delay_seconds": int(
-            maximum_signal_publication_delay_seconds
-        ),
+        "maximum_signal_publication_delay_seconds": int(maximum_signal_publication_delay_seconds),
         "entry_execution_model": metrics["entry_execution_model"],
         "instrument_spec_timeline": metrics["instrument_spec_timeline"],
         "historical_funding_schema": HISTORICAL_FUNDING_SCHEMA_VERSION,
@@ -1417,6 +1543,8 @@ def build_model_candidate(
         "symbols": list(symbol_values),
         "training_data_profile": training_data_profile.to_dict(),
         "universe_replay": json_compatible(universe_replay),
+        "training_universe_mode": training_universe_mode,
+        "training_universe_evidence": json_compatible(training_universe_evidence or {}),
         "source": source,
         "created_at": created_at.isoformat(),
     }
@@ -1458,9 +1586,7 @@ def evaluate_quality_gate(
     actual_training_profile = candidate.training_data_profile
     training_scope_evidence: dict[str, Any] = {
         "actual": actual_training_profile.to_dict(),
-        "expected": (
-            expected_training_profile.to_dict() if expected_training_profile is not None else None
-        ),
+        "expected": (expected_training_profile.to_dict() if expected_training_profile is not None else None),
     }
     if expected_training_profile is not None:
         if actual_training_profile.symbols != expected_training_profile.symbols:
@@ -1556,6 +1682,74 @@ def evaluate_quality_gate(
     ):
         reasons.append("entry_zone_atr_fraction_mismatch")
 
+    training_source = str(metrics.get("source") or "")
+    training_universe_mode = str(metrics.get("training_universe_mode") or "")
+    training_universe_evidence = metrics.get("training_universe_evidence")
+    universe_replay_evidence = metrics.get("universe_replay")
+    instrument_spec_evidence = metrics.get("instrument_spec_timeline")
+    if training_source == "background_trainer" and training_universe_mode not in TRAINING_UNIVERSE_MODES:
+        reasons.append("missing_or_invalid_training_universe_mode")
+    if training_universe_mode in TRAINING_UNIVERSE_MODES:
+        replay_status = (
+            universe_replay_evidence.get("status") if isinstance(universe_replay_evidence, dict) else None
+        )
+        bootstrap_enabled = (
+            instrument_spec_evidence.get("pre_observation_bootstrap_enabled")
+            if isinstance(instrument_spec_evidence, dict)
+            else None
+        )
+        bootstrap_resolutions = finite_or_none(
+            instrument_spec_evidence.get("pre_observation_bootstrap_resolutions")
+            if isinstance(instrument_spec_evidence, dict)
+            else None
+        )
+        if training_universe_mode == TRAINING_UNIVERSE_MODE_PROSPECTIVE:
+            if replay_status != "applied":
+                reasons.append("prospective_dynamic_universe_replay_not_applied")
+            if bootstrap_enabled is True or (bootstrap_resolutions or 0.0) > 0.0:
+                reasons.append("prospective_training_used_bootstrap_instrument_specs")
+        elif training_universe_mode == TRAINING_UNIVERSE_MODE_BOOTSTRAP:
+            if replay_status != "not_required":
+                reasons.append("historical_bootstrap_must_not_claim_dynamic_replay")
+            if not isinstance(training_universe_evidence, dict):
+                reasons.append("missing_historical_bootstrap_universe_evidence")
+            else:
+                if training_universe_evidence.get("schema") != "historical-frozen-dynamic-bootstrap-v1":
+                    reasons.append("invalid_historical_bootstrap_universe_schema")
+                if training_universe_evidence.get("status") != "frozen":
+                    reasons.append("historical_bootstrap_universe_not_frozen")
+                for field in ("policy_hash", "record_hash"):
+                    raw_hash = str(training_universe_evidence.get(field) or "")
+                    if len(raw_hash) != 64 or any(ch not in "0123456789abcdef" for ch in raw_hash.lower()):
+                        reasons.append(f"invalid_historical_bootstrap_{field}")
+                raw_symbols = training_universe_evidence.get("symbols")
+                evidence_symbols = (
+                    tuple(sorted(str(item).strip().upper() for item in raw_symbols))
+                    if isinstance(raw_symbols, list)
+                    else ()
+                )
+                if (
+                    not evidence_symbols
+                    or len(evidence_symbols) != len(set(evidence_symbols))
+                    or evidence_symbols != actual_training_profile.symbols
+                ):
+                    reasons.append("historical_bootstrap_cohort_profile_mismatch")
+            if bootstrap_enabled is not True:
+                reasons.append("historical_bootstrap_instrument_spec_fallback_not_enabled")
+            extra_ticks = finite_or_none(
+                entry_execution_model.get("bootstrap_instrument_spec_extra_ticks")
+                if isinstance(entry_execution_model, dict)
+                else None
+            )
+            if (
+                extra_ticks is None
+                or not extra_ticks.is_integer()
+                or int(extra_ticks) != settings.auto_train_bootstrap_instrument_spec_extra_ticks
+            ):
+                reasons.append("historical_bootstrap_tick_stress_mismatch")
+        elif replay_status != "not_required":
+            reasons.append("static_training_unexpected_universe_replay")
+
     funding_timeline = metrics.get("historical_funding_timeline")
     funding_schema = funding_timeline.get("schema") if isinstance(funding_timeline, dict) else None
     funding_symbols = finite_or_none(
@@ -1587,9 +1781,7 @@ def evaluate_quality_gate(
         funding_timeline.get("interval_source") if isinstance(funding_timeline, dict) else None
     )
     funding_interval_history_symbols = finite_or_none(
-        funding_timeline.get("interval_history_symbols")
-        if isinstance(funding_timeline, dict)
-        else None
+        funding_timeline.get("interval_history_symbols") if isinstance(funding_timeline, dict) else None
     )
     if funding_interval_schedule_schema != FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION:
         reasons.append("invalid_funding_interval_schedule_schema")
@@ -1611,32 +1803,29 @@ def evaluate_quality_gate(
         reasons.append("invalid_market_context_schema")
     if context_availability_schema != MARKET_CONTEXT_AVAILABILITY_SCHEMA:
         reasons.append("invalid_market_context_availability_schema")
-    if not isinstance(market_context, dict) or market_context.get(
-        "historical_receipt_time_reconstructed"
-    ) is not False:
+    if (
+        not isinstance(market_context, dict)
+        or market_context.get("historical_receipt_time_reconstructed") is not False
+    ):
         reasons.append("invalid_market_context_receipt_semantics")
-    if not isinstance(market_context, dict) or market_context.get(
-        "funding_interval_schedule_schema"
-    ) != FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION:
+    if (
+        not isinstance(market_context, dict)
+        or market_context.get("funding_interval_schedule_schema") != FUNDING_INTERVAL_SCHEDULE_SCHEMA_VERSION
+    ):
         reasons.append("invalid_market_context_funding_interval_schedule_schema")
-    if not isinstance(market_context, dict) or market_context.get(
-        "funding_interval_source"
-    ) != "instrument_spec_history_point_in_time":
+    if (
+        not isinstance(market_context, dict)
+        or market_context.get("funding_interval_source") != "instrument_spec_history_point_in_time"
+    ):
         reasons.append("market_context_funding_interval_history_not_point_in_time")
 
     context_ablation = metrics.get("market_context_ablation")
-    ablation_schema = (
-        context_ablation.get("schema") if isinstance(context_ablation, dict) else None
-    )
+    ablation_schema = context_ablation.get("schema") if isinstance(context_ablation, dict) else None
     ablation_benefit = finite_or_none(
-        context_ablation.get("log_loss_benefit")
-        if isinstance(context_ablation, dict)
-        else None
+        context_ablation.get("log_loss_benefit") if isinstance(context_ablation, dict) else None
     )
     ablation_tolerance = finite_or_none(
-        context_ablation.get("noninferiority_tolerance")
-        if isinstance(context_ablation, dict)
-        else None
+        context_ablation.get("noninferiority_tolerance") if isinstance(context_ablation, dict) else None
     )
     if ablation_schema != MARKET_CONTEXT_ABLATION_SCHEMA_VERSION:
         reasons.append("invalid_market_context_ablation_schema")
@@ -1644,9 +1833,7 @@ def evaluate_quality_gate(
         reasons.append("invalid_market_context_ablation_evidence")
     elif ablation_benefit < -ablation_tolerance:
         reasons.append("market_context_ablation_regression")
-    context_noninferior_folds = finite_or_none(
-        metrics.get("walk_forward_market_context_noninferior_folds")
-    )
+    context_noninferior_folds = finite_or_none(metrics.get("walk_forward_market_context_noninferior_folds"))
     if (
         context_noninferior_folds is None
         or not context_noninferior_folds.is_integer()
@@ -1682,9 +1869,7 @@ def evaluate_quality_gate(
             else:
                 selected_calibration_rows = raw_selected_rows
             selected_calibration_log_loss = finite_or_none(selected_calibration.get("log_loss"))
-            selected_calibration_brier = finite_or_none(
-                selected_calibration.get("multiclass_brier")
-            )
+            selected_calibration_brier = finite_or_none(selected_calibration.get("multiclass_brier"))
             if selected_calibration_log_loss is None:
                 reasons.append("missing_or_non_finite_policy_selected_log_loss")
             elif selected_calibration_log_loss > settings.auto_train_max_log_loss:
@@ -1900,22 +2085,16 @@ def evaluate_quality_gate(
         reasons.append("invalid_policy_cluster_robustness")
     if cluster_robustness is not None and policy_trades > 0:
         cluster_count = int(cluster_robustness["cluster_count"])
-        cluster_leave_one_out_min = float(
-            cluster_robustness["leave_one_cluster_out_mean_r_min"]
-        )
+        cluster_leave_one_out_min = float(cluster_robustness["leave_one_cluster_out_mean_r_min"])
         if cluster_count < 2:
             reasons.append("policy_cluster_count_below_minimum")
         if cluster_leave_one_out_min <= settings.auto_train_min_policy_realized_mean_r:
             reasons.append("policy_cluster_leave_one_out_mean_r_not_above_minimum")
 
     if symbol_robustness is not None and cluster_robustness is not None:
-        symbol_evidence_names = {
-            str(item["symbol"]) for item in symbol_robustness["symbols"]
-        }
+        symbol_evidence_names = {str(item["symbol"]) for item in symbol_robustness["symbols"]}
         cluster_evidence_names = {
-            str(symbol)
-            for cluster in cluster_robustness["clusters"]
-            for symbol in cluster["symbols"]
+            str(symbol) for cluster in cluster_robustness["clusters"] for symbol in cluster["symbols"]
         }
         if symbol_evidence_names != cluster_evidence_names:
             reasons.append("policy_cluster_symbol_set_mismatch")
@@ -1923,9 +2102,7 @@ def evaluate_quality_gate(
     actionable_calibration_schema = metrics.get("policy_actionable_calibration_schema")
     actionable_calibration_rows = nonnegative_int_metric("policy_actionable_calibration_rows")
     actionable_calibration_log_loss = finite_or_none(metrics.get("policy_actionable_log_loss"))
-    actionable_calibration_brier = finite_or_none(
-        metrics.get("policy_actionable_multiclass_brier")
-    )
+    actionable_calibration_brier = finite_or_none(metrics.get("policy_actionable_multiclass_brier"))
     if actionable_calibration_schema != POLICY_ACTIONABLE_CALIBRATION_SCHEMA:
         reasons.append("invalid_policy_actionable_calibration_schema")
     if actionable_calibration_rows != policy_trades:
@@ -2064,9 +2241,7 @@ def evaluate_quality_gate(
             for residual in sparse_pool["leave_one_cell_out"]:
                 residual_trades = int(residual["residual_trades"])
                 if residual_trades < POLICY_INTERACTION_MIN_TRADES:
-                    reasons.append(
-                        "policy_interaction_sparse_leave_one_cell_out_trade_count_below_minimum"
-                    )
+                    reasons.append("policy_interaction_sparse_leave_one_cell_out_trade_count_below_minimum")
                     continue
                 if (
                     float(residual["residual_realized_trade_mean_r"])
@@ -2076,22 +2251,15 @@ def evaluate_quality_gate(
                         "policy_interaction_sparse_leave_one_cell_out_realized_mean_r_not_above_minimum"
                     )
                 if float(residual["log_loss"]) > settings.auto_train_max_log_loss:
-                    reasons.append(
-                        "policy_interaction_sparse_leave_one_cell_out_log_loss_above_limit"
-                    )
-                if (
-                    float(residual["multiclass_brier"])
-                    > settings.auto_train_max_multiclass_brier
-                ):
+                    reasons.append("policy_interaction_sparse_leave_one_cell_out_log_loss_above_limit")
+                if float(residual["multiclass_brier"]) > settings.auto_train_max_multiclass_brier:
                     reasons.append(
                         "policy_interaction_sparse_leave_one_cell_out_multiclass_brier_above_limit"
                     )
 
     if interaction_robustness is not None:
         interaction_symbols = {str(item["symbol"]) for item in interaction_robustness["cells"]}
-        interaction_directions = {
-            str(item["direction"]) for item in interaction_robustness["cells"]
-        }
+        interaction_directions = {str(item["direction"]) for item in interaction_robustness["cells"]}
         interaction_regimes = {str(item["regime"]) for item in interaction_robustness["cells"]}
         if symbol_robustness is not None:
             expected_symbols = {str(item["symbol"]) for item in symbol_robustness["symbols"]}
@@ -2107,9 +2275,7 @@ def evaluate_quality_gate(
                 reasons.append("policy_interaction_direction_set_mismatch")
         if regime_robustness is not None:
             expected_regimes = {
-                str(item["regime"])
-                for item in regime_robustness["regimes"]
-                if int(item["trades"]) > 0
+                str(item["regime"]) for item in regime_robustness["regimes"] if int(item["trades"]) > 0
             }
             if interaction_regimes != expected_regimes:
                 reasons.append("policy_interaction_regime_set_mismatch")
@@ -2238,12 +2404,8 @@ def evaluate_quality_gate(
         incumbent_brier = finite_or_none(incumbent.get("multiclass_brier"))
         incumbent_policy_trades_value = finite_or_none(incumbent.get("policy_trades"))
         incumbent_policy_cohorts_value = finite_or_none(incumbent.get("policy_cohorts"))
-        incumbent_policy_trade_cohorts_value = finite_or_none(
-            incumbent.get("policy_trade_cohorts")
-        )
-        incumbent_policy_no_trade_cohorts_value = finite_or_none(
-            incumbent.get("policy_no_trade_cohorts")
-        )
+        incumbent_policy_trade_cohorts_value = finite_or_none(incumbent.get("policy_trade_cohorts"))
+        incumbent_policy_no_trade_cohorts_value = finite_or_none(incumbent.get("policy_no_trade_cohorts"))
         incumbent_policy_independent_cohorts_value = finite_or_none(
             incumbent.get("policy_independent_cohorts")
         )
@@ -2321,8 +2483,7 @@ def evaluate_quality_gate(
             incumbent_policy_no_trade_cohorts is not None
             and incumbent_policy_cohorts is not None
             and incumbent_policy_trade_cohorts is not None
-            and incumbent_policy_no_trade_cohorts
-            != incumbent_policy_cohorts - incumbent_policy_trade_cohorts
+            and incumbent_policy_no_trade_cohorts != incumbent_policy_cohorts - incumbent_policy_trade_cohorts
         ):
             invalid_incumbent_fields.append("policy_no_trade_cohorts")
         if (
@@ -2413,9 +2574,15 @@ def evaluate_quality_gate(
         "reasons": reasons,
         "absolute": {
             "training_scope": training_scope_evidence,
-            "required_training_symbol_coverage_ratio": (
-                settings.auto_train_min_symbol_coverage_ratio
+            "training_source": training_source,
+            "training_universe_mode": training_universe_mode or None,
+            "training_universe_evidence": json_compatible(
+                training_universe_evidence if isinstance(training_universe_evidence, dict) else {}
             ),
+            "universe_replay_status": (
+                universe_replay_evidence.get("status") if isinstance(universe_replay_evidence, dict) else None
+            ),
+            "required_training_symbol_coverage_ratio": (settings.auto_train_min_symbol_coverage_ratio),
             "market_context_schema": context_schema,
             "expected_market_context_schema": MARKET_CONTEXT_SCHEMA_VERSION,
             "market_context_availability_schema": context_availability_schema,
@@ -2488,9 +2655,7 @@ def evaluate_quality_gate(
                 symbol_robustness.get("symbol_count") if symbol_robustness is not None else None
             ),
             "policy_max_symbol_trade_fraction": (
-                symbol_robustness.get("max_symbol_trade_fraction")
-                if symbol_robustness is not None
-                else None
+                symbol_robustness.get("max_symbol_trade_fraction") if symbol_robustness is not None else None
             ),
             "policy_leave_one_symbol_out_mean_r_min": (
                 symbol_robustness.get("leave_one_symbol_out_mean_r_min")
@@ -2502,9 +2667,7 @@ def evaluate_quality_gate(
             ),
             "expected_policy_cluster_robustness_schema": POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
             "policy_cluster_count": (
-                cluster_robustness.get("cluster_count")
-                if cluster_robustness is not None
-                else None
+                cluster_robustness.get("cluster_count") if cluster_robustness is not None else None
             ),
             "policy_max_cluster_trade_fraction": (
                 cluster_robustness.get("max_cluster_trade_fraction")
@@ -2549,14 +2712,10 @@ def evaluate_quality_gate(
                 regime_robustness.get("regime_count") if regime_robustness is not None else None
             ),
             "policy_traded_regime_count": (
-                regime_robustness.get("traded_regime_count")
-                if regime_robustness is not None
-                else None
+                regime_robustness.get("traded_regime_count") if regime_robustness is not None else None
             ),
             "policy_worst_traded_regime_mean_r": (
-                regime_robustness.get("worst_traded_regime_mean_r")
-                if regime_robustness is not None
-                else None
+                regime_robustness.get("worst_traded_regime_mean_r") if regime_robustness is not None else None
             ),
             "policy_worst_traded_regime_log_loss": (
                 regime_robustness.get("worst_traded_regime_log_loss")
@@ -2570,13 +2729,9 @@ def evaluate_quality_gate(
             ),
             "min_policy_regime_trades": POLICY_REGIME_MIN_TRADES,
             "policy_interaction_robustness_schema": (
-                interaction_robustness.get("schema")
-                if interaction_robustness is not None
-                else None
+                interaction_robustness.get("schema") if interaction_robustness is not None else None
             ),
-            "expected_policy_interaction_robustness_schema": (
-                POLICY_INTERACTION_ROBUSTNESS_SCHEMA
-            ),
+            "expected_policy_interaction_robustness_schema": (POLICY_INTERACTION_ROBUSTNESS_SCHEMA),
             "policy_interaction_observed_cell_count": (
                 interaction_robustness.get("observed_cell_count")
                 if interaction_robustness is not None
@@ -2613,16 +2768,12 @@ def evaluate_quality_gate(
                 else None
             ),
             "policy_interaction_sparse_jackknife_worst_mean_r": (
-                (interaction_robustness.get("sparse_pool") or {}).get(
-                    "worst_leave_one_cell_out_mean_r"
-                )
+                (interaction_robustness.get("sparse_pool") or {}).get("worst_leave_one_cell_out_mean_r")
                 if interaction_robustness is not None
                 else None
             ),
             "policy_interaction_sparse_jackknife_worst_log_loss": (
-                (interaction_robustness.get("sparse_pool") or {}).get(
-                    "worst_leave_one_cell_out_log_loss"
-                )
+                (interaction_robustness.get("sparse_pool") or {}).get("worst_leave_one_cell_out_log_loss")
                 if interaction_robustness is not None
                 else None
             ),
@@ -2853,15 +3004,11 @@ async def register_and_activate_model_candidate(
         expected_horizon_hours=expected_horizon_hours,
     )
     policy_activation_binding = require_experiment_policy_binding(
-        candidate.metrics.get("promotion_policy_binding")
-        if isinstance(candidate.metrics, dict)
-        else None
+        candidate.metrics.get("promotion_policy_binding") if isinstance(candidate.metrics, dict) else None
     )
     configured_policy_binding = experiment_policy_binding_from_settings(get_settings())
     if policy_activation_binding != configured_policy_binding:
-        raise RuntimeError(
-            "Model candidate policy evidence does not match current deployment settings"
-        )
+        raise RuntimeError("Model candidate policy evidence does not match current deployment settings")
     experiment_activation_gate = require_passed_experiment_promotion_gate(
         experiment_activation_gate,
         expected_policy_binding=policy_activation_binding,

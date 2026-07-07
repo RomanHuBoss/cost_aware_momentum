@@ -25,6 +25,10 @@ Direction-conditional модель оценивает исходы `TP / SL / TI
 - direction/symbol/cluster/regime robustness;
 - immutable artifact hash/schema/classes/horizon checks.
 
+## Cold-start provenance
+
+На чистой dynamic-базе первый artifact может иметь mode `historical_frozen_dynamic_bootstrap`. Его cohort связан с текущим свежим universe snapshot, но не считается точной historical membership. Для pre-observation instrument specs используется earliest locally observed tick с adverse extra-tick stress. После накопления достаточного ledger создаётся `prospective_dynamic_replay` replacement candidate.
+
 ## Ограничения
 
-Техническое прохождение gate не является обещанием прибыли. Исторические results подвержены regime change, market impact, execution error и unobserved selection effects. Production требует paper/shadow/forward evidence и операторского контроля.
+Техническое прохождение gate не является обещанием прибыли. Historical bootstrap сохраняет current-cohort selection/survivorship limitation; архивные bid/ask/depth, queue position и local receipt times не реконструируются. Исторические results подвержены regime change, market impact, execution error и unobserved selection effects. Production требует paper/shadow/forward evidence и операторского контроля.

@@ -105,11 +105,12 @@ def _normalized_spread_limit(value: object) -> Decimal:
     return limit
 
 
-def _execution_symbols_from_snapshot(
+def execution_symbols_from_snapshot(
     snapshot: UniverseEligibilitySnapshot,
     *,
-    maximum_executable_spread_bps: Decimal,
+    maximum_executable_spread_bps: object,
 ) -> tuple[list[str], list[str]]:
+    spread_limit = _normalized_spread_limit(maximum_executable_spread_bps)
     selected = [str(item).strip().upper() for item in snapshot.selected_symbols]
     decisions_by_symbol: dict[str, dict[str, object]] = {}
     for raw in snapshot.decisions:
@@ -129,7 +130,7 @@ def _execution_symbols_from_snapshot(
             spread = Decimal(str(spread_value))
         except (InvalidOperation, ValueError, TypeError):
             spread = Decimal("NaN")
-        if spread.is_finite() and spread >= 0 and spread <= maximum_executable_spread_bps:
+        if spread.is_finite() and spread >= 0 and spread <= spread_limit:
             eligible.append(symbol)
         else:
             ineligible.append(symbol)
@@ -178,13 +179,8 @@ async def load_point_in_time_universe_snapshots(
         streamed_rows += 1
         missing = set(model_columns).difference(row.keys())
         if missing:
-            raise ValueError(
-                "Universe as-of loader returned an incomplete snapshot row: "
-                f"{sorted(missing)}"
-            )
-        snapshot = UniverseEligibilitySnapshot(
-            **{column: row[column] for column in model_columns}
-        )
+            raise ValueError(f"Universe as-of loader returned an incomplete snapshot row: {sorted(missing)}")
+        snapshot = UniverseEligibilitySnapshot(**{column: row[column] for column in model_columns})
         try:
             validate_universe_eligibility_snapshot_record(
                 snapshot,
@@ -196,7 +192,7 @@ async def load_point_in_time_universe_snapshots(
                 f"(id={snapshot.id}, mode={snapshot.mode}, "
                 f"recorded_at={snapshot.recorded_at.isoformat()}): {exc}"
             ) from exc
-        execution_eligible, spread_ineligible = _execution_symbols_from_snapshot(
+        execution_eligible, spread_ineligible = execution_symbols_from_snapshot(
             snapshot,
             maximum_executable_spread_bps=spread_limit,
         )
@@ -306,9 +302,7 @@ def apply_point_in_time_universe_replay(
         return dataset.copy(), evidence
     missing_dataset = {"decision_time", "symbol"}.difference(dataset.columns)
     if missing_dataset:
-        raise ValueError(
-            f"Universe replay dataset is missing columns: {sorted(missing_dataset)}"
-        )
+        raise ValueError(f"Universe replay dataset is missing columns: {sorted(missing_dataset)}")
     if not required:
         evidence = _empty_evidence(
             required=False,
@@ -325,15 +319,14 @@ def apply_point_in_time_universe_replay(
         return dataset.copy(), json_compatible(evidence)
     if snapshots is None or snapshots.empty:
         raise ValueError("Dynamic research requires universe eligibility snapshots")
-    loader_evidence = json_compatible(
-        snapshots.attrs.get("universe_snapshot_loader")
-    ) if snapshots.attrs.get("universe_snapshot_loader") else None
+    loader_evidence = (
+        json_compatible(snapshots.attrs.get("universe_snapshot_loader"))
+        if snapshots.attrs.get("universe_snapshot_loader")
+        else None
+    )
     missing_snapshots = _REQUIRED_SNAPSHOT_COLUMNS.difference(snapshots.columns)
     if missing_snapshots:
-        raise ValueError(
-            "Universe eligibility snapshots are missing columns: "
-            f"{sorted(missing_snapshots)}"
-        )
+        raise ValueError(f"Universe eligibility snapshots are missing columns: {sorted(missing_snapshots)}")
 
     frame = dataset.copy()
     frame["decision_time"] = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
@@ -354,9 +347,9 @@ def apply_point_in_time_universe_replay(
     ledger["execution_eligible_symbols"] = ledger["execution_eligible_symbols"].map(
         _normalize_selected_symbols
     )
-    ledger["spread_ineligible_selected_symbols"] = ledger[
-        "spread_ineligible_selected_symbols"
-    ].map(_normalize_selected_symbols)
+    ledger["spread_ineligible_selected_symbols"] = ledger["spread_ineligible_selected_symbols"].map(
+        _normalize_selected_symbols
+    )
     for row in ledger.itertuples(index=False):
         selected = set(row.selected_symbols)
         executable = set(row.execution_eligible_symbols)
@@ -365,15 +358,11 @@ def apply_point_in_time_universe_replay(
             raise ValueError("Universe eligibility executable spread cohorts contradict selected_symbols")
         if executable & spread_ineligible or executable | spread_ineligible != selected:
             raise ValueError("Universe eligibility executable spread cohort partition is invalid")
-    threshold_values = pd.to_numeric(
-        ledger["maximum_executable_spread_bps"], errors="coerce"
-    )
+    threshold_values = pd.to_numeric(ledger["maximum_executable_spread_bps"], errors="coerce")
     if threshold_values.isna().any() or (~threshold_values.map(math.isfinite)).any():
         raise ValueError("Universe eligibility snapshots contain invalid executable spread limit")
     if not threshold_values.map(
-        lambda value: math.isclose(
-            float(value), spread_limit_float, rel_tol=0.0, abs_tol=1e-12
-        )
+        lambda value: math.isclose(float(value), spread_limit_float, rel_tol=0.0, abs_tol=1e-12)
     ).all():
         raise ValueError("Universe replay executable spread limit mismatch")
     ledger["maximum_executable_spread_bps"] = threshold_values.astype(float)
@@ -394,9 +383,7 @@ def apply_point_in_time_universe_replay(
         raise ValueError("Universe replay has no decision rows at or after the prospective rollout")
 
     decisions = (
-        post_rollout[["decision_time"]]
-        .drop_duplicates()
-        .sort_values("decision_time", kind="mergesort")
+        post_rollout[["decision_time"]].drop_duplicates().sort_values("decision_time", kind="mergesort")
     )
     joined = pd.merge_asof(
         decisions,
@@ -419,9 +406,7 @@ def apply_point_in_time_universe_replay(
     )
     if joined["recorded_at"].isna().any():
         raise ValueError("Universe replay is missing a committed prior snapshot after rollout")
-    joined["snapshot_age_seconds"] = (
-        joined["decision_time"] - joined["observed_at"]
-    ).dt.total_seconds()
+    joined["snapshot_age_seconds"] = (joined["decision_time"] - joined["observed_at"]).dt.total_seconds()
     stale = joined["snapshot_age_seconds"] > float(max_snapshot_age_seconds)
     if stale.any():
         first = joined.loc[stale].iloc[0]
@@ -433,12 +418,8 @@ def apply_point_in_time_universe_replay(
         )
 
     post_rollout = post_rollout.merge(joined, on="decision_time", how="left", validate="many_to_one")
-    selected_mask = post_rollout.apply(
-        lambda row: row["symbol"] in row["selected_symbols"], axis=1
-    )
-    eligible_mask = post_rollout.apply(
-        lambda row: row["symbol"] in row["execution_eligible_symbols"], axis=1
-    )
+    selected_mask = post_rollout.apply(lambda row: row["symbol"] in row["selected_symbols"], axis=1)
+    eligible_mask = post_rollout.apply(lambda row: row["symbol"] in row["execution_eligible_symbols"], axis=1)
     spread_ineligible_mask = selected_mask & ~eligible_mask
     filtered = post_rollout.loc[eligible_mask, dataset.columns].copy()
     if filtered.empty:
@@ -457,11 +438,7 @@ def apply_point_in_time_universe_replay(
             "ineligible_rows_excluded": int((~eligible_mask).sum()),
             "spread_ineligible_rows_excluded": int(spread_ineligible_mask.sum()),
             "spread_ineligible_selected_symbols": sorted(
-                {
-                    symbol
-                    for values in used["spread_ineligible_selected_symbols"]
-                    for symbol in values
-                }
+                {symbol for values in used["spread_ineligible_selected_symbols"] for symbol in values}
             ),
             "eligible_rows": int(len(filtered)),
             "decision_timestamps": int(filtered["decision_time"].nunique()),
@@ -470,9 +447,7 @@ def apply_point_in_time_universe_replay(
             "rollout_start": rollout_start.isoformat(),
             "replay_start": pd.Timestamp(filtered["decision_time"].min()).isoformat(),
             "replay_end": pd.Timestamp(filtered["decision_time"].max()).isoformat(),
-            "maximum_observed_snapshot_age_seconds": float(
-                joined["snapshot_age_seconds"].max()
-            ),
+            "maximum_observed_snapshot_age_seconds": float(joined["snapshot_age_seconds"].max()),
             "policy_hashes": sorted(set(used["policy_hash"])),
             "record_hashes": list(used["record_hash"]),
             "snapshot_loader": loader_evidence,
