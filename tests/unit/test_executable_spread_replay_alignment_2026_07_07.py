@@ -224,7 +224,7 @@ def test_promotion_binding_changes_when_live_executable_spread_limit_changes() -
         Settings(**common, max_spread_bps=12.0)
     )
 
-    assert binding_18["schema"] == "model-promotion-policy-binding-v3"
+    assert binding_18["schema"] == "model-promotion-policy-binding-v4"
     assert binding_18["maximum_executable_spread_bps"] == 18.0
     assert binding_12["maximum_executable_spread_bps"] == 12.0
     assert binding_18 != binding_12

@@ -35,7 +35,7 @@ def test_market_signal_policy_rejects_unvalidated_expected_funding_overlay() -> 
             _equal_predictions(),
             bid_price=D("100"),
             ask_price=D("100"),
-            last_price=D("100"),
+            decision_anchor_price=D("100"),
             atr_pct=D("0.02"),
             costs=CostScenario(
                 fee_rate_round_trip=D("0"),

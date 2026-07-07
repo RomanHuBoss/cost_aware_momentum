@@ -63,6 +63,10 @@ async def run(args: argparse.Namespace) -> None:
         model_type=args.model_type,
         model_dir=settings.model_dir,
         entry_spread_bps=settings.model_entry_spread_bps,
+        entry_zone_atr_fraction=getattr(settings, "entry_zone_atr_fraction", 0.12),
+        maximum_signal_publication_delay_seconds=(
+            getattr(settings, "max_signal_publication_delay_seconds", 600)
+        ),
         funding_history=market_data.funding,
         funding_interval_minutes=market_data.funding_interval_minutes,
         funding_interval_history=market_data.funding_interval_history,

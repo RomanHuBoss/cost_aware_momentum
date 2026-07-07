@@ -93,9 +93,12 @@ def test_artifact_rejects_boolean_barrier_multiplier(tmp_path: Path) -> None:
             "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
+            "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
                 "entry_spread_bps": 18.0,
+                "entry_zone_atr_fraction": 0.12,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",

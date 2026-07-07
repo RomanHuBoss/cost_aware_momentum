@@ -34,7 +34,7 @@ def test_signal_policy_rejects_crossed_quote() -> None:
             _predictions(),
             bid_price=D("101"),
             ask_price=D("100"),
-            last_price=D("100.5"),
+            decision_anchor_price=D("100.5"),
             atr_pct=D("0.02"),
             costs=_costs(),
         )
@@ -54,7 +54,7 @@ def test_published_scenario_does_not_advertise_unmodeled_second_target() -> None
         _predictions(),
         bid_price=D("99.9"),
         ask_price=D("100.1"),
-        last_price=D("100"),
+        decision_anchor_price=D("100"),
         atr_pct=D("0.02"),
         costs=_costs(),
     )

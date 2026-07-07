@@ -161,7 +161,7 @@ def _blocked_report(*, now: datetime, window_start: datetime, alerts: list[str])
         "coverage": {
             "status": "BLOCKED",
             "expected_opportunities": 0,
-            "published_opportunities": 0,
+            "processed_opportunities": 0,
             "rate": 0.0,
         },
         "features": {"observations": 0, "max_psi": None, "by_feature": {}},
@@ -177,7 +177,13 @@ def _blocked_report(*, now: datetime, window_start: datetime, alerts: list[str])
             "rate": None,
             "status": "INSUFFICIENT_DATA",
         },
-        "actionability": {"status": "INSUFFICIENT_DATA", "observations": 0},
+        "actionability": {
+            "status": "INSUFFICIENT_DATA",
+            "observations": 0,
+            "opportunities": 0,
+            "actionable_opportunities": 0,
+            "rate": 0.0,
+        },
         "automatic_model_action": "none",
     }
 
@@ -387,7 +393,8 @@ async def build_production_drift_report(
         .all()
     )
     expected_opportunities = 0
-    published_opportunities = 0
+    processed_opportunities = 0
+    actionable_opportunities = 0
     failed_inference_jobs = 0
     invalid_coverage_jobs = 0
     for job in inference_jobs:
@@ -396,32 +403,37 @@ async def build_production_drift_report(
             continue
         details = job.details if isinstance(job.details, dict) else {}
         try:
-            universe_symbols = int(details.get("universe_symbols", 0))
-            covered = int(details.get("published", 0)) + int(
+            universe_symbols = int(
+                details.get("symbols_total", details.get("universe_symbols", 0))
+            )
+            processed = int(details["symbol_outcome_count"])
+            actionable = int(details.get("published", 0)) + int(
                 details.get("existing_current_hour", 0)
             )
-        except (TypeError, ValueError, OverflowError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             invalid_coverage_jobs += 1
             continue
-        if universe_symbols < 0 or covered < 0 or covered > universe_symbols:
+        if (
+            universe_symbols < 0
+            or processed < 0
+            or processed > universe_symbols
+            or actionable < 0
+            or actionable > processed
+        ):
             invalid_coverage_jobs += 1
             continue
         expected_opportunities += universe_symbols
-        published_opportunities += covered
+        processed_opportunities += processed
+        actionable_opportunities += actionable
 
     feature_names = list(reference["feature_names"])
-    actionability_reference = reference["actionability"]
-    min_net_rr = float(actionability_reference["min_net_rr"])
-    min_net_ev_r = float(actionability_reference["min_net_ev_r"])
     feature_rows: list[dict[str, object]] = []
     probability_rows: list[dict[str, float]] = []
-    actionable_flags: list[bool] = []
     signal_by_id: dict[object, MarketSignal] = {}
     for signal in signals:
         snapshot = signal.feature_snapshot if isinstance(signal.feature_snapshot, dict) else {}
         feature_rows.append({name: snapshot.get(name) for name in feature_names})
         probability_rows.extend(_directional_probability_rows(signal))
-        actionable_flags.append(signal.net_rr >= min_net_rr and signal.net_ev_r >= min_net_ev_r)
         signal_by_id[signal.id] = signal
 
     outcomes: list[SignalOutcome] = []
@@ -446,9 +458,10 @@ async def build_production_drift_report(
         feature_rows=feature_rows,
         probability_rows=probability_rows,
         outcome_rows=outcome_rows,
-        actionable_flags=actionable_flags,
+        actionable_flags=None,
         expected_opportunities=expected_opportunities,
-        published_opportunities=published_opportunities,
+        processed_opportunities=processed_opportunities,
+        actionable_opportunities=actionable_opportunities,
         thresholds=drift_thresholds(settings),
     )
     report_alerts = report.get("alerts")

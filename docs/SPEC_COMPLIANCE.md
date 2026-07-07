@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.39.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.49.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -9,7 +9,7 @@
 | Durable immutable model artifacts | Реализовано 1.36.0 | Exact bytes каждого нового candidate, version, SHA-256 и size атомарно сохраняются в `model.model_artifact_blobs`; UPDATE/DELETE запрещены trigger. Worker/trainer/activation service архивируют surviving legacy file или SHA-verified атомарно восстанавливают runtime copy до selection/activation. Уже удалённый pre-1.36.0 artifact без другой копии не реконструируется. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
 | Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; executable-spread alignment 1.37.0; immutable preflight scope 1.38.0 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; full snapshot hashes и `dynamic` mode повторно проверяются. Release 1.37.0 пересекает broad membership с точным live `MAX_SPREAD_BPS`. Release 1.38.0 заставляет background fit использовать exact symbols из persisted preflight profile и ограничивает last/mark/index raw history верхней границей `profile.end_time + horizon`; quality gate повторно сверяет symbol scope, temporal cutoff и post-feature coverage. Pre-ledger rows исключаются; stale/missing/corrupt evidence блокирует run. Exact membership до начала ledger и static-mode historical spread cohort не реконструируются. |
-| LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
+| LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0; decision-time anchoring 1.40.0 | Direction-specific adverse spread proxy сохранён. Release 1.40.0 фиксирует entry zone вокруг close подтверждённой decision candle, требует попадания historical next-hour executable proxy и live bid/ask в один ATR-масштабированный диапазон, блокирует позднюю publication и отсчитывает TTL от event time. Exact historical bid/ask, queue position, sub-hour path и operator latency distribution отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0; latest-prior live selection исправлен 1.35.4 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Live lookup фильтрует `source_time` и `received_at` по exact decision cutoff до сортировки. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history; deployment alignment усилен 1.34.1 | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках. Будущая фактическая ставка не участвует в ex-ante selection. До появления historical point-in-time forecast snapshots market-signal selector также обязан использовать нулевой expected funding; свежий ticker projection применяется только как более строгий execution-plan/acceptance overlay и не может менять направление. |
 | Rolling/expanding walk-forward | Реализовано 1.11.0 | Три purged expanding folds внутри development period, fresh fit/calibration на каждом fold и отдельный final holdout. Не является nested CV/PBO. |
@@ -20,11 +20,94 @@
 | Unconditional observed-opportunity policy inference | Реализовано 1.26.4 | Economic mean, horizon phases and moving-block LCB use every observed decision hour. A real hour with `NO TRADE` contributes zero; missing market hours are not synthesized. Trade/no-trade cohort counts are explicit and fail-closed validated for candidate and incumbent. This corrects selection-conditioned inference but does not establish profitability. |
 | OI/basis/funding/liquidity/context features | Частично реализовано 1.22.0 | Model использует 10 OHLCV-derived + 7 point-in-time context features: OI changes 1h/24h, mark/index basis и delta, latest settled funding/age с interval effective at decision time и turnover/OI liquidity proxy. Exact OI/basis и funding anchor обязательны; same-split ablation и walk-forward non-inferiority входят в gate. Historical local receipt timestamps, funding forecasts, orderbook-depth features, cross-asset context и richer liquidity regimes отсутствуют. |
 | PBO, Deflated Sharpe, full experiment ledger | Частично реализовано 1.34.0 | Prospective append-only trial ledger, aligned returns, contiguous CSCV/PBO, HAC-adjusted DSR и horizon-floored moving-block intervals сохранены. Nominal и cost-stress ×1,5/×2 paths используют union реально наблюдавшихся decision-to-horizon окон, cumulative hourly mark-close MTM и deterministic risk-budgeted sizing с aggregate risk/margin caps; timestamps, terminal return и max drawdown сверяются fail-closed. Выбранная конфигурация получает `REJECTED_COST_STRESS`, если любой обязательный stress-path compounds ниже 0%. Genuine `NO TRADE`/holding hours остаются нулями, недоступные календарные разрывы исключаются и раскрываются counts. Новая family требует immutable preregistration; normal activation требует report v4/gate v3, exact artifact/deployment-policy binding и passed cost-stress evidence. Automatic bounded RR/EV family объявляется до trial и не адаптируется к returns. Release 1.33.0 добавляет exact-target operator cancellation; release 1.34.0 запускает formal subprocess в изолированном process tree и завершает POSIX process group либо Windows tree при cancel, timeout, non-zero exit и control failure. Structured tree evidence попадает в append-only `FAILED`, control result и candidate terminal gate; preregistration/предыдущие events не изменяются, candidate activation request закрывается, incumbent сохраняется. Pre-1.18 trials не реконструируются; pre-1.20 families не считаются preregistered; external trusted timestamp, conditional search spaces, arbitrary hyperparameter search, experiments outside ledger и независимая external replication отсутствуют. |
-| Production drift monitoring | Частично реализовано 1.28.1 | Active-version monitor сравнивает production с immutable final-holdout reference: coverage/missingness, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Calibration использует только full-horizon mature signals; early TP/SL незрелых сигналов исключаются, unresolved mature outcomes и invalid maturity metadata блокируют и инвалидируют calibration evidence. Report v3 раздельно сохраняет critical/blocking/warning evidence: independent critical feature/probability/actionability drift или valid calibration drift не может быть подавлен одновременно низким coverage, warm-up или другим blocker и создаёт restart-persistent quarantine exact active version. Empty/sub-minimum warm-up остаётся `BLOCKED` без ложного missingness critical и без bootstrap deadlock. Runtime/signal version обязана совпадать с current active registry; latch снимается только другой model version. Multivariate tests, adaptive control limits и automated rollback отсутствуют. |
-| Fail-closed model activation gate | Реализовано 1.28.0 | Normal activation требует passed model quality gate и experiment promotion gate v3 с passed cost-stress evidence. Selected preregistered trial должен совпасть по version/SHA-256/horizon и deployment-policy binding v2; изменение production fees/slippage/stop-gap/EV-RR thresholds или risk/max-open-risk/margin-reserve sizing policy после evidence блокирует activation. Fresh/legacy candidate без current binding остаётся inactive. Emergency rollback требует явного flag + reason и сохраняет исходные evidence в audit. |
+| Production drift monitoring | Частично реализовано 1.28.1; selected-cohort integrity 1.41.0; terminal coverage accounting 1.49.0 | Active-version monitor сравнивает production с immutable final-holdout reference: terminal processing coverage, feature/probability PSI, selected-direction log-loss/Brier и actionability density. Release 1.49.0 разделяет `expected symbol opportunities`, `processed terminal outcomes` и `actionable published/existing signals`: coverage считается как processed/expected, actionability — actionable/expected, а retry использует authoritative `symbol_outcome_count`, поэтому корректные `SKIPPED`/`NO TRADE` результаты не выглядят незавершёнными. Reference actionability связан с final `policy_trades / policy_candidates` и immutable cohort schema `published-policy-trades-per-symbol-opportunity-v1`. Missing/malformed terminal coverage evidence остаётся fail-closed `BLOCKED`. Calibration использует только full-horizon mature signals; unresolved mature outcomes и invalid maturity metadata блокируют calibration evidence. Report v4 раздельно сохраняет critical/blocking/warning evidence: independent critical drift не подавляется low coverage/warm-up и создаёт restart-persistent quarantine exact active version. Feature/probability PSI пока строится по сохранённым published signals, а не по отдельному immutable ledger всех evaluated no-trade opportunities; multivariate tests, adaptive control limits и automated rollback отсутствуют. |
+| Fail-closed model activation gate | Реализовано 1.28.0; selected calibration strengthened 1.41.0; actionable calibration strengthened 1.42.0; symbol jackknife strengthened 1.43.0; cluster jackknife strengthened 1.44.0; market-regime robustness strengthened 1.45.0; directional robustness strengthened 1.46.0; interaction robustness strengthened 1.47.0; sparse-pool jackknife strengthened 1.48.0 | Normal activation требует passed model quality gate и experiment promotion gate v3 с passed cost-stress evidence. Release 1.41.0 применяет existing absolute log-loss/Brier limits к выбранному LONG/SHORT-направлению и связывает paired evidence counts. Release 1.42.0 дополнительно вычисляет и проверяет calibration exact post-actionability/post-overlap trade cohort. Release 1.43.0 добавляет exact leave-one-symbol-out recomputation, а 1.44.0 — leave-one-correlation-cluster-out. Release 1.45.0 классифицирует каждую opportunity по ex-ante decision-time regime и отдельно проверяет каждый торгуемый режим. Release 1.46.0 пересчитывает exact actionable economics/calibration отдельно для LONG и SHORT. Release 1.47.0 добавляет exact `symbol × direction × regime` cells: ячейки с ≥5 trades проверяются отдельно, а меньшие объединяются в один sparse-pool. Release 1.48.0 дополнительно удаляет каждую sparse-cell по очереди и требует, чтобы остаток сохранял ≥5 trades, положительный mean R и допустимую calibration; одна удачная tiny-cell не может поддерживать весь pool. Interaction symbol/direction/regime sets должны точно совпадать с marginal evidence. Все schema, counts, fractions, weighted pool/jackknife metrics, summaries и runtime evidence проверяются fail-closed. Selected preregistered trial должен совпасть по version/SHA-256/horizon и deployment-policy binding; изменение production economics/risk policy после evidence блокирует activation. Legacy artifact без current evidence отклоняется fail-closed. Emergency rollback требует явного flag + reason и сохраняет исходные evidence в audit. |
 | Deferred background promotion reconciliation | Реализовано 1.33.0 | Trainer повторно проверяет newest inactive background candidate с `activation_requested=true` и persisted passed quality gate. Явная operator family имеет приоритет; иначе при `AUTO_TRAIN_AUTO_EXPERIMENT=true` создаётся deterministic candidate-specific family, immutable preregistration фиксируется до первого trial и bounded configurations выполняются последовательно под advisory lock. Пока family incomplete, новый candidate не обучается. `READY` evidence всё равно обязана совпасть с exact artifact/version/horizon и persisted deployment-policy binding; terminal governance rejection, bounded retry exhaustion или authenticated exact-target operator cancellation транзакционно закрывают activation request с audit/outbox evidence. Отмена/terminal rejection завершает текущий scheduling cycle и не запускает немедленно новый candidate. |
 | Operator-visible automatic experiment control | Реализовано 1.34.0 | Fresh trainer heartbeat публикует exact family/candidate, stage, configuration, attempt и `subprocess_active`. `CANCEL_EXPERIMENT` требует exact target и CSRF/authenticated operator context. Formal subprocess запускается в isolated POSIX session/process group или Windows `CREATE_NEW_PROCESS_GROUP`; cancel/timeout/failure завершает всю доступную group/tree и сохраняет `subprocess-tree-termination-v1`. Mismatched/stale requests fail closed; pending `CHECK_NOW`/`RECOVER_NOW` не блокирует cancel; open trial закрывается append-only `FAILED`; preregistration и прошлые results не удаляются. Linux descendant runtime доказан; Windows runtime и намеренно detached POSIX `setsid()` descendants остаются непроверенными/вне group guarantee. |
 | Candidate/live recommendation attrition diagnostics | Реализовано prospectively; mature outcome attribution 1.35.0 | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются. Report v3 exact-join связывает instrumented `signal_id`/`plan_id` с persisted `SignalOutcome`/`PlanOutcome`, использует только full-horizon mature cohort с `resolved_at <= report.until` и показывает TP/SL/TIMEOUT, ambiguity, valuation coverage и descriptive `counterfactual_r` по initial status/stage/reason. Missing/conflicting mature evidence блокируется. История до 1.24.0 не реконструируется; это counterfactual diagnostic, не actual execution PnL, causal decomposition или основание ослаблять gates. |
+
+
+
+## Work package: symbol × direction × regime interaction robustness
+
+Release 1.48.0 усиливает interaction robustness после 1.47.0 и закрывает single-sparse-cell concentration gap. Release 1.47.0 закрыл masking достаточно поддержанных cells после отдельных проверок symbols, directions и regimes. Положительные marginal averages могли скрывать отрицательную exact cell, например `BTCUSDT × LONG × UPTREND`.
+
+Реализация:
+
+- cells строятся только после direction selection, EV/RR actionability и overlap filtering;
+- regime assignment переиспользует тот же development-only decision-time contract, что и release 1.45.0;
+- cell с минимум пятью trades получает отдельные realized mean R, log loss и multiclass Brier;
+- cells с меньшей поддержкой объединяются в один deterministic sparse-pool, а не игнорируются и не превращаются в множество слабых тестов;
+- non-empty sparse-pool обязан иметь минимум пять совокупных trades и проходить те же economics/calibration limits;
+- release 1.48.0 для каждой sparse-cell строит exact leave-one-cell-out residual и требует ≥5 остаточных trades, положительный mean R и существующие log-loss/Brier limits;
+- validator сверяет canonical cell order, exact omitted identity, residual counts/fractions, calibration rows, weighted sparse-pool/jackknife metrics, extrema и exact symbol/direction/regime sets;
+- runtime требует schema `symbol-direction-regime-supported-cells-sparse-pool-jackknife-v2` и nested `leave-one-sparse-interaction-cell-out-v1`; policy metric schema повышена до v25.
+
+Ограничения: пять trades — минимальный safety floor, а не сильная статистическая мощность. Jackknife доказывает только отсутствие зависимости pool от одной cell. Несколько вредных tiny cells всё ещё могут маскироваться несколькими прибыльными cells, если каждый leave-one-out residual остаётся положительным. Partition не является causal or hierarchical model и не доказывает forward profitability.
+
+## Work package: decision-time market-regime robustness
+
+Release 1.45.0 закрывает regime-masking gap. Aggregate actionable mean R и calibration могли оставаться допустимыми, хотя один фактически торгуемый рынок-состояние был отрицательным или статистически недостаточным.
+
+Реализовано:
+
+- regime assignment использует только decision-time `ret_24h` и `atr_pct_14`, уже входящие в feature schema;
+- high-volatility threshold рассчитывается как 75-й процентиль market-median ATR percentage только на development window, без final-holdout outcomes;
+- вне high-volatility состояния UPTREND/DOWNTREND задаются immutable threshold `|ret_24h / atr_pct_14| >= 1.0`, остальные observations относятся к RANGE;
+- exact actionable cohort стратифицируется после direction selection, EV/RR actionability и overlap filtering;
+- evidence сохраняет opportunity/trade/no-trade cohorts, trade fraction, realized mean R и exact actionable log-loss/Brier для каждого observed regime;
+- normal activation требует минимум пять сделок и прохождение неизменённых economic/calibration limits в каждом режиме, который policy фактически торгует;
+- validator и runtime проверяют schema, development threshold, canonical ordering, totals, fractions, summaries и calibration row counts.
+
+Ограничения: это preregistered statistical partition, а не causal macro-regime model. Multi-regime diversification не требуется: стратегия может торговать один режим, но он должен иметь достаточную поддержку и проходить все limits. Forward threshold stability, per-symbol-by-regime cells и causal profitability не доказаны.
+
+## Work package: final-holdout policy correlation-cluster jackknife robustness
+
+Release 1.44.0 закрывает group-concentration gap, который не обнаруживает single-symbol jackknife. Несколько сильно зависимых instruments могли совместно обеспечивать весь положительный результат: удаление любого одного сохраняло другой прибыльный proxy, но удаление всей группы оставляло убыточный universe.
+
+Реализовано:
+
+- корреляция считается по `realized_r` exact post-actionability/post-overlap trades только на timestamps, где оба symbols действительно торговались;
+- immutable rule соединяет symbols при абсолютной Pearson correlation не ниже `0.70` и минимум восьми совместных active observations;
+- транзитивные connected components образуют детерминированные sorted clusters;
+- каждый cluster полностью исключается, оставшиеся simultaneous trades перевзвешиваются, а исходный observed opportunity clock и zero-return no-trade hours сохраняются;
+- quality gate требует минимум два clusters и worst leave-one-cluster-out mean R строго выше `AUTO_TRAIN_MIN_POLICY_REALIZED_MEAN_R`;
+- validator сверяет schema, threshold, minimum observations, cluster IDs, symbol uniqueness, counts, fractions, extrema и точное совпадение symbol set с per-symbol evidence;
+- runtime отклоняет отсутствующее, malformed или legacy evidence fail-closed.
+
+Ограничения: threshold и minimum overlap preregistered как константы текущей schema, но не доказывают экономически истинную sector taxonomy. При недостаточном числе совместных сделок symbols остаются singleton clusters. Проверка использует realized final-holdout returns, не per-symbol calibration, не ex-ante sector taxonomy и не causal profitability. Market-regime stratification добавлена в 1.45.0 отдельным decision-time contract.
+
+## Work package: final-holdout policy symbol jackknife robustness
+
+Release 1.43.0 закрывает cross-symbol concentration gap. До исправления temporal phase bootstrap, walk-forward, actionable calibration и aggregate policy economics могли быть зелёными, хотя один instrument создавал весь положительный результат, а оставшийся traded universe был убыточным.
+
+Реализовано:
+
+- jackknife выполняется после direction selection, EV/RR actionability и single-active-trade-per-symbol overlap filtering;
+- для каждого traded symbol удаляются все его сделки, оставшиеся одновременные сделки заново получают равный вес, а все реально наблюдавшиеся no-trade opportunity hours сохраняются нулями;
+- evidence содержит exact sorted symbol list, per-symbol trade count/fraction, per-symbol leave-one-out mean, maximum trade fraction и worst leave-one-out mean;
+- schema, нормализация/уникальность symbols, суммы counts, fractions и summary extrema проверяются fail-closed;
+- normal quality gate требует минимум два traded symbols и `worst leave-one-out mean R > AUTO_TRAIN_MIN_POLICY_REALIZED_MEAN_R`;
+- runtime требует current evidence, policy metric schema повышена до v20, legacy artifacts требуют переобучения.
+
+Ограничения: single-symbol jackknife дополнен correlation-cluster jackknife 1.44.0, но всё ещё не проверяет per-symbol calibration, ex-ante sector taxonomy или causal profitability. Market-regime robustness добавлена в 1.45.0. При небольшом числе сделок тест консервативен намеренно.
+
+
+## Work package: decision-time entry anchoring and publication boundary
+
+Release 1.40.0 закрывает research/live geometry defect: вероятности TP/SL/TIMEOUT относились к close подтверждённой decision candle и следующему часовому open, но live selector ранее центрировал новую entry zone, SL и TP вокруг текущего bid/ask. При delayed catch-up это позволяло использовать старые вероятности для фактически новой сделки после существенного движения цены; signal expiry дополнительно начинался от publication time и продлевал старое решение.
+
+Реализовано:
+
+- immutable decision anchor берётся из exact close подтверждённой source candle;
+- historical LONG/SHORT next-hour adverse-spread entry proxies допускаются только внутри `decision_anchor ± ENTRY_ZONE_ATR_FRACTION × ATR`; timestamp pair исключается целиком, если хотя бы одна directional geometry вне зоны;
+- live bid и ask обязаны одновременно находиться в той же зоне; selector больше не переносит зону вслед за текущим рынком;
+- publication блокируется при lag больше `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS`;
+- signal expiry вычисляется как `event_time + SIGNAL_TTL_MINUTES`, а не `publish_time + TTL`;
+- entry-zone fraction и publication-delay limit входят в artifact metadata и immutable promotion-policy binding v4; live publication дополнительно требует exact artifact/config match, а legacy artifacts с прежней entry schema отклоняются fail-closed и требуют переобучения;
+- stop/TP, fees, spread, funding, EV и net R/R продолжают рассчитываться от фактической executable entry, но только после подтверждения, что рынок остаётся в исходной decision zone.
+
+Ограничения: historical entry всё ещё является next-hour open ± directional half-spread proxy, а не exact bid/ask/VWAP/fill. Нет sub-hour gap ordering, queue/latency model и causal доказательства прибыльности. Новый контракт может уменьшить число actionable observations и рекомендаций, поскольку исключает уже ушедшие цены; это преднамеренный fail-closed эффект.
 
 
 ## Work package: decision-time execution snapshot freshness barrier
@@ -90,6 +173,18 @@ Release 1.34.2 закрывает подтверждённый operational/tempo
 
 Ограничения: PostgreSQL integration и Windows PostgreSQL timezone smoke не выполнялись в этой среде. Релиз не переписывает immutable rows, не ослабляет model gates и не гарантирует, что однодневный candidate пройдёт minimum-history/final-holdout требования.
 
+
+## Work package: policy-actionable calibration integrity
+
+Release 1.42.0 closes a second, narrower selection-bias gap after direction selection. Release 1.41.0 measured calibration of the LONG/SHORT side chosen for each opportunity, but that cohort still included opportunities later rejected by EV/RR/actionability and single-active-trade overlap rules. A deterministic final-holdout reproducer showed that 130 well-classified non-trades could keep aggregate selected-direction log loss below 1.20 while 20 actual policy trades had log loss above 4 and multiclass Brier above 1.5.
+
+The release computes a separate `actionable-policy-trades-final-holdout-v1` calibration from the exact rows remaining after actionability and overlap filtering. The quality gate applies the unchanged absolute calibration limits, requires its row count to equal `policy_trades`, and rejects missing/non-finite/inconsistent evidence. Policy metric schema v19 and runtime validation make this artifact contract immutable; pre-1.42 artifacts require retraining. This does not prove profitability and does not relax trade-rate, holdout, walk-forward, EV/RR, spread or risk gates.
+
+## Work package: policy-selected calibration integrity
+
+Release 1.41.0 closes a confirmed selection-bias gap in activation evidence. The final holdout represents each opportunity by two counterfactual directional rows, while production publishes at most one selected direction. Training already calculated selected-direction log loss and multiclass Brier, but the gate enforced only all-direction averages. Good calibration of the unused side could therefore mask overconfidence in the actual recommendation.
+
+The release now requires an explicit selected-direction calibration mapping, checks it against the unchanged absolute ML limits and binds evidence cardinalities fail-closed: `holdout_rows = 2 × policy_candidates`, `selected_calibration_rows = policy_candidates`, and drift-reference rows equal holdout rows. Drift-reference schema v3 and selected cohort schema v2 make the new semantics immutable; legacy artifacts require retraining. This hardening does not claim profitability and does not relax any ML, policy, spread, EV/RR or risk gate.
 
 ## Work package: promotion-bound market-signal funding semantics
 
@@ -218,15 +313,18 @@ Release 1.28.1 закрывает fail-open конфликт статусов в
 
 Реализовано:
 
-- report schema повышена до `production-drift-report-v3`;
+- report schema последовательно повышена до `production-drift-report-v4`;
 - evidence разделена на `critical_evidence`, `blocking_evidence` и `warning_evidence`;
 - общий статус вычисляется независимо от порядка проверок: CRITICAL при любой валидной independent critical evidence, затем BLOCKED, WARN и OK;
-- failed inference jobs, invalid coverage accounting и incomplete maturity добавляют blockers, но не подавляют feature/probability/actionability critical evidence;
+- release 1.49.0 использует `symbol_outcome_count` как authoritative processed denominator: intentional `SKIPPED`/`NO TRADE` terminal outcomes считаются завершённой обработкой, но не actionable рекомендациями;
+- coverage считается как `processed terminal outcomes / expected symbol opportunities`, actionability density — как `published-or-existing actionable signals / expected symbol opportunities`;
+- reference actionability rate использует final `policy_trades / policy_candidates` и cohort schema `published-policy-trades-per-symbol-opportunity-v1`, а не pre-overlap actionable candidates;
+- failed inference jobs, missing/malformed terminal coverage и incomplete maturity добавляют blockers, но не подавляют independently valid feature/probability/actionability critical evidence;
 - incomplete/invalid maturity удаляет calibration-only critical/warning evidence и переводит calibration section в `BLOCKED`;
 - missingness становится critical только при наличии configured minimum denominator; empty warm-up остаётся blocked;
-- существующий exact-version persisted quarantine автоматически применяется к новым v3 reports со статусом `CRITICAL`; старые persisted v2 critical reports также продолжают учитываться guard.
+- существующий exact-version persisted quarantine автоматически применяется к v4 reports со статусом `CRITICAL`; старые persisted critical reports продолжают учитываться guard.
 
-Ограничения: monitor по-прежнему использует univariate PSI и aggregate calibration/actionability. Он не реализует symbol/regime-conditional drift, multivariate tests, adaptive thresholds, automatic rollback или causal attribution losses. Critical precedence не доказывает отрицательный edge, но предотвращает публикацию после независимо подтверждённой критической деградации.
+Ограничения: feature/probability PSI по-прежнему использует stored published signals, потому что отдельный bounded immutable telemetry ledger всех evaluated symbol opportunities пока отсутствует. Monitor не реализует symbol/regime-conditional drift, multivariate tests, adaptive thresholds, automatic rollback или causal attribution losses. Correct terminal coverage и actionability denominator предотвращают ложный retry/coverage/quarantine, но не доказывают положительный edge.
 
 
 ## Work package: risk-budgeted experiment portfolio accounting
@@ -580,3 +678,17 @@ Implemented:
 The change preserves latest-prior query semantics from 1.35.2 and does not widen `MAX_TICKER_AGE_SECONDS`, synthesize quotes, alter model features/labels, relax candidate promotion, lower EV/RR requirements or increase risk limits.
 
 Limitations: live PostgreSQL/Bybit execution was not available. The final barrier refreshes the single-call ticker batch; orderbook freshness remains independently fail-closed and exact historical market microstructure is still incomplete.
+
+## Directional policy robustness (1.46.0)
+
+Release 1.46.0 закрывает directional-masking gap. Aggregate actionable result, per-regime result и symbol/cluster jackknife могли оставаться положительными, когда LONG компенсировал систематически отрицательный SHORT либо наоборот.
+
+Реализовано:
+
+- exact post-actionability/post-overlap trade cohort делится на LONG и SHORT;
+- для каждого направления сохраняется полный observed opportunity clock, нулевые no-trade cohorts, trade counts/fractions, opportunity-weighted realized mean R и exact actionable log loss/Brier;
+- каждое фактически торгуемое направление требует минимум 5 сделок, mean R выше configured minimum и calibration в существующих absolute limits;
+- schema, canonical order, counts, fractions, summaries и runtime artifact evidence проверяются fail-closed;
+- policy metric schema повышена до v23, старые artifacts требуют переобучения.
+
+Ограничения: per-symbol × direction × regime interaction robustness добавлена в 1.47.0 и усилена sparse-pool jackknife в 1.48.0, но она использует minimum-support cells и pooled sparse tail, а не causal hierarchical model. Односторонняя стратегия допустима, если единственное торгуемое направление само проходит полный контракт.

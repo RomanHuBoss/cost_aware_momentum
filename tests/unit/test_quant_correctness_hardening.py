@@ -135,7 +135,7 @@ def test_direction_selector_requires_one_long_and_one_short_scenario() -> None:
             (only_long,),
             bid_price=D("99.9"),
             ask_price=D("100.1"),
-            last_price=D("100"),
+            decision_anchor_price=D("100"),
             atr_pct=D("0.02"),
             costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
         )

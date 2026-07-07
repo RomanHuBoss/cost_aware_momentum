@@ -93,6 +93,11 @@ def _small_reference() -> dict[str, object]:
         actionability_rate=0.5,
         min_net_rr=1.2,
         min_net_ev_r=0.05,
+        calibration_reference={
+            "rows": 6,
+            "log_loss": 0.3937289300155933,
+            "multiclass_brier": 0.1675,
+        },
         calibration_cohort_schema=PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA,
     )
 

@@ -19,6 +19,13 @@ from app.ml.training import (
     TIMEOUT_RETURN_SCHEMA_VERSION,
 )
 from tests.drift_reference import valid_production_drift_reference
+from tests.model_artifact_metrics import (
+    valid_policy_cluster_robustness,
+    valid_policy_direction_robustness,
+    valid_policy_interaction_robustness,
+    valid_policy_regime_robustness,
+    valid_policy_symbol_robustness,
+)
 
 
 class _RecoveryArtifactModel:
@@ -40,7 +47,11 @@ def _passing_metrics() -> dict[str, object]:
         "ece_sl": 0.06,
         "ece_timeout": 0.07,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "production_drift_reference": valid_production_drift_reference(),
+        "production_drift_reference": valid_production_drift_reference(
+            directional_rows=300,
+            selected_rows=150,
+            actionability_rate=80 / 150,
+        ),
         "market_context": {
             "schema": "hourly-oi-basis-settled-funding-turnover-v2",
                 "funding_interval_schedule_schema": "instrument-spec-point-in-time-v1",
@@ -59,8 +70,9 @@ def _passing_metrics() -> dict[str, object]:
         },
         "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
-            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
         },
         "historical_funding_schema": "bybit-settlement-timestamp-replay-v2",
         "historical_funding_timeline": {
@@ -121,7 +133,7 @@ def _passing_metrics() -> dict[str, object]:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v17",
+        "policy_metric_schema": "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",
@@ -135,9 +147,26 @@ def _passing_metrics() -> dict[str, object]:
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,
         "policy_horizon_phase_expected": 8,
-        "policy_candidates": 1_000,
+        "policy_candidates": 150,
         "policy_trades": 80,
-        "policy_trade_rate": 0.08,
+        "policy_direction_robustness": valid_policy_direction_robustness(
+            policy_trades=80,
+            policy_cohorts=80,
+        ),
+        "policy_symbol_robustness": valid_policy_symbol_robustness(policy_trades=80),
+        "policy_cluster_robustness": valid_policy_cluster_robustness(policy_trades=80),
+        "policy_regime_robustness": valid_policy_regime_robustness(
+            policy_trades=80,
+            policy_cohorts=80,
+        ),
+        "policy_interaction_robustness": valid_policy_interaction_robustness(
+            policy_trades=80
+        ),
+        "policy_actionable_calibration_schema": "actionable-policy-trades-final-holdout-v1",
+        "policy_actionable_calibration_rows": 80,
+        "policy_actionable_log_loss": 0.60,
+        "policy_actionable_multiclass_brier": 0.30,
+        "policy_trade_rate": 80 / 150,
         "policy_cohorts": 80,
         "policy_trade_cohorts": 80,
         "policy_no_trade_cohorts": 0,
@@ -176,12 +205,19 @@ def _write_artifact(path: Path, *, version: str | None = None, horizon: int = 8)
                 "historical_receipt_time_reconstructed": False,
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
-            "production_drift_reference": valid_production_drift_reference(),
+            "production_drift_reference": valid_production_drift_reference(
+                directional_rows=300,
+                selected_rows=150,
+                actionability_rate=80 / 150,
+            ),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
+            "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
                 "entry_spread_bps": 18.0,
+                "entry_zone_atr_fraction": 0.12,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",

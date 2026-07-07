@@ -30,7 +30,7 @@ def test_entry_zone_rounding_never_expands_beyond_continuous_policy_band() -> No
         _directional_predictions(),
         bid_price=D("100"),
         ask_price=D("100"),
-        last_price=D("100"),
+        decision_anchor_price=D("100"),
         atr_pct=D("0.02"),
         costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
         tick_size=D("1"),

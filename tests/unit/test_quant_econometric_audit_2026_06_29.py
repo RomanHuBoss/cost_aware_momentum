@@ -293,7 +293,16 @@ def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
         minimum_rows_for_coverage=300,
     )
     metrics = dict(metrics)
-    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
+    metrics.setdefault(
+        "production_drift_reference",
+        valid_production_drift_reference(
+            directional_rows=int(metrics.get("rows", 12)),
+            selected_rows=int(
+                metrics.get("policy_candidates", int(metrics.get("rows", 12)) // 2)
+            ),
+            actionability_rate=float(metrics.get("policy_trade_rate", 0.5)),
+        ),
+    )
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",
@@ -324,9 +333,9 @@ def _passing_metrics() -> dict[str, object]:
         "ece_sl": 0.05,
         "ece_timeout": 0.05,
         "class_distribution": {"TP": 0.35, "SL": 0.40, "TIMEOUT": 0.25},
-        "policy_candidates": 1_000,
+        "policy_candidates": 150,
         "policy_trades": 80,
-        "policy_trade_rate": 0.08,
+        "policy_trade_rate": 80 / 150,
         "policy_cohorts": 80,
         "policy_trade_cohorts": 80,
         "policy_no_trade_cohorts": 0,
@@ -585,9 +594,12 @@ def _artifact_bundle(**overrides: object) -> dict[str, object]:
         "production_drift_reference": valid_production_drift_reference(),
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": 18.0,
+        "entry_zone_atr_fraction": 0.12,
+        "maximum_signal_publication_delay_seconds": 600,
         "entry_execution_model": {
-            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
         },
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,

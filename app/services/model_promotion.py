@@ -22,12 +22,14 @@ from app.services.experiment_ledger import (
 
 EXPERIMENT_PROMOTION_GATE_SCHEMA = "model-promotion-experiment-governance-v3"
 EXPERIMENT_GOVERNANCE_REPORT_SCHEMA = "experiment-selection-preregistered-governance-v4"
-EXPERIMENT_POLICY_BINDING_SCHEMA = "model-promotion-policy-binding-v3"
+EXPERIMENT_POLICY_BINDING_SCHEMA = "model-promotion-policy-binding-v4"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 EXPERIMENT_POLICY_BINDING_KEYS = (
     "entry_spread_bps",
     "maximum_executable_spread_bps",
+    "entry_zone_atr_fraction",
+    "maximum_signal_publication_delay_seconds",
     "risk_rate",
     "max_total_open_risk_rate",
     "margin_reserve_rate",
@@ -44,7 +46,7 @@ EXPERIMENT_POLICY_BINDING_KEYS = (
     "portfolio_accounting",
 )
 _POLICY_STRING_KEYS = {"policy_source", "portfolio_accounting"}
-_POLICY_INTEGER_KEYS = {"research_leverage"}
+_POLICY_INTEGER_KEYS = {"research_leverage", "maximum_signal_publication_delay_seconds"}
 _POLICY_NULLABLE_NUMERIC_KEYS = {"timeout_return_rate_override"}
 
 
@@ -52,6 +54,8 @@ def build_experiment_policy_binding(
     *,
     entry_spread_bps: float,
     maximum_executable_spread_bps: float,
+    entry_zone_atr_fraction: float = 0.12,
+    maximum_signal_publication_delay_seconds: int = 600,
     risk_rate: float,
     max_total_open_risk_rate: float,
     margin_reserve_rate: float,
@@ -72,6 +76,8 @@ def build_experiment_policy_binding(
     values: dict[str, Any] = {
         "entry_spread_bps": entry_spread_bps,
         "maximum_executable_spread_bps": maximum_executable_spread_bps,
+        "entry_zone_atr_fraction": entry_zone_atr_fraction,
+        "maximum_signal_publication_delay_seconds": maximum_signal_publication_delay_seconds,
         "risk_rate": risk_rate,
         "max_total_open_risk_rate": max_total_open_risk_rate,
         "margin_reserve_rate": margin_reserve_rate,
@@ -117,6 +123,8 @@ def build_experiment_policy_binding(
         if key in {"liquidation_equity_reserve_fraction", "margin_reserve_rate"} and not 0.0 <= numeric < 1.0:
             raise ValueError(f"Experiment policy binding {key} must be in [0, 1)")
         normalized[key] = numeric
+    if not 0.0 < normalized["entry_zone_atr_fraction"] <= 1.0:
+        raise ValueError("Experiment policy binding entry_zone_atr_fraction must be in (0, 1]")
     if normalized["risk_rate"] <= 0.0:
         raise ValueError("Experiment policy binding risk_rate must be positive")
     if normalized["max_total_open_risk_rate"] <= 0.0:
@@ -134,6 +142,10 @@ def experiment_policy_binding_from_settings(settings: Settings) -> dict[str, Any
     return build_experiment_policy_binding(
         entry_spread_bps=settings.model_entry_spread_bps,
         maximum_executable_spread_bps=settings.max_spread_bps,
+        entry_zone_atr_fraction=settings.entry_zone_atr_fraction,
+        maximum_signal_publication_delay_seconds=(
+            settings.max_signal_publication_delay_seconds
+        ),
         risk_rate=settings.default_risk_rate,
         max_total_open_risk_rate=settings.max_total_open_risk_rate,
         margin_reserve_rate=settings.margin_reserve_rate,

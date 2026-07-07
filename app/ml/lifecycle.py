@@ -59,8 +59,18 @@ from app.ml.training import (
     MODEL_BASE_FEATURE_NAMES,
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
+    POLICY_ACTIONABLE_CALIBRATION_SCHEMA,
+    POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
+    POLICY_DIRECTION_MIN_TRADES,
+    POLICY_DIRECTION_ROBUSTNESS_SCHEMA,
     POLICY_EXPECTED_FUNDING_SOURCE,
+    POLICY_INTERACTION_MIN_TRADES,
+    POLICY_INTERACTION_ROBUSTNESS_SCHEMA,
+    POLICY_INTERACTION_SPARSE_JACKKNIFE_SCHEMA,
     POLICY_METRIC_SCHEMA,
+    POLICY_REGIME_MIN_TRADES,
+    POLICY_REGIME_ROBUSTNESS_SCHEMA,
+    POLICY_SYMBOL_ROBUSTNESS_SCHEMA,
     POLICY_UNCERTAINTY_SCHEMA,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
     TIMEOUT_RETURN_SCHEMA_VERSION,
@@ -73,6 +83,11 @@ from app.ml.training import (
     expanding_walk_forward_splits,
     make_barrier_dataset,
     timeout_return_r_targets,
+    validate_policy_cluster_robustness,
+    validate_policy_direction_robustness,
+    validate_policy_interaction_robustness,
+    validate_policy_regime_robustness,
+    validate_policy_symbol_robustness,
     zero_market_context_split,
 )
 from app.ml.universe_replay import (
@@ -879,6 +894,8 @@ def build_model_candidate(
     model_type: str,
     model_dir: Path,
     entry_spread_bps: float = 0.0,
+    entry_zone_atr_fraction: float = 0.12,
+    maximum_signal_publication_delay_seconds: int = 600,
     funding_history: pd.DataFrame | None = None,
     funding_interval_minutes: dict[str, int] | None = None,
     funding_interval_history: pd.DataFrame | None = None,
@@ -901,6 +918,7 @@ def build_model_candidate(
         candles,
         horizon=horizon,
         entry_spread_bps=entry_spread_bps,
+        entry_zone_atr_fraction=entry_zone_atr_fraction,
         funding_history=funding_history,
         funding_interval_minutes=funding_interval_minutes,
         funding_interval_history=funding_interval_history,
@@ -967,6 +985,10 @@ def build_model_candidate(
         metrics["promotion_policy_binding"] = build_experiment_policy_binding(
             entry_spread_bps=entry_spread_bps,
             maximum_executable_spread_bps=maximum_executable_spread_bps,
+            entry_zone_atr_fraction=entry_zone_atr_fraction,
+            maximum_signal_publication_delay_seconds=(
+                maximum_signal_publication_delay_seconds
+            ),
             risk_rate=policy_config.risk_rate,
             max_total_open_risk_rate=policy_config.max_total_open_risk_rate,
             margin_reserve_rate=policy_config.margin_reserve_rate,
@@ -983,9 +1005,14 @@ def build_model_candidate(
             minimum_net_ev_r=policy_config.min_net_ev_r,
         )
     policy_candidates = int(metrics.get("policy_candidates") or 0)
-    policy_actionable_candidates = int(metrics.get("policy_actionable_candidates") or 0)
+    policy_trades = int(metrics.get("policy_trades") or 0)
+    if policy_candidates < 0 or policy_trades < 0 or policy_trades > policy_candidates:
+        raise ValueError("Policy trade counts are invalid for production drift reference")
+    # Production telemetry contains only final published policy signals.  Bind the
+    # reference density to the same post-actionability/post-overlap cohort rather
+    # than the wider pre-overlap actionable-candidate set.
     actionability_rate = (
-        float(policy_actionable_candidates / policy_candidates) if policy_candidates > 0 else 0.0
+        float(policy_trades / policy_candidates) if policy_candidates > 0 else 0.0
     )
     calibration_reference = None
     calibration_cohort_schema = None
@@ -1057,6 +1084,12 @@ def build_model_candidate(
                     rel_tol=0.0,
                     abs_tol=1e-12,
                 )
+                and math.isclose(
+                    runtime.entry_zone_atr_fraction,
+                    entry_zone_atr_fraction,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
                 and policy_config is not None
                 and runtime.research_leverage == policy_config.research_leverage
                 and math.isclose(
@@ -1071,6 +1104,8 @@ def build_model_candidate(
                     "candidate_stop_atr_multiplier": DEFAULT_STOP_ATR_MULTIPLIER,
                     "candidate_tp_atr_multiplier": DEFAULT_TP_ATR_MULTIPLIER,
                     "candidate_entry_spread_bps": float(entry_spread_bps),
+                    "candidate_entry_zone_atr_fraction": float(entry_zone_atr_fraction),
+                    "incumbent_entry_zone_atr_fraction": runtime.entry_zone_atr_fraction,
                     "incumbent_stop_atr_multiplier": runtime.stop_atr_multiplier,
                     "incumbent_tp_atr_multiplier": runtime.tp_atr_multiplier,
                     "incumbent_entry_spread_bps": runtime.entry_spread_bps,
@@ -1133,6 +1168,10 @@ def build_model_candidate(
         "production_drift_reference": metrics["production_drift_reference"],
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": float(entry_spread_bps),
+        "entry_zone_atr_fraction": float(entry_zone_atr_fraction),
+        "maximum_signal_publication_delay_seconds": int(
+            maximum_signal_publication_delay_seconds
+        ),
         "entry_execution_model": metrics["entry_execution_model"],
         "historical_funding_schema": HISTORICAL_FUNDING_SCHEMA_VERSION,
         "historical_funding_timeline": metrics["historical_funding_timeline"],
@@ -1286,6 +1325,20 @@ def evaluate_quality_gate(
         abs_tol=1e-12,
     ):
         reasons.append("entry_spread_bps_mismatch")
+    entry_zone_atr_fraction = finite_or_none(
+        entry_execution_model.get("entry_zone_atr_fraction")
+        if isinstance(entry_execution_model, dict)
+        else None
+    )
+    if entry_zone_atr_fraction is None or not 0.0 < entry_zone_atr_fraction <= 1.0:
+        reasons.append("missing_or_invalid_entry_zone_atr_fraction")
+    elif not math.isclose(
+        entry_zone_atr_fraction,
+        settings.entry_zone_atr_fraction,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        reasons.append("entry_zone_atr_fraction_mismatch")
 
     funding_timeline = metrics.get("historical_funding_timeline")
     funding_schema = funding_timeline.get("schema") if isinstance(funding_timeline, dict) else None
@@ -1386,6 +1439,9 @@ def evaluate_quality_gate(
         reasons.append("market_context_walk_forward_instability")
 
     drift_reference = metrics.get("production_drift_reference")
+    selected_calibration_rows = 0
+    selected_calibration_log_loss: float | None = None
+    selected_calibration_brier: float | None = None
     try:
         validated_drift_reference = validate_production_drift_reference(drift_reference)
     except (TypeError, ValueError):
@@ -1396,12 +1452,31 @@ def evaluate_quality_gate(
         and validated_drift_reference.get("schema") != PRODUCTION_DRIFT_REFERENCE_SCHEMA
     ):
         reasons.append("invalid_production_drift_reference_schema")
-    if (
-        validated_drift_reference is not None
-        and (validated_drift_reference.get("calibration") or {}).get("schema")
-        != PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA
-    ):
-        reasons.append("invalid_production_drift_calibration_cohort")
+    if validated_drift_reference is not None:
+        reference_rows = validated_drift_reference.get("rows")
+        if isinstance(reference_rows, bool) or not isinstance(reference_rows, int) or reference_rows != rows:
+            reasons.append("production_drift_reference_rows_mismatch")
+        selected_calibration = validated_drift_reference.get("calibration") or {}
+        if selected_calibration.get("schema") != PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA:
+            reasons.append("invalid_production_drift_calibration_cohort")
+        else:
+            raw_selected_rows = selected_calibration.get("rows")
+            if isinstance(raw_selected_rows, bool) or not isinstance(raw_selected_rows, int):
+                reasons.append("invalid_policy_selected_calibration_rows")
+            else:
+                selected_calibration_rows = raw_selected_rows
+            selected_calibration_log_loss = finite_or_none(selected_calibration.get("log_loss"))
+            selected_calibration_brier = finite_or_none(
+                selected_calibration.get("multiclass_brier")
+            )
+            if selected_calibration_log_loss is None:
+                reasons.append("missing_or_non_finite_policy_selected_log_loss")
+            elif selected_calibration_log_loss > settings.auto_train_max_log_loss:
+                reasons.append("policy_selected_log_loss_above_limit")
+            if selected_calibration_brier is None:
+                reasons.append("missing_or_non_finite_policy_selected_multiclass_brier")
+            elif selected_calibration_brier > settings.auto_train_max_multiclass_brier:
+                reasons.append("policy_selected_multiclass_brier_above_limit")
 
     margin_path = metrics.get("intrahorizon_margin_path")
     margin_schema = margin_path.get("schema") if isinstance(margin_path, dict) else None
@@ -1578,7 +1653,78 @@ def evaluate_quality_gate(
     else:
         min_class_fraction = min(distribution_values)
     policy_candidates = nonnegative_int_metric("policy_candidates")
+    if rows % 2 != 0 or policy_candidates * 2 != rows:
+        reasons.append("policy_candidate_count_does_not_match_directional_holdout_rows")
+    if selected_calibration_rows != policy_candidates:
+        reasons.append("policy_selected_calibration_rows_mismatch")
     policy_trades = nonnegative_int_metric("policy_trades")
+    symbol_robustness: dict[str, object] | None = None
+    try:
+        symbol_robustness = validate_policy_symbol_robustness(
+            metrics.get("policy_symbol_robustness"),
+            policy_trades=policy_trades,
+        )
+    except (TypeError, ValueError):
+        reasons.append("invalid_policy_symbol_robustness")
+    if symbol_robustness is not None and policy_trades > 0:
+        symbol_count = int(symbol_robustness["symbol_count"])
+        leave_one_out_min = float(symbol_robustness["leave_one_symbol_out_mean_r_min"])
+        if symbol_count < 2:
+            reasons.append("policy_symbol_count_below_minimum")
+        if leave_one_out_min <= settings.auto_train_min_policy_realized_mean_r:
+            reasons.append("policy_symbol_leave_one_out_mean_r_not_above_minimum")
+
+    cluster_robustness: dict[str, object] | None = None
+    try:
+        cluster_robustness = validate_policy_cluster_robustness(
+            metrics.get("policy_cluster_robustness"),
+            policy_trades=policy_trades,
+        )
+    except (TypeError, ValueError):
+        reasons.append("invalid_policy_cluster_robustness")
+    if cluster_robustness is not None and policy_trades > 0:
+        cluster_count = int(cluster_robustness["cluster_count"])
+        cluster_leave_one_out_min = float(
+            cluster_robustness["leave_one_cluster_out_mean_r_min"]
+        )
+        if cluster_count < 2:
+            reasons.append("policy_cluster_count_below_minimum")
+        if cluster_leave_one_out_min <= settings.auto_train_min_policy_realized_mean_r:
+            reasons.append("policy_cluster_leave_one_out_mean_r_not_above_minimum")
+
+    if symbol_robustness is not None and cluster_robustness is not None:
+        symbol_evidence_names = {
+            str(item["symbol"]) for item in symbol_robustness["symbols"]
+        }
+        cluster_evidence_names = {
+            str(symbol)
+            for cluster in cluster_robustness["clusters"]
+            for symbol in cluster["symbols"]
+        }
+        if symbol_evidence_names != cluster_evidence_names:
+            reasons.append("policy_cluster_symbol_set_mismatch")
+
+    actionable_calibration_schema = metrics.get("policy_actionable_calibration_schema")
+    actionable_calibration_rows = nonnegative_int_metric("policy_actionable_calibration_rows")
+    actionable_calibration_log_loss = finite_or_none(metrics.get("policy_actionable_log_loss"))
+    actionable_calibration_brier = finite_or_none(
+        metrics.get("policy_actionable_multiclass_brier")
+    )
+    if actionable_calibration_schema != POLICY_ACTIONABLE_CALIBRATION_SCHEMA:
+        reasons.append("invalid_policy_actionable_calibration_schema")
+    if actionable_calibration_rows != policy_trades:
+        reasons.append("policy_actionable_calibration_rows_mismatch")
+    if policy_trades > 0:
+        if actionable_calibration_log_loss is None or actionable_calibration_log_loss < 0.0:
+            reasons.append("missing_or_non_finite_policy_actionable_log_loss")
+        elif actionable_calibration_log_loss > settings.auto_train_max_log_loss:
+            reasons.append("policy_actionable_log_loss_above_limit")
+        if actionable_calibration_brier is None or actionable_calibration_brier < 0.0:
+            reasons.append("missing_or_non_finite_policy_actionable_multiclass_brier")
+        elif actionable_calibration_brier > settings.auto_train_max_multiclass_brier:
+            reasons.append("policy_actionable_multiclass_brier_above_limit")
+    elif actionable_calibration_log_loss is not None or actionable_calibration_brier is not None:
+        reasons.append("nonempty_policy_actionable_calibration_without_trades")
     if policy_liquidation_events > policy_trades:
         reasons.append("policy_liquidation_events_exceed_trades")
     if (
@@ -1624,6 +1770,134 @@ def evaluate_quality_gate(
         reasons.append("inconsistent_policy_no_trade_cohorts")
     if policy_candidates > 0 and policy_cohorts == 0:
         reasons.append("missing_policy_opportunity_cohorts")
+
+    direction_robustness: dict[str, object] | None = None
+    try:
+        direction_robustness = validate_policy_direction_robustness(
+            metrics.get("policy_direction_robustness"),
+            policy_trades=policy_trades,
+            policy_cohorts=policy_cohorts,
+        )
+    except (TypeError, ValueError):
+        reasons.append("invalid_policy_direction_robustness")
+    if direction_robustness is not None and policy_trades > 0:
+        for direction in direction_robustness["directions"]:
+            direction_trades = int(direction["trades"])
+            if direction_trades == 0:
+                continue
+            if direction_trades < POLICY_DIRECTION_MIN_TRADES:
+                reasons.append("policy_direction_trade_count_below_minimum")
+            if float(direction["realized_mean_r"]) <= settings.auto_train_min_policy_realized_mean_r:
+                reasons.append("policy_direction_realized_mean_r_not_above_minimum")
+            if float(direction["log_loss"]) > settings.auto_train_max_log_loss:
+                reasons.append("policy_direction_log_loss_above_limit")
+            if float(direction["multiclass_brier"]) > settings.auto_train_max_multiclass_brier:
+                reasons.append("policy_direction_multiclass_brier_above_limit")
+
+    regime_robustness: dict[str, object] | None = None
+    try:
+        regime_robustness = validate_policy_regime_robustness(
+            metrics.get("policy_regime_robustness"),
+            policy_trades=policy_trades,
+            policy_cohorts=policy_cohorts,
+        )
+    except (TypeError, ValueError):
+        reasons.append("invalid_policy_regime_robustness")
+    if regime_robustness is not None and policy_trades > 0:
+        for regime in regime_robustness["regimes"]:
+            regime_trades = int(regime["trades"])
+            if regime_trades == 0:
+                continue
+            if regime_trades < POLICY_REGIME_MIN_TRADES:
+                reasons.append("policy_regime_trade_count_below_minimum")
+            if float(regime["realized_mean_r"]) <= settings.auto_train_min_policy_realized_mean_r:
+                reasons.append("policy_regime_realized_mean_r_not_above_minimum")
+            if float(regime["log_loss"]) > settings.auto_train_max_log_loss:
+                reasons.append("policy_regime_log_loss_above_limit")
+            if float(regime["multiclass_brier"]) > settings.auto_train_max_multiclass_brier:
+                reasons.append("policy_regime_multiclass_brier_above_limit")
+
+    interaction_robustness: dict[str, object] | None = None
+    try:
+        interaction_robustness = validate_policy_interaction_robustness(
+            metrics.get("policy_interaction_robustness"),
+            policy_trades=policy_trades,
+        )
+    except (TypeError, ValueError):
+        reasons.append("invalid_policy_interaction_robustness")
+    if interaction_robustness is not None and policy_trades > 0:
+        for cell in interaction_robustness["cells"]:
+            if cell["support"] != "SUPPORTED":
+                continue
+            if float(cell["realized_trade_mean_r"]) <= settings.auto_train_min_policy_realized_mean_r:
+                reasons.append("policy_interaction_cell_realized_mean_r_not_above_minimum")
+            if float(cell["log_loss"]) > settings.auto_train_max_log_loss:
+                reasons.append("policy_interaction_cell_log_loss_above_limit")
+            if float(cell["multiclass_brier"]) > settings.auto_train_max_multiclass_brier:
+                reasons.append("policy_interaction_cell_multiclass_brier_above_limit")
+        sparse_pool = interaction_robustness.get("sparse_pool")
+        if isinstance(sparse_pool, dict):
+            if int(sparse_pool["trades"]) < POLICY_INTERACTION_MIN_TRADES:
+                reasons.append("policy_interaction_sparse_pool_trade_count_below_minimum")
+            if float(sparse_pool["realized_trade_mean_r"]) <= settings.auto_train_min_policy_realized_mean_r:
+                reasons.append("policy_interaction_sparse_pool_realized_mean_r_not_above_minimum")
+            if float(sparse_pool["log_loss"]) > settings.auto_train_max_log_loss:
+                reasons.append("policy_interaction_sparse_pool_log_loss_above_limit")
+            if float(sparse_pool["multiclass_brier"]) > settings.auto_train_max_multiclass_brier:
+                reasons.append("policy_interaction_sparse_pool_multiclass_brier_above_limit")
+            for residual in sparse_pool["leave_one_cell_out"]:
+                residual_trades = int(residual["residual_trades"])
+                if residual_trades < POLICY_INTERACTION_MIN_TRADES:
+                    reasons.append(
+                        "policy_interaction_sparse_leave_one_cell_out_trade_count_below_minimum"
+                    )
+                    continue
+                if (
+                    float(residual["residual_realized_trade_mean_r"])
+                    <= settings.auto_train_min_policy_realized_mean_r
+                ):
+                    reasons.append(
+                        "policy_interaction_sparse_leave_one_cell_out_realized_mean_r_not_above_minimum"
+                    )
+                if float(residual["log_loss"]) > settings.auto_train_max_log_loss:
+                    reasons.append(
+                        "policy_interaction_sparse_leave_one_cell_out_log_loss_above_limit"
+                    )
+                if (
+                    float(residual["multiclass_brier"])
+                    > settings.auto_train_max_multiclass_brier
+                ):
+                    reasons.append(
+                        "policy_interaction_sparse_leave_one_cell_out_multiclass_brier_above_limit"
+                    )
+
+    if interaction_robustness is not None:
+        interaction_symbols = {str(item["symbol"]) for item in interaction_robustness["cells"]}
+        interaction_directions = {
+            str(item["direction"]) for item in interaction_robustness["cells"]
+        }
+        interaction_regimes = {str(item["regime"]) for item in interaction_robustness["cells"]}
+        if symbol_robustness is not None:
+            expected_symbols = {str(item["symbol"]) for item in symbol_robustness["symbols"]}
+            if interaction_symbols != expected_symbols:
+                reasons.append("policy_interaction_symbol_set_mismatch")
+        if direction_robustness is not None:
+            expected_directions = {
+                str(item["direction"])
+                for item in direction_robustness["directions"]
+                if int(item["trades"]) > 0
+            }
+            if interaction_directions != expected_directions:
+                reasons.append("policy_interaction_direction_set_mismatch")
+        if regime_robustness is not None:
+            expected_regimes = {
+                str(item["regime"])
+                for item in regime_robustness["regimes"]
+                if int(item["trades"]) > 0
+            }
+            if interaction_regimes != expected_regimes:
+                reasons.append("policy_interaction_regime_set_mismatch")
+
     policy_independent_cohorts = nonnegative_int_metric("policy_independent_cohorts")
     policy_horizon_phase_count = nonnegative_int_metric("policy_horizon_phase_count")
     policy_horizon_phase_expected = nonnegative_int_metric("policy_horizon_phase_expected")
@@ -1936,6 +2210,8 @@ def evaluate_quality_gate(
             "expected_entry_execution_model_schema": ENTRY_EXECUTION_MODEL_SCHEMA,
             "entry_spread_bps": entry_spread_bps,
             "configured_entry_spread_bps": settings.model_entry_spread_bps,
+            "entry_zone_atr_fraction": entry_zone_atr_fraction,
+            "configured_entry_zone_atr_fraction": settings.entry_zone_atr_fraction,
             "intrahorizon_margin_schema": margin_schema,
             "expected_intrahorizon_margin_schema": INTRAHORIZON_MARGIN_SCHEMA_VERSION,
             "intrahorizon_margin_status": margin_status,
@@ -1984,6 +2260,184 @@ def evaluate_quality_gate(
             "min_policy_trades": settings.auto_train_min_policy_trades,
             "min_policy_cohorts": settings.auto_train_min_policy_cohorts,
             "policy_realized_mean_r": policy_mean_r,
+            "policy_actionable_calibration_schema": actionable_calibration_schema,
+            "policy_actionable_calibration_rows": actionable_calibration_rows,
+            "policy_actionable_log_loss": actionable_calibration_log_loss,
+            "policy_actionable_multiclass_brier": actionable_calibration_brier,
+            "policy_symbol_robustness_schema": (
+                symbol_robustness.get("schema") if symbol_robustness is not None else None
+            ),
+            "expected_policy_symbol_robustness_schema": POLICY_SYMBOL_ROBUSTNESS_SCHEMA,
+            "policy_symbol_count": (
+                symbol_robustness.get("symbol_count") if symbol_robustness is not None else None
+            ),
+            "policy_max_symbol_trade_fraction": (
+                symbol_robustness.get("max_symbol_trade_fraction")
+                if symbol_robustness is not None
+                else None
+            ),
+            "policy_leave_one_symbol_out_mean_r_min": (
+                symbol_robustness.get("leave_one_symbol_out_mean_r_min")
+                if symbol_robustness is not None
+                else None
+            ),
+            "policy_cluster_robustness_schema": (
+                cluster_robustness.get("schema") if cluster_robustness is not None else None
+            ),
+            "expected_policy_cluster_robustness_schema": POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
+            "policy_cluster_count": (
+                cluster_robustness.get("cluster_count")
+                if cluster_robustness is not None
+                else None
+            ),
+            "policy_max_cluster_trade_fraction": (
+                cluster_robustness.get("max_cluster_trade_fraction")
+                if cluster_robustness is not None
+                else None
+            ),
+            "policy_leave_one_cluster_out_mean_r_min": (
+                cluster_robustness.get("leave_one_cluster_out_mean_r_min")
+                if cluster_robustness is not None
+                else None
+            ),
+            "policy_direction_robustness_schema": (
+                direction_robustness.get("schema") if direction_robustness is not None else None
+            ),
+            "expected_policy_direction_robustness_schema": POLICY_DIRECTION_ROBUSTNESS_SCHEMA,
+            "policy_traded_direction_count": (
+                direction_robustness.get("traded_direction_count")
+                if direction_robustness is not None
+                else None
+            ),
+            "policy_worst_traded_direction_mean_r": (
+                direction_robustness.get("worst_traded_direction_mean_r")
+                if direction_robustness is not None
+                else None
+            ),
+            "policy_worst_traded_direction_log_loss": (
+                direction_robustness.get("worst_traded_direction_log_loss")
+                if direction_robustness is not None
+                else None
+            ),
+            "policy_worst_traded_direction_multiclass_brier": (
+                direction_robustness.get("worst_traded_direction_multiclass_brier")
+                if direction_robustness is not None
+                else None
+            ),
+            "min_policy_direction_trades": POLICY_DIRECTION_MIN_TRADES,
+            "policy_regime_robustness_schema": (
+                regime_robustness.get("schema") if regime_robustness is not None else None
+            ),
+            "expected_policy_regime_robustness_schema": POLICY_REGIME_ROBUSTNESS_SCHEMA,
+            "policy_regime_count": (
+                regime_robustness.get("regime_count") if regime_robustness is not None else None
+            ),
+            "policy_traded_regime_count": (
+                regime_robustness.get("traded_regime_count")
+                if regime_robustness is not None
+                else None
+            ),
+            "policy_worst_traded_regime_mean_r": (
+                regime_robustness.get("worst_traded_regime_mean_r")
+                if regime_robustness is not None
+                else None
+            ),
+            "policy_worst_traded_regime_log_loss": (
+                regime_robustness.get("worst_traded_regime_log_loss")
+                if regime_robustness is not None
+                else None
+            ),
+            "policy_worst_traded_regime_multiclass_brier": (
+                regime_robustness.get("worst_traded_regime_multiclass_brier")
+                if regime_robustness is not None
+                else None
+            ),
+            "min_policy_regime_trades": POLICY_REGIME_MIN_TRADES,
+            "policy_interaction_robustness_schema": (
+                interaction_robustness.get("schema")
+                if interaction_robustness is not None
+                else None
+            ),
+            "expected_policy_interaction_robustness_schema": (
+                POLICY_INTERACTION_ROBUSTNESS_SCHEMA
+            ),
+            "policy_interaction_observed_cell_count": (
+                interaction_robustness.get("observed_cell_count")
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_supported_cell_count": (
+                interaction_robustness.get("supported_cell_count")
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_sparse_cell_count": (
+                interaction_robustness.get("sparse_cell_count")
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_sparse_trade_count": (
+                interaction_robustness.get("sparse_trade_count")
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_sparse_jackknife_schema": (
+                (interaction_robustness.get("sparse_pool") or {}).get("jackknife_schema")
+                if interaction_robustness is not None
+                else None
+            ),
+            "expected_policy_interaction_sparse_jackknife_schema": (
+                POLICY_INTERACTION_SPARSE_JACKKNIFE_SCHEMA
+            ),
+            "policy_interaction_sparse_jackknife_minimum_residual_trades": (
+                (interaction_robustness.get("sparse_pool") or {}).get(
+                    "minimum_leave_one_cell_out_residual_trades"
+                )
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_sparse_jackknife_worst_mean_r": (
+                (interaction_robustness.get("sparse_pool") or {}).get(
+                    "worst_leave_one_cell_out_mean_r"
+                )
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_sparse_jackknife_worst_log_loss": (
+                (interaction_robustness.get("sparse_pool") or {}).get(
+                    "worst_leave_one_cell_out_log_loss"
+                )
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_sparse_jackknife_worst_multiclass_brier": (
+                (interaction_robustness.get("sparse_pool") or {}).get(
+                    "worst_leave_one_cell_out_multiclass_brier"
+                )
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_tested_bucket_count": (
+                interaction_robustness.get("tested_bucket_count")
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_worst_tested_bucket_mean_r": (
+                interaction_robustness.get("worst_tested_bucket_mean_r")
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_worst_tested_bucket_log_loss": (
+                interaction_robustness.get("worst_tested_bucket_log_loss")
+                if interaction_robustness is not None
+                else None
+            ),
+            "policy_interaction_worst_tested_bucket_multiclass_brier": (
+                interaction_robustness.get("worst_tested_bucket_multiclass_brier")
+                if interaction_robustness is not None
+                else None
+            ),
+            "min_policy_interaction_trades": POLICY_INTERACTION_MIN_TRADES,
             "min_policy_realized_mean_r": settings.auto_train_min_policy_realized_mean_r,
             "policy_independent_mean_r": policy_independent_mean_r,
             "policy_mean_r_lcb": policy_mean_r_lcb,

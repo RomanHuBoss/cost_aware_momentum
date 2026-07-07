@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -49,12 +50,30 @@ MODEL_FEATURE_SCHEMA_VERSION = "hourly-barrier-market-context-v5"
 MARKET_CONTEXT_ABLATION_SCHEMA_VERSION = "same-split-zeroed-context-v1"
 HOURLY_CONTINUITY_SCHEMA = "strict-hourly-v1"
 LABEL_PATH_SCHEMA_VERSION = "decision-open-directional-spread-entry-ohlc-path-v3"
-ENTRY_EXECUTION_MODEL_SCHEMA = "directional-half-spread-on-next-hour-open-v1"
+ENTRY_EXECUTION_MODEL_SCHEMA = "decision-close-zone-next-hour-open-directional-half-spread-v2"
 TEMPORAL_SPLIT_SCHEMA_VERSION = "final-holdout-plus-expanding-walk-forward-v4"
 WALK_FORWARD_SCHEMA_VERSION = "expanding-train-rolling-calibration-purged-v1"
 DEFAULT_WALK_FORWARD_FOLDS = 3
 MIN_WALK_FORWARD_POSITIVE_FRACTION = 2.0 / 3.0
-POLICY_METRIC_SCHEMA = "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v17"
+POLICY_METRIC_SCHEMA = "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25"
+POLICY_ACTIONABLE_CALIBRATION_SCHEMA = "actionable-policy-trades-final-holdout-v1"
+POLICY_DIRECTION_ROBUSTNESS_SCHEMA = "actionable-policy-direction-opportunity-cohort-v1"
+POLICY_DIRECTION_MIN_TRADES = 5
+POLICY_DIRECTIONS = ("LONG", "SHORT")
+POLICY_INTERACTION_ROBUSTNESS_SCHEMA = "symbol-direction-regime-supported-cells-sparse-pool-jackknife-v2"
+POLICY_INTERACTION_SPARSE_JACKKNIFE_SCHEMA = "leave-one-sparse-interaction-cell-out-v1"
+POLICY_INTERACTION_MIN_TRADES = 5
+POLICY_SYMBOL_ROBUSTNESS_SCHEMA = "leave-one-symbol-out-opportunity-cohort-v1"
+POLICY_CLUSTER_ROBUSTNESS_SCHEMA = (
+    "absolute-correlation-components-leave-one-cluster-out-opportunity-cohort-v1"
+)
+POLICY_CLUSTER_CORRELATION_THRESHOLD = 0.70
+POLICY_CLUSTER_MIN_SHARED_ACTIVE_OBSERVATIONS = 8
+POLICY_REGIME_ROBUSTNESS_SCHEMA = "decision-time-development-quantile-market-regimes-v1"
+POLICY_REGIME_VOLATILITY_QUANTILE = 0.75
+POLICY_REGIME_TREND_SCORE_THRESHOLD = 1.0
+POLICY_REGIME_MIN_TRADES = 5
+POLICY_REGIME_NAMES = ("DOWNTREND", "RANGE", "UPTREND", "HIGH_VOLATILITY")
 POLICY_UNCERTAINTY_SCHEMA = "observed-opportunity-zero-return-all-horizon-phases-circular-moving-block-v3"
 HOUR_NS = 3_600_000_000_000
 TIMEOUT_RETURN_SCHEMA_VERSION = "training-direction-median-r-v1"
@@ -405,6 +424,7 @@ def make_barrier_dataset(
     stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
     tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
     entry_spread_bps: float = 0.0,
+    entry_zone_atr_fraction: float = 0.12,
     funding_history: pd.DataFrame | None = None,
     funding_interval_minutes: dict[str, int] | None = None,
     funding_interval_history: pd.DataFrame | None = None,
@@ -444,6 +464,15 @@ def make_barrier_dataset(
         raise ValueError("entry_spread_bps must be non-negative and finite") from exc
     if not np.isfinite(parsed_entry_spread_bps) or parsed_entry_spread_bps < 0:
         raise ValueError("entry_spread_bps must be non-negative and finite")
+    try:
+        parsed_entry_zone_atr_fraction = float(entry_zone_atr_fraction)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("entry_zone_atr_fraction must be finite and in (0, 1]") from exc
+    if (
+        not np.isfinite(parsed_entry_zone_atr_fraction)
+        or not 0.0 < parsed_entry_zone_atr_fraction <= 1.0
+    ):
+        raise ValueError("entry_zone_atr_fraction must be finite and in (0, 1]")
     funding_timeline: HistoricalFundingTimeline | None = None
     if funding_history is not None:
         funding_timeline = HistoricalFundingTimeline(
@@ -558,6 +587,7 @@ def make_barrier_dataset(
         "skipped_feature_gap_timestamps": 0,
         "skipped_label_gap_timestamps": 0,
         "skipped_invalid_label_bar_timestamps": 0,
+        "skipped_entry_zone_timestamps": 0,
         "skipped_incomplete_direction_pair_timestamps": 0,
         "skipped_incomplete_funding_timeline_timestamps": 0,
         "skipped_incomplete_mark_timeline_timestamps": 0,
@@ -649,14 +679,30 @@ def make_barrier_dataset(
             # apply half of a configured full-spread stress in the adverse
             # direction instead of centering both labels on one frictionless open.
             entry_mid_proxy = float(future.iloc[0]["open"])
+            decision_entry_anchor = float(current.get("close", np.nan))
             half_spread_rate = parsed_entry_spread_bps / 20000.0
             atr_pct = float(current.get("atr_pct_14", np.nan))
             if (
                 not np.isfinite(entry_mid_proxy)
                 or entry_mid_proxy <= 0
+                or not np.isfinite(decision_entry_anchor)
+                or decision_entry_anchor <= 0
                 or not np.isfinite(atr_pct)
                 or atr_pct <= 0
             ):
+                continue
+            entry_zone_half = (
+                decision_entry_anchor * atr_pct * parsed_entry_zone_atr_fraction
+            )
+            entry_zone_low = decision_entry_anchor - entry_zone_half
+            entry_zone_high = decision_entry_anchor + entry_zone_half
+            stressed_long_entry = entry_mid_proxy * (1.0 + half_spread_rate)
+            stressed_short_entry = entry_mid_proxy * (1.0 - half_spread_rate)
+            if not (
+                entry_zone_low <= stressed_long_entry <= entry_zone_high
+                and entry_zone_low <= stressed_short_entry <= entry_zone_high
+            ):
+                diagnostics["skipped_entry_zone_timestamps"] += 1
                 continue
             label_end_time = future.iloc[-1]["close_time"]
 
@@ -867,6 +913,10 @@ def make_barrier_dataset(
                         "symbol": symbol,
                         "direction": direction,
                         "entry_mid_proxy": float(entry_mid_proxy),
+                        "decision_entry_anchor": float(decision_entry_anchor),
+                        "entry_zone_low": float(entry_zone_low),
+                        "entry_zone_high": float(entry_zone_high),
+                        "entry_zone_atr_fraction": parsed_entry_zone_atr_fraction,
                         "entry_price": float(entry),
                         "entry_spread_bps": parsed_entry_spread_bps,
                         "entry_price_source": "next_hour_open_directional_half_spread_stress",
@@ -921,9 +971,12 @@ def make_barrier_dataset(
     dataset.attrs["entry_execution_model"] = {
         "schema": ENTRY_EXECUTION_MODEL_SCHEMA,
         "entry_spread_bps": parsed_entry_spread_bps,
+        "entry_zone_atr_fraction": parsed_entry_zone_atr_fraction,
+        "decision_anchor_source": "confirmed_decision_candle_close",
+        "entry_price_source": "next_hour_open_directional_half_spread_stress",
         "residual_limitations": [
             "historical_bid_ask_unavailable",
-            "operator_latency_unmodeled",
+            "operator_latency_within_zone_unmodeled",
             "historical_depth_and_partial_fill_unmodeled",
         ],
     }
@@ -1219,8 +1272,15 @@ def _dataset_split_from_frames(
         "barrier_upside_rate",
         "barrier_downside_rate",
     ]
-    if "entry_price" in test.columns:
-        meta_columns.insert(5, "entry_price")
+    for entry_column in (
+        "entry_price",
+        "decision_entry_anchor",
+        "entry_zone_low",
+        "entry_zone_high",
+        "entry_zone_atr_fraction",
+    ):
+        if entry_column in test.columns:
+            meta_columns.insert(5, entry_column)
     for column in POLICY_PATH_METADATA_COLUMNS:
         present = [column in frame.columns for frame in (train, cal, test)]
         if any(present) and not all(present):
@@ -1413,6 +1473,29 @@ def _ordered_multiclass_log_loss(y_true: np.ndarray, probabilities: np.ndarray, 
     return float(-np.mean(np.log(np.clip(true_probabilities, epsilon, 1.0))))
 
 
+def _policy_calibration_metrics(frame: pd.DataFrame, *, context: str) -> dict[str, float | int | None]:
+    required = {"target", "p_tp", "p_sl", "p_timeout"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"{context} is missing calibration columns: {missing}")
+    if frame.empty:
+        return {"rows": 0, "log_loss": None, "multiclass_brier": None}
+
+    outcomes = frame["target"].astype(str).to_numpy()
+    if not np.isin(outcomes, OUTCOME_CLASSES).all():
+        raise ValueError(f"{context} target contains an unsupported outcome")
+    probabilities = frame[["p_tp", "p_sl", "p_timeout"]].to_numpy(float)
+    log_loss = _ordered_multiclass_log_loss(outcomes, probabilities, OUTCOME_CLASSES)
+    class_to_index = {label: index for index, label in enumerate(OUTCOME_CLASSES)}
+    indexes = np.asarray([class_to_index[label] for label in outcomes], dtype=int)
+    one_hot = np.eye(len(OUTCOME_CLASSES), dtype=float)[indexes]
+    return {
+        "rows": int(len(frame)),
+        "log_loss": float(log_loss),
+        "multiclass_brier": float(np.mean(np.sum((probabilities - one_hot) ** 2, axis=1))),
+    }
+
+
 def _class_prior_probabilities(y_train: np.ndarray, classes: np.ndarray, rows: int) -> np.ndarray:
     labels = np.asarray(classes, dtype=str)
     targets = np.asarray(y_train, dtype=str)
@@ -1520,6 +1603,1789 @@ def _policy_mean_r_bootstrap(
     bootstrap_means = resampled.mean(axis=1)
     lower_bound = float(np.quantile(bootstrap_means, 1.0 - confidence_level))
     return float(values.mean()), lower_bound, block_length
+
+
+
+
+def _policy_direction_robustness(
+    trades: pd.DataFrame,
+    opportunity_times: pd.DatetimeIndex,
+) -> dict[str, object]:
+    """Evaluate exact actionable economics and calibration by selected direction.
+
+    Each direction is recomputed on the complete observed opportunity clock. Hours
+    where that direction produced no accepted trade remain zero-return cohorts, so
+    a profitable opposite side cannot mask a systematically harmful LONG or SHORT
+    policy.
+    """
+
+    if opportunity_times.empty or opportunity_times.isna().any() or opportunity_times.has_duplicates:
+        raise ValueError("Policy direction robustness requires unique valid opportunity times")
+    required = {
+        "direction",
+        "decision_time",
+        "realized_r",
+        "target",
+        "p_tp",
+        "p_sl",
+        "p_timeout",
+    }
+    missing = sorted(required - set(trades.columns))
+    if missing:
+        raise ValueError(f"Policy direction robustness is missing trade columns: {missing}")
+    frame = trades.copy()
+    frame["direction"] = frame["direction"].astype(str).str.strip().str.upper()
+    frame["decision_time"] = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
+    frame["realized_r"] = pd.to_numeric(frame["realized_r"], errors="coerce")
+    if (
+        frame["decision_time"].isna().any()
+        or frame["realized_r"].isna().any()
+        or not np.isfinite(frame["realized_r"].to_numpy(float)).all()
+        or (~frame["direction"].isin(POLICY_DIRECTIONS)).any()
+        or not set(frame["decision_time"]).issubset(set(opportunity_times))
+    ):
+        raise ValueError("Policy direction trade evidence is invalid")
+
+    total_trades = int(len(frame))
+    entries: list[dict[str, object]] = []
+    for direction in POLICY_DIRECTIONS:
+        direction_trades = frame[frame["direction"].eq(direction)].copy()
+        trade_cohorts = (
+            int(direction_trades["decision_time"].nunique()) if len(direction_trades) else 0
+        )
+        if len(direction_trades):
+            cohort_returns = direction_trades.groupby("decision_time", sort=True)["realized_r"].mean()
+            realized_mean = float(cohort_returns.reindex(opportunity_times, fill_value=0.0).mean())
+        else:
+            realized_mean = 0.0
+        calibration = _policy_calibration_metrics(
+            direction_trades,
+            context=f"Policy actionable calibration for {direction}",
+        )
+        entries.append(
+            {
+                "direction": direction,
+                "opportunities": int(len(opportunity_times)),
+                "trade_cohorts": trade_cohorts,
+                "no_trade_cohorts": int(len(opportunity_times) - trade_cohorts),
+                "trades": int(len(direction_trades)),
+                "trade_fraction": (
+                    float(len(direction_trades) / total_trades) if total_trades else 0.0
+                ),
+                "realized_mean_r": realized_mean,
+                "calibration_rows": int(calibration["rows"]),
+                "log_loss": calibration["log_loss"],
+                "multiclass_brier": calibration["multiclass_brier"],
+            }
+        )
+    traded = [item for item in entries if int(item["trades"]) > 0]
+    return {
+        "schema": POLICY_DIRECTION_ROBUSTNESS_SCHEMA,
+        "minimum_trades_per_traded_direction": POLICY_DIRECTION_MIN_TRADES,
+        "opportunity_count": int(len(opportunity_times)),
+        "trade_count": total_trades,
+        "direction_count": len(entries),
+        "traded_direction_count": len(traded),
+        "worst_traded_direction_mean_r": (
+            float(min(item["realized_mean_r"] for item in traded)) if traded else None
+        ),
+        "worst_traded_direction_log_loss": (
+            float(max(item["log_loss"] for item in traded)) if traded else None
+        ),
+        "worst_traded_direction_multiclass_brier": (
+            float(max(item["multiclass_brier"] for item in traded)) if traded else None
+        ),
+        "directions": entries,
+    }
+
+
+def validate_policy_direction_robustness(
+    evidence: object,
+    *,
+    policy_trades: int,
+    policy_cohorts: int,
+) -> dict[str, object]:
+    """Validate immutable per-direction evidence and exact arithmetic."""
+
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (policy_trades, policy_cohorts)
+    ):
+        raise ValueError("Policy direction counts must be non-negative integers")
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("schema") != POLICY_DIRECTION_ROBUSTNESS_SCHEMA
+    ):
+        raise ValueError("Policy direction robustness evidence is required")
+    if evidence.get("minimum_trades_per_traded_direction") != POLICY_DIRECTION_MIN_TRADES:
+        raise ValueError("Policy direction minimum trade contract mismatch")
+    count_keys = ("opportunity_count", "trade_count", "direction_count", "traded_direction_count")
+    counts: dict[str, int] = {}
+    for key in count_keys:
+        raw = evidence.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise ValueError("Policy direction count evidence is invalid")
+        counts[key] = raw
+    if (
+        counts["opportunity_count"] != policy_cohorts
+        or counts["trade_count"] != policy_trades
+        or counts["direction_count"] != len(POLICY_DIRECTIONS)
+    ):
+        raise ValueError("Policy direction totals mismatch policy metrics")
+    raw_entries = evidence.get("directions")
+    if not isinstance(raw_entries, list) or len(raw_entries) != len(POLICY_DIRECTIONS):
+        raise ValueError("Policy direction entries are invalid")
+
+    normalized: list[dict[str, object]] = []
+    total_trades = traded_count = 0
+    for expected_direction, item in zip(POLICY_DIRECTIONS, raw_entries, strict=True):
+        if not isinstance(item, dict) or item.get("direction") != expected_direction:
+            raise ValueError("Policy direction entries are not in canonical order")
+        integers: dict[str, int] = {}
+        for key in (
+            "opportunities",
+            "trade_cohorts",
+            "no_trade_cohorts",
+            "trades",
+            "calibration_rows",
+        ):
+            raw = item.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                raise ValueError("Policy direction entry count is invalid")
+            integers[key] = raw
+        if integers["opportunities"] != policy_cohorts:
+            raise ValueError("Policy direction opportunity clock mismatch")
+        if integers["trade_cohorts"] > integers["opportunities"]:
+            raise ValueError("Policy direction trade cohorts exceed opportunities")
+        if integers["no_trade_cohorts"] != integers["opportunities"] - integers["trade_cohorts"]:
+            raise ValueError("Policy direction no-trade cohorts are inconsistent")
+        if integers["trade_cohorts"] > integers["trades"]:
+            raise ValueError("Policy direction trade cohorts exceed trades")
+        if integers["calibration_rows"] != integers["trades"]:
+            raise ValueError("Policy direction calibration rows mismatch trades")
+
+        raw_fraction = item.get("trade_fraction")
+        raw_mean = item.get("realized_mean_r")
+        if isinstance(raw_fraction, bool) or isinstance(raw_mean, bool):
+            raise ValueError("Policy direction metric is invalid")
+        try:
+            fraction = float(raw_fraction)
+            realized_mean = float(raw_mean)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy direction metric is invalid") from exc
+        expected_fraction = integers["trades"] / policy_trades if policy_trades else 0.0
+        if (
+            not math.isfinite(fraction)
+            or not math.isclose(fraction, expected_fraction, rel_tol=1e-9, abs_tol=1e-12)
+            or not math.isfinite(realized_mean)
+        ):
+            raise ValueError("Policy direction metric is inconsistent")
+
+        log_loss = item.get("log_loss")
+        brier = item.get("multiclass_brier")
+        if integers["trades"] > 0:
+            resolved_metrics: list[float] = []
+            for raw in (log_loss, brier):
+                if isinstance(raw, bool):
+                    raise ValueError("Policy direction calibration metric is invalid")
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("Policy direction calibration metric is invalid") from exc
+                if not math.isfinite(value) or value < 0.0:
+                    raise ValueError("Policy direction calibration metric is invalid")
+                resolved_metrics.append(value)
+            log_loss, brier = resolved_metrics
+            traded_count += 1
+        elif (
+            log_loss is not None
+            or brier is not None
+            or not math.isclose(realized_mean, 0.0, abs_tol=1e-12)
+        ):
+            raise ValueError("Non-traded policy direction contains non-empty outcomes")
+
+        total_trades += integers["trades"]
+        normalized.append(
+            {
+                "direction": expected_direction,
+                **integers,
+                "trade_fraction": fraction,
+                "realized_mean_r": realized_mean,
+                "log_loss": log_loss,
+                "multiclass_brier": brier,
+            }
+        )
+    if total_trades != policy_trades or traded_count != counts["traded_direction_count"]:
+        raise ValueError("Policy direction entry totals are inconsistent")
+
+    traded = [item for item in normalized if int(item["trades"]) > 0]
+    summaries = {
+        "worst_traded_direction_mean_r": min(
+            (float(item["realized_mean_r"]) for item in traded), default=None
+        ),
+        "worst_traded_direction_log_loss": max(
+            (float(item["log_loss"]) for item in traded), default=None
+        ),
+        "worst_traded_direction_multiclass_brier": max(
+            (float(item["multiclass_brier"]) for item in traded), default=None
+        ),
+    }
+    for key, expected in summaries.items():
+        raw = evidence.get(key)
+        if expected is None:
+            if raw is not None:
+                raise ValueError("Policy direction summary must be empty without trades")
+        else:
+            if isinstance(raw, bool):
+                raise ValueError("Policy direction summary is invalid")
+            try:
+                actual = float(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Policy direction summary is invalid") from exc
+            if (
+                not math.isfinite(actual)
+                or not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-12)
+            ):
+                raise ValueError("Policy direction summary is inconsistent")
+    return {
+        "schema": POLICY_DIRECTION_ROBUSTNESS_SCHEMA,
+        "minimum_trades_per_traded_direction": POLICY_DIRECTION_MIN_TRADES,
+        "opportunity_count": policy_cohorts,
+        "trade_count": policy_trades,
+        "direction_count": counts["direction_count"],
+        "traded_direction_count": counts["traded_direction_count"],
+        **summaries,
+        "directions": normalized,
+    }
+
+def _development_high_volatility_atr_pct_threshold(split: DatasetSplit) -> float:
+    """Derive the high-volatility cutoff from development data only."""
+
+    atr_index = MODEL_FEATURE_NAMES.index("atr_pct_14")
+    values = np.asarray(split.x_train, dtype=float)
+    if values.ndim != 2:
+        raise ValueError("Development feature matrix is invalid for regime classification")
+    if values.shape[1] != len(MODEL_FEATURE_NAMES):
+        if split.train_meta is not None:
+            raise ValueError("Development feature matrix is invalid for regime classification")
+        fallback_meta = split.test_meta
+        if "barrier_downside_rate" not in fallback_meta.columns:
+            raise ValueError("Development feature matrix is invalid for regime classification")
+        fallback = pd.to_numeric(
+            fallback_meta["barrier_downside_rate"], errors="coerce"
+        ).to_numpy(float) / DEFAULT_STOP_ATR_MULTIPLIER
+        if len(fallback) == 0 or not np.isfinite(fallback).all() or (fallback <= 0.0).any():
+            raise ValueError("Legacy policy fixture cannot derive a valid ATR regime reference")
+        return float(np.quantile(fallback, POLICY_REGIME_VOLATILITY_QUANTILE))
+    atr_values = values[:, atr_index]
+    valid_atr = len(atr_values) > 0 and np.isfinite(atr_values).all() and (atr_values > 0.0).all()
+    if not valid_atr:
+        if split.train_meta is not None:
+            raise ValueError("Development ATR percentages must be finite and positive")
+        fallback_meta = split.test_meta
+        if "barrier_downside_rate" not in fallback_meta.columns:
+            raise ValueError("Development ATR percentages must be finite and positive")
+        fallback = pd.to_numeric(fallback_meta["barrier_downside_rate"], errors="coerce").to_numpy(float)
+        fallback = fallback / DEFAULT_STOP_ATR_MULTIPLIER
+        if not np.isfinite(fallback).all() or (fallback <= 0.0).any():
+            raise ValueError("Legacy policy fixture cannot derive a valid ATR regime reference")
+        return float(np.quantile(fallback, POLICY_REGIME_VOLATILITY_QUANTILE))
+
+    if split.train_meta is not None and len(split.train_meta) == len(atr_values):
+        frame = split.train_meta.loc[:, ["decision_time", "symbol"]].copy()
+        frame["decision_time"] = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
+        frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+        frame["atr_pct_14"] = atr_values
+        if frame["decision_time"].isna().any() or (frame["symbol"] == "").any():
+            raise ValueError("Development regime metadata is invalid")
+        per_symbol = frame.groupby(["decision_time", "symbol"], sort=True)["atr_pct_14"].agg(
+            ["min", "max"]
+        )
+        if not np.allclose(per_symbol["min"], per_symbol["max"], rtol=1e-10, atol=1e-12):
+            raise ValueError("Directional development rows disagree on ATR regime feature")
+        reference = per_symbol["min"].groupby(level="decision_time", sort=True).median().to_numpy(float)
+    else:
+        reference = atr_values
+    threshold = float(np.quantile(reference, POLICY_REGIME_VOLATILITY_QUANTILE))
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        raise ValueError("Development high-volatility threshold is invalid")
+    return threshold
+
+
+def _policy_market_regime_frame(
+    *,
+    selected: pd.DataFrame,
+    opportunity_times: pd.DatetimeIndex,
+    development_high_volatility_atr_pct_threshold: float,
+) -> pd.DataFrame:
+    """Return one ex-ante market regime for every observed decision time."""
+
+    threshold = float(development_high_volatility_atr_pct_threshold)
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        raise ValueError("Policy regime volatility threshold must be finite and positive")
+    if opportunity_times.empty or opportunity_times.isna().any() or opportunity_times.has_duplicates:
+        raise ValueError("Policy regime robustness requires unique valid opportunity times")
+    required_selected = {"decision_time", "regime_ret_24h", "regime_atr_pct_14"}
+    missing_selected = sorted(required_selected - set(selected.columns))
+    if missing_selected:
+        raise ValueError(f"Policy regime robustness is missing opportunity columns: {missing_selected}")
+    opportunities = selected.loc[:, sorted(required_selected)].copy()
+    opportunities["decision_time"] = pd.to_datetime(
+        opportunities["decision_time"], utc=True, errors="coerce"
+    )
+    opportunities["regime_ret_24h"] = pd.to_numeric(
+        opportunities["regime_ret_24h"], errors="coerce"
+    )
+    opportunities["regime_atr_pct_14"] = pd.to_numeric(
+        opportunities["regime_atr_pct_14"], errors="coerce"
+    )
+    if (
+        opportunities["decision_time"].isna().any()
+        or opportunities[["regime_ret_24h", "regime_atr_pct_14"]].isna().any().any()
+        or not np.isfinite(
+            opportunities[["regime_ret_24h", "regime_atr_pct_14"]].to_numpy(float)
+        ).all()
+        or (opportunities["regime_atr_pct_14"] <= 0.0).any()
+    ):
+        raise ValueError("Policy regime opportunity evidence is invalid")
+    market = opportunities.groupby("decision_time", sort=True).agg(
+        market_ret_24h=("regime_ret_24h", "median"),
+        market_atr_pct_14=("regime_atr_pct_14", "median"),
+    )
+    market = market.reindex(opportunity_times)
+    if market.isna().any().any():
+        raise ValueError("Policy regime opportunity clock does not match selected evidence")
+    trend_score = market["market_ret_24h"] / market["market_atr_pct_14"]
+    regime = pd.Series("RANGE", index=market.index, dtype="object")
+    regime.loc[trend_score >= POLICY_REGIME_TREND_SCORE_THRESHOLD] = "UPTREND"
+    regime.loc[trend_score <= -POLICY_REGIME_TREND_SCORE_THRESHOLD] = "DOWNTREND"
+    regime.loc[market["market_atr_pct_14"] >= threshold] = "HIGH_VOLATILITY"
+    market["regime"] = regime
+    return market
+
+
+def _policy_regime_robustness(
+    *,
+    selected: pd.DataFrame,
+    trades: pd.DataFrame,
+    opportunity_times: pd.DatetimeIndex,
+    development_high_volatility_atr_pct_threshold: float,
+) -> dict[str, object]:
+    """Evaluate economics and calibration within ex-ante decision-time regimes."""
+
+    threshold = float(development_high_volatility_atr_pct_threshold)
+    market = _policy_market_regime_frame(
+        selected=selected,
+        opportunity_times=opportunity_times,
+        development_high_volatility_atr_pct_threshold=threshold,
+    )
+
+    required_trade = {"decision_time", "realized_r", "target", "p_tp", "p_sl", "p_timeout"}
+    missing_trade = sorted(required_trade - set(trades.columns))
+    if missing_trade:
+        raise ValueError(f"Policy regime robustness is missing trade columns: {missing_trade}")
+    trade_frame = trades.copy()
+    trade_frame["decision_time"] = pd.to_datetime(
+        trade_frame["decision_time"], utc=True, errors="coerce"
+    )
+    trade_frame["realized_r"] = pd.to_numeric(trade_frame["realized_r"], errors="coerce")
+    if (
+        trade_frame["decision_time"].isna().any()
+        or trade_frame["realized_r"].isna().any()
+        or not np.isfinite(trade_frame["realized_r"].to_numpy(float)).all()
+        or not set(trade_frame["decision_time"]).issubset(set(opportunity_times))
+    ):
+        raise ValueError("Policy regime trade evidence is invalid")
+    trade_frame = trade_frame.merge(
+        market[["regime"]], left_on="decision_time", right_index=True, how="left", validate="many_to_one"
+    )
+    if trade_frame["regime"].isna().any():
+        raise ValueError("Policy regime classification is missing for a trade")
+
+    total_trades = int(len(trade_frame))
+    entries: list[dict[str, object]] = []
+    for regime_name in POLICY_REGIME_NAMES:
+        regime_times = market.index[market["regime"].eq(regime_name)]
+        if len(regime_times) == 0:
+            continue
+        regime_trades = trade_frame[trade_frame["regime"].eq(regime_name)].copy()
+        trade_cohorts = int(regime_trades["decision_time"].nunique()) if len(regime_trades) else 0
+        if len(regime_trades):
+            cohort_returns = regime_trades.groupby("decision_time", sort=True)["realized_r"].mean()
+            realized_mean = float(cohort_returns.reindex(regime_times, fill_value=0.0).mean())
+        else:
+            realized_mean = 0.0
+        calibration = _policy_calibration_metrics(
+            regime_trades,
+            context=f"Policy actionable calibration for {regime_name}",
+        )
+        entries.append(
+            {
+                "regime": regime_name,
+                "opportunities": int(len(regime_times)),
+                "trade_cohorts": trade_cohorts,
+                "no_trade_cohorts": int(len(regime_times) - trade_cohorts),
+                "trades": int(len(regime_trades)),
+                "trade_fraction": float(len(regime_trades) / total_trades) if total_trades else 0.0,
+                "realized_mean_r": realized_mean,
+                "calibration_rows": int(calibration["rows"]),
+                "log_loss": calibration["log_loss"],
+                "multiclass_brier": calibration["multiclass_brier"],
+            }
+        )
+    traded = [item for item in entries if int(item["trades"]) > 0]
+    return {
+        "schema": POLICY_REGIME_ROBUSTNESS_SCHEMA,
+        "volatility_quantile": POLICY_REGIME_VOLATILITY_QUANTILE,
+        "development_high_volatility_atr_pct_threshold": threshold,
+        "trend_score_threshold": POLICY_REGIME_TREND_SCORE_THRESHOLD,
+        "minimum_trades_per_traded_regime": POLICY_REGIME_MIN_TRADES,
+        "opportunity_count": int(len(opportunity_times)),
+        "trade_count": total_trades,
+        "regime_count": len(entries),
+        "traded_regime_count": len(traded),
+        "worst_traded_regime_mean_r": (
+            float(min(item["realized_mean_r"] for item in traded)) if traded else None
+        ),
+        "worst_traded_regime_log_loss": (
+            float(max(item["log_loss"] for item in traded)) if traded else None
+        ),
+        "worst_traded_regime_multiclass_brier": (
+            float(max(item["multiclass_brier"] for item in traded)) if traded else None
+        ),
+        "regimes": entries,
+    }
+
+
+def validate_policy_regime_robustness(
+    evidence: object,
+    *,
+    policy_trades: int,
+    policy_cohorts: int,
+) -> dict[str, object]:
+    """Validate immutable regime evidence and all arithmetic relationships."""
+
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (policy_trades, policy_cohorts)):
+        raise ValueError("Policy regime counts must be non-negative integers")
+    if not isinstance(evidence, dict) or evidence.get("schema") != POLICY_REGIME_ROBUSTNESS_SCHEMA:
+        raise ValueError("Policy regime robustness evidence is required")
+    for key, expected in (
+        ("volatility_quantile", POLICY_REGIME_VOLATILITY_QUANTILE),
+        ("trend_score_threshold", POLICY_REGIME_TREND_SCORE_THRESHOLD),
+    ):
+        raw = evidence.get(key)
+        if isinstance(raw, bool):
+            raise ValueError("Policy regime parameter is invalid")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy regime parameter is invalid") from exc
+        if not math.isfinite(value) or not math.isclose(value, expected, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("Policy regime parameter mismatch")
+    raw_threshold = evidence.get("development_high_volatility_atr_pct_threshold")
+    try:
+        threshold = float(raw_threshold)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Policy regime volatility threshold is invalid") from exc
+    if isinstance(raw_threshold, bool) or not math.isfinite(threshold) or threshold <= 0.0:
+        raise ValueError("Policy regime volatility threshold is invalid")
+    if evidence.get("minimum_trades_per_traded_regime") != POLICY_REGIME_MIN_TRADES:
+        raise ValueError("Policy regime minimum trade contract mismatch")
+    count_keys = ("opportunity_count", "trade_count", "regime_count", "traded_regime_count")
+    counts: dict[str, int] = {}
+    for key in count_keys:
+        raw = evidence.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise ValueError("Policy regime count evidence is invalid")
+        counts[key] = raw
+    if counts["opportunity_count"] != policy_cohorts or counts["trade_count"] != policy_trades:
+        raise ValueError("Policy regime totals mismatch policy metrics")
+    raw_entries = evidence.get("regimes")
+    if not isinstance(raw_entries, list) or len(raw_entries) != counts["regime_count"]:
+        raise ValueError("Policy regime entries are invalid")
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    total_opportunities = total_trades = traded_count = 0
+    for item in raw_entries:
+        if not isinstance(item, dict):
+            raise ValueError("Policy regime entry is invalid")
+        regime_name = item.get("regime")
+        if regime_name not in POLICY_REGIME_NAMES or regime_name in seen:
+            raise ValueError("Policy regime name is invalid or duplicated")
+        seen.add(str(regime_name))
+        integers: dict[str, int] = {}
+        for key in ("opportunities", "trade_cohorts", "no_trade_cohorts", "trades", "calibration_rows"):
+            raw = item.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                raise ValueError("Policy regime entry count is invalid")
+            integers[key] = raw
+        if integers["opportunities"] <= 0:
+            raise ValueError("Policy regime must contain at least one opportunity")
+        if integers["trade_cohorts"] > integers["opportunities"]:
+            raise ValueError("Policy regime trade cohorts exceed opportunities")
+        if integers["no_trade_cohorts"] != integers["opportunities"] - integers["trade_cohorts"]:
+            raise ValueError("Policy regime no-trade cohorts are inconsistent")
+        if integers["trade_cohorts"] > integers["trades"]:
+            raise ValueError("Policy regime trade cohorts exceed trades")
+        if integers["calibration_rows"] != integers["trades"]:
+            raise ValueError("Policy regime calibration rows mismatch trades")
+        raw_fraction = item.get("trade_fraction")
+        raw_mean = item.get("realized_mean_r")
+        if isinstance(raw_fraction, bool) or isinstance(raw_mean, bool):
+            raise ValueError("Policy regime metric is invalid")
+        try:
+            fraction = float(raw_fraction)
+            realized_mean = float(raw_mean)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy regime metric is invalid") from exc
+        expected_fraction = integers["trades"] / policy_trades if policy_trades else 0.0
+        if (
+            not math.isfinite(fraction)
+            or not math.isclose(fraction, expected_fraction, rel_tol=1e-9, abs_tol=1e-12)
+            or not math.isfinite(realized_mean)
+        ):
+            raise ValueError("Policy regime metric is inconsistent")
+        log_loss = item.get("log_loss")
+        brier = item.get("multiclass_brier")
+        if integers["trades"] > 0:
+            resolved_metrics: list[float] = []
+            for raw in (log_loss, brier):
+                if isinstance(raw, bool):
+                    raise ValueError("Policy regime calibration metric is invalid")
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("Policy regime calibration metric is invalid") from exc
+                if not math.isfinite(value) or value < 0.0:
+                    raise ValueError("Policy regime calibration metric is invalid")
+                resolved_metrics.append(value)
+            log_loss, brier = resolved_metrics
+            traded_count += 1
+        else:
+            if log_loss is not None or brier is not None or not math.isclose(realized_mean, 0.0, abs_tol=1e-12):
+                raise ValueError("Non-traded policy regime contains non-empty outcomes")
+        total_opportunities += integers["opportunities"]
+        total_trades += integers["trades"]
+        normalized.append(
+            {
+                "regime": regime_name,
+                **integers,
+                "trade_fraction": fraction,
+                "realized_mean_r": realized_mean,
+                "log_loss": log_loss,
+                "multiclass_brier": brier,
+            }
+        )
+    expected_order = [name for name in POLICY_REGIME_NAMES if name in seen]
+    if [item["regime"] for item in normalized] != expected_order:
+        raise ValueError("Policy regime entries are not in canonical order")
+    if total_opportunities != policy_cohorts or total_trades != policy_trades or traded_count != counts["traded_regime_count"]:
+        raise ValueError("Policy regime entry totals are inconsistent")
+    traded = [item for item in normalized if int(item["trades"]) > 0]
+    summaries = {
+        "worst_traded_regime_mean_r": min((float(item["realized_mean_r"]) for item in traded), default=None),
+        "worst_traded_regime_log_loss": max((float(item["log_loss"]) for item in traded), default=None),
+        "worst_traded_regime_multiclass_brier": max((float(item["multiclass_brier"]) for item in traded), default=None),
+    }
+    for key, expected in summaries.items():
+        raw = evidence.get(key)
+        if expected is None:
+            if raw is not None:
+                raise ValueError("Policy regime summary must be empty without trades")
+        else:
+            if isinstance(raw, bool):
+                raise ValueError("Policy regime summary is invalid")
+            try:
+                actual = float(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Policy regime summary is invalid") from exc
+            if not math.isfinite(actual) or not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-12):
+                raise ValueError("Policy regime summary is inconsistent")
+    return {
+        "schema": POLICY_REGIME_ROBUSTNESS_SCHEMA,
+        "volatility_quantile": POLICY_REGIME_VOLATILITY_QUANTILE,
+        "development_high_volatility_atr_pct_threshold": threshold,
+        "trend_score_threshold": POLICY_REGIME_TREND_SCORE_THRESHOLD,
+        "minimum_trades_per_traded_regime": POLICY_REGIME_MIN_TRADES,
+        "opportunity_count": policy_cohorts,
+        "trade_count": policy_trades,
+        "regime_count": counts["regime_count"],
+        "traded_regime_count": counts["traded_regime_count"],
+        **summaries,
+        "regimes": normalized,
+    }
+
+
+def _policy_interaction_robustness(
+    *,
+    selected: pd.DataFrame,
+    trades: pd.DataFrame,
+    opportunity_times: pd.DatetimeIndex,
+    development_high_volatility_atr_pct_threshold: float,
+) -> dict[str, object]:
+    """Evaluate symbol × direction × regime cells without tiny-cell multiplicity.
+
+    Cells with at least ``POLICY_INTERACTION_MIN_TRADES`` are evaluated
+    separately.  Smaller cells are pooled into one preregistered sparse tail, so
+    sparse policies do not create dozens of underpowered tests while their
+    combined economics and calibration remain fail-closed evidence.
+    """
+
+    market = _policy_market_regime_frame(
+        selected=selected,
+        opportunity_times=opportunity_times,
+        development_high_volatility_atr_pct_threshold=(
+            development_high_volatility_atr_pct_threshold
+        ),
+    )
+    required = {
+        "symbol",
+        "direction",
+        "decision_time",
+        "realized_r",
+        "target",
+        "p_tp",
+        "p_sl",
+        "p_timeout",
+    }
+    missing = sorted(required - set(trades.columns))
+    if missing:
+        raise ValueError(f"Policy interaction robustness is missing trade columns: {missing}")
+    frame = trades.copy()
+    frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+    frame["direction"] = frame["direction"].astype(str).str.strip().str.upper()
+    frame["decision_time"] = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
+    frame["realized_r"] = pd.to_numeric(frame["realized_r"], errors="coerce")
+    if (
+        frame["decision_time"].isna().any()
+        or frame["realized_r"].isna().any()
+        or not np.isfinite(frame["realized_r"].to_numpy(float)).all()
+        or (frame["symbol"] == "").any()
+        or (~frame["direction"].isin(POLICY_DIRECTIONS)).any()
+        or not set(frame["decision_time"]).issubset(set(opportunity_times))
+    ):
+        raise ValueError("Policy interaction trade evidence is invalid")
+    frame = frame.merge(
+        market[["regime"]],
+        left_on="decision_time",
+        right_index=True,
+        how="left",
+        validate="many_to_one",
+    )
+    if frame["regime"].isna().any():
+        raise ValueError("Policy interaction regime classification is missing for a trade")
+
+    direction_order = {name: index for index, name in enumerate(POLICY_DIRECTIONS)}
+    regime_order = {name: index for index, name in enumerate(POLICY_REGIME_NAMES)}
+    grouped: list[tuple[tuple[str, str, str], pd.DataFrame]] = []
+    for key, cell in frame.groupby(["symbol", "direction", "regime"], sort=False):
+        symbol, direction, regime = (str(value) for value in key)
+        grouped.append(((symbol, direction, regime), cell.copy()))
+    grouped.sort(
+        key=lambda item: (
+            item[0][0],
+            direction_order[item[0][1]],
+            regime_order[item[0][2]],
+        )
+    )
+
+    total_trades = int(len(frame))
+    entries: list[dict[str, object]] = []
+    sparse_indexes: list[object] = []
+    for (symbol, direction, regime), cell in grouped:
+        trade_count = int(len(cell))
+        support = (
+            "SUPPORTED" if trade_count >= POLICY_INTERACTION_MIN_TRADES else "SPARSE"
+        )
+        calibration = _policy_calibration_metrics(
+            cell,
+            context=f"Policy interaction calibration for {symbol}/{direction}/{regime}",
+        )
+        entries.append(
+            {
+                "symbol": symbol,
+                "direction": direction,
+                "regime": regime,
+                "support": support,
+                "trades": trade_count,
+                "trade_fraction": (
+                    float(trade_count / total_trades) if total_trades else 0.0
+                ),
+                "realized_trade_mean_r": float(cell["realized_r"].mean()),
+                "calibration_rows": int(calibration["rows"]),
+                "log_loss": calibration["log_loss"],
+                "multiclass_brier": calibration["multiclass_brier"],
+            }
+        )
+        if support == "SPARSE":
+            sparse_indexes.extend(cell.index.tolist())
+
+    supported = [item for item in entries if item["support"] == "SUPPORTED"]
+    sparse = [item for item in entries if item["support"] == "SPARSE"]
+    sparse_frame = frame.loc[sparse_indexes].copy() if sparse_indexes else frame.iloc[0:0].copy()
+    sparse_pool: dict[str, object] | None = None
+    if len(sparse_frame):
+        calibration = _policy_calibration_metrics(
+            sparse_frame,
+            context="Policy interaction sparse-pool calibration",
+        )
+        leave_one_cell_out: list[dict[str, object]] = []
+        for omitted in sparse:
+            omitted_symbol = str(omitted["symbol"])
+            omitted_direction = str(omitted["direction"])
+            omitted_regime = str(omitted["regime"])
+            residual = sparse_frame.loc[
+                ~(
+                    (sparse_frame["symbol"] == omitted_symbol)
+                    & (sparse_frame["direction"] == omitted_direction)
+                    & (sparse_frame["regime"] == omitted_regime)
+                )
+            ].copy()
+            residual_trades = int(len(residual))
+            residual_calibration = (
+                _policy_calibration_metrics(
+                    residual,
+                    context=(
+                        "Policy interaction sparse-pool leave-one-cell-out calibration "
+                        f"without {omitted_symbol}/{omitted_direction}/{omitted_regime}"
+                    ),
+                )
+                if residual_trades
+                else None
+            )
+            leave_one_cell_out.append(
+                {
+                    "omitted_symbol": omitted_symbol,
+                    "omitted_direction": omitted_direction,
+                    "omitted_regime": omitted_regime,
+                    "omitted_trades": int(omitted["trades"]),
+                    "residual_trades": residual_trades,
+                    "residual_trade_fraction_of_sparse_pool": float(
+                        residual_trades / len(sparse_frame)
+                    ),
+                    "residual_realized_trade_mean_r": (
+                        float(residual["realized_r"].mean())
+                        if residual_trades
+                        else None
+                    ),
+                    "calibration_rows": residual_trades,
+                    "log_loss": (
+                        residual_calibration["log_loss"]
+                        if residual_calibration is not None
+                        else None
+                    ),
+                    "multiclass_brier": (
+                        residual_calibration["multiclass_brier"]
+                        if residual_calibration is not None
+                        else None
+                    ),
+                }
+            )
+        nonempty_residuals = [
+            item for item in leave_one_cell_out if int(item["residual_trades"]) > 0
+        ]
+        sparse_pool = {
+            "cell_count": len(sparse),
+            "trades": int(len(sparse_frame)),
+            "trade_fraction": float(len(sparse_frame) / total_trades),
+            "realized_trade_mean_r": float(sparse_frame["realized_r"].mean()),
+            "calibration_rows": int(calibration["rows"]),
+            "log_loss": calibration["log_loss"],
+            "multiclass_brier": calibration["multiclass_brier"],
+            "jackknife_schema": POLICY_INTERACTION_SPARSE_JACKKNIFE_SCHEMA,
+            "minimum_residual_trades": POLICY_INTERACTION_MIN_TRADES,
+            "leave_one_cell_out_count": len(leave_one_cell_out),
+            "minimum_leave_one_cell_out_residual_trades": min(
+                int(item["residual_trades"]) for item in leave_one_cell_out
+            ),
+            "worst_leave_one_cell_out_mean_r": (
+                float(
+                    min(
+                        float(item["residual_realized_trade_mean_r"])
+                        for item in nonempty_residuals
+                    )
+                )
+                if nonempty_residuals
+                else None
+            ),
+            "worst_leave_one_cell_out_log_loss": (
+                float(max(float(item["log_loss"]) for item in nonempty_residuals))
+                if nonempty_residuals
+                else None
+            ),
+            "worst_leave_one_cell_out_multiclass_brier": (
+                float(
+                    max(float(item["multiclass_brier"]) for item in nonempty_residuals)
+                )
+                if nonempty_residuals
+                else None
+            ),
+            "leave_one_cell_out": leave_one_cell_out,
+        }
+    tested_buckets: list[dict[str, object]] = [*supported]
+    if sparse_pool is not None:
+        tested_buckets.append(sparse_pool)
+    return {
+        "schema": POLICY_INTERACTION_ROBUSTNESS_SCHEMA,
+        "minimum_trades_per_supported_cell": POLICY_INTERACTION_MIN_TRADES,
+        "trade_count": total_trades,
+        "observed_cell_count": len(entries),
+        "supported_cell_count": len(supported),
+        "sparse_cell_count": len(sparse),
+        "supported_trade_count": sum(int(item["trades"]) for item in supported),
+        "sparse_trade_count": sum(int(item["trades"]) for item in sparse),
+        "tested_bucket_count": len(tested_buckets),
+        "worst_tested_bucket_mean_r": (
+            float(min(item["realized_trade_mean_r"] for item in tested_buckets))
+            if tested_buckets
+            else None
+        ),
+        "worst_tested_bucket_log_loss": (
+            float(max(item["log_loss"] for item in tested_buckets))
+            if tested_buckets
+            else None
+        ),
+        "worst_tested_bucket_multiclass_brier": (
+            float(max(item["multiclass_brier"] for item in tested_buckets))
+            if tested_buckets
+            else None
+        ),
+        "cells": entries,
+        "sparse_pool": sparse_pool,
+    }
+
+
+def validate_policy_interaction_robustness(
+    evidence: object,
+    *,
+    policy_trades: int,
+) -> dict[str, object]:
+    """Validate immutable interaction-cell evidence and pooled sparse arithmetic."""
+
+    if isinstance(policy_trades, bool) or not isinstance(policy_trades, int) or policy_trades < 0:
+        raise ValueError("Policy interaction trade count must be a non-negative integer")
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("schema") != POLICY_INTERACTION_ROBUSTNESS_SCHEMA
+    ):
+        raise ValueError("Policy interaction robustness evidence is required")
+    if evidence.get("minimum_trades_per_supported_cell") != POLICY_INTERACTION_MIN_TRADES:
+        raise ValueError("Policy interaction minimum trade contract mismatch")
+
+    count_keys = (
+        "trade_count",
+        "observed_cell_count",
+        "supported_cell_count",
+        "sparse_cell_count",
+        "supported_trade_count",
+        "sparse_trade_count",
+        "tested_bucket_count",
+    )
+    counts: dict[str, int] = {}
+    for key in count_keys:
+        raw = evidence.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise ValueError("Policy interaction count evidence is invalid")
+        counts[key] = raw
+    if counts["trade_count"] != policy_trades:
+        raise ValueError("Policy interaction trade total mismatch")
+
+    raw_cells = evidence.get("cells")
+    if not isinstance(raw_cells, list) or len(raw_cells) != counts["observed_cell_count"]:
+        raise ValueError("Policy interaction cell entries are invalid")
+    direction_order = {name: index for index, name in enumerate(POLICY_DIRECTIONS)}
+    regime_order = {name: index for index, name in enumerate(POLICY_REGIME_NAMES)}
+    normalized: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in raw_cells:
+        if not isinstance(item, dict):
+            raise ValueError("Policy interaction cell is invalid")
+        symbol = str(item.get("symbol", "")).strip().upper()
+        direction = str(item.get("direction", "")).strip().upper()
+        regime = str(item.get("regime", "")).strip().upper()
+        key = (symbol, direction, regime)
+        if (
+            not symbol
+            or item.get("symbol") != symbol
+            or direction not in POLICY_DIRECTIONS
+            or regime not in POLICY_REGIME_NAMES
+            or key in seen
+        ):
+            raise ValueError("Policy interaction cell key is invalid or duplicated")
+        seen.add(key)
+        raw_trades = item.get("trades")
+        raw_rows = item.get("calibration_rows")
+        if (
+            isinstance(raw_trades, bool)
+            or not isinstance(raw_trades, int)
+            or raw_trades <= 0
+            or isinstance(raw_rows, bool)
+            or not isinstance(raw_rows, int)
+            or raw_rows != raw_trades
+        ):
+            raise ValueError("Policy interaction cell count is invalid")
+        expected_support = (
+            "SUPPORTED" if raw_trades >= POLICY_INTERACTION_MIN_TRADES else "SPARSE"
+        )
+        if item.get("support") != expected_support:
+            raise ValueError("Policy interaction cell support classification is invalid")
+        raw_fraction = item.get("trade_fraction")
+        raw_mean = item.get("realized_trade_mean_r")
+        try:
+            fraction = float(raw_fraction)
+            realized_mean = float(raw_mean)
+            log_loss = float(item.get("log_loss"))
+            brier = float(item.get("multiclass_brier"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy interaction cell metric is invalid") from exc
+        expected_fraction = raw_trades / policy_trades if policy_trades else 0.0
+        if (
+            isinstance(raw_fraction, bool)
+            or isinstance(raw_mean, bool)
+            or not all(math.isfinite(value) for value in (fraction, realized_mean, log_loss, brier))
+            or log_loss < 0.0
+            or brier < 0.0
+            or not math.isclose(fraction, expected_fraction, rel_tol=1e-9, abs_tol=1e-12)
+        ):
+            raise ValueError("Policy interaction cell metric is inconsistent")
+        normalized.append(
+            {
+                "symbol": symbol,
+                "direction": direction,
+                "regime": regime,
+                "support": expected_support,
+                "trades": raw_trades,
+                "trade_fraction": fraction,
+                "realized_trade_mean_r": realized_mean,
+                "calibration_rows": raw_rows,
+                "log_loss": log_loss,
+                "multiclass_brier": brier,
+            }
+        )
+    expected_order = sorted(
+        seen,
+        key=lambda item: (item[0], direction_order[item[1]], regime_order[item[2]]),
+    )
+    if [(item["symbol"], item["direction"], item["regime"]) for item in normalized] != expected_order:
+        raise ValueError("Policy interaction cells are not in canonical order")
+
+    supported = [item for item in normalized if item["support"] == "SUPPORTED"]
+    sparse = [item for item in normalized if item["support"] == "SPARSE"]
+    computed = {
+        "observed_cell_count": len(normalized),
+        "supported_cell_count": len(supported),
+        "sparse_cell_count": len(sparse),
+        "supported_trade_count": sum(int(item["trades"]) for item in supported),
+        "sparse_trade_count": sum(int(item["trades"]) for item in sparse),
+    }
+    if sum(int(item["trades"]) for item in normalized) != policy_trades:
+        raise ValueError("Policy interaction cell trade totals are inconsistent")
+    for key, value in computed.items():
+        if counts[key] != value:
+            raise ValueError("Policy interaction cell summaries are inconsistent")
+
+    raw_pool = evidence.get("sparse_pool")
+    sparse_pool: dict[str, object] | None = None
+    if sparse:
+        if not isinstance(raw_pool, dict):
+            raise ValueError("Policy interaction sparse pool is required")
+        raw_cell_count = raw_pool.get("cell_count")
+        raw_trades = raw_pool.get("trades")
+        raw_rows = raw_pool.get("calibration_rows")
+        if (
+            raw_cell_count != len(sparse)
+            or raw_trades != counts["sparse_trade_count"]
+            or raw_rows != counts["sparse_trade_count"]
+        ):
+            raise ValueError("Policy interaction sparse pool counts are inconsistent")
+        try:
+            fraction = float(raw_pool.get("trade_fraction"))
+            realized_mean = float(raw_pool.get("realized_trade_mean_r"))
+            log_loss = float(raw_pool.get("log_loss"))
+            brier = float(raw_pool.get("multiclass_brier"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy interaction sparse pool metric is invalid") from exc
+        expected_fraction = counts["sparse_trade_count"] / policy_trades if policy_trades else 0.0
+        weighted_mean = sum(
+            float(item["realized_trade_mean_r"]) * int(item["trades"]) for item in sparse
+        ) / counts["sparse_trade_count"]
+        weighted_log_loss = sum(
+            float(item["log_loss"]) * int(item["trades"]) for item in sparse
+        ) / counts["sparse_trade_count"]
+        weighted_brier = sum(
+            float(item["multiclass_brier"]) * int(item["trades"]) for item in sparse
+        ) / counts["sparse_trade_count"]
+        if (
+            not all(math.isfinite(value) for value in (fraction, realized_mean, log_loss, brier))
+            or log_loss < 0.0
+            or brier < 0.0
+            or not math.isclose(fraction, expected_fraction, rel_tol=1e-9, abs_tol=1e-12)
+            or not math.isclose(realized_mean, weighted_mean, rel_tol=1e-9, abs_tol=1e-12)
+            or not math.isclose(log_loss, weighted_log_loss, rel_tol=1e-9, abs_tol=1e-12)
+            or not math.isclose(brier, weighted_brier, rel_tol=1e-9, abs_tol=1e-12)
+        ):
+            raise ValueError("Policy interaction sparse pool metric is inconsistent")
+        if raw_pool.get("jackknife_schema") != POLICY_INTERACTION_SPARSE_JACKKNIFE_SCHEMA:
+            raise ValueError("Policy interaction sparse leave-one-cell-out schema is invalid")
+        if raw_pool.get("minimum_residual_trades") != POLICY_INTERACTION_MIN_TRADES:
+            raise ValueError("Policy interaction sparse leave-one-cell-out minimum is invalid")
+        raw_leave_one = raw_pool.get("leave_one_cell_out")
+        if not isinstance(raw_leave_one, list) or len(raw_leave_one) != len(sparse):
+            raise ValueError("Policy interaction sparse leave-one-cell-out evidence is required")
+        if raw_pool.get("leave_one_cell_out_count") != len(sparse):
+            raise ValueError("Policy interaction sparse leave-one-cell-out count is invalid")
+        normalized_leave_one: list[dict[str, object]] = []
+        for omitted, raw_result in zip(sparse, raw_leave_one, strict=True):
+            if not isinstance(raw_result, dict):
+                raise ValueError("Policy interaction sparse leave-one-cell-out entry is invalid")
+            omitted_key = (
+                str(omitted["symbol"]),
+                str(omitted["direction"]),
+                str(omitted["regime"]),
+            )
+            raw_key = (
+                raw_result.get("omitted_symbol"),
+                raw_result.get("omitted_direction"),
+                raw_result.get("omitted_regime"),
+            )
+            if raw_key != omitted_key or raw_result.get("omitted_trades") != omitted["trades"]:
+                raise ValueError("Policy interaction sparse leave-one-cell-out key is invalid")
+            raw_residual_trades = raw_result.get("residual_trades")
+            raw_rows = raw_result.get("calibration_rows")
+            expected_residual_trades = counts["sparse_trade_count"] - int(omitted["trades"])
+            if (
+                isinstance(raw_residual_trades, bool)
+                or not isinstance(raw_residual_trades, int)
+                or raw_residual_trades != expected_residual_trades
+                or raw_rows != expected_residual_trades
+            ):
+                raise ValueError("Policy interaction sparse leave-one-cell-out counts are inconsistent")
+            try:
+                residual_fraction = float(
+                    raw_result.get("residual_trade_fraction_of_sparse_pool")
+                )
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "Policy interaction sparse leave-one-cell-out fraction is invalid"
+                ) from exc
+            expected_residual_fraction = (
+                expected_residual_trades / counts["sparse_trade_count"]
+            )
+            if (
+                not math.isfinite(residual_fraction)
+                or not math.isclose(
+                    residual_fraction,
+                    expected_residual_fraction,
+                    rel_tol=1e-9,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise ValueError(
+                    "Policy interaction sparse leave-one-cell-out fraction is inconsistent"
+                )
+            residual_cells = [item for item in sparse if item is not omitted]
+            if expected_residual_trades == 0:
+                if any(
+                    raw_result.get(key) is not None
+                    for key in (
+                        "residual_realized_trade_mean_r",
+                        "log_loss",
+                        "multiclass_brier",
+                    )
+                ):
+                    raise ValueError(
+                        "Policy interaction sparse leave-one-cell-out empty residual is invalid"
+                    )
+                residual_mean = residual_log_loss = residual_brier = None
+            else:
+                try:
+                    residual_mean = float(raw_result.get("residual_realized_trade_mean_r"))
+                    residual_log_loss = float(raw_result.get("log_loss"))
+                    residual_brier = float(raw_result.get("multiclass_brier"))
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(
+                        "Policy interaction sparse leave-one-cell-out metric is invalid"
+                    ) from exc
+                expected_residual_mean = sum(
+                    float(item["realized_trade_mean_r"]) * int(item["trades"])
+                    for item in residual_cells
+                ) / expected_residual_trades
+                expected_residual_log_loss = sum(
+                    float(item["log_loss"]) * int(item["trades"])
+                    for item in residual_cells
+                ) / expected_residual_trades
+                expected_residual_brier = sum(
+                    float(item["multiclass_brier"]) * int(item["trades"])
+                    for item in residual_cells
+                ) / expected_residual_trades
+                if (
+                    not all(
+                        math.isfinite(value)
+                        for value in (residual_mean, residual_log_loss, residual_brier)
+                    )
+                    or residual_log_loss < 0.0
+                    or residual_brier < 0.0
+                    or not math.isclose(
+                        residual_mean,
+                        expected_residual_mean,
+                        rel_tol=1e-9,
+                        abs_tol=1e-12,
+                    )
+                    or not math.isclose(
+                        residual_log_loss,
+                        expected_residual_log_loss,
+                        rel_tol=1e-9,
+                        abs_tol=1e-12,
+                    )
+                    or not math.isclose(
+                        residual_brier,
+                        expected_residual_brier,
+                        rel_tol=1e-9,
+                        abs_tol=1e-12,
+                    )
+                ):
+                    raise ValueError(
+                        "Policy interaction sparse leave-one-cell-out metric is inconsistent"
+                    )
+            normalized_leave_one.append(
+                {
+                    "omitted_symbol": omitted_key[0],
+                    "omitted_direction": omitted_key[1],
+                    "omitted_regime": omitted_key[2],
+                    "omitted_trades": int(omitted["trades"]),
+                    "residual_trades": expected_residual_trades,
+                    "residual_trade_fraction_of_sparse_pool": residual_fraction,
+                    "residual_realized_trade_mean_r": residual_mean,
+                    "calibration_rows": expected_residual_trades,
+                    "log_loss": residual_log_loss,
+                    "multiclass_brier": residual_brier,
+                }
+            )
+        minimum_residual_trades = min(
+            int(item["residual_trades"]) for item in normalized_leave_one
+        )
+        if raw_pool.get("minimum_leave_one_cell_out_residual_trades") != minimum_residual_trades:
+            raise ValueError("Policy interaction sparse leave-one-cell-out minimum is inconsistent")
+        nonempty_residuals = [
+            item for item in normalized_leave_one if int(item["residual_trades"]) > 0
+        ]
+        jackknife_summaries = {
+            "worst_leave_one_cell_out_mean_r": (
+                min(
+                    float(item["residual_realized_trade_mean_r"])
+                    for item in nonempty_residuals
+                )
+                if nonempty_residuals
+                else None
+            ),
+            "worst_leave_one_cell_out_log_loss": (
+                max(float(item["log_loss"]) for item in nonempty_residuals)
+                if nonempty_residuals
+                else None
+            ),
+            "worst_leave_one_cell_out_multiclass_brier": (
+                max(float(item["multiclass_brier"]) for item in nonempty_residuals)
+                if nonempty_residuals
+                else None
+            ),
+        }
+        for key, expected in jackknife_summaries.items():
+            raw = raw_pool.get(key)
+            if expected is None:
+                if raw is not None:
+                    raise ValueError(
+                        "Policy interaction sparse leave-one-cell-out summary is invalid"
+                    )
+                continue
+            try:
+                actual = float(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "Policy interaction sparse leave-one-cell-out summary is invalid"
+                ) from exc
+            if (
+                isinstance(raw, bool)
+                or not math.isfinite(actual)
+                or not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-12)
+            ):
+                raise ValueError(
+                    "Policy interaction sparse leave-one-cell-out summary is inconsistent"
+                )
+        sparse_pool = {
+            "cell_count": len(sparse),
+            "trades": counts["sparse_trade_count"],
+            "trade_fraction": fraction,
+            "realized_trade_mean_r": realized_mean,
+            "calibration_rows": counts["sparse_trade_count"],
+            "log_loss": log_loss,
+            "multiclass_brier": brier,
+            "jackknife_schema": POLICY_INTERACTION_SPARSE_JACKKNIFE_SCHEMA,
+            "minimum_residual_trades": POLICY_INTERACTION_MIN_TRADES,
+            "leave_one_cell_out_count": len(normalized_leave_one),
+            "minimum_leave_one_cell_out_residual_trades": minimum_residual_trades,
+            **jackknife_summaries,
+            "leave_one_cell_out": normalized_leave_one,
+        }
+    elif raw_pool is not None:
+        raise ValueError("Policy interaction sparse pool must be empty without sparse cells")
+
+    tested_buckets: list[dict[str, object]] = [*supported]
+    if sparse_pool is not None:
+        tested_buckets.append(sparse_pool)
+    if counts["tested_bucket_count"] != len(tested_buckets):
+        raise ValueError("Policy interaction tested bucket count is inconsistent")
+    summaries = {
+        "worst_tested_bucket_mean_r": (
+            min((float(item["realized_trade_mean_r"]) for item in tested_buckets), default=None)
+        ),
+        "worst_tested_bucket_log_loss": (
+            max((float(item["log_loss"]) for item in tested_buckets), default=None)
+        ),
+        "worst_tested_bucket_multiclass_brier": (
+            max((float(item["multiclass_brier"]) for item in tested_buckets), default=None)
+        ),
+    }
+    for key, expected in summaries.items():
+        raw = evidence.get(key)
+        if expected is None:
+            if raw is not None:
+                raise ValueError("Policy interaction summary must be empty without trades")
+            continue
+        try:
+            actual = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy interaction summary is invalid") from exc
+        if (
+            isinstance(raw, bool)
+            or not math.isfinite(actual)
+            or not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-12)
+        ):
+            raise ValueError("Policy interaction summary is inconsistent")
+    return {
+        "schema": POLICY_INTERACTION_ROBUSTNESS_SCHEMA,
+        "minimum_trades_per_supported_cell": POLICY_INTERACTION_MIN_TRADES,
+        **counts,
+        **summaries,
+        "cells": normalized,
+        "sparse_pool": sparse_pool,
+    }
+
+
+def _policy_symbol_robustness(
+    trades: pd.DataFrame,
+    opportunity_times: pd.DatetimeIndex,
+) -> dict[str, object]:
+    """Measure whether final-holdout edge survives removal of any one traded symbol.
+
+    The counterfactual preserves the exact observed opportunity clock, including
+    zero-return no-trade hours, and recomputes equal weighting among the remaining
+    simultaneous trades. A positive aggregate result that turns non-positive after
+    removing one symbol is not considered cross-symbol robust.
+    """
+
+    if opportunity_times.empty or opportunity_times.isna().any():
+        raise ValueError("Policy symbol robustness requires valid opportunity times")
+    if trades.empty:
+        return {
+            "schema": POLICY_SYMBOL_ROBUSTNESS_SCHEMA,
+            "symbol_count": 0,
+            "trade_count": 0,
+            "max_symbol_trade_fraction": 0.0,
+            "leave_one_symbol_out_mean_r_min": None,
+            "symbols": [],
+        }
+
+    required = {"symbol", "decision_time", "realized_r"}
+    missing = sorted(required - set(trades.columns))
+    if missing:
+        raise ValueError(f"Policy symbol robustness is missing columns: {missing}")
+    frame = trades.loc[:, ["symbol", "decision_time", "realized_r"]].copy()
+    frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+    frame["decision_time"] = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
+    frame["realized_r"] = pd.to_numeric(frame["realized_r"], errors="coerce")
+    if (
+        (frame["symbol"] == "").any()
+        or frame["decision_time"].isna().any()
+        or frame["realized_r"].isna().any()
+        or not np.isfinite(frame["realized_r"].to_numpy(float)).all()
+    ):
+        raise ValueError("Policy symbol robustness contains invalid trade evidence")
+
+    total_trades = int(len(frame))
+    entries: list[dict[str, object]] = []
+    for symbol in sorted(frame["symbol"].unique()):
+        symbol_trades = int(frame["symbol"].eq(symbol).sum())
+        remaining = frame[~frame["symbol"].eq(symbol)]
+        if remaining.empty:
+            leave_one_out_mean = 0.0
+        else:
+            remaining_cohorts = remaining.groupby("decision_time", sort=True)["realized_r"].mean()
+            remaining_cohorts.index = pd.to_datetime(remaining_cohorts.index, utc=True, errors="coerce")
+            if remaining_cohorts.index.isna().any() or remaining_cohorts.index.has_duplicates:
+                raise ValueError("Policy symbol robustness produced invalid cohort evidence")
+            leave_one_out_mean = float(
+                remaining_cohorts.reindex(opportunity_times, fill_value=0.0).mean()
+            )
+        entries.append(
+            {
+                "symbol": str(symbol),
+                "trades": symbol_trades,
+                "trade_fraction": float(symbol_trades / total_trades),
+                "leave_one_symbol_out_policy_mean_r": leave_one_out_mean,
+            }
+        )
+
+    return {
+        "schema": POLICY_SYMBOL_ROBUSTNESS_SCHEMA,
+        "symbol_count": len(entries),
+        "trade_count": total_trades,
+        "max_symbol_trade_fraction": float(max(item["trade_fraction"] for item in entries)),
+        "leave_one_symbol_out_mean_r_min": float(
+            min(item["leave_one_symbol_out_policy_mean_r"] for item in entries)
+        ),
+        "symbols": entries,
+    }
+
+
+def _policy_cluster_robustness(
+    trades: pd.DataFrame,
+    opportunity_times: pd.DatetimeIndex,
+) -> dict[str, object]:
+    """Test whether policy edge survives removal of correlated symbol components.
+
+    Symbols are connected when their realized-R series have absolute Pearson
+    correlation at or above the immutable threshold on at least the configured
+    number of timestamps where both symbols traded. Connected components form
+    deterministic dependence clusters. Each counterfactual removes a whole
+    component while preserving the exact observed opportunity clock and
+    reweighting the remaining simultaneous trades.
+    """
+
+    if opportunity_times.empty or opportunity_times.isna().any():
+        raise ValueError("Policy cluster robustness requires valid opportunity times")
+    if opportunity_times.has_duplicates:
+        raise ValueError("Policy cluster robustness opportunity times must be unique")
+    if trades.empty:
+        return {
+            "schema": POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
+            "correlation_threshold": POLICY_CLUSTER_CORRELATION_THRESHOLD,
+            "minimum_shared_active_observations": (
+                POLICY_CLUSTER_MIN_SHARED_ACTIVE_OBSERVATIONS
+            ),
+            "symbol_count": 0,
+            "cluster_count": 0,
+            "trade_count": 0,
+            "max_cluster_trade_fraction": 0.0,
+            "leave_one_cluster_out_mean_r_min": None,
+            "clusters": [],
+        }
+
+    required = {"symbol", "decision_time", "realized_r"}
+    missing = sorted(required - set(trades.columns))
+    if missing:
+        raise ValueError(f"Policy cluster robustness is missing columns: {missing}")
+    frame = trades.loc[:, ["symbol", "decision_time", "realized_r"]].copy()
+    frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+    frame["decision_time"] = pd.to_datetime(frame["decision_time"], utc=True, errors="coerce")
+    frame["realized_r"] = pd.to_numeric(frame["realized_r"], errors="coerce")
+    if (
+        (frame["symbol"] == "").any()
+        or frame["decision_time"].isna().any()
+        or frame["realized_r"].isna().any()
+        or not np.isfinite(frame["realized_r"].to_numpy(float)).all()
+        or frame.duplicated(["decision_time", "symbol"]).any()
+    ):
+        raise ValueError("Policy cluster robustness contains invalid trade evidence")
+
+    symbols = sorted(frame["symbol"].unique())
+    returns = (
+        frame.pivot(index="decision_time", columns="symbol", values="realized_r")
+        .reindex(opportunity_times)
+        .fillna(0.0)
+    )
+    active = (
+        frame.assign(active=1.0)
+        .pivot(index="decision_time", columns="symbol", values="active")
+        .reindex(opportunity_times)
+        .fillna(0.0)
+    )
+    adjacency: dict[str, set[str]] = {symbol: set() for symbol in symbols}
+    for left_index, left in enumerate(symbols):
+        for right in symbols[left_index + 1 :]:
+            jointly_active = (active[left] > 0.0) & (active[right] > 0.0)
+            shared = int(jointly_active.sum())
+            if shared < POLICY_CLUSTER_MIN_SHARED_ACTIVE_OBSERVATIONS:
+                continue
+            left_values = returns.loc[jointly_active, left].to_numpy(float)
+            right_values = returns.loc[jointly_active, right].to_numpy(float)
+            if np.std(left_values) <= 0.0 or np.std(right_values) <= 0.0:
+                continue
+            correlation = float(np.corrcoef(left_values, right_values)[0, 1])
+            if math.isfinite(correlation) and abs(correlation) >= POLICY_CLUSTER_CORRELATION_THRESHOLD:
+                adjacency[left].add(right)
+                adjacency[right].add(left)
+
+    components: list[list[str]] = []
+    unseen = set(symbols)
+    while unseen:
+        seed = min(unseen)
+        stack = [seed]
+        component: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            unseen.discard(current)
+            stack.extend(sorted(adjacency[current] - component, reverse=True))
+        components.append(sorted(component))
+    components.sort(key=lambda values: tuple(values))
+
+    total_trades = int(len(frame))
+    clusters: list[dict[str, object]] = []
+    for index, component in enumerate(components, start=1):
+        in_cluster = frame["symbol"].isin(component)
+        cluster_trades = int(in_cluster.sum())
+        remaining = frame[~in_cluster]
+        if remaining.empty:
+            leave_one_out_mean = 0.0
+        else:
+            remaining_cohorts = remaining.groupby("decision_time", sort=True)["realized_r"].mean()
+            remaining_cohorts.index = pd.to_datetime(
+                remaining_cohorts.index, utc=True, errors="coerce"
+            )
+            if remaining_cohorts.index.isna().any() or remaining_cohorts.index.has_duplicates:
+                raise ValueError("Policy cluster robustness produced invalid cohort evidence")
+            leave_one_out_mean = float(
+                remaining_cohorts.reindex(opportunity_times, fill_value=0.0).mean()
+            )
+        clusters.append(
+            {
+                "cluster_id": f"cluster-{index:03d}",
+                "symbols": component,
+                "trades": cluster_trades,
+                "trade_fraction": float(cluster_trades / total_trades),
+                "leave_one_cluster_out_policy_mean_r": leave_one_out_mean,
+            }
+        )
+
+    return {
+        "schema": POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
+        "correlation_threshold": POLICY_CLUSTER_CORRELATION_THRESHOLD,
+        "minimum_shared_active_observations": POLICY_CLUSTER_MIN_SHARED_ACTIVE_OBSERVATIONS,
+        "symbol_count": len(symbols),
+        "cluster_count": len(clusters),
+        "trade_count": total_trades,
+        "max_cluster_trade_fraction": float(
+            max(item["trade_fraction"] for item in clusters)
+        ),
+        "leave_one_cluster_out_mean_r_min": float(
+            min(item["leave_one_cluster_out_policy_mean_r"] for item in clusters)
+        ),
+        "clusters": clusters,
+    }
+
+
+def validate_policy_cluster_robustness(
+    evidence: object,
+    *,
+    policy_trades: int,
+) -> dict[str, object]:
+    """Validate immutable dependence-cluster jackknife evidence and arithmetic."""
+
+    if isinstance(policy_trades, bool) or not isinstance(policy_trades, int) or policy_trades < 0:
+        raise ValueError("policy_trades must be a non-negative integer")
+    if not isinstance(evidence, dict):
+        raise ValueError("Policy cluster robustness evidence is required")
+    if evidence.get("schema") != POLICY_CLUSTER_ROBUSTNESS_SCHEMA:
+        raise ValueError("Policy cluster robustness schema mismatch")
+
+    raw_threshold = evidence.get("correlation_threshold")
+    raw_min_shared = evidence.get("minimum_shared_active_observations")
+    if isinstance(raw_threshold, bool) or isinstance(raw_min_shared, bool):
+        raise ValueError("Policy cluster robustness configuration is invalid")
+    try:
+        threshold = float(raw_threshold)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Policy cluster robustness correlation threshold is invalid") from exc
+    if (
+        not math.isfinite(threshold)
+        or not math.isclose(
+            threshold, POLICY_CLUSTER_CORRELATION_THRESHOLD, rel_tol=0.0, abs_tol=1e-12
+        )
+        or not isinstance(raw_min_shared, int)
+        or raw_min_shared != POLICY_CLUSTER_MIN_SHARED_ACTIVE_OBSERVATIONS
+    ):
+        raise ValueError("Policy cluster robustness configuration mismatch")
+
+    symbol_count = evidence.get("symbol_count")
+    cluster_count = evidence.get("cluster_count")
+    trade_count = evidence.get("trade_count")
+    clusters = evidence.get("clusters")
+    if (
+        isinstance(symbol_count, bool)
+        or not isinstance(symbol_count, int)
+        or symbol_count < 0
+        or isinstance(cluster_count, bool)
+        or not isinstance(cluster_count, int)
+        or cluster_count < 0
+        or isinstance(trade_count, bool)
+        or not isinstance(trade_count, int)
+        or trade_count < 0
+        or trade_count != policy_trades
+        or not isinstance(clusters, list)
+        or len(clusters) != cluster_count
+    ):
+        raise ValueError("Policy cluster robustness count evidence is inconsistent")
+
+    if policy_trades == 0:
+        if symbol_count != 0 or cluster_count != 0 or clusters:
+            raise ValueError("Policy cluster robustness is non-empty without trades")
+        if evidence.get("leave_one_cluster_out_mean_r_min") is not None:
+            raise ValueError("Policy cluster leave-one-out mean must be empty without trades")
+        raw_max_fraction = evidence.get("max_cluster_trade_fraction")
+        if isinstance(raw_max_fraction, bool):
+            raise ValueError("Policy cluster maximum trade fraction is invalid")
+        try:
+            max_fraction = float(raw_max_fraction)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy cluster maximum trade fraction is invalid") from exc
+        if not math.isfinite(max_fraction) or not math.isclose(max_fraction, 0.0, abs_tol=1e-12):
+            raise ValueError("Policy cluster maximum trade fraction is invalid")
+        return {
+            "schema": POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
+            "correlation_threshold": threshold,
+            "minimum_shared_active_observations": raw_min_shared,
+            "symbol_count": 0,
+            "cluster_count": 0,
+            "trade_count": 0,
+            "max_cluster_trade_fraction": 0.0,
+            "leave_one_cluster_out_mean_r_min": None,
+            "clusters": [],
+        }
+
+    normalized: list[dict[str, object]] = []
+    seen_symbols: set[str] = set()
+    total_trades = 0
+    for expected_index, item in enumerate(clusters, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("Policy cluster robustness cluster entry is invalid")
+        expected_id = f"cluster-{expected_index:03d}"
+        if item.get("cluster_id") != expected_id:
+            raise ValueError("Policy cluster robustness cluster ids are invalid")
+        raw_symbols = item.get("symbols")
+        if not isinstance(raw_symbols, list) or not raw_symbols:
+            raise ValueError("Policy cluster robustness symbols are invalid")
+        symbols: list[str] = []
+        for raw_symbol in raw_symbols:
+            symbol = raw_symbol.strip().upper() if isinstance(raw_symbol, str) else ""
+            if not symbol or raw_symbol != symbol or symbol in seen_symbols:
+                raise ValueError("Policy cluster robustness symbols overlap or are invalid")
+            seen_symbols.add(symbol)
+            symbols.append(symbol)
+        if symbols != sorted(symbols):
+            raise ValueError("Policy cluster robustness symbols must be sorted")
+        trades = item.get("trades")
+        if isinstance(trades, bool) or not isinstance(trades, int) or trades <= 0:
+            raise ValueError("Policy cluster robustness trade count is invalid")
+        total_trades += trades
+        raw_fraction = item.get("trade_fraction")
+        raw_leave_one_out = item.get("leave_one_cluster_out_policy_mean_r")
+        if isinstance(raw_fraction, bool) or isinstance(raw_leave_one_out, bool):
+            raise ValueError("Policy cluster robustness metric is invalid")
+        try:
+            fraction = float(raw_fraction)
+            leave_one_out = float(raw_leave_one_out)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy cluster robustness metric is invalid") from exc
+        if (
+            not math.isfinite(fraction)
+            or not 0.0 < fraction <= 1.0
+            or not math.isclose(fraction, trades / policy_trades, rel_tol=1e-9, abs_tol=1e-12)
+            or not math.isfinite(leave_one_out)
+        ):
+            raise ValueError("Policy cluster robustness metric is inconsistent")
+        normalized.append(
+            {
+                "cluster_id": expected_id,
+                "symbols": symbols,
+                "trades": trades,
+                "trade_fraction": fraction,
+                "leave_one_cluster_out_policy_mean_r": leave_one_out,
+            }
+        )
+
+    if (
+        len(seen_symbols) != symbol_count
+        or total_trades != policy_trades
+        or [item["symbols"] for item in normalized]
+        != sorted([item["symbols"] for item in normalized], key=lambda values: tuple(values))
+    ):
+        raise ValueError("Policy cluster robustness symbols or totals are inconsistent")
+    expected_max_fraction = max(float(item["trade_fraction"]) for item in normalized)
+    expected_min_leave_one_out = min(
+        float(item["leave_one_cluster_out_policy_mean_r"]) for item in normalized
+    )
+    raw_max_fraction = evidence.get("max_cluster_trade_fraction")
+    raw_min_leave_one_out = evidence.get("leave_one_cluster_out_mean_r_min")
+    if isinstance(raw_max_fraction, bool) or isinstance(raw_min_leave_one_out, bool):
+        raise ValueError("Policy cluster robustness summary is invalid")
+    try:
+        max_fraction = float(raw_max_fraction)
+        min_leave_one_out = float(raw_min_leave_one_out)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Policy cluster robustness summary is invalid") from exc
+    if (
+        not math.isfinite(max_fraction)
+        or not math.isfinite(min_leave_one_out)
+        or not math.isclose(max_fraction, expected_max_fraction, rel_tol=1e-9, abs_tol=1e-12)
+        or not math.isclose(
+            min_leave_one_out, expected_min_leave_one_out, rel_tol=1e-9, abs_tol=1e-12
+        )
+    ):
+        raise ValueError("Policy cluster robustness summary is inconsistent")
+
+    return {
+        "schema": POLICY_CLUSTER_ROBUSTNESS_SCHEMA,
+        "correlation_threshold": threshold,
+        "minimum_shared_active_observations": raw_min_shared,
+        "symbol_count": symbol_count,
+        "cluster_count": cluster_count,
+        "trade_count": trade_count,
+        "max_cluster_trade_fraction": max_fraction,
+        "leave_one_cluster_out_mean_r_min": min_leave_one_out,
+        "clusters": normalized,
+    }
+
+
+def validate_policy_symbol_robustness(
+    evidence: object,
+    *,
+    policy_trades: int,
+) -> dict[str, object]:
+    """Validate immutable per-symbol jackknife evidence and its arithmetic."""
+
+    if isinstance(policy_trades, bool) or not isinstance(policy_trades, int) or policy_trades < 0:
+        raise ValueError("policy_trades must be a non-negative integer")
+    if not isinstance(evidence, dict):
+        raise ValueError("Policy symbol robustness evidence is required")
+    if evidence.get("schema") != POLICY_SYMBOL_ROBUSTNESS_SCHEMA:
+        raise ValueError("Policy symbol robustness schema mismatch")
+
+    symbol_count = evidence.get("symbol_count")
+    trade_count = evidence.get("trade_count")
+    entries = evidence.get("symbols")
+    if (
+        isinstance(symbol_count, bool)
+        or not isinstance(symbol_count, int)
+        or symbol_count < 0
+        or isinstance(trade_count, bool)
+        or not isinstance(trade_count, int)
+        or trade_count < 0
+        or trade_count != policy_trades
+        or not isinstance(entries, list)
+        or len(entries) != symbol_count
+    ):
+        raise ValueError("Policy symbol robustness count evidence is inconsistent")
+
+    if policy_trades == 0:
+        if symbol_count != 0 or entries:
+            raise ValueError("Policy symbol robustness is non-empty without trades")
+        if evidence.get("leave_one_symbol_out_mean_r_min") is not None:
+            raise ValueError("Policy symbol robustness leave-one-out mean must be empty without trades")
+        raw_max_fraction = evidence.get("max_symbol_trade_fraction")
+        if isinstance(raw_max_fraction, bool):
+            raise ValueError("Policy symbol robustness maximum trade fraction is invalid")
+        try:
+            max_fraction = float(raw_max_fraction)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy symbol robustness maximum trade fraction is invalid") from exc
+        if not math.isfinite(max_fraction) or not math.isclose(max_fraction, 0.0, abs_tol=1e-12):
+            raise ValueError("Policy symbol robustness maximum trade fraction is invalid")
+        return {
+            "schema": POLICY_SYMBOL_ROBUSTNESS_SCHEMA,
+            "symbol_count": 0,
+            "trade_count": 0,
+            "max_symbol_trade_fraction": 0.0,
+            "leave_one_symbol_out_mean_r_min": None,
+            "symbols": [],
+        }
+
+    normalized_entries: list[dict[str, object]] = []
+    seen: set[str] = set()
+    total = 0
+    for item in entries:
+        if not isinstance(item, dict):
+            raise ValueError("Policy symbol robustness symbol entry is invalid")
+        raw_symbol = item.get("symbol")
+        symbol = raw_symbol.strip().upper() if isinstance(raw_symbol, str) else ""
+        if not symbol or raw_symbol != symbol or symbol in seen:
+            raise ValueError("Policy symbol robustness symbols must be unique normalized values")
+        seen.add(symbol)
+        trades = item.get("trades")
+        if isinstance(trades, bool) or not isinstance(trades, int) or trades <= 0:
+            raise ValueError("Policy symbol robustness trade count is invalid")
+        total += trades
+        raw_fraction = item.get("trade_fraction")
+        raw_leave_one_out = item.get("leave_one_symbol_out_policy_mean_r")
+        if isinstance(raw_fraction, bool) or isinstance(raw_leave_one_out, bool):
+            raise ValueError("Policy symbol robustness metric is invalid")
+        try:
+            fraction = float(raw_fraction)
+            leave_one_out = float(raw_leave_one_out)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Policy symbol robustness metric is invalid") from exc
+        if (
+            not math.isfinite(fraction)
+            or not 0.0 < fraction <= 1.0
+            or not math.isclose(
+                fraction, trades / policy_trades, rel_tol=1e-9, abs_tol=1e-12
+            )
+            or not math.isfinite(leave_one_out)
+        ):
+            raise ValueError("Policy symbol robustness metric is inconsistent")
+        normalized_entries.append(
+            {
+                "symbol": symbol,
+                "trades": trades,
+                "trade_fraction": fraction,
+                "leave_one_symbol_out_policy_mean_r": leave_one_out,
+            }
+        )
+
+    if total != policy_trades or [item["symbol"] for item in normalized_entries] != sorted(seen):
+        raise ValueError("Policy symbol robustness symbols or totals are inconsistent")
+    expected_max_fraction = max(float(item["trade_fraction"]) for item in normalized_entries)
+    expected_min_leave_one_out = min(
+        float(item["leave_one_symbol_out_policy_mean_r"]) for item in normalized_entries
+    )
+    raw_max_fraction = evidence.get("max_symbol_trade_fraction")
+    raw_min_leave_one_out = evidence.get("leave_one_symbol_out_mean_r_min")
+    if isinstance(raw_max_fraction, bool) or isinstance(raw_min_leave_one_out, bool):
+        raise ValueError("Policy symbol robustness summary is invalid")
+    try:
+        max_fraction = float(raw_max_fraction)
+        min_leave_one_out = float(raw_min_leave_one_out)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Policy symbol robustness summary is invalid") from exc
+    if (
+        not math.isfinite(max_fraction)
+        or not math.isfinite(min_leave_one_out)
+        or not math.isclose(max_fraction, expected_max_fraction, rel_tol=1e-9, abs_tol=1e-12)
+        or not math.isclose(
+            min_leave_one_out, expected_min_leave_one_out, rel_tol=1e-9, abs_tol=1e-12
+        )
+    ):
+        raise ValueError("Policy symbol robustness summary is inconsistent")
+
+    return {
+        "schema": POLICY_SYMBOL_ROBUSTNESS_SCHEMA,
+        "symbol_count": symbol_count,
+        "trade_count": trade_count,
+        "max_symbol_trade_fraction": max_fraction,
+        "leave_one_symbol_out_mean_r_min": min_leave_one_out,
+        "symbols": normalized_entries,
+    }
 
 
 def evaluate_model(model: TemporalCalibratedBarrierModel, split: DatasetSplit) -> dict:
@@ -1959,6 +3825,37 @@ def evaluate_policy_model(
         horizon_hours=resolved_horizon,
         require_barrier_return_consistency=True,
     )
+    test_features = np.asarray(split.x_test, dtype=float)
+    if test_features.ndim != 2 or test_features.shape[0] != len(meta):
+        raise ValueError("Policy evaluation feature matrix does not align with holdout metadata")
+    if test_features.shape[1] == len(MODEL_FEATURE_NAMES):
+        regime_ret_24h = test_features[:, MODEL_FEATURE_NAMES.index("ret_24h")].copy()
+        regime_atr_pct_14 = test_features[:, MODEL_FEATURE_NAMES.index("atr_pct_14")].copy()
+    elif split.train_meta is None:
+        regime_ret_24h = np.zeros(len(meta), dtype=float)
+        regime_atr_pct_14 = (
+            meta["barrier_downside_rate"].to_numpy(float) / DEFAULT_STOP_ATR_MULTIPLIER
+        )
+    else:
+        raise ValueError("Policy evaluation feature matrix does not contain the current schema")
+    invalid_regime_features = (
+        ~np.isfinite(regime_ret_24h)
+        | ~np.isfinite(regime_atr_pct_14)
+        | (regime_atr_pct_14 <= 0.0)
+    )
+    if invalid_regime_features.any():
+        if split.train_meta is not None:
+            raise ValueError("Policy regime features must be finite with positive ATR")
+        fallback_atr = meta["barrier_downside_rate"].to_numpy(float) / DEFAULT_STOP_ATR_MULTIPLIER
+        if not np.isfinite(fallback_atr).all() or (fallback_atr <= 0.0).any():
+            raise ValueError("Legacy policy fixture cannot derive valid regime features")
+        regime_atr_pct_14 = fallback_atr
+        regime_ret_24h = np.where(np.isfinite(regime_ret_24h), regime_ret_24h, 0.0)
+    meta["regime_ret_24h"] = regime_ret_24h
+    meta["regime_atr_pct_14"] = regime_atr_pct_14
+    development_high_volatility_atr_pct_threshold = (
+        _development_high_volatility_atr_pct_threshold(split)
+    )
     for label in OUTCOME_CLASSES:
         meta[f"p_{str(label).lower()}"] = probabilities[:, class_to_index[str(label)]]
 
@@ -2105,23 +4002,14 @@ def evaluate_policy_model(
         .sort_values(["decision_time", "symbol"], kind="mergesort")
         .reset_index(drop=True)
     )
-    selected_outcomes = selected["target"].astype(str).to_numpy()
-    if not np.isin(selected_outcomes, OUTCOME_CLASSES).all():
-        raise ValueError("Policy-selected calibration target contains an unsupported outcome")
-    selected_probabilities = selected[["p_tp", "p_sl", "p_timeout"]].to_numpy(float)
-    selected_log_loss = _ordered_multiclass_log_loss(
-        selected_outcomes,
-        selected_probabilities,
-        OUTCOME_CLASSES,
+    selected_calibration = _policy_calibration_metrics(
+        selected,
+        context="Policy-selected calibration",
     )
-    selected_indexes = np.array(
-        [{label: index for index, label in enumerate(OUTCOME_CLASSES)}[label] for label in selected_outcomes],
-        dtype=int,
-    )
-    selected_one_hot = np.eye(len(OUTCOME_CLASSES), dtype=float)[selected_indexes]
-    selected_multiclass_brier = float(
-        np.mean(np.sum((selected_probabilities - selected_one_hot) ** 2, axis=1))
-    )
+    selected_log_loss = selected_calibration["log_loss"]
+    selected_multiclass_brier = selected_calibration["multiclass_brier"]
+    if selected_log_loss is None or selected_multiclass_brier is None:
+        raise ValueError("Policy-selected calibration requires at least one row")
     selected["actionable"] = (selected["net_rr"] >= config.min_net_rr) & (
         selected["expected_ev_r"] >= config.min_net_ev_r
     )
@@ -2129,6 +4017,10 @@ def evaluate_policy_model(
     trades, overlap_blocked_trades = filter_single_active_trade_per_symbol(
         actionable_trades,
         context="Policy evaluation",
+    )
+    actionable_calibration = _policy_calibration_metrics(
+        trades,
+        context="Policy actionable calibration",
     )
 
     opportunity_times = pd.DatetimeIndex(
@@ -2185,6 +4077,25 @@ def evaluate_policy_model(
     trade_cohort_count = int(len(trade_cohort_metrics))
     opportunity_cohort_count = int(len(cohort_metrics))
     no_trade_cohort_count = opportunity_cohort_count - trade_cohort_count
+    direction_robustness = _policy_direction_robustness(trades, opportunity_times)
+    symbol_robustness = _policy_symbol_robustness(trades, opportunity_times)
+    cluster_robustness = _policy_cluster_robustness(trades, opportunity_times)
+    regime_robustness = _policy_regime_robustness(
+        selected=selected,
+        trades=trades,
+        opportunity_times=opportunity_times,
+        development_high_volatility_atr_pct_threshold=(
+            development_high_volatility_atr_pct_threshold
+        ),
+    )
+    interaction_robustness = _policy_interaction_robustness(
+        selected=selected,
+        trades=trades,
+        opportunity_times=opportunity_times,
+        development_high_volatility_atr_pct_threshold=(
+            development_high_volatility_atr_pct_threshold
+        ),
+    )
 
     horizon_phases = _horizon_separated_phase_series(
         cohort_metrics["realized_mean_r"],
@@ -2273,8 +4184,17 @@ def evaluate_policy_model(
         "policy_selected_calibration_rows": int(len(selected)),
         "policy_selected_log_loss": float(selected_log_loss),
         "policy_selected_multiclass_brier": selected_multiclass_brier,
+        "policy_actionable_calibration_schema": POLICY_ACTIONABLE_CALIBRATION_SCHEMA,
+        "policy_actionable_calibration_rows": int(actionable_calibration["rows"]),
+        "policy_actionable_log_loss": actionable_calibration["log_loss"],
+        "policy_actionable_multiclass_brier": actionable_calibration["multiclass_brier"],
         "policy_overlap_blocked_trades": int(overlap_blocked_trades),
         "policy_trades": int(len(trades)),
+        "policy_direction_robustness": direction_robustness,
+        "policy_symbol_robustness": symbol_robustness,
+        "policy_cluster_robustness": cluster_robustness,
+        "policy_regime_robustness": regime_robustness,
+        "policy_interaction_robustness": interaction_robustness,
         "policy_cohorts": opportunity_cohort_count,
         "policy_trade_cohorts": trade_cohort_count,
         "policy_no_trade_cohorts": no_trade_cohort_count,

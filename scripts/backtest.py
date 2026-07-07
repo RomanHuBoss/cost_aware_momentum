@@ -1091,6 +1091,7 @@ async def run(args) -> None:
             stop_atr_multiplier=runtime.stop_atr_multiplier,
             tp_atr_multiplier=runtime.tp_atr_multiplier,
             entry_spread_bps=runtime.entry_spread_bps,
+            entry_zone_atr_fraction=runtime.entry_zone_atr_fraction,
             funding_history=market_data.funding,
             funding_interval_minutes=market_data.funding_interval_minutes,
             funding_interval_history=market_data.funding_interval_history,

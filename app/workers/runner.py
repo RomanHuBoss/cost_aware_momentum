@@ -70,12 +70,24 @@ def should_retry_incomplete_coverage(
 
 
 def should_retry_incomplete_inference(details: dict[str, object], *, max_retries: int) -> bool:
-    """Return true when an hourly inference covered only part of its universe."""
+    """Return true only when some symbols lack a terminal inference outcome.
 
+    A completed symbol may legitimately end as PUBLISHED, EXISTING_CURRENT_HOUR
+    or SKIPPED (for example NO_TRADE, spread, stale data or missing context).
+    Recommendation count is therefore not processing coverage.  New job evidence
+    records one terminal outcome per selected symbol; older details fall back to
+    the historical published/existing accounting for compatibility.
+    """
+
+    covered_keys = (
+        ("symbol_outcome_count",)
+        if "symbol_outcome_count" in details
+        else ("published", "existing_current_hour")
+    )
     return should_retry_incomplete_coverage(
         details,
         total_key="symbols_total",
-        covered_keys=("published", "existing_current_hour"),
+        covered_keys=covered_keys,
         retry_count_key="inference_retry_count",
         max_retries=max_retries,
     )

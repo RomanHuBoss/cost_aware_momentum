@@ -60,6 +60,8 @@ def _policy_values() -> dict[str, object]:
     return {
         "entry_spread_bps": 18.0,
         "maximum_executable_spread_bps": 18.0,
+        "entry_zone_atr_fraction": 0.12,
+        "maximum_signal_publication_delay_seconds": 600,
         "risk_rate": 0.0035,
         "max_total_open_risk_rate": 0.02,
         "margin_reserve_rate": 0.20,

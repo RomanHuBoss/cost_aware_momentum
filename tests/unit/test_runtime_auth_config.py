@@ -19,6 +19,7 @@ from app.ml.training import (
     TemporalCalibratedBarrierModel,
 )
 from tests.drift_reference import valid_production_drift_reference
+from tests.model_artifact_metrics import valid_runtime_policy_metrics
 
 
 class ArtifactStubModel:
@@ -125,11 +126,15 @@ def test_runtime_loads_calibrated_barrier_artifact(tmp_path: Path) -> None:
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
             "production_drift_reference": valid_production_drift_reference(),
+            "metrics": valid_runtime_policy_metrics(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
+            "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
                 "entry_spread_bps": 18.0,
+                "entry_zone_atr_fraction": 0.12,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
@@ -214,9 +219,12 @@ def test_runtime_rejects_non_finite_artifact_barrier_multiplier(tmp_path: Path) 
             "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
+            "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
                 "entry_spread_bps": 18.0,
+                "entry_zone_atr_fraction": 0.12,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",

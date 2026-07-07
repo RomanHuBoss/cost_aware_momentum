@@ -27,6 +27,14 @@ from app.ml.training import (
     WALK_FORWARD_SCHEMA_VERSION,
 )
 from tests.drift_reference import valid_production_drift_reference
+from tests.model_artifact_metrics import (
+    valid_policy_cluster_robustness,
+    valid_policy_direction_robustness,
+    valid_policy_interaction_robustness,
+    valid_policy_regime_robustness,
+    valid_policy_symbol_robustness,
+    valid_runtime_policy_metrics,
+)
 
 
 class _ScalarsResult:
@@ -55,6 +63,7 @@ async def test_signal_policy_uses_the_exact_model_atr_without_hidden_clipping(
         [
             {
                 "close_time": event_time,
+                "close": 100.0,
             }
         ]
     )
@@ -163,11 +172,15 @@ def _artifact_bundle(**updates: object) -> dict[str, object]:
         },
         "market_context_ablation_schema": "same-split-zeroed-context-v1",
         "production_drift_reference": valid_production_drift_reference(),
+        "metrics": valid_runtime_policy_metrics(),
         "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
         "entry_spread_bps": 18.0,
+        "entry_zone_atr_fraction": 0.12,
+        "maximum_signal_publication_delay_seconds": 600,
         "entry_execution_model": {
-            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
         },
         "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
         "walk_forward_schema": WALK_FORWARD_SCHEMA_VERSION,
@@ -247,7 +260,7 @@ def test_runtime_rejects_inconsistent_entry_execution_metadata(tmp_path: Path) -
 
     inconsistent = _artifact_bundle(
         entry_execution_model={
-            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
             "entry_spread_bps": 12.0,
         }
     )
@@ -260,7 +273,16 @@ def test_runtime_rejects_inconsistent_entry_execution_metadata(tmp_path: Path) -
 def _candidate(tmp_path: Path, metrics: dict[str, object]) -> ModelCandidate:
     now = datetime(2026, 7, 2, tzinfo=UTC)
     metrics = dict(metrics)
-    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
+    metrics.setdefault(
+        "production_drift_reference",
+        valid_production_drift_reference(
+            directional_rows=int(metrics.get("rows", 12)),
+            selected_rows=int(
+                metrics.get("policy_candidates", int(metrics.get("rows", 12)) // 2)
+            ),
+            actionability_rate=float(metrics.get("policy_trade_rate", 0.5)),
+        ),
+    )
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",
@@ -315,8 +337,9 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
         },
         "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
-            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
         },
         "historical_funding_schema": "bybit-settlement-timestamp-replay-v2",
         "historical_funding_timeline": {
@@ -377,7 +400,7 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v17",
+        "policy_metric_schema": "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",
@@ -391,9 +414,26 @@ def test_quality_gate_treats_positive_no_loss_profit_factor_as_unbounded(
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,
         "policy_horizon_phase_expected": 8,
-        "policy_candidates": 1_000,
+        "policy_candidates": 150,
         "policy_trades": 80,
-        "policy_trade_rate": 0.08,
+        "policy_direction_robustness": valid_policy_direction_robustness(
+            policy_trades=80,
+            policy_cohorts=80,
+        ),
+        "policy_symbol_robustness": valid_policy_symbol_robustness(policy_trades=80),
+        "policy_cluster_robustness": valid_policy_cluster_robustness(policy_trades=80),
+        "policy_regime_robustness": valid_policy_regime_robustness(
+            policy_trades=80,
+            policy_cohorts=80,
+        ),
+        "policy_interaction_robustness": valid_policy_interaction_robustness(
+            policy_trades=80
+        ),
+        "policy_actionable_calibration_schema": "actionable-policy-trades-final-holdout-v1",
+        "policy_actionable_calibration_rows": 80,
+        "policy_actionable_log_loss": 0.60,
+        "policy_actionable_multiclass_brier": 0.30,
+        "policy_trade_rate": 80 / 150,
         "policy_cohorts": 80,
         "policy_trade_cohorts": 80,
         "policy_no_trade_cohorts": 0,
@@ -557,6 +597,8 @@ def test_incumbent_with_different_barrier_geometry_is_not_compared_on_candidate_
         "candidate_stop_atr_multiplier": 1.15,
         "candidate_tp_atr_multiplier": 2.2,
         "candidate_entry_spread_bps": 18.0,
+        "candidate_entry_zone_atr_fraction": 0.12,
+        "incumbent_entry_zone_atr_fraction": 0.12,
         "incumbent_stop_atr_multiplier": 1.5,
         "incumbent_tp_atr_multiplier": 3.0,
         "incumbent_entry_spread_bps": 18.0,

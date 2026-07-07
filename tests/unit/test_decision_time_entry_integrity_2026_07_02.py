@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
-import pytest
 
 from app.ml.training import make_barrier_dataset
 
@@ -56,27 +55,13 @@ def _candles_with_post_decision_gap() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_dataset_uses_first_post_decision_open_as_executable_entry_proxy() -> None:
-    candles = _candles_with_post_decision_gap()
-    dataset = make_barrier_dataset(candles, horizon=4)
+def test_dataset_rejects_post_decision_gap_outside_entry_zone() -> None:
+    dataset = make_barrier_dataset(_candles_with_post_decision_gap(), horizon=4)
 
-    decision_time = pd.Timestamp("2026-01-02T01:00:00Z")
-    pair = dataset[dataset["decision_time"].eq(decision_time)].set_index("direction")
+    assert dataset.empty
+    assert dataset.attrs["hourly_continuity"]["skipped_entry_zone_timestamps"] == 1
 
-    assert set(pair.index) == {"LONG", "SHORT"}
-    assert pair.loc["LONG", "entry_price"] == pytest.approx(110.0)
-    assert pair.loc["SHORT", "entry_price"] == pytest.approx(110.0)
-    assert pair.loc["LONG", "barrier_upside_rate"] == pytest.approx(
-        pair.loc["LONG", "atr_pct_14"] * 2.20
-    )
-    assert pair.loc["LONG", "barrier_downside_rate"] == pytest.approx(
-        pair.loc["LONG", "atr_pct_14"] * 1.15
-    )
-    assert pair.loc["LONG", "target"] == "TIMEOUT"
-    assert pair.loc["LONG", "realized_gross_return"] == pytest.approx((110.50 - 110.0) / 110.0)
-
-
-def test_short_dataset_does_not_book_down_gap_before_executable_entry() -> None:
+def test_short_dataset_rejects_down_gap_outside_entry_zone() -> None:
     candles = _candles_with_post_decision_gap()
     future_mask = candles["open_time"] >= pd.Timestamp("2026-01-02T01:00:00Z")
     replacement = [
@@ -86,14 +71,11 @@ def test_short_dataset_does_not_book_down_gap_before_executable_entry() -> None:
         (89.6, 90.20, 88.90, 89.50),
     ]
     for index, values in zip(candles.index[future_mask], replacement, strict=True):
-        open_price, high, low, close = values
+        *_, close = values
         candles.loc[index, ["open", "high", "low", "close"]] = values
         candles.loc[index, "turnover"] = candles.loc[index, "volume"] * close
 
     dataset = make_barrier_dataset(candles, horizon=4)
-    decision_time = pd.Timestamp("2026-01-02T01:00:00Z")
-    pair = dataset[dataset["decision_time"].eq(decision_time)].set_index("direction")
 
-    assert pair.loc["SHORT", "entry_price"] == pytest.approx(90.0)
-    assert pair.loc["SHORT", "target"] == "TIMEOUT"
-    assert pair.loc["SHORT", "realized_gross_return"] == pytest.approx((90.0 - 89.50) / 90.0)
+    assert dataset.empty
+    assert dataset.attrs["hourly_continuity"]["skipped_entry_zone_timestamps"] == 1

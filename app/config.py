@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     market_poll_seconds: int = 60
     instrument_refresh_seconds: int = 21600
     inference_delay_seconds: int = 75
+    max_signal_publication_delay_seconds: int = 600
     outcome_intrabar_interval: Literal["1", "3", "5"] = "5"
     outcome_intrabar_max_windows_per_cycle: int = 100
 
@@ -103,6 +104,7 @@ class Settings(BaseSettings):
     fee_rate_taker: float = 0.00055
     base_slippage_bps: float = 3.0
     model_entry_spread_bps: float = 18.0
+    entry_zone_atr_fraction: float = 0.12
     stop_gap_reserve_bps: float = 10.0
     timeout_gross_return_rate: float = -0.002
 
@@ -296,6 +298,7 @@ class Settings(BaseSettings):
             "FEE_RATE_TAKER": self.fee_rate_taker,
             "BASE_SLIPPAGE_BPS": self.base_slippage_bps,
             "MODEL_ENTRY_SPREAD_BPS": self.model_entry_spread_bps,
+            "ENTRY_ZONE_ATR_FRACTION": self.entry_zone_atr_fraction,
             "STOP_GAP_RESERVE_BPS": self.stop_gap_reserve_bps,
             "UNIVERSE_MIN_TURNOVER_24H": self.universe_min_turnover_24h,
             "UNIVERSE_MAX_SPREAD_BPS": self.universe_max_spread_bps,
@@ -348,8 +351,20 @@ class Settings(BaseSettings):
             raise ValueError("BASE_SLIPPAGE_BPS cannot be negative")
         if self.model_entry_spread_bps < 0:
             raise ValueError("MODEL_ENTRY_SPREAD_BPS cannot be negative")
+        if not 0 < self.entry_zone_atr_fraction <= 1:
+            raise ValueError("ENTRY_ZONE_ATR_FRACTION must be in (0, 1]")
         if self.stop_gap_reserve_bps < 0:
             raise ValueError("STOP_GAP_RESERVE_BPS cannot be negative")
+        if self.inference_delay_seconds <= 0:
+            raise ValueError("INFERENCE_DELAY_SECONDS must be positive")
+        if self.max_signal_publication_delay_seconds < self.inference_delay_seconds:
+            raise ValueError(
+                "MAX_SIGNAL_PUBLICATION_DELAY_SECONDS cannot be below INFERENCE_DELAY_SECONDS"
+            )
+        if self.max_signal_publication_delay_seconds >= self.signal_ttl_minutes * 60:
+            raise ValueError(
+                "MAX_SIGNAL_PUBLICATION_DELAY_SECONDS must be below SIGNAL_TTL_MINUTES"
+            )
         if self.max_ticker_age_seconds <= 0:
             raise ValueError("MAX_TICKER_AGE_SECONDS must be positive")
         if self.max_candle_age_seconds <= 0:

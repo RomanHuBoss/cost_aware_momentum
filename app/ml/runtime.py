@@ -37,9 +37,16 @@ from app.ml.training import (
     MODEL_FEATURE_NAMES,
     MODEL_FEATURE_SCHEMA_VERSION,
     OUTCOME_CLASSES,
+    POLICY_ACTIONABLE_CALIBRATION_SCHEMA,
+    POLICY_METRIC_SCHEMA,
     TEMPORAL_SPLIT_SCHEMA_VERSION,
     TIMEOUT_RETURN_SCHEMA_VERSION,
     WALK_FORWARD_SCHEMA_VERSION,
+    validate_policy_cluster_robustness,
+    validate_policy_direction_robustness,
+    validate_policy_interaction_robustness,
+    validate_policy_regime_robustness,
+    validate_policy_symbol_robustness,
 )
 from app.risk.math import validate_probability_simplex
 
@@ -73,6 +80,8 @@ class ModelRuntime:
         self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
         self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
         self.entry_spread_bps = 0.0
+        self.entry_zone_atr_fraction = 0.12
+        self.maximum_signal_publication_delay_seconds = 600
         self.research_leverage = 3
         self.liquidation_equity_reserve_fraction = DEFAULT_EQUITY_RESERVE_FRACTION
 
@@ -93,6 +102,10 @@ class ModelRuntime:
             "stop_atr_multiplier": self.stop_atr_multiplier,
             "tp_atr_multiplier": self.tp_atr_multiplier,
             "entry_spread_bps": self.entry_spread_bps,
+            "entry_zone_atr_fraction": self.entry_zone_atr_fraction,
+            "maximum_signal_publication_delay_seconds": (
+                self.maximum_signal_publication_delay_seconds
+            ),
             "research_leverage": self.research_leverage,
             "liquidation_equity_reserve_fraction": (self.liquidation_equity_reserve_fraction),
             "feature_schema_version": (
@@ -153,6 +166,8 @@ class ModelRuntime:
         self.stop_atr_multiplier = DEFAULT_STOP_ATR_MULTIPLIER
         self.tp_atr_multiplier = DEFAULT_TP_ATR_MULTIPLIER
         self.entry_spread_bps = 0.0
+        self.entry_zone_atr_fraction = 0.12
+        self.maximum_signal_publication_delay_seconds = 600
         self.research_leverage = 3
         self.liquidation_equity_reserve_fraction = DEFAULT_EQUITY_RESERVE_FRACTION
         self.version = "baseline-momentum-v1"
@@ -303,6 +318,26 @@ class ModelRuntime:
                 abs_tol=1e-12,
             ):
                 raise ValueError("Model artifact entry_spread_bps conflicts with entry execution metadata")
+            entry_zone_atr_fraction = self._artifact_positive(
+                bundle, "entry_zone_atr_fraction"
+            )
+            nested_entry_zone_atr_fraction = self._artifact_positive(
+                entry_execution_model, "entry_zone_atr_fraction"
+            )
+            if entry_zone_atr_fraction > 1.0 or nested_entry_zone_atr_fraction > 1.0:
+                raise ValueError("Model artifact entry_zone_atr_fraction must not exceed one ATR")
+            if not math.isclose(
+                nested_entry_zone_atr_fraction,
+                entry_zone_atr_fraction,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(
+                    "Model artifact entry_zone_atr_fraction conflicts with entry execution metadata"
+                )
+            maximum_signal_publication_delay_seconds = self._artifact_positive_int(
+                bundle, "maximum_signal_publication_delay_seconds"
+            )
             raw_horizon = bundle.get("horizon_hours")
             if isinstance(raw_horizon, bool):
                 raise ValueError("Model artifact horizon_hours must be a positive integer")
@@ -377,6 +412,126 @@ class ModelRuntime:
                 != PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA
             ):
                 raise ValueError("Model production drift calibration cohort mismatch")
+            metrics = bundle.get("metrics")
+            if not isinstance(metrics, dict):
+                raise ValueError("Model artifact metrics are required")
+            if metrics.get("policy_metric_schema") != POLICY_METRIC_SCHEMA:
+                raise ValueError("Model artifact policy metric schema mismatch")
+            if (
+                metrics.get("policy_actionable_calibration_schema")
+                != POLICY_ACTIONABLE_CALIBRATION_SCHEMA
+            ):
+                raise ValueError("Model artifact actionable calibration schema mismatch")
+            raw_actionable_rows = metrics.get("policy_actionable_calibration_rows")
+            raw_policy_trades = metrics.get("policy_trades")
+            if (
+                isinstance(raw_actionable_rows, bool)
+                or not isinstance(raw_actionable_rows, int)
+                or isinstance(raw_policy_trades, bool)
+                or not isinstance(raw_policy_trades, int)
+                or raw_actionable_rows < 0
+                or raw_policy_trades < 0
+                or raw_actionable_rows != raw_policy_trades
+            ):
+                raise ValueError("Model artifact actionable calibration row count mismatch")
+            actionable_log_loss = metrics.get("policy_actionable_log_loss")
+            actionable_brier = metrics.get("policy_actionable_multiclass_brier")
+            if raw_actionable_rows > 0:
+                for name, value in (
+                    ("log loss", actionable_log_loss),
+                    ("multiclass Brier", actionable_brier),
+                ):
+                    if isinstance(value, bool):
+                        raise ValueError(f"Model artifact actionable calibration {name} is invalid")
+                    try:
+                        resolved = float(value)
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        raise ValueError(
+                            f"Model artifact actionable calibration {name} is invalid"
+                        ) from exc
+                    if not math.isfinite(resolved) or resolved < 0.0:
+                        raise ValueError(f"Model artifact actionable calibration {name} is invalid")
+            elif actionable_log_loss is not None or actionable_brier is not None:
+                raise ValueError("Model artifact actionable calibration is non-empty without trades")
+            try:
+                symbol_robustness = validate_policy_symbol_robustness(
+                    metrics.get("policy_symbol_robustness"),
+                    policy_trades=raw_policy_trades,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Model artifact symbol robustness evidence is invalid") from exc
+            try:
+                cluster_robustness = validate_policy_cluster_robustness(
+                    metrics.get("policy_cluster_robustness"),
+                    policy_trades=raw_policy_trades,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Model artifact cluster robustness evidence is invalid") from exc
+            symbol_evidence_names = {
+                str(item["symbol"]) for item in symbol_robustness["symbols"]
+            }
+            cluster_evidence_names = {
+                str(symbol)
+                for cluster in cluster_robustness["clusters"]
+                for symbol in cluster["symbols"]
+            }
+            if symbol_evidence_names != cluster_evidence_names:
+                raise ValueError("Model artifact cluster robustness symbol set mismatch")
+            raw_policy_cohorts = metrics.get("policy_cohorts")
+            if (
+                isinstance(raw_policy_cohorts, bool)
+                or not isinstance(raw_policy_cohorts, int)
+                or raw_policy_cohorts < 0
+            ):
+                raise ValueError("Model artifact policy cohort count is invalid")
+            try:
+                direction_robustness = validate_policy_direction_robustness(
+                    metrics.get("policy_direction_robustness"),
+                    policy_trades=raw_policy_trades,
+                    policy_cohorts=raw_policy_cohorts,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Model artifact direction robustness evidence is invalid") from exc
+            try:
+                regime_robustness = validate_policy_regime_robustness(
+                    metrics.get("policy_regime_robustness"),
+                    policy_trades=raw_policy_trades,
+                    policy_cohorts=raw_policy_cohorts,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Model artifact regime robustness evidence is invalid") from exc
+            try:
+                interaction_robustness = validate_policy_interaction_robustness(
+                    metrics.get("policy_interaction_robustness"),
+                    policy_trades=raw_policy_trades,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Model artifact interaction robustness evidence is invalid") from exc
+            interaction_symbols = {
+                str(item["symbol"]) for item in interaction_robustness["cells"]
+            }
+            interaction_directions = {
+                str(item["direction"]) for item in interaction_robustness["cells"]
+            }
+            interaction_regimes = {
+                str(item["regime"]) for item in interaction_robustness["cells"]
+            }
+            if interaction_symbols != symbol_evidence_names:
+                raise ValueError("Model artifact interaction robustness symbol set mismatch")
+            expected_directions = {
+                str(item["direction"])
+                for item in direction_robustness["directions"]
+                if int(item["trades"]) > 0
+            }
+            if interaction_directions != expected_directions:
+                raise ValueError("Model artifact interaction robustness direction set mismatch")
+            expected_regimes = {
+                str(item["regime"])
+                for item in regime_robustness["regimes"]
+                if int(item["trades"]) > 0
+            }
+            if interaction_regimes != expected_regimes:
+                raise ValueError("Model artifact interaction robustness regime set mismatch")
             self.bundle = bundle
             self.sha256 = digest
             self.version = version
@@ -386,6 +541,10 @@ class ModelRuntime:
             self.stop_atr_multiplier = stop_atr_multiplier
             self.tp_atr_multiplier = tp_atr_multiplier
             self.entry_spread_bps = entry_spread_bps
+            self.entry_zone_atr_fraction = entry_zone_atr_fraction
+            self.maximum_signal_publication_delay_seconds = (
+                maximum_signal_publication_delay_seconds
+            )
             self.research_leverage = research_leverage
             self.liquidation_equity_reserve_fraction = reserve_fraction
             self.source = source
@@ -405,6 +564,23 @@ class ModelRuntime:
             raise ValueError(f"Model artifact {key} must be positive and finite") from exc
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"Model artifact {key} must be positive and finite")
+        return value
+
+    @staticmethod
+    def _artifact_positive(bundle: dict[str, Any], key: str) -> float:
+        return ModelRuntime._artifact_multiplier(bundle, key, float("nan"))
+
+    @staticmethod
+    def _artifact_positive_int(bundle: dict[str, Any], key: str) -> int:
+        raw_value = bundle.get(key)
+        if isinstance(raw_value, bool):
+            raise ValueError(f"Model artifact {key} must be a positive integer")
+        try:
+            value = int(raw_value)
+            if float(raw_value) != float(value) or value <= 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"Model artifact {key} must be a positive integer") from exc
         return value
 
     @staticmethod

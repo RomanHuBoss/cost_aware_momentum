@@ -134,7 +134,7 @@ def _training_candles() -> pd.DataFrame:
             high = close + 0.40
             low = open_price - 0.40
         else:
-            open_price = 110.0 + (hour - 25) * 0.1
+            open_price = 100.0 + (hour - 25) * 0.1
             close = open_price + 0.2
             high = open_price + 0.8
             low = open_price - 0.5

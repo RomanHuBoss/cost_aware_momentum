@@ -8,6 +8,13 @@ from app.config import Settings
 from app.ml.data_profile import profile_from_symbol_rows
 from app.ml.lifecycle import ModelCandidate, evaluate_quality_gate
 from tests.drift_reference import valid_production_drift_reference
+from tests.model_artifact_metrics import (
+    valid_policy_cluster_robustness,
+    valid_policy_direction_robustness,
+    valid_policy_interaction_robustness,
+    valid_policy_regime_robustness,
+    valid_policy_symbol_robustness,
+)
 
 
 def _candidate(
@@ -27,7 +34,16 @@ def _candidate(
         minimum_rows_for_coverage=300,
     )
     metrics = dict(metrics)
-    metrics.setdefault("production_drift_reference", valid_production_drift_reference())
+    metrics.setdefault(
+        "production_drift_reference",
+        valid_production_drift_reference(
+            directional_rows=int(metrics.get("rows", 12)),
+            selected_rows=int(
+                metrics.get("policy_candidates", int(metrics.get("rows", 12)) // 2)
+            ),
+            actionability_rate=float(metrics.get("policy_trade_rate", 0.5)),
+        ),
+    )
     return ModelCandidate(
         path=tmp_path / "candidate.joblib",
         version="candidate-v1",
@@ -76,8 +92,9 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         },
         "walk_forward_market_context_noninferior_folds": 3,
         "entry_execution_model": {
-            "schema": "directional-half-spread-on-next-hour-open-v1",
+            "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
         },
         "historical_funding_schema": "bybit-settlement-timestamp-replay-v2",
         "historical_funding_timeline": {
@@ -138,7 +155,7 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
                 "policy_realized_mean_r": 0.01,
             },
         ],
-        "policy_metric_schema": "decision-open-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v17",
+        "policy_metric_schema": "decision-close-zone-directional-spread-entry-funding-mark-mtm-liquidation-cohort-v25",
         "policy_funding_timeline_complete": True,
         "policy_expected_funding_source": "none-no-point-in-time-forecast",
         "policy_realized_funding_source": "bybit-settlement-timestamp-replay-v2",
@@ -152,9 +169,26 @@ def _metrics(*, log_loss: float = 0.90, brier: float = 0.55) -> dict:
         "policy_capital_sleeves": 8,
         "policy_horizon_phase_count": 8,
         "policy_horizon_phase_expected": 8,
-        "policy_candidates": 1_000,
+        "policy_candidates": 150,
         "policy_trades": 80,
-        "policy_trade_rate": 0.08,
+        "policy_direction_robustness": valid_policy_direction_robustness(
+            policy_trades=80,
+            policy_cohorts=80,
+        ),
+        "policy_symbol_robustness": valid_policy_symbol_robustness(policy_trades=80),
+        "policy_cluster_robustness": valid_policy_cluster_robustness(policy_trades=80),
+        "policy_regime_robustness": valid_policy_regime_robustness(
+            policy_trades=80,
+            policy_cohorts=80,
+        ),
+        "policy_interaction_robustness": valid_policy_interaction_robustness(
+            policy_trades=80
+        ),
+        "policy_actionable_calibration_schema": "actionable-policy-trades-final-holdout-v1",
+        "policy_actionable_calibration_rows": 80,
+        "policy_actionable_log_loss": 0.60,
+        "policy_actionable_multiclass_brier": 0.30,
+        "policy_trade_rate": 80 / 150,
         "policy_cohorts": 80,
         "policy_trade_cohorts": 80,
         "policy_no_trade_cohorts": 0,

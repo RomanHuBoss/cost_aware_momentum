@@ -64,6 +64,12 @@ def decimal(value: float | str | Decimal) -> Decimal:
 
 
 @dataclass(frozen=True)
+class SignalPublicationBoundary:
+    publication_lag_seconds: float
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
 class SignalScenarioEconomics:
     prediction: Prediction
     reference: Decimal
@@ -79,13 +85,77 @@ class SignalScenarioEconomics:
     timeout_return_rate: Decimal
 
 
+def resolve_decision_execution_contract(
+    *,
+    settings: Settings,
+    runtime: ModelRuntime,
+) -> tuple[Decimal, int]:
+    """Resolve one live entry-timing contract and reject artifact/config drift."""
+
+    configured_zone = positive_finite_decimal(
+        getattr(settings, "entry_zone_atr_fraction", 0.12),
+        "entry_zone_atr_fraction",
+    )
+    if configured_zone > 1:
+        raise ValueError("Configured entry_zone_atr_fraction must not exceed one ATR")
+    configured_delay_raw = getattr(settings, "max_signal_publication_delay_seconds", None)
+    if configured_delay_raw is None:
+        # Backward-compatible support for narrow unit-test/settings stubs. The
+        # real Settings model always declares the immutable publication limit.
+        configured_delay_raw = max(1, int(getattr(settings, "signal_ttl_minutes", 90)) * 60 - 1)
+    configured_delay = int(configured_delay_raw)
+    if configured_delay <= 0:
+        raise ValueError("Configured maximum signal publication delay must be positive")
+
+    if bool(getattr(runtime, "is_baseline", True)):
+        return configured_zone, configured_delay
+
+    artifact_zone = positive_finite_decimal(
+        getattr(runtime, "entry_zone_atr_fraction", None),
+        "artifact_entry_zone_atr_fraction",
+    )
+    artifact_delay = int(getattr(runtime, "maximum_signal_publication_delay_seconds", 0))
+    if artifact_zone > 1 or artifact_delay <= 0:
+        raise ValueError("Active model artifact has an invalid decision execution contract")
+    if artifact_zone != configured_zone or artifact_delay != configured_delay:
+        raise ValueError("Active model artifact decision execution contract does not match runtime settings")
+    return artifact_zone, artifact_delay
+
+
+def validate_signal_publication_boundary(
+    *,
+    event_time: datetime,
+    publish_time: datetime,
+    maximum_delay_seconds: int,
+    signal_ttl_minutes: int,
+) -> SignalPublicationBoundary:
+    """Validate that a decision is published close to its immutable event time."""
+
+    if event_time.tzinfo is None or publish_time.tzinfo is None:
+        raise ValueError("Signal publication timestamps must be timezone-aware")
+    if isinstance(maximum_delay_seconds, bool) or maximum_delay_seconds <= 0:
+        raise ValueError("maximum signal publication delay must be positive")
+    if isinstance(signal_ttl_minutes, bool) or signal_ttl_minutes <= 0:
+        raise ValueError("signal TTL must be positive")
+    lag = (publish_time - event_time).total_seconds()
+    if lag < 0:
+        raise ValueError("Signal publication time cannot precede decision event time")
+    if lag > maximum_delay_seconds:
+        raise ValueError("Signal publication delay exceeds the decision-time execution contract")
+    expires_at = event_time + timedelta(minutes=signal_ttl_minutes)
+    if publish_time >= expires_at:
+        raise ValueError("Signal decision window already expired before publication")
+    return SignalPublicationBoundary(publication_lag_seconds=lag, expires_at=expires_at)
+
+
 def select_cost_aware_scenario(
     predictions: Iterable[Prediction],
     *,
     bid_price: Decimal | None,
     ask_price: Decimal | None,
-    last_price: Decimal,
+    decision_anchor_price: Decimal,
     atr_pct: Decimal,
+    entry_zone_atr_fraction: Decimal = Decimal("0.12"),
     costs: CostScenario,
     stop_atr_multiplier: float = DEFAULT_STOP_ATR_MULTIPLIER,
     tp_atr_multiplier: float = DEFAULT_TP_ATR_MULTIPLIER,
@@ -113,8 +183,11 @@ def select_cost_aware_scenario(
         raise ValueError("Exactly one LONG and one SHORT directional prediction are required")
 
     bid, ask = validated_bid_ask(bid_price=bid_price, ask_price=ask_price)
-    positive_finite_decimal(last_price, "last_price")
+    decision_anchor = positive_finite_decimal(decision_anchor_price, "decision_anchor_price")
     atr_pct = positive_finite_decimal(atr_pct, "atr_pct")
+    zone_fraction = positive_finite_decimal(entry_zone_atr_fraction, "entry_zone_atr_fraction")
+    if zone_fraction > 1:
+        raise ValueError("entry_zone_atr_fraction must not exceed one ATR")
     stop_multiplier = decimal(stop_atr_multiplier)
     tp_multiplier = decimal(tp_atr_multiplier)
     if (
@@ -125,9 +198,7 @@ def select_cost_aware_scenario(
     ):
         raise ValueError("ATR barrier multipliers must be positive and finite")
 
-    price_step = (
-        positive_finite_decimal(tick_size, "tick_size") if tick_size is not None else None
-    )
+    price_step = positive_finite_decimal(tick_size, "tick_size") if tick_size is not None else None
 
     def floor_to_tick(value: Decimal) -> Decimal:
         if price_step is None:
@@ -139,24 +210,27 @@ def select_cost_aware_scenario(
             return value
         return (value / price_step).to_integral_value(rounding=ROUND_CEILING) * price_step
 
+    # The entry band belongs to the model decision, not to the latest quote.  A
+    # moving band would silently turn old probabilities into a new trade after
+    # the market had already moved away from the evaluated decision boundary.
+    decision_atr = decision_anchor * atr_pct
+    zone_half = decision_atr * zone_fraction
+    entry_low = ceil_to_tick(decision_anchor - zone_half)
+    entry_high = floor_to_tick(decision_anchor + zone_half)
+    if entry_low > entry_high:
+        raise ValueError("No executable tick lies inside the decision-time entry zone")
+    if bid < entry_low or ask > entry_high:
+        raise ValueError("Executable quote moved outside the decision-time entry zone")
+
     candidates: list[SignalScenarioEconomics] = []
     for prediction in prediction_rows:
         reference = ask if prediction.direction == "LONG" else bid
         atr = reference * atr_pct
-        zone_half = atr * Decimal("0.12")
         stop_distance = atr * stop_multiplier
         tp_distance = atr * tp_multiplier
 
         if price_step is not None and reference % price_step != 0:
             raise ValueError("Executable bid/ask reference is not aligned to tick_size")
-
-        # The entry band is an admissible interval, not a risk barrier.  Keep only
-        # executable ticks inside the continuous policy band; outward rounding would
-        # silently approve fills that the model/policy never evaluated.
-        entry_low = ceil_to_tick(reference - zone_half)
-        entry_high = floor_to_tick(reference + zone_half)
-        if entry_low > entry_high:
-            raise ValueError("No executable tick lies inside the entry policy band")
         if prediction.direction == "LONG":
             # Conservative exchange rounding: widen the stop and pull the target
             # toward entry, so discrete ticks cannot understate loss or overstate reward.
@@ -180,9 +254,7 @@ def select_cost_aware_scenario(
                 max(timeout_return_r, Decimal("-1")),
                 support_upper,
             )
-            scenario_timeout_return_rate = (
-                bounded_timeout_return_r * gross_downside_rate
-            )
+            scenario_timeout_return_rate = bounded_timeout_return_r * gross_downside_rate
 
         net_rr, ev_r, downside, upside = net_rr_and_ev(
             entry=reference,
@@ -560,9 +632,7 @@ async def publish_hourly_signals(
     drift_guard = await production_drift_publication_guard(
         session,
         model_version=runtime_version or "unversioned-runtime",
-        monitor_enabled=(
-            bool(getattr(settings, "drift_monitor_enabled", False)) and bool(runtime_version)
-        ),
+        monitor_enabled=(bool(getattr(settings, "drift_monitor_enabled", False)) and bool(runtime_version)),
         runtime_is_baseline=bool(getattr(runtime, "is_baseline", True)),
     )
     if diagnostics is not None:
@@ -583,6 +653,58 @@ async def publish_hourly_signals(
             extra={"drift_interlock": drift_guard},
         )
         return []
+
+    signal_ttl_minutes = int(getattr(settings, "signal_ttl_minutes", 90))
+    try:
+        effective_entry_zone_fraction, maximum_publication_delay = resolve_decision_execution_contract(
+            settings=settings, runtime=runtime
+        )
+        publication_boundary = validate_signal_publication_boundary(
+            event_time=event_time,
+            publish_time=now,
+            maximum_delay_seconds=maximum_publication_delay,
+            signal_ttl_minutes=signal_ttl_minutes,
+        )
+    except ValueError as exc:
+        error_text = str(exc).lower()
+        reason_code = (
+            "decision_execution_contract_mismatch"
+            if "artifact" in error_text or "runtime settings" in error_text
+            else "decision_publication_lag_exceeded"
+        )
+        for symbol in selected_symbols:
+            record_symbol_outcome(
+                symbol,
+                terminal_state="SKIPPED",
+                reason_code=reason_code,
+            )
+        if diagnostics is not None:
+            diagnostics["publication_boundary"] = {
+                "passed": False,
+                "error": str(exc),
+                "reason_code": reason_code,
+                "publication_lag_seconds": (now - event_time).total_seconds(),
+                "maximum_delay_seconds": getattr(settings, "max_signal_publication_delay_seconds", None),
+            }
+            diagnostics["skipped_total"] = len(selected_symbols)
+            diagnostics["symbol_outcome_count"] = len(selected_symbols)
+        logger.warning(
+            "Signal publication blocked by decision-time execution contract",
+            extra={
+                "event_time": event_time.isoformat(),
+                "publish_time": now.isoformat(),
+                "error": str(exc),
+                "reason_code": reason_code,
+            },
+        )
+        return []
+    if diagnostics is not None:
+        diagnostics["publication_boundary"] = {
+            "passed": True,
+            "publication_lag_seconds": publication_boundary.publication_lag_seconds,
+            "maximum_delay_seconds": maximum_publication_delay,
+            "expires_at": publication_boundary.expires_at.isoformat(),
+        }
 
     profiles = (await session.execute(select(CapitalProfile))).scalars().all()
     if diagnostics is not None:
@@ -682,7 +804,9 @@ async def publish_hourly_signals(
                     )
                 )
             except ValueError as exc:
-                record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="incomplete_market_context")
+                record_symbol_outcome(
+                    symbol, terminal_state="SKIPPED", reason_code="incomplete_market_context"
+                )
                 logger.warning(
                     "Skipping symbol with incomplete point-in-time market context",
                     extra={"symbol": symbol, "error": str(exc)},
@@ -695,7 +819,9 @@ async def publish_hourly_signals(
             logger.warning("Skipping symbol without executable bid/ask", extra={"symbol": symbol})
             continue
         if spread_bps > settings.max_spread_bps:
-            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="spread_above_execution_limit")
+            record_symbol_outcome(
+                symbol, terminal_state="SKIPPED", reason_code="spread_above_execution_limit"
+            )
             logger.info(
                 "Skipping symbol above executable spread limit",
                 extra={"symbol": symbol, "spread_bps": spread_bps},
@@ -759,8 +885,9 @@ async def publish_hourly_signals(
                 directional_predictions,
                 bid_price=ticker.bid_price,
                 ask_price=ticker.ask_price,
-                last_price=ticker.last_price,
+                decision_anchor_price=decimal(frame.iloc[-1]["close"]),
                 atr_pct=atr_pct,
+                entry_zone_atr_fraction=effective_entry_zone_fraction,
                 costs=costs,
                 stop_atr_multiplier=runtime.stop_atr_multiplier,
                 tp_atr_multiplier=runtime.tp_atr_multiplier,
@@ -799,9 +926,7 @@ async def publish_hourly_signals(
         ).scalar_one_or_none()
         if existing:
             if diagnostics is not None:
-                diagnostics["existing_current_hour"] = int(
-                    diagnostics.get("existing_current_hour", 0)
-                ) + 1
+                diagnostics["existing_current_hour"] = int(diagnostics.get("existing_current_hour", 0)) + 1
             record_symbol_outcome(
                 symbol,
                 terminal_state="EXISTING_CURRENT_HOUR",
@@ -828,7 +953,7 @@ async def publish_hourly_signals(
             status="PUBLISHED",
             event_time=event_time,
             publish_time=now,
-            expires_at=now + timedelta(minutes=settings.signal_ttl_minutes),
+            expires_at=publication_boundary.expires_at,
             horizon_hours=settings.default_horizon_hours,
             entry_reference=reference,
             entry_low=entry_low,
@@ -862,12 +987,14 @@ async def publish_hourly_signals(
                 **model_features,
                 "score": prediction.score,
                 "spread_bps": spread_bps,
-                "directional_predictions": directional_prediction_snapshot(
-                    directional_predictions
-                ),
+                "directional_predictions": directional_prediction_snapshot(directional_predictions),
                 "model_runtime": runtime.metadata(),
                 "economics_assumptions": {
                     "timeout_gross_return_rate": str(scenario.timeout_return_rate),
+                    "decision_anchor_price": str(frame.iloc[-1]["close"]),
+                    "entry_zone_atr_fraction": str(effective_entry_zone_fraction),
+                    "publication_lag_seconds": publication_boundary.publication_lag_seconds,
+                    "maximum_publication_delay_seconds": maximum_publication_delay,
                     "timeout_return_r": prediction.timeout_return_r,
                     "timeout_return_source": (
                         "artifact_training_direction_median_r"
@@ -876,12 +1003,8 @@ async def publish_hourly_signals(
                     ),
                     "expected_funding_source": POLICY_EXPECTED_FUNDING_SOURCE,
                     "market_signal_funding_rate_scenario": "0",
-                    "execution_funding_projection_at_publish": str(
-                        execution_funding_scenario
-                    ),
-                    "execution_funding_source": (
-                        "ticker_current_rate_projection_revalidated_per_plan"
-                    ),
+                    "execution_funding_projection_at_publish": str(execution_funding_scenario),
+                    "execution_funding_source": ("ticker_current_rate_projection_revalidated_per_plan"),
                 },
             },
         )
@@ -934,9 +1057,7 @@ async def publish_hourly_signals(
                 payload={"symbol": symbol, "replacement_signal_id": str(signal.id)},
             )
         for profile in profiles:
-            plan = await create_execution_plan(
-                session, signal=signal, profile=profile, settings=settings
-            )
+            plan = await create_execution_plan(session, signal=signal, profile=profile, settings=settings)
             if diagnostics is not None:
                 status_counts = diagnostics.setdefault("plan_status_counts", {})
                 assert isinstance(status_counts, dict)
@@ -972,9 +1093,7 @@ async def publish_hourly_signals(
     if diagnostics is not None:
         skip_counts = diagnostics.get("skip_counts")
         diagnostics["skipped_total"] = (
-            sum(int(value) for value in skip_counts.values())
-            if isinstance(skip_counts, dict)
-            else 0
+            sum(int(value) for value in skip_counts.values()) if isinstance(skip_counts, dict) else 0
         )
         symbol_outcomes = diagnostics.get("symbol_outcomes")
         if not isinstance(symbol_outcomes, list) or len(symbol_outcomes) != len(selected_symbols):

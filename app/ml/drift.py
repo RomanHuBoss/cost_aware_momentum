@@ -7,12 +7,13 @@ from typing import Any
 
 import numpy as np
 
-PRODUCTION_DRIFT_REFERENCE_SCHEMA = "final-holdout-feature-probability-selected-calibration-reference-v2"
-PRODUCTION_DRIFT_REPORT_SCHEMA = "production-drift-report-v3"
+PRODUCTION_DRIFT_REFERENCE_SCHEMA = "final-holdout-feature-probability-selected-calibration-reference-v4"
+PRODUCTION_DRIFT_REPORT_SCHEMA = "production-drift-report-v4"
 PRODUCTION_DRIFT_OUTCOME_COHORT_SCHEMA = "full-horizon-mature-signal-outcomes-v1"
 DIRECTIONAL_PREDICTION_SCHEMA = "both-directional-probabilities-v1"
-PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA = "selected-direction-final-holdout-v1"
+PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA = "selected-direction-final-holdout-v2"
 PRODUCTION_DRIFT_UNSELECTED_CALIBRATION_COHORT_SCHEMA = "all-direction-final-holdout-v0"
+PRODUCTION_DRIFT_ACTIONABILITY_COHORT_SCHEMA = "published-policy-trades-per-symbol-opportunity-v1"
 
 
 
@@ -197,6 +198,10 @@ def build_production_drift_reference(
     ordered_classes = _validated_classes(classes)
     probability_matrix = _validate_probability_matrix(probabilities, expected_rows=len(feature_matrix))
     if calibration_reference is None:
+        if calibration_cohort_schema == PRODUCTION_DRIFT_CALIBRATION_COHORT_SCHEMA:
+            raise ValueError(
+                "explicit selected-direction calibration is required for the selected cohort schema"
+            )
         calibration = {
             "schema": calibration_cohort_schema,
             "rows": int(len(probability_matrix)),
@@ -254,6 +259,7 @@ def build_production_drift_reference(
         },
         "calibration": calibration,
         "actionability": {
+            "cohort_schema": PRODUCTION_DRIFT_ACTIONABILITY_COHORT_SCHEMA,
             "rate": float(actionability_rate),
             "min_net_rr": float(min_net_rr),
             "min_net_ev_r": float(min_net_ev_r),
@@ -300,6 +306,8 @@ def validate_production_drift_reference(reference: object) -> dict[str, object]:
     actionability = reference.get("actionability")
     if not isinstance(actionability, dict):
         raise ValueError("Production drift actionability reference is required")
+    if actionability.get("cohort_schema") != PRODUCTION_DRIFT_ACTIONABILITY_COHORT_SCHEMA:
+        raise ValueError("Production drift actionability cohort schema mismatch")
     rate = actionability.get("rate")
     if isinstance(rate, bool) or not math.isfinite(float(rate)) or not 0 <= float(rate) <= 1:
         raise ValueError("Production drift actionability rate is invalid")
@@ -367,22 +375,47 @@ def evaluate_production_drift(
     feature_rows: Sequence[Mapping[str, object]],
     probability_rows: Sequence[Mapping[str, object]],
     outcome_rows: Sequence[Mapping[str, object]],
-    actionable_flags: Sequence[bool],
+    actionable_flags: Sequence[bool] | None = None,
     expected_opportunities: int,
-    published_opportunities: int,
+    published_opportunities: int | None = None,
+    processed_opportunities: int | None = None,
+    actionable_opportunities: int | None = None,
     thresholds: DriftThresholds,
 ) -> dict[str, object]:
     validated_reference = validate_production_drift_reference(reference)
-    if isinstance(expected_opportunities, bool) or expected_opportunities < 0:
+    if isinstance(expected_opportunities, bool) or not isinstance(expected_opportunities, int) or expected_opportunities < 0:
         raise ValueError("expected_opportunities must be a non-negative integer")
-    if isinstance(published_opportunities, bool) or published_opportunities < 0:
-        raise ValueError("published_opportunities must be a non-negative integer")
-    if published_opportunities > expected_opportunities:
-        raise ValueError("published_opportunities cannot exceed expected_opportunities")
-    if len(actionable_flags) != len(feature_rows):
-        raise ValueError("actionable_flags must align with feature_rows")
-    if any(not isinstance(value, (bool, np.bool_)) for value in actionable_flags):
-        raise ValueError("actionable_flags must contain booleans")
+    if processed_opportunities is None:
+        processed_opportunities = published_opportunities
+    if processed_opportunities is None:
+        raise ValueError("processed_opportunities is required")
+    if (
+        isinstance(processed_opportunities, bool)
+        or not isinstance(processed_opportunities, int)
+        or processed_opportunities < 0
+        or processed_opportunities > expected_opportunities
+    ):
+        raise ValueError("processed_opportunities must be within expected opportunities")
+    if actionable_opportunities is None:
+        if actionable_flags is None:
+            raise ValueError("actionable_opportunities or actionable_flags is required")
+        if any(not isinstance(value, (bool, np.bool_)) for value in actionable_flags):
+            raise ValueError("actionable_flags must contain booleans")
+        actionable_opportunities = int(sum(bool(value) for value in actionable_flags))
+        actionability_denominator = len(actionable_flags)
+    else:
+        if actionable_flags is not None and any(
+            not isinstance(value, (bool, np.bool_)) for value in actionable_flags
+        ):
+            raise ValueError("actionable_flags must contain booleans")
+        actionability_denominator = expected_opportunities
+    if (
+        isinstance(actionable_opportunities, bool)
+        or not isinstance(actionable_opportunities, int)
+        or actionable_opportunities < 0
+        or actionable_opportunities > processed_opportunities
+    ):
+        raise ValueError("actionable_opportunities must be within processed opportunities")
 
     alerts: list[str] = []
     critical_evidence: list[str] = []
@@ -401,7 +434,7 @@ def evaluate_production_drift(
             target.append(reason)
 
     coverage_rate = (
-        float(published_opportunities / expected_opportunities) if expected_opportunities else 0.0
+        float(processed_opportunities / expected_opportunities) if expected_opportunities else 0.0
     )
     coverage_status = "OK"
     if expected_opportunities <= 0 or coverage_rate < thresholds.minimum_coverage_rate:
@@ -579,8 +612,8 @@ def evaluate_production_drift(
         }
 
     observed_actionability_rate = (
-        float(sum(bool(value) for value in actionable_flags) / len(actionable_flags))
-        if actionable_flags
+        float(actionable_opportunities / actionability_denominator)
+        if actionability_denominator
         else 0.0
     )
     reference_actionability_rate = float(validated_reference["actionability"]["rate"])
@@ -607,7 +640,7 @@ def evaluate_production_drift(
         "coverage": {
             "status": coverage_status,
             "expected_opportunities": int(expected_opportunities),
-            "published_opportunities": int(published_opportunities),
+            "processed_opportunities": int(processed_opportunities),
             "rate": coverage_rate,
             "minimum_rate": thresholds.minimum_coverage_rate,
         },
@@ -626,7 +659,9 @@ def evaluate_production_drift(
         "calibration": calibration,
         "actionability": {
             "status": actionability_status,
-            "observations": len(actionable_flags),
+            "observations": int(actionability_denominator),
+            "opportunities": int(actionability_denominator),
+            "actionable_opportunities": int(actionable_opportunities),
             "rate": observed_actionability_rate,
             "reference_rate": reference_actionability_rate,
             "absolute_delta": actionability_delta,

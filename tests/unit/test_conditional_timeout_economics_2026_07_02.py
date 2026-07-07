@@ -21,6 +21,7 @@ from app.ml.training import (
 from app.risk.math import CostScenario
 from app.services.signals import select_cost_aware_scenario
 from tests.drift_reference import valid_production_drift_reference
+from tests.model_artifact_metrics import valid_runtime_policy_metrics
 
 D = Decimal
 
@@ -81,7 +82,7 @@ def test_signal_policy_uses_scenario_specific_timeout_return_r() -> None:
         predictions,
         bid_price=D("100"),
         ask_price=D("100"),
-        last_price=D("100"),
+        decision_anchor_price=D("100"),
         atr_pct=D("0.02"),
         costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
         timeout_return_rate=D("-0.002"),
@@ -124,9 +125,12 @@ def test_runtime_rejects_artifact_without_timeout_return_schema(tmp_path: Path) 
             "production_drift_reference": valid_production_drift_reference(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
+            "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
                 "entry_spread_bps": 18.0,
+                "entry_zone_atr_fraction": 0.12,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
@@ -184,11 +188,15 @@ def test_runtime_propagates_artifact_timeout_return_r(tmp_path: Path) -> None:
             },
             "market_context_ablation_schema": "same-split-zeroed-context-v1",
             "production_drift_reference": valid_production_drift_reference(),
+            "metrics": valid_runtime_policy_metrics(),
             "label_path_schema_version": LABEL_PATH_SCHEMA_VERSION,
             "entry_spread_bps": 18.0,
+            "entry_zone_atr_fraction": 0.12,
+            "maximum_signal_publication_delay_seconds": 600,
             "entry_execution_model": {
-                "schema": "directional-half-spread-on-next-hour-open-v1",
+                "schema": "decision-close-zone-next-hour-open-directional-half-spread-v2",
                 "entry_spread_bps": 18.0,
+                "entry_zone_atr_fraction": 0.12,
             },
             "temporal_split_schema": TEMPORAL_SPLIT_SCHEMA_VERSION,
             "walk_forward_schema": "expanding-train-rolling-calibration-purged-v1",
