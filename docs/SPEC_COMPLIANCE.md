@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.38.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.39.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -26,6 +26,24 @@
 | Operator-visible automatic experiment control | Реализовано 1.34.0 | Fresh trainer heartbeat публикует exact family/candidate, stage, configuration, attempt и `subprocess_active`. `CANCEL_EXPERIMENT` требует exact target и CSRF/authenticated operator context. Formal subprocess запускается в isolated POSIX session/process group или Windows `CREATE_NEW_PROCESS_GROUP`; cancel/timeout/failure завершает всю доступную group/tree и сохраняет `subprocess-tree-termination-v1`. Mismatched/stale requests fail closed; pending `CHECK_NOW`/`RECOVER_NOW` не блокирует cancel; open trial закрывается append-only `FAILED`; preregistration и прошлые results не удаляются. Linux descendant runtime доказан; Windows runtime и намеренно detached POSIX `setsid()` descendants остаются непроверенными/вне group guarantee. |
 | Candidate/live recommendation attrition diagnostics | Реализовано prospectively; mature outcome attribution 1.35.0 | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются. Report v3 exact-join связывает instrumented `signal_id`/`plan_id` с persisted `SignalOutcome`/`PlanOutcome`, использует только full-horizon mature cohort с `resolved_at <= report.until` и показывает TP/SL/TIMEOUT, ambiguity, valuation coverage и descriptive `counterfactual_r` по initial status/stage/reason. Missing/conflicting mature evidence блокируется. История до 1.24.0 не реконструируется; это counterfactual diagnostic, не actual execution PnL, causal decomposition или основание ослаблять gates. |
 
+
+## Work package: decision-time execution snapshot freshness barrier
+
+Release 1.39.0 закрывает mass-staleness defect, при котором fresh market signals получали profile-specific execution plans со статусом `BLOCKED_STALE_DATA`. Ticker refresh 1.35.5 выполнялся непосредственно перед publication, но account snapshot и orderbook оставались результатом более раннего общего poll. Startup additionally выполнял catch-up inference до первого private account sync, а initial backfill мог состарить order books на часы.
+
+Реализовано:
+
+- hourly и universe-catchup inference используют общий `_refresh_execution_inputs`;
+- при `BYBIT_READ_ONLY_ACCOUNT=true` wallet/equity и positions обновляются до market-depth refresh;
+- active-universe order books обновляются после account state и до final ticker batch;
+- non-empty universe с нулевым stored/duplicate orderbook coverage блокирует transaction до signal write;
+- private account refresh failure также блокирует publication;
+- partial orderbook coverage сохраняется в `JobRun.details.execution_input_refresh`, а per-symbol age/depth checks остаются fail-closed;
+- freshness windows, signal TTL, model/promotion gates, EV/RR и risk limits не изменены.
+
+Отдельный вывод по trainer readiness: `4 из 1206` в dynamic mode является честным prospective count, а не скоростью candle backfill. Point-in-time replay исключает все decision rows до первого committed eligibility snapshot, поскольку historical membership/spread decisions не могут быть восстановлены из OHLCV. Release не фабрикует pre-ledger evidence и не снижает 1206.
+
+Ограничения: live PostgreSQL/Bybit startup не проверен; последовательный REST orderbook refresh полного operator universe не benchmarked. Частичные public API failures по-прежнему могут блокировать отдельные symbols. Исправление operational availability не доказывает прибыльность стратегии.
 
 ## Work package: immutable background trainer preflight scope
 

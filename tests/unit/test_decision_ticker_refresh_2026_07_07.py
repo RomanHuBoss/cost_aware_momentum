@@ -38,11 +38,18 @@ async def test_hourly_inference_refreshes_tickers_immediately_before_publication
         events.append("persist_tickers")
         return 2
 
+    async def sync_orderbooks(_session, _client, symbols, *, depth):
+        assert set(symbols) == {"BTCUSDT", "ETHUSDT"}
+        assert depth > 0
+        events.append("persist_orderbooks")
+        return {"requested": 2, "stored": 2, "duplicates": 0, "failed": 0}
+
     async def publish(_session, **kwargs):
         assert kwargs["symbols"] == worker.active_symbols
         events.append("publish")
         return []
 
+    monkeypatch.setattr(runner_module, "sync_orderbooks", sync_orderbooks)
     monkeypatch.setattr(runner_module, "sync_tickers", sync_tickers)
     monkeypatch.setattr(runner_module, "publish_hourly_signals", publish)
 
@@ -51,7 +58,7 @@ async def test_hourly_inference_refreshes_tickers_immediately_before_publication
         datetime(2026, 7, 7, 1, tzinfo=UTC),
     )
 
-    assert events == ["fetch_tickers", "persist_tickers", "publish"]
+    assert events == ["persist_orderbooks", "fetch_tickers", "persist_tickers", "publish"]
     assert result["decision_ticker_refresh"]["requested"] == 2
     assert result["decision_ticker_refresh"]["stored"] == 2
 
@@ -68,6 +75,11 @@ async def test_zero_row_decision_ticker_refresh_blocks_inference_fail_closed(
     )
     worker.run_job = _execute_job
 
+    monkeypatch.setattr(
+        runner_module,
+        "sync_orderbooks",
+        AsyncMock(return_value={"requested": 1, "stored": 1, "duplicates": 0, "failed": 0}),
+    )
     monkeypatch.setattr(runner_module, "sync_tickers", AsyncMock(return_value=0))
     publish = AsyncMock(return_value=[])
     monkeypatch.setattr(runner_module, "publish_hourly_signals", publish)
@@ -102,16 +114,22 @@ async def test_catchup_inference_uses_the_same_fresh_ticker_barrier(
         events.append("persist_tickers")
         return 1
 
+    async def sync_orderbooks(_session, _client, _symbols, *, depth):
+        assert depth > 0
+        events.append("persist_orderbooks")
+        return {"requested": 1, "stored": 1, "duplicates": 0, "failed": 0}
+
     async def publish(_session, **_kwargs):
         events.append("publish")
         return []
 
+    monkeypatch.setattr(runner_module, "sync_orderbooks", sync_orderbooks)
     monkeypatch.setattr(runner_module, "sync_tickers", sync_tickers)
     monkeypatch.setattr(runner_module, "publish_hourly_signals", publish)
 
     result = await runner_module.Worker.catchup_inference_job(worker, "universe_expanded")
 
-    assert events == ["fetch_tickers", "persist_tickers", "publish"]
+    assert events == ["persist_orderbooks", "fetch_tickers", "persist_tickers", "publish"]
     assert result["decision_ticker_refresh"]["stored"] == 1
 
 

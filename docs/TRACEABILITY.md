@@ -1,6 +1,6 @@
 # Traceability
 
-Состояние: release 1.38.0, 2026-07-07. Таблица дополнена immutable preflight symbol/time scope для background trainer; executable-spread replay, durable model-artifact storage, decision-time freshness, point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
+Состояние: release 1.39.0, 2026-07-07. Таблица дополнена decision-time account/orderbook/ticker freshness barrier; immutable trainer scope, executable-spread replay, durable model-artifact storage, point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
@@ -80,14 +80,22 @@
 | TICKER-FRESH-02 | Медленные orderbook/backfill операции не должны состарить только что записанный ticker batch | `market_job` выполняет slow work, затем получает новый all-tickers response и сохраняет его последним | `test_market_sync_fetches_a_new_ticker_payload_after_slow_snapshot_work` | Проверено red → green unit |
 | TICKER-FRESH-03 | Полностью пустой refresh не должен запускать inference на заведомо старых строках | non-empty active universe + `stored == 0` raises before publication | `test_zero_row_decision_ticker_refresh_blocks_inference_fail_closed` | Проверено red → green unit |
 | TICKER-OBS-01 | Stale warning должен содержать доказуемую freshness geometry | JSON allowlist сохраняет age/max/source/received timestamps; signal warning заполняет их | `test_json_logging_preserves_ticker_freshness_diagnostics` | Проверено red → green unit |
+| EXEC-FRESH-01 | Startup/catch-up не должен строить read-only plans до свежего account snapshot | `_refresh_execution_inputs` вызывает `sync_read_only_account` до orderbook/ticker и publication | `test_catchup_inference_uses_same_execution_snapshot_barrier`, account-failure regression | Проверено red → green unit |
+| EXEC-FRESH-02 | Долгий market/backfill cycle не должен использовать старую depth snapshot при новом signal TTL | hourly/catch-up refresh active-universe order books непосредственно перед final ticker batch and publish | hourly ordering regression + updated ticker freshness suite | Проверено red → green unit |
+| EXEC-FRESH-03 | Полный orderbook refresh failure не должен создавать universe известных blocked plans | requested > 0 и stored + duplicates == 0 raises before publication | `test_zero_orderbook_refresh_coverage_blocks_publication_fail_closed` | Проверено red → green unit |
+| EXEC-FRESH-04 | Manual capital mode не должен требовать private account API, но обязан обновлять market depth | account refresh conditional on `bybit_read_only_account`; orderbook/ticker barrier unconditional | `test_manual_capital_mode_skips_private_account_refresh` | Проверено unit |
 | TIMEOUT-EXEC-01 | Conditional TIMEOUT estimate должен сохранять stop-risk `R` при изменении executable entry/VWAP | `signal_timeout_return_rate(..., entry=...)` reprojects bounded immutable `timeout_return_r` на current gross stop distance | `test_execution_reprojects_conditional_timeout_r_to_current_entry_geometry` | Проверено red → green LONG/SHORT unit |
 | TIMEOUT-EXEC-02 | Stale signal-reference absolute rate не должен давать ложный policy pass | Plan/acceptance call helper с current entry; independent boundary case сравнивает stale 0.0526R с current 0.0235R при gate 0.05R | `test_current_entry_timeout_repricing_prevents_false_positive_ev_gate` | Проверено unit |
 | TIMEOUT-EXEC-03 | Plan evidence должно отражать current depth VWAP semantics | converged `planning_entry` передаётся в TIMEOUT projection; schema `tp-sl-timeout-current-entry-r-v2` | `test_execution_plan_reprojects_timeout_r_at_current_vwap` | Проверено unit |
 | TIMEOUT-EXEC-04 | Legacy signals и invalid conditional evidence должны обрабатываться явно | no-`R` path сохраняет stored absolute/fallback; non-finite `R`/invalid geometry fail closed | legacy and non-finite regressions | Проверено unit |
-| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.38.0 не меняет configured limits; он фиксирует preflight cohort/cutoff и добавляет post-feature coverage interlock | full suite + diff inspection | Реализовано |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.39.0 не меняет configured limits; он перемещает существующие read-only snapshot refreshes к publication boundary | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка
+
+- Live decision-time account/orderbook/ticker refresh was not executed against the operator PostgreSQL/Bybit environment; unit tests verify ordering and fail-closed behavior.
+- Full-universe orderbook refresh wall-clock duration and rate-limit behavior were not benchmarked.
+- Dynamic `4/1206` readiness remains prospective by design; pre-ledger membership/spread evidence is not reconstructed.
 
 - Actual PostgreSQL background fit with a frozen trigger profile was not executed because no isolated integration database was configured.
 - Stage-by-stage pre-fit loss across continuity, market context and labels remains diagnostic work; post-fit quality gate now blocks material scope divergence.

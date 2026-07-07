@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.39.0 — 2026-07-07
+
+### Fixed
+
+- Added a decision-time execution-input barrier for both hourly and universe-catchup inference: read-only account snapshot, active-universe order books and the ticker batch are refreshed immediately before signal/plan publication.
+- Prevented startup catch-up from publishing a whole universe of profile plans before the first account sync or after order books had aged during long bootstrap/backfill work.
+- Abort publication fail-closed when a configured read-only account refresh fails or a non-empty universe has zero successful/idempotently-covered orderbook refreshes.
+- Preserve partial orderbook coverage diagnostics and all existing per-symbol stale checks; no freshness window, model gate, EV/RR threshold or risk limit was relaxed.
+- Added five red → green regressions and updated the previous ticker-barrier tests to cover the combined account/orderbook/ticker publication boundary.
+
 ## 1.38.0 — 2026-07-07
 
 - Fixed a confirmed dynamic-trainer preflight/fit mismatch: background fit now consumes the exact symbols persisted in the triggering `training_data_profile` instead of reloading an unlimited dynamic universe.

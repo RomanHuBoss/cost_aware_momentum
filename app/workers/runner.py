@@ -678,13 +678,58 @@ class Worker:
 
         return await self.run_job("account_sync", scheduled, task)
 
+    async def _refresh_execution_inputs(
+        self,
+        session: AsyncSession,
+        symbols: Iterable[str],
+        *,
+        purpose: str,
+    ) -> dict[str, object]:
+        """Refresh every mutable snapshot required by execution-plan construction.
+
+        Market signals are account-independent, but the UI presents profile-specific
+        execution plans created in the same publication transaction.  Refreshing only
+        tickers allowed a long startup/backfill cycle to publish a whole universe of
+        plans against missing capital or stale order books.  Keep the strict freshness
+        limits and move all required reads immediately in front of publication.
+        """
+
+        account_refresh: dict[str, object] = {"enabled": False}
+        if settings.bybit_read_only_account:
+            account_refresh = await sync_read_only_account(session, self.client, settings)
+
+        orderbook_refresh = await sync_orderbooks(
+            session,
+            self.client,
+            symbols,
+            depth=settings.orderbook_depth_levels,
+        )
+        requested = int(orderbook_refresh.get("requested", 0) or 0)
+        covered = int(orderbook_refresh.get("stored", 0) or 0) + int(
+            orderbook_refresh.get("duplicates", 0) or 0
+        )
+        if requested > 0 and covered <= 0:
+            raise RuntimeError(f"{purpose} orderbook refresh stored no active symbols")
+
+        ticker_refresh = await self._refresh_tickers_for_symbols(
+            session,
+            symbols,
+            purpose=purpose,
+        )
+        return {
+            "account": account_refresh,
+            "orderbooks": orderbook_refresh,
+            "tickers": ticker_refresh,
+        }
+
     async def inference_job(self, event_time: datetime) -> dict:
         async def task(session):
-            decision_ticker_refresh = await self._refresh_tickers_for_symbols(
+            execution_input_refresh = await self._refresh_execution_inputs(
                 session,
                 self.active_symbols,
                 purpose="hourly_inference",
             )
+            decision_ticker_refresh = execution_input_refresh["tickers"]
             diagnostics: dict[str, object] = {}
             published = await publish_hourly_signals(
                 session,
@@ -698,11 +743,12 @@ class Worker:
                 "universe_symbols": len(self.active_symbols),
                 "published": len(published),
                 "signal_ids": [str(item.id) for item in published],
+                "execution_input_refresh": execution_input_refresh,
                 "decision_ticker_refresh": decision_ticker_refresh,
                 **diagnostics,
             }
 
-        return await self.run_job(
+        result = await self.run_job(
             "hourly_inference",
             event_time,
             task,
@@ -710,6 +756,9 @@ class Worker:
             retry_after_seconds=max(30, settings.market_poll_seconds),
             max_inference_retries=5,
         )
+        if settings.bybit_read_only_account and not result.get("skipped"):
+            self.last_account_sync = datetime.now(UTC)
+        return result
 
     async def catchup_inference_job(self, reason: str) -> dict:
         """Publish missing current-hour signals after a universe bootstrap/change.
@@ -724,11 +773,12 @@ class Worker:
         scheduled = now.replace(second=0, microsecond=0)
 
         async def task(session):
-            decision_ticker_refresh = await self._refresh_tickers_for_symbols(
+            execution_input_refresh = await self._refresh_execution_inputs(
                 session,
                 self.active_symbols,
                 purpose="universe_catchup_inference",
             )
+            decision_ticker_refresh = execution_input_refresh["tickers"]
             diagnostics: dict[str, object] = {}
             published = await publish_hourly_signals(
                 session,
@@ -744,11 +794,15 @@ class Worker:
                 "universe_symbols": len(self.active_symbols),
                 "published": len(published),
                 "signal_ids": [str(item.id) for item in published],
+                "execution_input_refresh": execution_input_refresh,
                 "decision_ticker_refresh": decision_ticker_refresh,
                 **diagnostics,
             }
 
-        return await self.run_job("universe_catchup_inference", scheduled, task)
+        result = await self.run_job("universe_catchup_inference", scheduled, task)
+        if settings.bybit_read_only_account and not result.get("skipped"):
+            self.last_account_sync = datetime.now(UTC)
+        return result
 
     async def counterfactual_outcome_job(self, event_time: datetime) -> dict:
         async def task(session):
@@ -842,7 +896,7 @@ class Worker:
                 await self.drift_monitor_job(startup_event_time)
             if self.active_symbols and not market_result.get("skipped"):
                 await self.catchup_inference_job("startup_backfill")
-            if settings.bybit_read_only_account:
+            if settings.bybit_read_only_account and self.last_account_sync is None:
                 await self.account_job()
                 self.last_account_sync = datetime.now(UTC)
         except Exception:
