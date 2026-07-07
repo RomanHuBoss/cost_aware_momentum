@@ -58,10 +58,7 @@ def _feature_rows(*, shifted: bool) -> list[dict[str, float]]:
     ]
     if not shifted:
         return base
-    return [
-        {"ret_1h": row["ret_1h"] + 3.0, "atr_pct_14": row["atr_pct_14"] + 1.0}
-        for row in base
-    ]
+    return [{"ret_1h": row["ret_1h"] + 3.0, "atr_pct_14": row["atr_pct_14"] + 1.0} for row in base]
 
 
 def _probability_rows() -> list[dict[str, float]]:
@@ -130,8 +127,7 @@ def _signal(
 ) -> SimpleNamespace:
     reference = valid_production_drift_reference()
     feature_snapshot = {
-        name: float(-0.03 + feature_index * 0.001 + row_index * (0.06 / 11.0))
-        + (100.0 if shifted else 0.0)
+        name: float(-0.03 + feature_index * 0.001 + row_index * (0.06 / 11.0)) + (100.0 if shifted else 0.0)
         for feature_index, name in enumerate(reference["feature_names"])
     }
     probability_cycle = (
@@ -175,10 +171,21 @@ def _service_evidence(*, now: datetime, shifted: bool) -> tuple[list[SimpleNames
     ]
     labels = ("TP", "SL", "TIMEOUT")
     outcomes = [
-        SimpleNamespace(signal_id=signals[index].id, outcome=labels[index % 3])
-        for index in range(11)
+        SimpleNamespace(signal_id=signals[index].id, outcome=labels[index % 3]) for index in range(11)
     ]
     return signals, outcomes
+
+
+def _observation(signal: SimpleNamespace) -> SimpleNamespace:
+    snapshot = dict(signal.feature_snapshot)
+    directional_predictions = snapshot.pop("directional_predictions")
+    return SimpleNamespace(
+        model_version=signal.model_version,
+        feature_schema_version="schema-v1",
+        feature_snapshot=snapshot,
+        directional_predictions=directional_predictions,
+    )
+
 
 def _active_model() -> SimpleNamespace:
     return SimpleNamespace(
@@ -205,9 +212,16 @@ async def test_incomplete_outcomes_do_not_suppress_independent_critical_feature_
     signals, outcomes = _service_evidence(now=now, shifted=True)
     successful_job = SimpleNamespace(
         status="SUCCESS",
-        details={"universe_symbols": 12, "published": 12, "existing_current_hour": 0},
+        details={
+            "universe_symbols": 12,
+            "symbol_outcome_count": 12,
+            "published": 1,
+            "existing_current_hour": 0,
+        },
     )
-    session = _Session([_active_model(), signals, [successful_job], outcomes])
+    session = _Session(
+        [_active_model(), [_observation(signal) for signal in signals], signals, [successful_job], outcomes]
+    )
 
     report = await build_production_drift_report(session, _settings(), now=now)
 
@@ -226,9 +240,16 @@ async def test_incomplete_outcomes_without_independent_critical_evidence_remain_
     signals, outcomes = _service_evidence(now=now, shifted=False)
     successful_job = SimpleNamespace(
         status="SUCCESS",
-        details={"universe_symbols": 12, "published": 12, "existing_current_hour": 0},
+        details={
+            "universe_symbols": 12,
+            "symbol_outcome_count": 12,
+            "published": 1,
+            "existing_current_hour": 0,
+        },
     )
-    session = _Session([_active_model(), signals, [successful_job], outcomes])
+    session = _Session(
+        [_active_model(), [_observation(signal) for signal in signals], signals, [successful_job], outcomes]
+    )
 
     report = await build_production_drift_report(session, _settings(), now=now)
 

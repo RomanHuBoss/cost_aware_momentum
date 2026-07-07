@@ -125,8 +125,7 @@ class UniverseEligibilitySnapshot(Base, UUIDPrimaryKeyMixin):
             name="counts_nonnegative",
         ),
         CheckConstraint(
-            "selected_count <= eligible_before_limit "
-            "AND eligible_before_limit <= total_instruments",
+            "selected_count <= eligible_before_limit AND eligible_before_limit <= total_instruments",
             name="count_order",
         ),
         CheckConstraint(
@@ -287,6 +286,45 @@ class ModelArtifactBlob(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+
+
+class ModelInferenceObservation(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "model_inference_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_version",
+            "symbol",
+            "event_time",
+            name="uq_model_inference_observation",
+        ),
+        CheckConstraint("event_time <= observed_at", name="event_not_after_observation"),
+        CheckConstraint("length(model_version) > 0", name="model_version_nonempty"),
+        CheckConstraint("length(calibration_version) > 0", name="calibration_version_nonempty"),
+        CheckConstraint("length(feature_schema_version) > 0", name="feature_schema_version_nonempty"),
+        CheckConstraint(
+            "jsonb_typeof(feature_snapshot) = 'object'",
+            name="feature_snapshot_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(directional_predictions) = 'object'",
+            name="directional_predictions_object",
+        ),
+        Index(
+            "ix_model_inference_observation_version_observed",
+            "model_version",
+            "observed_at",
+        ),
+        {"schema": "model"},
+    )
+
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    calibration_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    feature_schema_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    feature_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    directional_predictions: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
 class CapitalProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):

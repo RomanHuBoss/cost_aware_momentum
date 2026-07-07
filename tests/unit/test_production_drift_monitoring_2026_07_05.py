@@ -261,7 +261,7 @@ async def test_failed_inference_job_blocks_report_without_automatic_model_action
         metrics={"production_drift_reference": valid_production_drift_reference()},
     )
     failed_job = SimpleNamespace(status="FAILED", details={})
-    session = _Session([active_model, [], [failed_job]])
+    session = _Session([active_model, [], [], [failed_job]])
     report = await build_production_drift_report(
         session,
         Settings(

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.50.0 — 2026-07-07
+
+### Fixed
+
+- Removed policy-conditioned sampling from production feature/probability drift: every successful artifact evaluation is now persisted before spread, funding, EV/RR and plan filters.
+- Added immutable PostgreSQL `model.model_inference_observations`, unique by model version, symbol and event time, with JSON/timestamp constraints and an UPDATE/DELETE rejection trigger.
+- Made observation persistence transactionally idempotent under a PostgreSQL advisory lock and bound each row to model, calibration and feature-schema versions.
+- Production drift now reads feature/probability PSI from the all-opportunity observation ledger while retaining published mature signals only for realized calibration outcomes.
+- Invalid observation schema/version rows fail closed as `invalid_model_inference_observations`; sparse recommendation density no longer hides pre-policy distribution drift.
+- Added migration `0018_inference_observations` and three net-new regression tests; full unit suite: 832 passed, 8 skipped.
+- No EV/RR, probability, spread, leverage, risk or model-promotion threshold was relaxed.
+
 ## 1.49.1 — 2026-07-07
 
 ### Fixed

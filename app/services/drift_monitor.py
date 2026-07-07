@@ -7,7 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import JobRun, MarketSignal, ModelRegistry, SignalOutcome
+from app.db.models import (
+    JobRun,
+    MarketSignal,
+    ModelInferenceObservation,
+    ModelRegistry,
+    SignalOutcome,
+)
 from app.ml.drift import (
     DIRECTIONAL_PREDICTION_SCHEMA,
     PRODUCTION_DRIFT_OUTCOME_COHORT_SCHEMA,
@@ -188,12 +194,14 @@ def _blocked_report(*, now: datetime, window_start: datetime, alerts: list[str])
     }
 
 
-def _directional_probability_rows(signal: MarketSignal) -> list[dict[str, float]]:
-    snapshot = signal.feature_snapshot if isinstance(signal.feature_snapshot, dict) else {}
-    directional = snapshot.get("directional_predictions")
+def _probability_rows_from_snapshot(
+    directional: object,
+    *,
+    model_version: str,
+) -> list[dict[str, float]]:
     if not isinstance(directional, dict) or directional.get("schema") != DIRECTIONAL_PREDICTION_SCHEMA:
         return []
-    if directional.get("model_version") != signal.model_version:
+    if directional.get("model_version") != model_version:
         return []
     predictions = directional.get("predictions")
     if not isinstance(predictions, dict):
@@ -214,6 +222,14 @@ def _directional_probability_rows(signal: MarketSignal) -> list[dict[str, float]
         except (KeyError, TypeError, ValueError, OverflowError):
             return []
     return rows
+
+
+def _directional_probability_rows(signal: MarketSignal) -> list[dict[str, float]]:
+    snapshot = signal.feature_snapshot if isinstance(signal.feature_snapshot, dict) else {}
+    return _probability_rows_from_snapshot(
+        snapshot.get("directional_predictions"),
+        model_version=signal.model_version,
+    )
 
 
 def _mature_signal_ids(
@@ -362,6 +378,24 @@ async def build_production_drift_report(
         report["model_version"] = active_model.version
         return report
 
+    observations = (
+        (
+            await session.execute(
+                select(ModelInferenceObservation)
+                .where(
+                    ModelInferenceObservation.model_version == active_model.version,
+                    ModelInferenceObservation.observed_at >= window_start,
+                    ModelInferenceObservation.observed_at <= resolved_now,
+                )
+                .order_by(
+                    ModelInferenceObservation.observed_at,
+                    ModelInferenceObservation.symbol,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     signals = (
         (
             await session.execute(
@@ -429,11 +463,29 @@ async def build_production_drift_report(
     feature_names = list(reference["feature_names"])
     feature_rows: list[dict[str, object]] = []
     probability_rows: list[dict[str, float]] = []
+    invalid_observation_rows = 0
+    for observation in observations:
+        snapshot = (
+            observation.feature_snapshot
+            if isinstance(observation.feature_snapshot, dict)
+            else {}
+        )
+        probabilities = _probability_rows_from_snapshot(
+            observation.directional_predictions,
+            model_version=observation.model_version,
+        )
+        if (
+            observation.feature_schema_version != active_model.feature_schema_version
+            or not snapshot
+            or len(probabilities) != 2
+        ):
+            invalid_observation_rows += 1
+            continue
+        feature_rows.append({name: snapshot.get(name) for name in feature_names})
+        probability_rows.extend(probabilities)
+
     signal_by_id: dict[object, MarketSignal] = {}
     for signal in signals:
-        snapshot = signal.feature_snapshot if isinstance(signal.feature_snapshot, dict) else {}
-        feature_rows.append({name: snapshot.get(name) for name in feature_names})
-        probability_rows.extend(_directional_probability_rows(signal))
         signal_by_id[signal.id] = signal
 
     outcomes: list[SignalOutcome] = []
@@ -491,6 +543,8 @@ async def build_production_drift_report(
         add_blocker("failed_inference_jobs_in_window")
     if invalid_coverage_jobs:
         add_blocker("invalid_inference_coverage_accounting")
+    if invalid_observation_rows:
+        add_blocker("invalid_model_inference_observations")
     if outcome_alerts:
         for alert in outcome_alerts:
             add_blocker(alert)

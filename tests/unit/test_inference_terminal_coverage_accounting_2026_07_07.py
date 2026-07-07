@@ -54,14 +54,12 @@ def _thresholds() -> DriftThresholds:
     )
 
 
-def _single_feature_and_probability(reference: dict[str, object]) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
-    feature_row = {
-        name: float(reference["features"][name]["mean"])
-        for name in reference["feature_names"]
-    }
+def _single_feature_and_probability(
+    reference: dict[str, object],
+) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+    feature_row = {name: float(reference["features"][name]["mean"]) for name in reference["feature_names"]}
     probability_row = {
-        label: float(reference["probabilities"][label]["mean"])
-        for label in reference["classes"]
+        label: float(reference["probabilities"][label]["mean"]) for label in reference["classes"]
     }
     total = sum(probability_row.values())
     probability_row = {key: value / total for key, value in probability_row.items()}
@@ -70,10 +68,7 @@ def _single_feature_and_probability(reference: dict[str, object]) -> tuple[list[
 
 def test_reference_binds_actionability_to_published_policy_trade_density() -> None:
     reference = valid_production_drift_reference()
-    assert (
-        reference["actionability"]["cohort_schema"]
-        == "published-policy-trades-per-symbol-opportunity-v1"
-    )
+    assert reference["actionability"]["cohort_schema"] == "published-policy-trades-per-symbol-opportunity-v1"
 
 
 def test_reference_rejects_unknown_actionability_cohort_semantics() -> None:
@@ -187,8 +182,7 @@ async def test_service_report_separates_terminal_coverage_from_sparse_signal_den
     reference = deepcopy(valid_production_drift_reference())
     reference["actionability"]["rate"] = 0.01
     feature_snapshot = {
-        name: float(reference["features"][name]["mean"])
-        for name in reference["feature_names"]
+        name: float(reference["features"][name]["mean"]) for name in reference["feature_names"]
     }
     probabilities = {"TP": 0.70, "SL": 0.20, "TIMEOUT": 0.10}
     feature_snapshot["directional_predictions"] = {
@@ -226,7 +220,15 @@ async def test_service_report_separates_terminal_coverage_from_sparse_signal_den
             "symbol_outcome_count": 100,
         },
     )
-    session = _Session([active_model, [signal], [successful_job], [outcome]])
+    observation_snapshot = dict(signal.feature_snapshot)
+    directional_predictions = observation_snapshot.pop("directional_predictions")
+    observation = SimpleNamespace(
+        model_version=signal.model_version,
+        feature_schema_version="schema-v1",
+        feature_snapshot=observation_snapshot,
+        directional_predictions=directional_predictions,
+    )
+    session = _Session([active_model, [observation], [signal], [successful_job], [outcome]])
     settings = Settings(
         database_url="postgresql+psycopg://u:p@localhost/db",
         drift_min_feature_observations=1,

@@ -19,6 +19,7 @@ from app.db.models import (
     FundingRate,
     InstrumentSpecHistory,
     MarketSignal,
+    ModelInferenceObservation,
     OpenInterest,
     TickerSnapshot,
 )
@@ -61,6 +62,82 @@ PLAN_STATUSES_PRESERVED_ON_SIGNAL_REPLACEMENT = {
 
 def decimal(value: float | str | Decimal) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def _runtime_feature_schema_version(runtime: ModelRuntime) -> str:
+    bundle = getattr(runtime, "bundle", None)
+    if isinstance(bundle, dict):
+        value = str(bundle.get("feature_schema_version") or "").strip()
+        if value:
+            return value
+    value = str(getattr(runtime, "feature_schema_version", "") or "").strip()
+    return value or "hourly-barrier-v1"
+
+
+async def persist_model_inference_observation(
+    session: AsyncSession,
+    *,
+    runtime: ModelRuntime,
+    symbol: str,
+    event_time: datetime,
+    observed_at: datetime,
+    model_features: dict[str, float],
+    directional_predictions: Iterable[Prediction],
+) -> tuple[ModelInferenceObservation | None, bool]:
+    """Persist the first point-in-time model evaluation for a symbol/hour.
+
+    The observation is written before spread/funding/EV policy filters, so
+    production feature/probability drift is not conditioned on publication.
+    Baseline predictions are intentionally excluded because they have no
+    immutable artifact reference.
+    """
+
+    if bool(getattr(runtime, "is_baseline", True)):
+        return None, False
+    snapshot = directional_prediction_snapshot(directional_predictions)
+    model_version = str(snapshot["model_version"]).strip()
+    calibration_version = str(snapshot["calibration_version"]).strip()
+    runtime_version = str(getattr(runtime, "version", "") or "").strip()
+    if runtime_version and runtime_version != model_version:
+        raise ValueError("Runtime and directional prediction model versions differ")
+    if event_time.tzinfo is None or observed_at.tzinfo is None:
+        raise ValueError("Inference observation timestamps must be timezone-aware")
+    event_time = event_time.astimezone(UTC)
+    observed_at = observed_at.astimezone(UTC)
+    if event_time > observed_at:
+        raise ValueError("Inference observation cannot precede its event time")
+
+    lock_value = "|".join((model_version, symbol, event_time.isoformat()))
+    await acquire_advisory_xact_lock(
+        session,
+        "model_inference_observation",
+        lock_value,
+    )
+    existing = (
+        await session.execute(
+            select(ModelInferenceObservation).where(
+                ModelInferenceObservation.model_version == model_version,
+                ModelInferenceObservation.symbol == symbol,
+                ModelInferenceObservation.event_time == event_time,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing, False
+
+    observation = ModelInferenceObservation(
+        symbol=symbol,
+        event_time=event_time,
+        observed_at=observed_at,
+        model_version=model_version,
+        calibration_version=calibration_version,
+        feature_schema_version=_runtime_feature_schema_version(runtime),
+        feature_snapshot=dict(model_features),
+        directional_predictions=snapshot,
+    )
+    session.add(observation)
+    await session.flush()
+    return observation, True
 
 
 @dataclass(frozen=True)
@@ -625,6 +702,8 @@ async def publish_hourly_signals(
                 "attrition_schema": INFERENCE_ATTRITION_SCHEMA,
                 "symbol_outcomes": [],
                 "plan_outcomes": [],
+                "model_observations_recorded": 0,
+                "model_observations_existing": 0,
             }
         )
 
@@ -813,6 +892,27 @@ async def publish_hourly_signals(
                 )
                 continue
 
+        directional_predictions: tuple[Prediction, ...] | None = None
+        prediction_error: ValueError | None = None
+        try:
+            directional_predictions = tuple(runtime.predict_scenarios(model_features))
+        except ValueError as exc:
+            prediction_error = exc
+
+        if directional_predictions is not None:
+            observation, created = await persist_model_inference_observation(
+                session,
+                runtime=runtime,
+                symbol=symbol,
+                event_time=event_time,
+                observed_at=now,
+                model_features=model_features,
+                directional_predictions=directional_predictions,
+            )
+            if diagnostics is not None and observation is not None:
+                key = "model_observations_recorded" if created else "model_observations_existing"
+                diagnostics[key] = int(diagnostics.get(key, 0)) + 1
+
         spread_bps = _spread_bps(ticker)
         if spread_bps is None:
             record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="missing_executable_bid_ask")
@@ -879,8 +979,14 @@ async def publish_hourly_signals(
             stop_gap_reserve_rate=decimal(settings.stop_gap_reserve_bps / 10000),
             funding_rate=Decimal("0"),
         )
+        if prediction_error is not None or directional_predictions is None:
+            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="invalid_signal_economics")
+            logger.warning(
+                "Skipping symbol with invalid model prediction",
+                extra={"symbol": symbol, "error": str(prediction_error)},
+            )
+            continue
         try:
-            directional_predictions = runtime.predict_scenarios(model_features)
             scenario = select_cost_aware_scenario(
                 directional_predictions,
                 bid_price=ticker.bid_price,

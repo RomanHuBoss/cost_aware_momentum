@@ -36,8 +36,7 @@ class _Session:
 def _signal(*, signal_id: str, event_time: datetime, horizon_hours: int = 4) -> SimpleNamespace:
     reference = valid_production_drift_reference()
     feature_snapshot = {
-        name: float(reference["features"][name]["mean"])
-        for name in reference["feature_names"]
+        name: float(reference["features"][name]["mean"]) for name in reference["feature_names"]
     }
     feature_snapshot["directional_predictions"] = {
         "schema": DIRECTIONAL_PREDICTION_SCHEMA,
@@ -58,6 +57,17 @@ def _signal(*, signal_id: str, event_time: datetime, horizon_hours: int = 4) -> 
         p_tp=0.60,
         p_sl=0.20,
         p_timeout=0.20,
+    )
+
+
+def _observation(signal: SimpleNamespace) -> SimpleNamespace:
+    snapshot = dict(signal.feature_snapshot)
+    directional_predictions = snapshot.pop("directional_predictions")
+    return SimpleNamespace(
+        model_version=signal.model_version,
+        feature_schema_version="schema-v1",
+        feature_snapshot=snapshot,
+        directional_predictions=directional_predictions,
     )
 
 
@@ -87,13 +97,26 @@ async def test_drift_calibration_excludes_early_outcome_before_full_horizon_matu
     immature = _signal(signal_id="immature", event_time=now - timedelta(hours=1))
     successful_job = SimpleNamespace(
         status="SUCCESS",
-        details={"universe_symbols": 2, "published": 2, "existing_current_hour": 0},
+        details={
+            "universe_symbols": 2,
+            "symbol_outcome_count": 2,
+            "published": 2,
+            "existing_current_hour": 0,
+        },
     )
     outcomes = [
         SimpleNamespace(signal_id="mature", outcome="TIMEOUT"),
         SimpleNamespace(signal_id="immature", outcome="TP"),
     ]
-    session = _Session([_active_model(), [mature, immature], [successful_job], outcomes])
+    session = _Session(
+        [
+            _active_model(),
+            [_observation(mature), _observation(immature)],
+            [mature, immature],
+            [successful_job],
+            outcomes,
+        ]
+    )
 
     report = await build_production_drift_report(session, _settings(), now=now)
 
@@ -117,10 +140,23 @@ async def test_unresolved_mature_signal_blocks_calibration_evidence() -> None:
     second = _signal(signal_id="second", event_time=now - timedelta(hours=7))
     successful_job = SimpleNamespace(
         status="SUCCESS",
-        details={"universe_symbols": 2, "published": 2, "existing_current_hour": 0},
+        details={
+            "universe_symbols": 2,
+            "symbol_outcome_count": 2,
+            "published": 2,
+            "existing_current_hour": 0,
+        },
     )
     outcomes = [SimpleNamespace(signal_id="first", outcome="TP")]
-    session = _Session([_active_model(), [first, second], [successful_job], outcomes])
+    session = _Session(
+        [
+            _active_model(),
+            [_observation(first), _observation(second)],
+            [first, second],
+            [successful_job],
+            outcomes,
+        ]
+    )
 
     report = await build_production_drift_report(session, _settings(), now=now)
 
