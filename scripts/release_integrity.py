@@ -5,10 +5,37 @@ import hashlib
 import os
 import re
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 DEFAULT_MANIFEST_NAME = "SHA256SUMS"
+REQUIRED_RELEASE_FILES = (
+    ".env.example",
+    "CHANGELOG.md",
+    "README.md",
+    "alembic.ini",
+    "app/__init__.py",
+    "docs/ARCHITECTURE.md",
+    "docs/CONFIGURATION.md",
+    "docs/INCIDENT_RUNBOOK.md",
+    "docs/MODEL_CARD.md",
+    "docs/OPERATOR_MANUAL.md",
+    "docs/QA_REPORT.md",
+    "docs/SECURITY.md",
+    "docs/SPEC_COMPLIANCE.md",
+    "docs/TRACEABILITY.md",
+    "manage.py",
+    "pyproject.toml",
+)
+_README_VERSION = re.compile(
+    r"^>\s*Версия\s+(?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?=[:\s])",
+    re.MULTILINE,
+)
+_APP_VERSION = re.compile(
+    r"^__version__\s*=\s*[\"'](?P<version>[0-9]+\.[0-9]+\.[0-9]+)[\"']\s*$",
+    re.MULTILINE,
+)
 _MANIFEST_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64})  \./(?P<path>.+)$")
 
 _FORBIDDEN_DIR_NAMES = {
@@ -191,6 +218,59 @@ def _parse_manifest(manifest_path: Path) -> tuple[dict[str, str], list[str]]:
     return entries, errors
 
 
+
+def _read_release_versions(root: Path) -> tuple[dict[str, str], list[str]]:
+    versions: dict[str, str] = {}
+    errors: list[str] = []
+
+    try:
+        project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        version = project.get("project", {}).get("version")
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+            raise ValueError("project.version must be a semantic version")
+        versions["pyproject.toml"] = version
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError, ValueError) as exc:
+        errors.append(f"invalid release version evidence: pyproject.toml ({exc})")
+
+    for relative, pattern in (("app/__init__.py", _APP_VERSION), ("README.md", _README_VERSION)):
+        try:
+            content = (root / relative).read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError) as exc:
+            errors.append(f"invalid release version evidence: {relative} ({exc})")
+            continue
+        match = pattern.search(content)
+        if match is None:
+            errors.append(f"invalid release version evidence: {relative} (version marker missing)")
+            continue
+        versions[relative] = match.group("version")
+
+    return versions, errors
+
+
+def _release_contract_errors(root: Path) -> list[str]:
+    errors: list[str] = []
+    for relative in REQUIRED_RELEASE_FILES:
+        if not (root / relative).is_file():
+            errors.append(f"required release file is missing: {relative}")
+
+    versions, version_errors = _read_release_versions(root)
+    errors.extend(version_errors)
+    if len(versions) == 3 and len(set(versions.values())) != 1:
+        errors.append(
+            "release version mismatch: "
+            f"pyproject.toml={versions['pyproject.toml']}, "
+            f"app/__init__.py={versions['app/__init__.py']}, "
+            f"README.md={versions['README.md']}"
+        )
+
+    release_version = versions.get("pyproject.toml")
+    if release_version is not None and not (root / f"PATCH_{release_version}.md").is_file():
+        errors.append(f"required release file is missing: PATCH_{release_version}.md")
+    if not any((root / "docs").glob("ITERATION_REPORT_*.md")):
+        errors.append("required release evidence is missing: docs/ITERATION_REPORT_*.md")
+    return errors
+
+
 def verify_release_tree(
     root: Path,
     *,
@@ -200,6 +280,7 @@ def verify_release_tree(
     manifest = (manifest_path or root / DEFAULT_MANIFEST_NAME).resolve()
     eligible_files, forbidden = inspect_release_tree(root, manifest_path=manifest)
     entries, errors = _parse_manifest(manifest)
+    errors.extend(_release_contract_errors(root))
 
     for relative in forbidden:
         errors.append(f"forbidden release artifact: {relative}")
