@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.37.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.38.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -8,7 +8,7 @@
 | PostgreSQL-only | Реализовано | SQLAlchemy/PostgreSQL models и Alembic; SQLite fallback отсутствует. |
 | Durable immutable model artifacts | Реализовано 1.36.0 | Exact bytes каждого нового candidate, version, SHA-256 и size атомарно сохраняются в `model.model_artifact_blobs`; UPDATE/DELETE запрещены trigger. Worker/trainer/activation service архивируют surviving legacy file или SHA-verified атомарно восстанавливают runtime copy до selection/activation. Уже удалённый pre-1.36.0 artifact без другой копии не реконструируется. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
-| Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; executable-spread alignment 1.37.0 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; full snapshot hashes и `dynamic` mode повторно проверяются. Release 1.37.0 дополнительно пересекает широкую selected membership с точным live `MAX_SPREAD_BPS` по сохранённому per-symbol `ticker.spread_bps`, фиксирует spread exclusions и блокирует threshold mismatch. Candidate profile строится по фактически replayed cohort. Pre-ledger rows исключаются; stale/missing/corrupt evidence блокирует run. Exact membership до начала ledger и static-mode historical spread cohort не реконструируются. |
+| Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; executable-spread alignment 1.37.0; immutable preflight scope 1.38.0 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; full snapshot hashes и `dynamic` mode повторно проверяются. Release 1.37.0 пересекает broad membership с точным live `MAX_SPREAD_BPS`. Release 1.38.0 заставляет background fit использовать exact symbols из persisted preflight profile и ограничивает last/mark/index raw history верхней границей `profile.end_time + horizon`; quality gate повторно сверяет symbol scope, temporal cutoff и post-feature coverage. Pre-ledger rows исключаются; stale/missing/corrupt evidence блокирует run. Exact membership до начала ledger и static-mode historical spread cohort не реконструируются. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0; latest-prior live selection исправлен 1.35.4 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Live lookup фильтрует `source_time` и `received_at` по exact decision cutoff до сортировки. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history; deployment alignment усилен 1.34.1 | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках. Будущая фактическая ставка не участвует в ex-ante selection. До появления historical point-in-time forecast snapshots market-signal selector также обязан использовать нулевой expected funding; свежий ticker projection применяется только как более строгий execution-plan/acceptance overlay и не может менять направление. |
@@ -26,6 +26,20 @@
 | Operator-visible automatic experiment control | Реализовано 1.34.0 | Fresh trainer heartbeat публикует exact family/candidate, stage, configuration, attempt и `subprocess_active`. `CANCEL_EXPERIMENT` требует exact target и CSRF/authenticated operator context. Formal subprocess запускается в isolated POSIX session/process group или Windows `CREATE_NEW_PROCESS_GROUP`; cancel/timeout/failure завершает всю доступную group/tree и сохраняет `subprocess-tree-termination-v1`. Mismatched/stale requests fail closed; pending `CHECK_NOW`/`RECOVER_NOW` не блокирует cancel; open trial закрывается append-only `FAILED`; preregistration и прошлые results не удаляются. Linux descendant runtime доказан; Windows runtime и намеренно detached POSIX `setsid()` descendants остаются непроверенными/вне group guarantee. |
 | Candidate/live recommendation attrition diagnostics | Реализовано prospectively; mature outcome attribution 1.35.0 | Каждый background training attempt, `symbol × event_time` inference opportunity и initial execution plan получает terminal outcome/cause; retries дедуплицируются. Report v3 exact-join связывает instrumented `signal_id`/`plan_id` с persisted `SignalOutcome`/`PlanOutcome`, использует только full-horizon mature cohort с `resolved_at <= report.until` и показывает TP/SL/TIMEOUT, ambiguity, valuation coverage и descriptive `counterfactual_r` по initial status/stage/reason. Missing/conflicting mature evidence блокируется. История до 1.24.0 не реконструируется; это counterfactual diagnostic, не actual execution PnL, causal decomposition или основание ослаблять gates. |
 
+
+## Work package: immutable background trainer preflight scope
+
+Release 1.38.0 закрывает расхождение между dataset, который разрешал background training, и dataset, на котором фактически строился candidate. До исправления dynamic preflight применял `AUTO_TRAIN_MAX_SYMBOLS` и сохранял exact `training_data_profile.symbols`, но `run_training_once` игнорировал этот список в dynamic mode, загружал все symbols и заново выбирал latest database horizon.
+
+Исправление:
+
+- background training fail-closed требует валидный persisted trigger profile с symbols и end time;
+- static и dynamic modes используют один exact preflight symbol list;
+- last/mark/index queries ограничены `preflight.end_time + horizon`, поэтому данные, появившиеся после scheduler decision, не меняют attempt;
+- actual candidate profile сравнивается с expected profile; changed symbols, post-feature coverage ниже `AUTO_TRAIN_MIN_SYMBOL_COVERAGE_RATIO` и temporal advance блокируют quality gate;
+- expected/actual scope сохраняются в gate evidence.
+
+Ограничения: preflight всё ещё является быстрым candle/replay profile, а не полным dry-run feature/context/label construction. Release fail-closed обнаруживает divergence после candidate construction, но не исключает вычислительно бесполезный fit при неполном OI/mark/index/funding context. Следующий work package — stage-by-stage eligibility audit. Пороговые значения и риск не ослаблены; исправление не доказывает прибыльность.
 
 ## Work package: durable PostgreSQL-backed model artifacts
 

@@ -1,9 +1,13 @@
 # Traceability
 
-Состояние: release 1.37.0, 2026-07-07. Таблица дополнена executable-spread alignment между dynamic research replay и live publication; durable model-artifact storage, decision-time freshness, point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
+Состояние: release 1.38.0, 2026-07-07. Таблица дополнена immutable preflight symbol/time scope для background trainer; executable-spread replay, durable model-artifact storage, decision-time freshness, point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
+| TRAIN-SCOPE-01 | Dynamic fit должен использовать exact symbols, которые прошли preflight, а не повторно выбирать unlimited universe | `require_training_trigger_profile`; `run_training_once` всегда передаёт exact profile symbols и `max_symbols=0` | `test_background_training_resolves_exact_preflight_symbols_and_frozen_cutoff` | Проверено red → green unit |
+| TRAIN-SCOPE-02 | Data, появившиеся после scheduler decision, не должны менять candidate | `maximum_open_time = profile.end_time + horizon`; upper bound применяется к last/mark/index queries | `test_market_data_loader_applies_preflight_upper_bound_to_all_candle_types` | Проверено red → green unit |
+| TRAIN-SCOPE-03 | Missing/malformed trigger scope должен блокировать fit | strict profile parsing, non-empty symbols и end-time requirements | parametrized malformed-trigger regression | Проверено red → green unit |
+| TRAIN-SCOPE-04 | Feature/context/label filtering не должно молча разрушать symbol coverage | `evaluate_quality_gate(... expected_training_profile=...)` сравнивает symbols, cutoff и coverage | coverage/symbol/time drift regressions | Проверено red → green unit |
 | SPREAD-REPLAY-01 | Dynamic research не должен включать symbol-hour, который live жёстко отклонил бы по `MAX_SPREAD_BPS` | `load_point_in_time_universe_snapshots` извлекает immutable decision spread; `apply_point_in_time_universe_replay` использует `execution_eligible_symbols` | `test_loader_derives_live_executable_symbols_from_immutable_spread_evidence`, `test_replay_excludes_untradeable_selected_symbols_before_training_and_policy_evaluation` | Проверено red → green unit |
 | SPREAD-REPLAY-02 | Research evidence нельзя переиспользовать при другом executable-spread contract | replay v2 сохраняет exact threshold и fail-closed сравнивает его; promotion-policy binding v3 включает `maximum_executable_spread_bps` | threshold mismatch и promotion-binding regressions | Проверено red → green unit |
 | SPREAD-REPLAY-03 | Background preflight, fit, manual training и backtest должны применять один spread threshold | settings `max_spread_bps` передаётся во все loader/replay/candidate paths | forwarding regression + full suite | Проверено unit |
@@ -80,10 +84,14 @@
 | TIMEOUT-EXEC-02 | Stale signal-reference absolute rate не должен давать ложный policy pass | Plan/acceptance call helper с current entry; independent boundary case сравнивает stale 0.0526R с current 0.0235R при gate 0.05R | `test_current_entry_timeout_repricing_prevents_false_positive_ev_gate` | Проверено unit |
 | TIMEOUT-EXEC-03 | Plan evidence должно отражать current depth VWAP semantics | converged `planning_entry` передаётся в TIMEOUT projection; schema `tp-sl-timeout-current-entry-r-v2` | `test_execution_plan_reprojects_timeout_r_at_current_vwap` | Проверено unit |
 | TIMEOUT-EXEC-04 | Legacy signals и invalid conditional evidence должны обрабатываться явно | no-`R` path сохраняет stored absolute/fallback; non-finite `R`/invalid geometry fail closed | legacy and non-finite regressions | Проверено unit |
-| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.37.0 не меняет configured limits; он делает research cohort строже и повышает replay/policy-binding evidence schemas | full suite + diff inspection | Реализовано |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.38.0 не меняет configured limits; он фиксирует preflight cohort/cutoff и добавляет post-feature coverage interlock | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка
+
+- Actual PostgreSQL background fit with a frozen trigger profile was not executed because no isolated integration database was configured.
+- Stage-by-stage pre-fit loss across continuity, market context and labels remains diagnostic work; post-fit quality gate now blocks material scope divergence.
+- Reproducible training scope does not establish profitability or explain historical manual fill losses causally.
 
 - Live PostgreSQL as-of replay and actual trainer/backtest run were not executed because no isolated integration database was configured.
 - Pre-ledger dynamic membership, static-mode historical spread cohorts, orderbook depth and realized fill probability are not reconstructed.

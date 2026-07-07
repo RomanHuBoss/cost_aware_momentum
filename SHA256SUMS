@@ -1,7 +1,7 @@
 e1faf5b701a118c981778d89e2ff88cc534e54971a0265b4a2da142c5f9e618a  ./.env.example
 6a3f1e9a9bc85bcb41c2abb5abae49858661f8b42347649eefafebc689c2db19  ./.github/workflows/ci.yml
 a9f24e43c585d89b03bc14d57e7347b0baa9ccf5987d3bc8935489aac9146842  ./.gitignore
-cf45b8ba5607e29ac0d6e3216df6053167dda5c3053f6d0ef9d23190681527e1  ./CHANGELOG.md
+a7040150937bac23a0fc785b624f423e982f36be4c7fa11279a66ce3ab249b4e  ./CHANGELOG.md
 f684d9cbbeb0c83fd5172f108bdb85888a827fc52e106e55731c11f5b7b39445  ./Makefile
 3ea270e59053c2a9b6cddeddc4b8e813f60b2b06d7a5cfd0488bf261481eaa8f  ./PATCH_1.34.0.md
 f0553d72a673cbc5d49d4a9887c383992c1e04120e6fd5d20374857ec9f3b05b  ./PATCH_1.34.1.md
@@ -13,9 +13,10 @@ a17f4aa95dd6e824db481894af43e1eb29ce323cf53a9f52439af9bbee3c5280  ./PATCH_1.35.0
 e62b14e616e2033b16a11421fef2d1f3494c8821de143037aa4f7cd1213f9316  ./PATCH_1.35.5.md
 6278bd8081ad3810c3ce659d67e2e09e8f56b74d7834eb7b72c0182056cefacc  ./PATCH_1.36.0.md
 05cad0c3091c6c7ea4ba0580b3506420485f5a831ca5ab5bbc5870fa0354a5f1  ./PATCH_1.37.0.md
-5952eebfb4e0f6e2a01643d3803d7323ea7030cd64390eaa3e4730d49afdee04  ./README.md
+4893b6b96fb5ee55618ce5946adb3d5b82e4d6f46bd418180a2778bf0e93eb60  ./PATCH_1.38.0.md
+e3e8601a52d73991a7e2f44e233b72028bb219c77db2ca24b8c2fb1a7c2c0c95  ./README.md
 c7957d8dc92aa0acf8ba2d80501ee776b263b248a5f01a9d1836375d6ded52bb  ./alembic.ini
-47231e96b6edeb46f49c483c6099a6adbd832940d4e70de43573abe3c56e12a1  ./app/__init__.py
+9f37e6ca11a7ff3c41b20724afd6fcfdf43324aa54de3542109f48cee061b01b  ./app/__init__.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./app/api/__init__.py
 31fe91eaef1707af9c9348819b82f395aaaff5b5642c6e3c6752f45535e8a88d  ./app/api/deps.py
 32ba0e1de4a6b9e5ac0cfc1dbb0a729ce40e8eda2c64f7913441cf18ed13a789  ./app/api/schemas.py
@@ -53,7 +54,7 @@ be6af4ba88d97fcbc94cbcf40b54c9bb3873602cea739b2a1339a01652bcc2cc  ./app/ml/drift
 8a4ebcc4a18734a2c5249a8d98410c0d8cd23e41394a67a75c002b4a51a4a965  ./app/ml/features.py
 d2c87a608f7438023efc20d95c94534dd6c39f3b0c47121ffa123c3708879b29  ./app/ml/funding.py
 435b05c6380f4e862b5faf337535e30ccc5da26b05cd98368be15aed632e1825  ./app/ml/labels.py
-17126fcdbae043330fc92392f89054343025fbee37dc9319b18c35e139534096  ./app/ml/lifecycle.py
+89fd29dc4f4642ad190b580af611457c4e863902ca6a893f055291c93d91e567  ./app/ml/lifecycle.py
 91d3304ca0f211f9bf94642c26d5e00962fd6694c3c89a8b3b0619a371a6f53d  ./app/ml/mtm.py
 07144469ae7c177f1b81ed11765c0c5444c471c8fbd179097690b86becf7f909  ./app/ml/runtime.py
 a77a65b439975ddc6288d69f652712a8d4986643b4290f7f3a0509363c96d37b  ./app/ml/runtime_selection.py
@@ -92,7 +93,7 @@ f3d29a5a9150b9b11fe940ddd15b1c0eeeda80c9abc19e9c07ca225d0a5c9662  ./app/services
 f11b70cda3b37f9a61ce78d4f8a0bb11cc11d0960d8b4e348e2c102f30d9da2d  ./app/services/universe.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./app/workers/__init__.py
 ee2c91df93dd77d7c1e34560d4a1ef816a252ef72f98bd29e8d5963a955bd07e  ./app/workers/runner.py
-269aa9f226aa225ed7329ecb93ccb03ebf9dc4aa0b1d392cfe64668f03af1a74  ./app/workers/trainer.py
+e269388e8c7d8a587e16df2fcd42ab10bbfd6a6c4571a7e6cafff57efdcc851f  ./app/workers/trainer.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./backups/.gitkeep
 ee002c34d6e8f428e48830b1dca44161daa322f05113586868af1662347c96f6  ./docs/AUDIT_REPORT_1.35.4.md
 e4e7ed641fe4f0e98df6f90a4dcf5cc794d0a70c2e503a4f827fd4fcd5abb51f  ./docs/ITERATION_REPORT_2026-07-06_exposure-orderbook-account-point-in-time.md
@@ -105,9 +106,10 @@ cdfd8697b58e60ecbc26c6fe031212bbb43e283a1228d086f1c7b26e9c863f25  ./docs/ITERATI
 0fb2a1e89ad971a970f223548ade546fbb0f65cc50532463de2b9eca0020e027  ./docs/ITERATION_REPORT_2026-07-07_decision-ticker-freshness.md
 bcc92e3ceaaf30360a4b5ba2985f60e66fc6c75c2cf9fdca8abe9c466d546332  ./docs/ITERATION_REPORT_2026-07-07_executable-spread-replay-alignment.md
 9152f5a300aaf6eda6c61d2336e8308e7ec15283958b7622951a34f061adc889  ./docs/ITERATION_REPORT_2026-07-07_model-artifact-durability.md
-45a061e01718c34c0e2b07cb6b4979d05ced321012a8109f0a030a8404895d49  ./docs/QA_REPORT.md
-51341c33f199e748945e5dfbcad724f5127d5ff1e7ad7da2c43863a220780230  ./docs/SPEC_COMPLIANCE.md
-e4ae1fd7b4e7b05489944c5c2564c94dfe22cee5d5b14700e8e0664518e2775a  ./docs/TRACEABILITY.md
+b2d84461624e67386df414b7cc239b2335c0f206cf8c1d45e207f6c0fe04f714  ./docs/ITERATION_REPORT_2026-07-07_trainer-preflight-scope.md
+72a7102ffa3809116f9a3254276d4c4c8912aabff411d60f9b08ea7ea2aba0be  ./docs/QA_REPORT.md
+aaf0133b2e7e503dcd7b544cdb6273211df05a6dd7d5e3e7e2a11fdc1368c7d6  ./docs/SPEC_COMPLIANCE.md
+6fd6e6544ba13fc449c51c17a6db43024b0377e5ba77433b9590e04e58d5a028  ./docs/TRACEABILITY.md
 b0159a96b085dc9dab9898a85dc6836e831267efefb7979f61c75eb01908eb84  ./docs/source/Cost_aware_hourly_ML_momentum_specification.docx
 26170e06ec50e6867ecf173ad1e81fb24940a5cc6e5a474acde7335c38e9e278  ./manage.py
 d2db851a7b5c477365224a9eb8e0bdd459d6b0ad415ef52402345f7819e4f37c  ./migrations/env.py
@@ -130,7 +132,7 @@ c03aa4fc715614f965c16648a81a1271b1c869eb83bf661cd7bc73bb4245a7d0  ./migrations/v
 c54fa90885ad483027c6af18d4cd6b1b87b6752fcb8490ae8218c5d6aa541b95  ./migrations/versions/0016_universe_replay_asof.py
 59799e43578f14fe0e012ffd461cfe73c964da66521c40b1ff3d94ee6919bd62  ./migrations/versions/0017_model_artifact_blobs.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./models/.gitkeep
-06597d731339ec3e5be7518acde2fc4a3c1d496decdd30fff373b3c686ef1a62  ./pyproject.toml
+c8676b6966671c77720929ef845c7a9a73f751fab35f6f1338f5fae6dc737edf  ./pyproject.toml
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./reports/.gitkeep
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./scripts/__init__.py
 5b348139d8b4163fe0e38816cf25221e970fb6d588b9e057b18dcaeb42125f10  ./scripts/attrition_report.py
@@ -226,6 +228,7 @@ c40137290a053b063f4a4bcabc3616b56dcbf8051743d88f2c8d8faffbedacb4  ./tests/unit/t
 0469ea80792d1d4abc34bbd047fa3567ffe08b60112776c4eea98c1e3c5e8312  ./tests/unit/test_policy_opportunity_path_2026_07_05.py
 92c8e4d8fd3df2ad01f8c9574dbdf8810d82ee931afc6c20471e6d54ff94bca4  ./tests/unit/test_policy_uncertainty_gate_2026_07_04.py
 acfd12ddac535b095bd5844dae963859e36bd8975333adac0a7fc2e760a5ce5f  ./tests/unit/test_postgres_native_universe_replay_2026_07_06.py
+ea10a39d7a1a1465010ea647c746efc4aaf47326e56b05a5826bedde5567176e  ./tests/unit/test_preflight_training_scope_alignment_2026_07_07.py
 897e75715ee6d81063c1b47f894025eb217100e17b2ecdad82652abed0718547  ./tests/unit/test_production_drift_monitoring_2026_07_05.py
 4f638cab62b2c53d4e63fed85e13c38ba1fb963e48b4abebf457986525fe25d6  ./tests/unit/test_quant_correctness_hardening.py
 f94ee128f8eacda85ed1ce2a044e499799924f07c7b2c7a3011ff053457149e7  ./tests/unit/test_quant_econometric_audit_2026_06_29.py

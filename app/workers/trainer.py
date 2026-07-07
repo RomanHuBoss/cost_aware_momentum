@@ -70,6 +70,37 @@ def _job_trigger(details: object) -> dict[str, object] | None:
     return trigger if isinstance(trigger, dict) else None
 
 
+def require_training_trigger_profile(
+    trigger: dict[str, object],
+    *,
+    horizon_hours: int,
+) -> tuple[TrainingDataProfile, list[str], datetime]:
+    """Resolve the exact immutable cohort and data cutoff approved by preflight.
+
+    Background training must consume the same symbols that caused ``due_reason``
+    to authorize the run.  The profile end is the latest label-eligible decision
+    timestamp, so the raw candle upper bound includes exactly one future label
+    horizon and excludes any universe/data expansion that arrives after preflight.
+    """
+
+    profile = TrainingDataProfile.from_mapping(
+        trigger.get("training_data_profile")
+        if isinstance(trigger.get("training_data_profile"), dict)
+        else None
+    )
+    if profile is None:
+        raise RuntimeError("Background training requires a valid preflight training_data_profile")
+    if not profile.symbols:
+        raise RuntimeError("Background training preflight profile contains no symbols")
+    if profile.end_time is None:
+        raise RuntimeError("Background training preflight profile has no label cutoff")
+    if isinstance(horizon_hours, bool) or not isinstance(horizon_hours, int) or horizon_hours <= 0:
+        raise ValueError("horizon_hours must be a positive integer")
+    symbols = list(profile.symbols)
+    maximum_open_time = profile.end_time + timedelta(hours=horizon_hours)
+    return profile, symbols, maximum_open_time
+
+
 def _same_bootstrap_episode(latest: JobRun, trigger: dict[str, object]) -> bool:
     """Return whether a prior job belongs to the current no-model recovery episode.
 
@@ -1067,18 +1098,16 @@ class BackgroundTrainer:
                             "Unusable active artifact is treated as bootstrap recovery input",
                             extra={"incumbent_recovery": incumbent_recovery},
                         )
-                    symbols = settings.symbols if settings.universe_mode == "static" else None
-                    trigger_profile = trigger.get("training_data_profile")
-                    expected_symbols = (
-                        [str(item) for item in trigger_profile.get("symbols", []) if item]
-                        if settings.universe_mode == "static" and isinstance(trigger_profile, dict)
-                        else None
+                    (
+                        preflight_profile,
+                        expected_symbols,
+                        maximum_open_time,
+                    ) = require_training_trigger_profile(
+                        trigger,
+                        horizon_hours=settings.default_horizon_hours,
                     )
-                    load_symbols = expected_symbols if expected_symbols is not None else symbols
-                    load_max_symbols = (
-                        0 if settings.universe_mode == "dynamic" or expected_symbols is not None
-                        else settings.auto_train_max_symbols
-                    )
+                    load_symbols = expected_symbols
+                    load_max_symbols = 0
                     self.state.update(
                         {
                             "phase": "LOADING_DATA",
@@ -1096,6 +1125,7 @@ class BackgroundTrainer:
                         require_universe_replay=settings.universe_mode == "dynamic",
                         universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
                         maximum_executable_spread_bps=settings.max_spread_bps,
+                        maximum_open_time=maximum_open_time,
                     )
                     self.state["phase"] = "FITTING"
                     candidate = await asyncio.to_thread(
@@ -1121,7 +1151,11 @@ class BackgroundTrainer:
                         universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
                         maximum_executable_spread_bps=settings.max_spread_bps,
                     )
-                    gate = evaluate_quality_gate(candidate, settings)
+                    gate = evaluate_quality_gate(
+                        candidate,
+                        settings,
+                        expected_training_profile=preflight_profile,
+                    )
                     candidate_digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()
                     experiment_family = (settings.auto_train_experiment_family or "").strip() or None
                     if not settings.auto_train_auto_activate:

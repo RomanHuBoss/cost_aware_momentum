@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.38.0 — 2026-07-07
+
+- Fixed a confirmed dynamic-trainer preflight/fit mismatch: background fit now consumes the exact symbols persisted in the triggering `training_data_profile` instead of reloading an unlimited dynamic universe.
+- Frozen last/mark/index candle loading at `preflight.end_time + horizon`, preventing new candles or universe changes arriving after authorization from changing the candidate dataset.
+- Added fail-closed quality-gate checks for post-feature symbol scope, minimum symbol coverage and temporal advance beyond the approved preflight cutoff.
+- Added six red → green regressions; no holdout, walk-forward, policy trade-rate, spread, EV/RR, leverage or risk threshold was relaxed.
+
 ## 1.37.0 — 2026-07-07
 
 ### Fixed

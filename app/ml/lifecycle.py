@@ -412,6 +412,7 @@ async def load_training_market_data(
     require_universe_replay: bool = False,
     universe_replay_max_age_seconds: int = 600,
     maximum_executable_spread_bps: float = 0.0,
+    maximum_open_time: datetime | None = None,
 ) -> TrainingMarketData:
     async with SessionFactory() as session:
         selected_symbols = await _select_training_symbols(
@@ -423,8 +424,15 @@ async def load_training_market_data(
             horizon=horizon,
             minimum_rows_for_coverage=minimum_rows_for_coverage,
         )
-        latest = await _latest_training_candle_time(
-            session, selected_symbols=selected_symbols, interval=interval
+        bounded_open_time = (
+            _as_datetime(maximum_open_time) if maximum_open_time is not None else None
+        )
+        latest = (
+            bounded_open_time
+            if bounded_open_time is not None
+            else await _latest_training_candle_time(
+                session, selected_symbols=selected_symbols, interval=interval
+            )
         )
         cutoff = None
         if latest is not None and lookback_days and lookback_days > 0:
@@ -437,6 +445,8 @@ async def load_training_market_data(
         )
         if selected_symbols is not None:
             query = query.where(Candle.symbol.in_(selected_symbols))
+        if bounded_open_time is not None:
+            query = query.where(Candle.open_time <= bounded_open_time)
         if cutoff is not None:
             query = query.where(Candle.open_time >= cutoff)
         candle_rows = (await session.execute(query.order_by(Candle.open_time, Candle.symbol))).scalars().all()
@@ -448,6 +458,8 @@ async def load_training_market_data(
         )
         if selected_symbols is not None:
             mark_query = mark_query.where(Candle.symbol.in_(selected_symbols))
+        if bounded_open_time is not None:
+            mark_query = mark_query.where(Candle.open_time <= bounded_open_time)
         if cutoff is not None:
             mark_query = mark_query.where(Candle.open_time >= cutoff)
         mark_rows = (
@@ -461,6 +473,8 @@ async def load_training_market_data(
         )
         if selected_symbols is not None:
             index_query = index_query.where(Candle.symbol.in_(selected_symbols))
+        if bounded_open_time is not None:
+            index_query = index_query.where(Candle.open_time <= bounded_open_time)
         if cutoff is not None:
             index_query = index_query.where(Candle.open_time >= cutoff)
         index_rows = (
@@ -1178,9 +1192,39 @@ def build_model_candidate(
     )
 
 
-def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict[str, Any]:
+def evaluate_quality_gate(
+    candidate: ModelCandidate,
+    settings: Settings,
+    *,
+    expected_training_profile: TrainingDataProfile | None = None,
+) -> dict[str, Any]:
     metrics = candidate.metrics
     reasons: list[str] = []
+    actual_training_profile = candidate.training_data_profile
+    training_scope_evidence: dict[str, Any] = {
+        "actual": actual_training_profile.to_dict(),
+        "expected": (
+            expected_training_profile.to_dict() if expected_training_profile is not None else None
+        ),
+    }
+    if expected_training_profile is not None:
+        if actual_training_profile.symbols != expected_training_profile.symbols:
+            reasons.append("training_symbol_scope_changed_after_preflight")
+        if not (
+            actual_training_profile.minimum_rows_for_coverage
+            == expected_training_profile.minimum_rows_for_coverage
+            == settings.auto_train_min_bars_per_symbol
+        ):
+            reasons.append("training_profile_minimum_rows_contract_mismatch")
+        if actual_training_profile.coverage_ratio < settings.auto_train_min_symbol_coverage_ratio:
+            reasons.append("fitted_symbol_history_coverage_below_minimum")
+        if actual_training_profile.end_time is None:
+            reasons.append("fitted_training_profile_missing_end_time")
+        elif (
+            expected_training_profile.end_time is not None
+            and actual_training_profile.end_time > expected_training_profile.end_time
+        ):
+            reasons.append("training_data_advanced_beyond_preflight_cutoff")
 
     def finite_or_none(value: object) -> float | None:
         if value is None:
@@ -1878,6 +1922,10 @@ def evaluate_quality_gate(candidate: ModelCandidate, settings: Settings) -> dict
         "passed": not reasons,
         "reasons": reasons,
         "absolute": {
+            "training_scope": training_scope_evidence,
+            "required_training_symbol_coverage_ratio": (
+                settings.auto_train_min_symbol_coverage_ratio
+            ),
             "market_context_schema": context_schema,
             "expected_market_context_schema": MARKET_CONTEXT_SCHEMA_VERSION,
             "market_context_availability_schema": context_availability_schema,
