@@ -724,14 +724,16 @@ async def test_postgres_native_universe_asof_loader_is_indexed_and_reduced(
                 session,
                 decision_times,
                 expected_mode="dynamic",
+                maximum_executable_spread_bps=settings.max_spread_bps,
             )
 
             assert len(compact) == 3
             assert compact.attrs["universe_snapshot_loader"] == {
-                "schema": "postgresql-native-universe-asof-loader-v1",
+                "schema": "postgresql-native-universe-asof-loader-v2",
                 "requested_decision_timestamps": 2,
                 "snapshot_rows_streamed": 3,
                 "compact_rows_retained": 3,
+                "maximum_executable_spread_bps": settings.max_spread_bps,
             }
             assert list(compact["recorded_at"]) == [
                 start + timedelta(seconds=1),

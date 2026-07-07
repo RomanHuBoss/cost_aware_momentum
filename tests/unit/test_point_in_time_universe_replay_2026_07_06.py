@@ -31,6 +31,9 @@ def _snapshots() -> pd.DataFrame:
                 "observed_at": datetime(2026, 7, 6, 9, 55, tzinfo=UTC),
                 "recorded_at": datetime(2026, 7, 6, 9, 55, 1, tzinfo=UTC),
                 "selected_symbols": ["BTCUSDT"],
+                "execution_eligible_symbols": ["BTCUSDT"],
+                "spread_ineligible_selected_symbols": [],
+                "maximum_executable_spread_bps": 18.0,
                 "policy_hash": "1" * 64,
                 "record_hash": "a" * 64,
             },
@@ -38,6 +41,9 @@ def _snapshots() -> pd.DataFrame:
                 "observed_at": datetime(2026, 7, 6, 10, 55, tzinfo=UTC),
                 "recorded_at": datetime(2026, 7, 6, 10, 55, 1, tzinfo=UTC),
                 "selected_symbols": ["ETHUSDT"],
+                "execution_eligible_symbols": ["ETHUSDT"],
+                "spread_ineligible_selected_symbols": [],
+                "maximum_executable_spread_bps": 18.0,
                 "policy_hash": "2" * 64,
                 "record_hash": "b" * 64,
             },
@@ -50,6 +56,7 @@ def test_replay_uses_latest_snapshot_available_at_each_decision_and_excludes_pre
         _dataset(),
         _snapshots(),
         max_snapshot_age_seconds=600,
+        maximum_executable_spread_bps=18.0,
         required=True,
     )
 
@@ -58,7 +65,7 @@ def test_replay_uses_latest_snapshot_available_at_each_decision_and_excludes_pre
         (pd.Timestamp("2026-07-06T11:00:00Z"), "ETHUSDT"),
     }
     assert len(filtered) == 4
-    assert evidence["schema"] == "point-in-time-universe-replay-v1"
+    assert evidence["schema"] == "point-in-time-universe-replay-v2"
     assert evidence["status"] == "applied"
     assert evidence["pre_rollout_rows_excluded"] == 4
     assert evidence["ineligible_rows_excluded"] == 4
@@ -73,6 +80,7 @@ def test_replay_fails_closed_when_post_rollout_snapshot_is_stale() -> None:
             _dataset(),
             _snapshots().iloc[:1],
             max_snapshot_age_seconds=600,
+            maximum_executable_spread_bps=18.0,
             required=True,
         )
 
@@ -83,6 +91,7 @@ def test_required_replay_never_falls_back_when_snapshot_evidence_is_missing() ->
             _dataset(),
             pd.DataFrame(),
             max_snapshot_age_seconds=600,
+            maximum_executable_spread_bps=18.0,
             required=True,
         )
 
@@ -105,6 +114,9 @@ def test_replay_uses_commit_availability_not_uncommitted_observation_time() -> N
                 "observed_at": datetime(2026, 7, 6, 9, 55, tzinfo=UTC),
                 "recorded_at": datetime(2026, 7, 6, 9, 55, 1, tzinfo=UTC),
                 "selected_symbols": ["BTCUSDT"],
+                "execution_eligible_symbols": ["BTCUSDT"],
+                "spread_ineligible_selected_symbols": [],
+                "maximum_executable_spread_bps": 18.0,
                 "policy_hash": "1" * 64,
                 "record_hash": "a" * 64,
             },
@@ -112,6 +124,9 @@ def test_replay_uses_commit_availability_not_uncommitted_observation_time() -> N
                 "observed_at": datetime(2026, 7, 6, 9, 59, 59, tzinfo=UTC),
                 "recorded_at": datetime(2026, 7, 6, 10, 0, 1, tzinfo=UTC),
                 "selected_symbols": ["ETHUSDT"],
+                "execution_eligible_symbols": ["ETHUSDT"],
+                "spread_ineligible_selected_symbols": [],
+                "maximum_executable_spread_bps": 18.0,
                 "policy_hash": "2" * 64,
                 "record_hash": "b" * 64,
             },
@@ -122,6 +137,7 @@ def test_replay_uses_commit_availability_not_uncommitted_observation_time() -> N
         dataset,
         snapshots,
         max_snapshot_age_seconds=600,
+        maximum_executable_spread_bps=18.0,
         required=True,
     )
 
@@ -156,6 +172,7 @@ async def test_background_training_profile_counts_only_replayed_eligible_rows(mo
         minimum_rows_for_coverage=1,
         require_universe_replay=True,
         universe_replay_max_age_seconds=600,
+        maximum_executable_spread_bps=18.0,
     )
 
     assert profile.candle_rows == 2

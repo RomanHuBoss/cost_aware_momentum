@@ -52,6 +52,7 @@ async def run(args: argparse.Namespace) -> None:
         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
         require_universe_replay=settings.universe_mode == "dynamic",
         universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+        maximum_executable_spread_bps=settings.max_spread_bps,
     )
     candidate = build_model_candidate(
         market_data.candles,
@@ -74,6 +75,7 @@ async def run(args: argparse.Namespace) -> None:
         universe_eligibility=getattr(market_data, "universe_eligibility", None),
         require_universe_replay=settings.universe_mode == "dynamic",
         universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+        maximum_executable_spread_bps=settings.max_spread_bps,
     )
     quality_gate = evaluate_quality_gate(candidate, settings)
     candidate_digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()

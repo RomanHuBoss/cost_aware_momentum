@@ -1069,6 +1069,7 @@ async def run(args) -> None:
             max_symbols=0,
             require_universe_replay=settings.universe_mode == "dynamic",
             universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+            maximum_executable_spread_bps=settings.max_spread_bps,
         )
         frame = market_data.candles
         runtime = load_validated_artifact(
@@ -1106,6 +1107,7 @@ async def run(args) -> None:
             dataset,
             market_data.universe_eligibility,
             max_snapshot_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+            maximum_executable_spread_bps=settings.max_spread_bps,
             required=settings.universe_mode == "dynamic",
         )
         split = chronological_split(dataset, purge_rows=horizon)
@@ -1169,6 +1171,7 @@ async def run(args) -> None:
             "label_path_schema_version": bundle.get("label_path_schema_version"),
             "temporal_split_schema": bundle.get("temporal_split_schema"),
             "entry_spread_bps": runtime.entry_spread_bps,
+            "maximum_executable_spread_bps": settings.max_spread_bps,
             "risk_rate": settings.default_risk_rate,
             "max_total_open_risk_rate": settings.max_total_open_risk_rate,
             "margin_reserve_rate": settings.margin_reserve_rate,

@@ -22,11 +22,12 @@ from app.services.experiment_ledger import (
 
 EXPERIMENT_PROMOTION_GATE_SCHEMA = "model-promotion-experiment-governance-v3"
 EXPERIMENT_GOVERNANCE_REPORT_SCHEMA = "experiment-selection-preregistered-governance-v4"
-EXPERIMENT_POLICY_BINDING_SCHEMA = "model-promotion-policy-binding-v2"
+EXPERIMENT_POLICY_BINDING_SCHEMA = "model-promotion-policy-binding-v3"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 EXPERIMENT_POLICY_BINDING_KEYS = (
     "entry_spread_bps",
+    "maximum_executable_spread_bps",
     "risk_rate",
     "max_total_open_risk_rate",
     "margin_reserve_rate",
@@ -50,6 +51,7 @@ _POLICY_NULLABLE_NUMERIC_KEYS = {"timeout_return_rate_override"}
 def build_experiment_policy_binding(
     *,
     entry_spread_bps: float,
+    maximum_executable_spread_bps: float,
     risk_rate: float,
     max_total_open_risk_rate: float,
     margin_reserve_rate: float,
@@ -69,6 +71,7 @@ def build_experiment_policy_binding(
 
     values: dict[str, Any] = {
         "entry_spread_bps": entry_spread_bps,
+        "maximum_executable_spread_bps": maximum_executable_spread_bps,
         "risk_rate": risk_rate,
         "max_total_open_risk_rate": max_total_open_risk_rate,
         "margin_reserve_rate": margin_reserve_rate,
@@ -130,6 +133,7 @@ def build_experiment_policy_binding(
 def experiment_policy_binding_from_settings(settings: Settings) -> dict[str, Any]:
     return build_experiment_policy_binding(
         entry_spread_bps=settings.model_entry_spread_bps,
+        maximum_executable_spread_bps=settings.max_spread_bps,
         risk_rate=settings.default_risk_rate,
         max_total_open_risk_rate=settings.max_total_open_risk_rate,
         margin_reserve_rate=settings.margin_reserve_rate,

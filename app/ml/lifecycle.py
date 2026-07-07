@@ -284,6 +284,7 @@ async def load_training_data_profile(
     interval: str = "60",
     require_universe_replay: bool = False,
     universe_replay_max_age_seconds: int = 600,
+    maximum_executable_spread_bps: float = 0.0,
 ) -> TrainingDataProfile:
     if require_universe_replay:
         market_data = await load_training_market_data(
@@ -295,6 +296,7 @@ async def load_training_data_profile(
             minimum_rows_for_coverage=minimum_rows_for_coverage,
             require_universe_replay=True,
             universe_replay_max_age_seconds=universe_replay_max_age_seconds,
+            maximum_executable_spread_bps=maximum_executable_spread_bps,
         )
         if market_data.candles.empty:
             return profile_from_symbol_rows(
@@ -313,6 +315,7 @@ async def load_training_data_profile(
                 eligible,
                 market_data.universe_eligibility,
                 max_snapshot_age_seconds=universe_replay_max_age_seconds,
+                maximum_executable_spread_bps=maximum_executable_spread_bps,
                 required=True,
             )
         except ValueError as exc:
@@ -408,6 +411,7 @@ async def load_training_market_data(
     minimum_rows_for_coverage: int = 1,
     require_universe_replay: bool = False,
     universe_replay_max_age_seconds: int = 600,
+    maximum_executable_spread_bps: float = 0.0,
 ) -> TrainingMarketData:
     async with SessionFactory() as session:
         selected_symbols = await _select_training_symbols(
@@ -528,6 +532,9 @@ async def load_training_market_data(
                 "observed_at",
                 "recorded_at",
                 "selected_symbols",
+                "execution_eligible_symbols",
+                "spread_ineligible_selected_symbols",
+                "maximum_executable_spread_bps",
                 "policy_hash",
                 "record_hash",
             ]
@@ -537,6 +544,7 @@ async def load_training_market_data(
                 session,
                 (row.close_time for row in candle_rows),
                 expected_mode="dynamic",
+                maximum_executable_spread_bps=maximum_executable_spread_bps,
             )
 
     candles = pd.DataFrame(
@@ -806,6 +814,47 @@ def evaluate_walk_forward_validation(
     )
 
 
+def training_profile_from_model_dataset(
+    dataset: pd.DataFrame,
+    *,
+    minimum_rows_for_coverage: int,
+    expected_symbols: list[str] | tuple[str, ...] | None,
+) -> TrainingDataProfile:
+    """Profile the exact symbol-hour cohort consumed by the fitted model.
+
+    Barrier datasets contain one LONG and one SHORT row per source candle.  The
+    training-data profile is candle-oriented, so direction duplicates are removed
+    before coverage and retraining signatures are calculated.
+    """
+
+    required = {"symbol", "source_open_time"}
+    missing = required.difference(dataset.columns)
+    if missing:
+        raise ValueError(
+            f"Model dataset is missing training profile columns: {sorted(missing)}"
+        )
+    if dataset.empty:
+        return profile_from_symbol_rows(
+            [],
+            unique_timestamps=0,
+            minimum_rows_for_coverage=minimum_rows_for_coverage,
+        )
+    frame = dataset[["symbol", "source_open_time"]].copy()
+    frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+    frame["open_time"] = pd.to_datetime(
+        frame.pop("source_open_time"), utc=True, errors="coerce"
+    )
+    if (frame["symbol"] == "").any() or frame["open_time"].isna().any():
+        raise ValueError("Model dataset contains invalid training profile identity")
+    frame = frame.drop_duplicates(["symbol", "open_time"])
+    return profile_training_frame(
+        frame,
+        label_cutoff=None,
+        minimum_rows_for_coverage=minimum_rows_for_coverage,
+        expected_symbols=expected_symbols,
+    )
+
+
 def build_model_candidate(
     candles: pd.DataFrame,
     *,
@@ -829,6 +878,7 @@ def build_model_candidate(
     universe_eligibility: pd.DataFrame | None = None,
     require_universe_replay: bool = False,
     universe_replay_max_age_seconds: int = 600,
+    maximum_executable_spread_bps: float = 0.0,
 ) -> ModelCandidate:
     if candles.empty:
         raise RuntimeError("No confirmed hourly candles are available for model training")
@@ -859,6 +909,7 @@ def build_model_candidate(
         dataset,
         universe_eligibility,
         max_snapshot_age_seconds=universe_replay_max_age_seconds,
+        maximum_executable_spread_bps=maximum_executable_spread_bps,
         required=require_universe_replay,
     )
     split = chronological_split(dataset, purge_rows=horizon)
@@ -901,6 +952,7 @@ def build_model_candidate(
         metrics.update(evaluate_policy_model(model, split, policy_config, horizon_hours=horizon))
         metrics["promotion_policy_binding"] = build_experiment_policy_binding(
             entry_spread_bps=entry_spread_bps,
+            maximum_executable_spread_bps=maximum_executable_spread_bps,
             risk_rate=policy_config.risk_rate,
             max_total_open_risk_rate=policy_config.max_total_open_risk_rate,
             margin_reserve_rate=policy_config.margin_reserve_rate,
@@ -1047,9 +1099,8 @@ def build_model_candidate(
     training_end = _as_datetime(dataset.decision_time.max())
     unique_timestamps = int(dataset["decision_time"].nunique())
     symbol_values = tuple(sorted(str(item) for item in dataset["symbol"].unique()))
-    training_data_profile = profile_training_frame(
-        candles,
-        label_cutoff=_as_datetime(dataset.source_open_time.max()),
+    training_data_profile = training_profile_from_model_dataset(
+        dataset,
         minimum_rows_for_coverage=minimum_rows_for_coverage,
         expected_symbols=expected_symbols,
     )

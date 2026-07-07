@@ -246,6 +246,7 @@ async def test_manual_train_activate_registers_failed_candidate_inactive(
         auto_train_max_symbols=3,
         model_dir=tmp_path,
         model_entry_spread_bps=18.0,
+        max_spread_bps=18.0,
         auto_train_min_bars_per_symbol=300,
         default_horizon_hours=8,
     )

@@ -529,6 +529,7 @@ class BackgroundTrainer:
                 settings, "universe_refresh_seconds", 300
             )
             * 2,
+            maximum_executable_spread_bps=settings.max_spread_bps,
         )
 
     async def due_reason(
@@ -1094,6 +1095,7 @@ class BackgroundTrainer:
                         minimum_rows_for_coverage=settings.auto_train_min_bars_per_symbol,
                         require_universe_replay=settings.universe_mode == "dynamic",
                         universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+                        maximum_executable_spread_bps=settings.max_spread_bps,
                     )
                     self.state["phase"] = "FITTING"
                     candidate = await asyncio.to_thread(
@@ -1117,6 +1119,7 @@ class BackgroundTrainer:
                         universe_eligibility=getattr(market_data, "universe_eligibility", None),
                         require_universe_replay=settings.universe_mode == "dynamic",
                         universe_replay_max_age_seconds=getattr(settings, "universe_refresh_seconds", 300) * 2,
+                        maximum_executable_spread_bps=settings.max_spread_bps,
                     )
                     gate = evaluate_quality_gate(candidate, settings)
                     candidate_digest = hashlib.sha256(candidate.path.read_bytes()).hexdigest()

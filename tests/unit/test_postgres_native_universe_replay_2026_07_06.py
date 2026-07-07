@@ -123,6 +123,7 @@ async def test_asof_loader_streams_validates_and_retains_only_compact_replay_col
         session,  # type: ignore[arg-type]
         [decision_time, decision_time],
         expected_mode="dynamic",
+        maximum_executable_spread_bps=30.0,
     )
 
     assert session.params == {
@@ -133,6 +134,9 @@ async def test_asof_loader_streams_validates_and_retains_only_compact_replay_col
         "observed_at",
         "recorded_at",
         "selected_symbols",
+        "execution_eligible_symbols",
+        "spread_ineligible_selected_symbols",
+        "maximum_executable_spread_bps",
         "policy_hash",
         "record_hash",
     ]
@@ -141,6 +145,9 @@ async def test_asof_loader_streams_validates_and_retains_only_compact_replay_col
             "observed_at": row["observed_at"],
             "recorded_at": row["recorded_at"],
             "selected_symbols": row["selected_symbols"],
+            "execution_eligible_symbols": ["BTCUSDT"],
+            "spread_ineligible_selected_symbols": [],
+            "maximum_executable_spread_bps": 30.0,
             "policy_hash": row["policy_hash"],
             "record_hash": row["record_hash"],
         }
@@ -152,6 +159,7 @@ async def test_asof_loader_streams_validates_and_retains_only_compact_replay_col
         "requested_decision_timestamps": 1,
         "snapshot_rows_streamed": 1,
         "compact_rows_retained": 1,
+        "maximum_executable_spread_bps": 30.0,
     }
 
 
@@ -164,6 +172,7 @@ async def test_asof_loader_rejects_naive_decision_time_before_database_access() 
             session,  # type: ignore[arg-type]
             [datetime(2026, 7, 6, 10)],
             expected_mode="dynamic",
+            maximum_executable_spread_bps=30.0,
         )
 
     assert session.statement is None
@@ -197,6 +206,7 @@ async def test_loader_evidence_flows_into_replay_report() -> None:
         session,  # type: ignore[arg-type]
         [decision_time],
         expected_mode="dynamic",
+        maximum_executable_spread_bps=30.0,
     )
     dataset = __import__("pandas").DataFrame(
         [{"decision_time": decision_time, "symbol": "BTCUSDT"}]
@@ -206,6 +216,7 @@ async def test_loader_evidence_flows_into_replay_report() -> None:
         dataset,
         snapshots,
         max_snapshot_age_seconds=600,
+        maximum_executable_spread_bps=30.0,
         required=True,
     )
 
@@ -226,6 +237,7 @@ async def test_asof_loader_reports_the_exact_invalid_snapshot() -> None:
             session,  # type: ignore[arg-type]
             [decision_time],
             expected_mode="dynamic",
+            maximum_executable_spread_bps=30.0,
         )
 
     message = str(exc_info.value)

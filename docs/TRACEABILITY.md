@@ -1,9 +1,13 @@
 # Traceability
 
-Состояние: release 1.36.0, 2026-07-07. Таблица дополнена durable model-artifact storage и release-safe restoration; decision-time freshness, point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
+Состояние: release 1.37.0, 2026-07-07. Таблица дополнена executable-spread alignment между dynamic research replay и live publication; durable model-artifact storage, decision-time freshness, point-in-time lookup, exposure isolation, trainer recovery, current-entry TIMEOUT, attrition outcomes и experiment governance сохраняются без регрессии.
 
 | ID | Требование / инвариант | Реализация | Проверка | Статус |
 |---|---|---|---|---|
+| SPREAD-REPLAY-01 | Dynamic research не должен включать symbol-hour, который live жёстко отклонил бы по `MAX_SPREAD_BPS` | `load_point_in_time_universe_snapshots` извлекает immutable decision spread; `apply_point_in_time_universe_replay` использует `execution_eligible_symbols` | `test_loader_derives_live_executable_symbols_from_immutable_spread_evidence`, `test_replay_excludes_untradeable_selected_symbols_before_training_and_policy_evaluation` | Проверено red → green unit |
+| SPREAD-REPLAY-02 | Research evidence нельзя переиспользовать при другом executable-spread contract | replay v2 сохраняет exact threshold и fail-closed сравнивает его; promotion-policy binding v3 включает `maximum_executable_spread_bps` | threshold mismatch и promotion-binding regressions | Проверено red → green unit |
+| SPREAD-REPLAY-03 | Background preflight, fit, manual training и backtest должны применять один spread threshold | settings `max_spread_bps` передаётся во все loader/replay/candidate paths | forwarding regression + full suite | Проверено unit |
+| TRAIN-PROFILE-02 | Artifact training profile должен описывать фактически fitted cohort, а не raw candles | `training_profile_from_model_dataset` deduplicates LONG/SHORT by `symbol × source_open_time` after replay | `test_candidate_training_profile_is_built_from_actual_replayed_model_rows` | Проверено red → green unit |
 | ARTIFACT-DUR-01 | Candidate registry не должен commit без exact immutable artifact bytes | `register_model_candidate`/atomic activation читают bytes один раз; `archive_model_artifact_bytes(..., assume_new=True)` добавляет `ModelArtifactBlob` в той же transaction до audit/outbox commit | `test_registration_passes_exact_file_bytes_into_registry_transaction`, exact-byte/idempotency tests | Проверено red → green unit |
 | ARTIFACT-DUR-02 | Replacement release tree не должен уничтожать active model state | worker/trainer/activation вызывают `ensure_registry_artifact_durable` до runtime selection/recovery/activation; missing file materialized из BYTEA | restore test + worker call-order test | Проверено red → green unit |
 | ARTIFACT-DUR-03 | Corrupt DB/local bytes не должны загружаться или скрытно перезаписываться | exact SHA/version/size validation, 256 MiB bound, temp+fsync+atomic replace; corrupt target сохраняется как forensic evidence | corrupt-payload and non-overwrite regressions | Проверено red → green unit |
@@ -76,10 +80,14 @@
 | TIMEOUT-EXEC-02 | Stale signal-reference absolute rate не должен давать ложный policy pass | Plan/acceptance call helper с current entry; independent boundary case сравнивает stale 0.0526R с current 0.0235R при gate 0.05R | `test_current_entry_timeout_repricing_prevents_false_positive_ev_gate` | Проверено unit |
 | TIMEOUT-EXEC-03 | Plan evidence должно отражать current depth VWAP semantics | converged `planning_entry` передаётся в TIMEOUT projection; schema `tp-sl-timeout-current-entry-r-v2` | `test_execution_plan_reprojects_timeout_r_at_current_vwap` | Проверено unit |
 | TIMEOUT-EXEC-04 | Legacy signals и invalid conditional evidence должны обрабатываться явно | no-`R` path сохраняет stored absolute/fallback; non-finite `R`/invalid geometry fail closed | legacy and non-finite regressions | Проверено unit |
-| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.36.0 добавляет только durable artifact migration/status; feature/label/policy schemas, quality/promotion thresholds, EV/RR и risk limits не меняются | full suite + diff inspection | Реализовано |
+| COMPAT-01 | Risk, activation thresholds и `.env` contracts не ослабляются | Release 1.37.0 не меняет configured limits; он делает research cohort строже и повышает replay/policy-binding evidence schemas | full suite + diff inspection | Реализовано |
 | BOUNDARY-01 | Advisory-only/read-only Bybit boundary сохраняется | order mutation methods не добавлены | static scan + full suite | Проверено static/unit |
 
 ## Непроверенная трассировка
+
+- Live PostgreSQL as-of replay and actual trainer/backtest run were not executed because no isolated integration database was configured.
+- Pre-ledger dynamic membership, static-mode historical spread cohorts, orderbook depth and realized fill probability are not reconstructed.
+- Correct cohort alignment does not prove profitability and may reduce available training rows.
 
 - PostgreSQL migration `0017`, BYTEA round-trip and immutable trigger were not executed because no isolated integration database was configured.
 - Actual operator release replacement and runtime restoration were not performed.

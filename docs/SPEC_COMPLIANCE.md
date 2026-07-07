@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.36.0, а не на заявлении о полной реализации спецификации.
+Состояние на 2026-07-07. Статусы основаны на фактическом коде release 1.37.0, а не на заявлении о полной реализации спецификации.
 
 | Требование | Статус | Доказательство / ограничение |
 |---|---|---|
@@ -8,7 +8,7 @@
 | PostgreSQL-only | Реализовано | SQLAlchemy/PostgreSQL models и Alembic; SQLite fallback отсутствует. |
 | Durable immutable model artifacts | Реализовано 1.36.0 | Exact bytes каждого нового candidate, version, SHA-256 и size атомарно сохраняются в `model.model_artifact_blobs`; UPDATE/DELETE запрещены trigger. Worker/trainer/activation service архивируют surviving legacy file или SHA-verified атомарно восстанавливают runtime copy до selection/activation. Уже удалённый pre-1.36.0 artifact без другой копии не реконструируется. |
 | Point-in-time confirmed hourly data | Реализовано | `Candle.close_time`, `available_at`, confirmed semantics, temporal tests. |
-| Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; timezone-stable validation 1.34.2 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; snapshot hashes и `dynamic` mode повторно проверяются; static-mode evidence исключено. PostgreSQL выбирает только first-rollout и latest-prior snapshots для фактических hourly decision timestamps, full rows потоково валидируются, а в памяти остаются compact replay fields. Release 1.34.2 канонизирует верхнеуровневые `TIMESTAMPTZ` поля snapshot в UTC до hash/revalidation, поэтому timezone представления одной и той же временной точки не создают ложную corruption-ошибку. Pre-1.29.0/pre-rollout rows исключаются, stale/missing или действительно повреждённое post-rollout evidence блокирует run. Exact membership до начала ledger не реконструируется. |
+| Point-in-time dynamic training cohort | Реализовано prospectively 1.31.0; executable-spread alignment 1.37.0 | Каждый training/backtest `symbol × decision_time` допускается только по latest immutable snapshot с `recorded_at <= decision_time`; full snapshot hashes и `dynamic` mode повторно проверяются. Release 1.37.0 дополнительно пересекает широкую selected membership с точным live `MAX_SPREAD_BPS` по сохранённому per-symbol `ticker.spread_bps`, фиксирует spread exclusions и блокирует threshold mismatch. Candidate profile строится по фактически replayed cohort. Pre-ledger rows исключаются; stale/missing/corrupt evidence блокирует run. Exact membership до начала ledger и static-mode historical spread cohort не реконструируются. |
 | LONG/SHORT executable-side entry semantics | Частично реализовано 1.10.0 | Direction-specific adverse spread proxy. Exact historical bid/ask и operator latency отсутствуют. |
 | Historical orderbook depth/VWAP/no-fill/partial-fill | Частично реализовано 1.14.0; latest-prior live selection исправлен 1.35.4 | Forward point-in-time REST snapshots сохраняются в PostgreSQL; plan/acceptance используют direction-aware bounded-depth simulation, complete-fill VWAP и FULL/PARTIAL/NO_FILL evidence. Live lookup фильтрует `source_time` и `received_at` по exact decision cutoff до сортировки. Исторический backfill до 1.14.0, RPI/queue position, limit-order fill probability и реальный partial-fill lifecycle отсутствуют; поэтому model/backtest gap не считается закрытым. |
 | Historical funding tied to actual settlements in research labels | Реализовано 1.22.0 для observed settlement и interval history; deployment alignment усилен 1.34.1 | Progressive backfill сохраняет фактические settlement timestamps; training/backtest агрегируют только события `(entry, actual_exit]`, используют interval, действовавший по `InstrumentSpecHistory`, и fail-closed при пропусках. Будущая фактическая ставка не участвует в ex-ante selection. До появления historical point-in-time forecast snapshots market-signal selector также обязан использовать нулевой expected funding; свежий ticker projection применяется только как более строгий execution-plan/acceptance overlay и не может менять направление. |
@@ -177,7 +177,7 @@ Release 1.28.2 закрывает econometric и operational mismatch в dynamic
 - background trainer переносит exact symbols из trigger profile в data load и fit;
 - manual trainer передаёт horizon/minimum-history contract в тот же loader.
 
-Ограничения: release не реконструирует историческую membership фактического live dynamic universe, исторические spread/turnover eligibility до локального хранения или delisting state. Coverage-based cohort устраняет post-cutoff turnover selection и TOCTOU drift, но не доказывает прибыльность, не повышает signal frequency и не объясняет причинно прошлые убытки. Default quality gates не ослаблены: 24 часа данных недостаточно против requirement 1206 unique hourly timestamps.
+Ограничения: release не реконструирует membership до начала prospective ledger. Начиная с 1.37.0 historical dynamic replay использует сохранённый snapshot spread и точный `MAX_SPREAD_BPS`, но это top-of-book observation, а не historical depth/fill proof. Static-mode historical spread cohort и operator latency остаются нереконструируемыми. Default quality gates не ослаблены: 24 часа данных недостаточно против requirement 1206 unique hourly timestamps.
 
 
 ## Work package: critical drift evidence precedence
@@ -284,7 +284,7 @@ Release 1.26.3 закрывает econometric research-to-production mismatch в
 Реализовано:
 
 - immutable schema `model-promotion-policy-binding-v1` сохраняется в candidate metrics при обучении;
-- binding включает entry spread, research leverage и liquidation reserve, round-trip fees, slippage, stop-gap reserve, funding/timeout overrides, `minimum_net_rr`, `minimum_net_ev_r`, policy source и portfolio accounting;
+- binding v3 включает entry-spread label stress, точный live `maximum_executable_spread_bps`, research leverage/liquidation reserve, round-trip fees, slippage, stop-gap reserve, funding/timeout overrides, `minimum_net_rr`, `minimum_net_ev_r`, policy source и portfolio accounting;
 - promotion gate schema повышена до `model-promotion-experiment-governance-v3`;
 - selected `STARTED.configuration` сравнивается с binding key-by-key; отсутствующий или отличающийся параметр даёт явный `selected_trial_policy_mismatch:<key>`;
 - manual fresh activation, deferred trainer activation и registry CLI используют один и тот же persisted binding;

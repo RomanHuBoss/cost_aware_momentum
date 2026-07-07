@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
@@ -13,13 +15,16 @@ from app.db.models import UniverseEligibilitySnapshot
 from app.json_utils import json_compatible
 from app.services.universe import validate_universe_eligibility_snapshot_record
 
-UNIVERSE_REPLAY_SCHEMA_VERSION = "point-in-time-universe-replay-v1"
+UNIVERSE_REPLAY_SCHEMA_VERSION = "point-in-time-universe-replay-v2"
 
-POSTGRES_UNIVERSE_ASOF_LOADER_SCHEMA = "postgresql-native-universe-asof-loader-v1"
+POSTGRES_UNIVERSE_ASOF_LOADER_SCHEMA = "postgresql-native-universe-asof-loader-v2"
 _COMPACT_SNAPSHOT_COLUMNS = [
     "observed_at",
     "recorded_at",
     "selected_symbols",
+    "execution_eligible_symbols",
+    "spread_ineligible_selected_symbols",
+    "maximum_executable_spread_bps",
     "policy_hash",
     "record_hash",
 ]
@@ -88,11 +93,55 @@ def _normalize_decision_times(values: Iterable[datetime]) -> list[datetime]:
     return sorted(normalized)
 
 
+def _normalized_spread_limit(value: object) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError("maximum_executable_spread_bps must be numeric")
+    try:
+        limit = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError("maximum_executable_spread_bps must be finite and non-negative") from exc
+    if not limit.is_finite() or limit < 0:
+        raise ValueError("maximum_executable_spread_bps must be finite and non-negative")
+    return limit
+
+
+def _execution_symbols_from_snapshot(
+    snapshot: UniverseEligibilitySnapshot,
+    *,
+    maximum_executable_spread_bps: Decimal,
+) -> tuple[list[str], list[str]]:
+    selected = [str(item).strip().upper() for item in snapshot.selected_symbols]
+    decisions_by_symbol: dict[str, dict[str, object]] = {}
+    for raw in snapshot.decisions:
+        if not isinstance(raw, dict):
+            continue
+        symbol = str(raw.get("symbol") or "").strip().upper()
+        if symbol:
+            decisions_by_symbol[symbol] = raw
+
+    eligible: list[str] = []
+    ineligible: list[str] = []
+    for symbol in selected:
+        decision = decisions_by_symbol.get(symbol)
+        ticker = decision.get("ticker") if isinstance(decision, dict) else None
+        spread_value = ticker.get("spread_bps") if isinstance(ticker, dict) else None
+        try:
+            spread = Decimal(str(spread_value))
+        except (InvalidOperation, ValueError, TypeError):
+            spread = Decimal("NaN")
+        if spread.is_finite() and spread >= 0 and spread <= maximum_executable_spread_bps:
+            eligible.append(symbol)
+        else:
+            ineligible.append(symbol)
+    return eligible, ineligible
+
+
 async def load_point_in_time_universe_snapshots(
     session: AsyncSession,
     decision_times: Iterable[datetime],
     *,
     expected_mode: str = "dynamic",
+    maximum_executable_spread_bps: float,
 ) -> pd.DataFrame:
     """Stream only snapshots required by the requested decision timestamps.
 
@@ -105,6 +154,7 @@ async def load_point_in_time_universe_snapshots(
 
     if expected_mode not in {"dynamic", "static"}:
         raise ValueError("Unsupported universe replay mode")
+    spread_limit = _normalized_spread_limit(maximum_executable_spread_bps)
     normalized_times = _normalize_decision_times(decision_times)
     if not normalized_times:
         frame = pd.DataFrame(columns=_COMPACT_SNAPSHOT_COLUMNS)
@@ -113,6 +163,7 @@ async def load_point_in_time_universe_snapshots(
             "requested_decision_timestamps": 0,
             "snapshot_rows_streamed": 0,
             "compact_rows_retained": 0,
+            "maximum_executable_spread_bps": float(spread_limit),
         }
         return frame
 
@@ -145,11 +196,18 @@ async def load_point_in_time_universe_snapshots(
                 f"(id={snapshot.id}, mode={snapshot.mode}, "
                 f"recorded_at={snapshot.recorded_at.isoformat()}): {exc}"
             ) from exc
+        execution_eligible, spread_ineligible = _execution_symbols_from_snapshot(
+            snapshot,
+            maximum_executable_spread_bps=spread_limit,
+        )
         compact_records.append(
             {
                 "observed_at": snapshot.observed_at,
                 "recorded_at": snapshot.recorded_at,
                 "selected_symbols": list(snapshot.selected_symbols),
+                "execution_eligible_symbols": execution_eligible,
+                "spread_ineligible_selected_symbols": spread_ineligible,
+                "maximum_executable_spread_bps": float(spread_limit),
                 "policy_hash": snapshot.policy_hash,
                 "record_hash": snapshot.record_hash,
             }
@@ -161,6 +219,7 @@ async def load_point_in_time_universe_snapshots(
         "requested_decision_timestamps": len(normalized_times),
         "snapshot_rows_streamed": streamed_rows,
         "compact_rows_retained": len(compact_records),
+        "maximum_executable_spread_bps": float(spread_limit),
     }
     return frame
 
@@ -169,21 +228,32 @@ _REQUIRED_SNAPSHOT_COLUMNS = {
     "observed_at",
     "recorded_at",
     "selected_symbols",
+    "execution_eligible_symbols",
+    "spread_ineligible_selected_symbols",
+    "maximum_executable_spread_bps",
     "policy_hash",
     "record_hash",
 }
 
 
-def _empty_evidence(*, required: bool, max_snapshot_age_seconds: int) -> dict[str, Any]:
+def _empty_evidence(
+    *,
+    required: bool,
+    max_snapshot_age_seconds: int,
+    maximum_executable_spread_bps: float,
+) -> dict[str, Any]:
     return json_compatible(
         {
             "schema": UNIVERSE_REPLAY_SCHEMA_VERSION,
             "status": "not_required" if not required else "missing",
             "required": required,
             "max_snapshot_age_seconds": max_snapshot_age_seconds,
+            "maximum_executable_spread_bps": maximum_executable_spread_bps,
             "input_rows": 0,
             "pre_rollout_rows_excluded": 0,
             "ineligible_rows_excluded": 0,
+            "spread_ineligible_rows_excluded": 0,
+            "spread_ineligible_selected_symbols": [],
             "eligible_rows": 0,
             "decision_timestamps": 0,
             "snapshot_count_available": 0,
@@ -212,6 +282,7 @@ def apply_point_in_time_universe_replay(
     snapshots: pd.DataFrame | None,
     *,
     max_snapshot_age_seconds: int,
+    maximum_executable_spread_bps: float,
     required: bool,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Filter decision rows by the latest committed universe snapshot available then.
@@ -224,10 +295,13 @@ def apply_point_in_time_universe_replay(
 
     if max_snapshot_age_seconds <= 0:
         raise ValueError("max_snapshot_age_seconds must be positive")
+    spread_limit = _normalized_spread_limit(maximum_executable_spread_bps)
+    spread_limit_float = float(spread_limit)
     if dataset.empty:
         evidence = _empty_evidence(
             required=required,
             max_snapshot_age_seconds=max_snapshot_age_seconds,
+            maximum_executable_spread_bps=spread_limit_float,
         )
         return dataset.copy(), evidence
     missing_dataset = {"decision_time", "symbol"}.difference(dataset.columns)
@@ -239,6 +313,7 @@ def apply_point_in_time_universe_replay(
         evidence = _empty_evidence(
             required=False,
             max_snapshot_age_seconds=max_snapshot_age_seconds,
+            maximum_executable_spread_bps=spread_limit_float,
         )
         evidence.update(
             {
@@ -276,6 +351,32 @@ def apply_point_in_time_universe_replay(
     if (ledger["recorded_at"] < ledger["observed_at"]).any():
         raise ValueError("Universe eligibility snapshot was recorded before observation")
     ledger["selected_symbols"] = ledger["selected_symbols"].map(_normalize_selected_symbols)
+    ledger["execution_eligible_symbols"] = ledger["execution_eligible_symbols"].map(
+        _normalize_selected_symbols
+    )
+    ledger["spread_ineligible_selected_symbols"] = ledger[
+        "spread_ineligible_selected_symbols"
+    ].map(_normalize_selected_symbols)
+    for row in ledger.itertuples(index=False):
+        selected = set(row.selected_symbols)
+        executable = set(row.execution_eligible_symbols)
+        spread_ineligible = set(row.spread_ineligible_selected_symbols)
+        if not executable.issubset(selected) or not spread_ineligible.issubset(selected):
+            raise ValueError("Universe eligibility executable spread cohorts contradict selected_symbols")
+        if executable & spread_ineligible or executable | spread_ineligible != selected:
+            raise ValueError("Universe eligibility executable spread cohort partition is invalid")
+    threshold_values = pd.to_numeric(
+        ledger["maximum_executable_spread_bps"], errors="coerce"
+    )
+    if threshold_values.isna().any() or (~threshold_values.map(math.isfinite)).any():
+        raise ValueError("Universe eligibility snapshots contain invalid executable spread limit")
+    if not threshold_values.map(
+        lambda value: math.isclose(
+            float(value), spread_limit_float, rel_tol=0.0, abs_tol=1e-12
+        )
+    ).all():
+        raise ValueError("Universe replay executable spread limit mismatch")
+    ledger["maximum_executable_spread_bps"] = threshold_values.astype(float)
     for column in ("policy_hash", "record_hash"):
         values = ledger[column].astype(str)
         if (~values.str.fullmatch(r"[0-9a-f]{64}", case=False)).any():
@@ -304,6 +405,9 @@ def apply_point_in_time_universe_replay(
                 "observed_at",
                 "recorded_at",
                 "selected_symbols",
+                "execution_eligible_symbols",
+                "spread_ineligible_selected_symbols",
+                "maximum_executable_spread_bps",
                 "policy_hash",
                 "record_hash",
             ]
@@ -329,9 +433,13 @@ def apply_point_in_time_universe_replay(
         )
 
     post_rollout = post_rollout.merge(joined, on="decision_time", how="left", validate="many_to_one")
-    eligible_mask = post_rollout.apply(
+    selected_mask = post_rollout.apply(
         lambda row: row["symbol"] in row["selected_symbols"], axis=1
     )
+    eligible_mask = post_rollout.apply(
+        lambda row: row["symbol"] in row["execution_eligible_symbols"], axis=1
+    )
+    spread_ineligible_mask = selected_mask & ~eligible_mask
     filtered = post_rollout.loc[eligible_mask, dataset.columns].copy()
     if filtered.empty:
         raise ValueError("Universe replay produced no production-eligible decision rows")
@@ -343,9 +451,18 @@ def apply_point_in_time_universe_replay(
             "status": "applied",
             "required": True,
             "max_snapshot_age_seconds": max_snapshot_age_seconds,
+            "maximum_executable_spread_bps": spread_limit_float,
             "input_rows": int(len(frame)),
             "pre_rollout_rows_excluded": int(pre_rollout_mask.sum()),
             "ineligible_rows_excluded": int((~eligible_mask).sum()),
+            "spread_ineligible_rows_excluded": int(spread_ineligible_mask.sum()),
+            "spread_ineligible_selected_symbols": sorted(
+                {
+                    symbol
+                    for values in used["spread_ineligible_selected_symbols"]
+                    for symbol in values
+                }
+            ),
             "eligible_rows": int(len(filtered)),
             "decision_timestamps": int(filtered["decision_time"].nunique()),
             "snapshot_count_available": int(len(ledger)),

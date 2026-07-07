@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.37.0 — 2026-07-07
+
+### Fixed
+
+- Aligned dynamic-universe training and formal backtests with the exact live `MAX_SPREAD_BPS` executable gate instead of replaying every symbol admitted by the broader `UNIVERSE_MAX_SPREAD_BPS` discovery threshold.
+- Derived execution-eligible historical cohorts from immutable per-symbol bid/ask spread evidence in each universe snapshot and recorded spread exclusions in replay evidence.
+- Added `MAX_SPREAD_BPS` to immutable promotion-policy binding schema v3, so evidence produced under a different live spread contract cannot authorize normal activation.
+- Built candidate training-data profiles from the actual post-replay model cohort, deduplicated to one source candle per symbol/hour, instead of the unfiltered source candle frame.
+- Added six red → green regressions; no spread, quality, walk-forward, holdout, EV/RR or risk threshold was relaxed.
+
 ## 1.36.0 — 2026-07-07
 
 ### Added
