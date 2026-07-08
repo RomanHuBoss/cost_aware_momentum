@@ -241,6 +241,39 @@ async def test_rejected_recovery_candidate_uses_controlled_success_cooldown(
     assert reason["pending_trigger"]["reason"] == "bootstrap_recovery"
 
 
+
+
+@pytest.mark.asyncio
+async def test_rejected_bootstrap_reports_new_data_wait_even_during_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    profile = training_profile(now)
+    latest = attempt(
+        status="SUCCESS",
+        started_at=now - timedelta(hours=1),
+        trigger_reason="bootstrap_training",
+        active_version=None,
+        activation_skipped="quality_gate_failed",
+        profile=profile,
+    )
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=None,
+        latest=latest,
+        profile=profile,
+    )
+
+    due, reason = await trainer.due_reason()
+
+    assert due is False
+    assert reason["reason"] == "quality_gate_failed_waiting_for_new_data"
+    assert reason["previous_activation_skipped"] == "quality_gate_failed"
+    assert reason["new_timestamps"] == 0
+    assert reason["required_new_timestamps"] == trainer_module.settings.auto_train_min_new_timestamps
+    assert reason["cooldown_hours"] == 6
+    assert reason["next_due_at"] is not None
+
 @pytest.mark.asyncio
 async def test_rejected_bootstrap_waits_for_new_training_data_after_cooldown(
     monkeypatch: pytest.MonkeyPatch,

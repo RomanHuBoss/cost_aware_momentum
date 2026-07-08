@@ -912,47 +912,14 @@ class BackgroundTrainer:
             if trigger_kind == "bootstrap" and not _same_bootstrap_episode(latest, trigger):
                 return True, trigger
 
-            if trigger_kind == "bootstrap" and latest.status != "SUCCESS":
-                wait = timedelta(minutes=settings.auto_train_recovery_retry_minutes)
-                if age < wait:
-                    return False, {
-                        "reason": "training_recovery_backoff_not_elapsed",
-                        "pending_trigger": trigger,
-                        "last_status": latest.status,
-                        "last_started_at": latest.started_at.isoformat(),
-                        "cooldown_minutes": settings.auto_train_recovery_retry_minutes,
-                        "next_due_at": (latest.started_at + wait).isoformat(),
-                    }
-                return True, trigger
-
-            if latest.status != "SUCCESS":
-                wait_hours = settings.auto_train_retry_hours
-            elif trigger_kind == "data_change" or (
-                trigger_kind == "bootstrap"
-                and isinstance(latest.details, dict)
-                and latest.details.get("activation_skipped") in DATA_DEPENDENT_TRAINING_SKIPS
-            ):
-                wait_hours = settings.auto_train_data_change_cooldown_hours
-            else:
-                wait_hours = settings.auto_train_interval_hours
-            wait = timedelta(hours=wait_hours)
-            if age < wait:
-                return False, {
-                    "reason": "training_cooldown_not_elapsed",
-                    "pending_trigger": trigger,
-                    "last_status": latest.status,
-                    "last_started_at": latest.started_at.isoformat(),
-                    "cooldown_hours": wait_hours,
-                    "next_due_at": (latest.started_at + wait).isoformat(),
-                }
-
-            if (
+            data_dependent_bootstrap_skip = (
                 trigger_kind == "bootstrap"
                 and latest.status == "SUCCESS"
                 and isinstance(latest.details, dict)
                 and latest.details.get("activation_skipped") in DATA_DEPENDENT_TRAINING_SKIPS
                 and _same_bootstrap_episode(latest, trigger)
-            ):
+            )
+            if data_dependent_bootstrap_skip:
                 previous_trigger = _job_trigger(latest.details)
                 previous_profile = TrainingDataProfile.from_mapping(
                     previous_trigger.get("training_data_profile") if previous_trigger is not None else None
@@ -981,17 +948,52 @@ class BackgroundTrainer:
                             if previous_skip == "quality_gate_failed"
                             else "training_deferred_waiting_for_new_data"
                         )
+                        wait_hours = settings.auto_train_data_change_cooldown_hours
+                        next_due_at = latest.started_at + timedelta(hours=wait_hours)
                         return False, {
                             "reason": wait_reason,
                             "previous_activation_skipped": previous_skip,
                             "pending_trigger": trigger,
+                            "last_status": latest.status,
                             "last_started_at": latest.started_at.isoformat(),
+                            "cooldown_hours": wait_hours,
+                            "next_due_at": next_due_at.isoformat() if age < timedelta(hours=wait_hours) else None,
                             "new_timestamps": retry_new_timestamps,
                             "required_new_timestamps": (settings.auto_train_min_new_timestamps),
                             "dataset_change": retry_comparison,
                             "previous_training_data_profile": previous_profile.to_dict(),
                             **training_scope,
                         }
+
+            if trigger_kind == "bootstrap" and latest.status != "SUCCESS":
+                wait = timedelta(minutes=settings.auto_train_recovery_retry_minutes)
+                if age < wait:
+                    return False, {
+                        "reason": "training_recovery_backoff_not_elapsed",
+                        "pending_trigger": trigger,
+                        "last_status": latest.status,
+                        "last_started_at": latest.started_at.isoformat(),
+                        "cooldown_minutes": settings.auto_train_recovery_retry_minutes,
+                        "next_due_at": (latest.started_at + wait).isoformat(),
+                    }
+                return True, trigger
+
+            if latest.status != "SUCCESS":
+                wait_hours = settings.auto_train_retry_hours
+            elif trigger_kind == "data_change" or data_dependent_bootstrap_skip:
+                wait_hours = settings.auto_train_data_change_cooldown_hours
+            else:
+                wait_hours = settings.auto_train_interval_hours
+            wait = timedelta(hours=wait_hours)
+            if age < wait:
+                return False, {
+                    "reason": "training_cooldown_not_elapsed",
+                    "pending_trigger": trigger,
+                    "last_status": latest.status,
+                    "last_started_at": latest.started_at.isoformat(),
+                    "cooldown_hours": wait_hours,
+                    "next_due_at": (latest.started_at + wait).isoformat(),
+                }
         return True, trigger
 
     async def claim_control_request(self) -> JobRun | None:

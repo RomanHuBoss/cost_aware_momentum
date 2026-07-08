@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.3: worker больше не запускает stale hourly/catch-up inference после истечения decision-time publication window. Опоздавший цикл фиксируется как terminal skip `decision_publication_lag_exceeded` до market refresh/publication, без расширения безопасного лимита и без публикации устаревших рекомендаций.
+> Версия 1.52.4: trainer после отклонённого bootstrap/recovery candidate из-за `quality_gate_failed` или недостаточной walk-forward истории сразу показывает первопричину и прогресс новых размеченных часов, а не маскирует состояние общим cooldown. Dependency contract дополнительно ограничивает NumPy `<2.5` для воспроизводимости unit/static QA.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -171,7 +171,7 @@ Override не является способом обойти плохие мет
 
 
 
-Release 1.52.3 не добавляет migration, `.env`, API или model-artifact changes. После обновления перезапустите inference worker. Если текущий hourly/catch-up цикл стартует позже `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS`, worker записывает terminal skip `decision_publication_lag_exceeded` и ждёт следующего eligible hour; `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS` не увеличен, stale recommendations не публикуются.
+Release 1.52.4 не добавляет migration, `.env`, API или model-artifact changes. После обновления перезапустите trainer/API, чтобы UI получил новые wait reason labels. Если trainer показывает `quality_gate_failed_waiting_for_new_data` или `training_deferred_waiting_for_new_data`, это означает, что активная baseline-модель сохранена, а повторное обучение ждёт material dataset change или минимум `AUTO_TRAIN_MIN_NEW_TIMESTAMPS` новых размеченных часов. NumPy ограничен `<2.5`, потому что fresh install с NumPy 2.5.1 нарушал существующие funding/policy unit contracts.
 
 Release 1.52.2 не добавляет migration, `.env`, API или model-artifact changes. После обновления перезапустите API и inference worker. Многоуровневый depth sizing теперь ограничивается фактически доступным base quantity, а acceptance допускает агрегированный FULL-fill VWAP между тиками при tick-aligned уровнях стакана и signal geometry. Fresh depth, entry-zone, adverse-price, risk, funding, margin и reconciliation checks остаются fail-closed.
 

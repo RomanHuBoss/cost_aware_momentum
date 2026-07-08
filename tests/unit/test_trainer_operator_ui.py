@@ -13,3 +13,5 @@ def test_operator_ui_exposes_trainer_status_dialog_and_safe_controls() -> None:
     assert "/api/v1/admin/trainer-control" in javascript
     assert "not_enough_new_labeled_time" in javascript
     assert "not_enough_history_for_bootstrap" in javascript
+    assert "quality_gate_failed_waiting_for_new_data" in javascript
+    assert "training_deferred_waiting_for_new_data" in javascript

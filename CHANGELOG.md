@@ -2,6 +2,21 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.4 — 2026-07-08
+
+### Fixed
+
+- Trainer scheduling больше не маскирует rejected bootstrap/recovery candidate с `quality_gate_failed` или data-dependent walk-forward deferral общим `training_cooldown_not_elapsed`, когда повтор всё равно требует новых данных.
+- Heartbeat/UI wait reason теперь сразу сообщает `quality_gate_failed_waiting_for_new_data` или `training_deferred_waiting_for_new_data`, предыдущий skip reason, прогресс новых размеченных часов и, если применимо, оставшееся cooldown window.
+- UI добавил человекочитаемые сообщения для data-dependent trainer waits и показывает progress bar по новым размеченным часам.
+- Dependency contract ограничивает NumPy `<2.5`; fresh QA install с NumPy 2.5.1 ломал существующие funding replay и policy phase contracts, тогда как NumPy 2.3.5 проходит suite.
+
+### Compatibility
+
+- Миграций БД, новых `.env` variables, API-breaking changes и model-artifact changes нет.
+- Trainer gates, quality thresholds и cooldown limits не ослаблены; меняется только ранняя классификация причины ожидания и reproducible dependency bound.
+- После обновления требуется перезапуск trainer и API/UI process.
+
 
 ## 1.52.3 — 2026-07-08
 

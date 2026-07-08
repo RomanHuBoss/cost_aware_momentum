@@ -42,6 +42,8 @@ const trainerWaitLabels = {
   not_enough_new_or_changed_training_data: 'После активной модели накоплено недостаточно новых размеченных часов или изменений набора данных.',
   not_enough_new_labeled_time: 'После активной модели накоплено недостаточно новых размеченных часов.',
   training_cooldown_not_elapsed: 'Действует защитная пауза после предыдущей попытки обучения.',
+  quality_gate_failed_waiting_for_new_data: 'Предыдущий candidate не прошёл quality gate; trainer ждёт новых размеченных часов перед повтором.',
+  training_deferred_waiting_for_new_data: 'Предыдущее обучение отложено из-за недостаточной walk-forward истории; trainer ждёт новых размеченных часов.',
   training_recovery_backoff_not_elapsed: 'Действует короткая защитная пауза после неудачного восстановления.',
   operator_recovery_not_required: 'Активный artifact доступен; восстановительное обучение не требуется.',
   operator_recovery_blocked_by_active_model_path: 'Восстановление заблокировано настройкой ACTIVE_MODEL_PATH.',
@@ -307,7 +309,7 @@ function trainerWaitDescription(waitReason) {
     progress += trainerProgressRow('Инструменты с достаточной историей', waitReason.covered_symbols, waitReason.symbol_count);
     progress += trainerProgressRow('Покрытие universe', Number(waitReason.coverage_ratio || 0) * 100, Number(waitReason.required_coverage_ratio || 0) * 100, value => `${fmt(value, 1)}%`);
   }
-  if (['not_enough_new_or_changed_training_data', 'not_enough_new_labeled_time'].includes(reason)) {
+  if (['not_enough_new_or_changed_training_data', 'not_enough_new_labeled_time', 'quality_gate_failed_waiting_for_new_data', 'training_deferred_waiting_for_new_data'].includes(reason)) {
     progress += trainerProgressRow('Новые размеченные часы', waitReason.new_timestamps, waitReason.required_new_timestamps);
   }
   const pending = waitReason.pending_trigger;

@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.3; они не означают полную production/economic validation.
+Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.4; они не означают полную production/economic validation.
 
 | Требование | Статус | Evidence / ограничение |
 |---|---|---|
@@ -22,4 +22,6 @@
 | Economic profitability | Not claimed | требуется paper/shadow/forward evidence |
 | Fail-closed operator diagnostics | Implemented, unit tested | structured walk-forward capacity, safe decision-time contract JSON fields, and pre-publication stale skip diagnostics |
 | Worker stale decision scheduling | Implemented, unit tested | stale hourly/catch-up inference records `decision_publication_lag_exceeded` before publication attempt |
+| Trainer data-dependent wait diagnostics | Implemented, unit tested | rejected bootstrap/recovery candidates report `quality_gate_failed_waiting_for_new_data` or `training_deferred_waiting_for_new_data` with new-labeled-hour progress |
+| Dependency QA reproducibility | Implemented, static/unit checked | NumPy constrained to `<2.5`; NumPy 2.5.1 fresh install was confirmed incompatible with existing funding/policy tests |
 | Complete release attestation | Implemented since 1.51.1 | required docs, version agreement, patch/report, SHA256SUMS |

@@ -15,6 +15,15 @@
 - Реальный вход и выход регистрируются вручную в fills/trades journal.
 - Не обходите `NO_TRADE`, stale, risk, margin, liquidity, reconciliation или model quarantine блокировки.
 
+
+## Обновление 1.52.4
+
+Миграций и новых `.env` variables нет. После обновления перезапустите trainer и API/UI process.
+
+Если при активной `baseline-momentum-v1` UI показывает `quality_gate_failed_waiting_for_new_data`, предыдущий candidate был построен, но не прошёл quality gate; повтор до накопления новых размеченных часов обычно снова будет заблокирован тем же gate. Если отображается `training_deferred_waiting_for_new_data`, после feature/context/label filtering или walk-forward capacity не хватило пригодной истории. В обоих случаях смотрите progress bar «Новые размеченные часы» и `AUTO_TRAIN_MIN_NEW_TIMESTAMPS`; recovery не отключает temporal validation, quality gate и fail-closed защиту active model.
+
+NumPy в release contract ограничен `<2.5`; при обновлении environment переустановите зависимости по `pyproject.toml`, чтобы не подтянуть несовместимый NumPy 2.5.x.
+
 ## Обновление 1.52.3
 
 Миграций и новых `.env` variables нет. После обновления перезапустите inference worker.
