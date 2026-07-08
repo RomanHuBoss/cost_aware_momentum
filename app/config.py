@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     orderbook_retention_hours: int = 48
 
     candle_interval: str = "60"
-    initial_backfill_bars: int = 1000
+    initial_backfill_bars: int = 1500
     history_backfill_enabled: bool = True
     history_backfill_target_days: int = 365
     history_backfill_interval_seconds: int = 60

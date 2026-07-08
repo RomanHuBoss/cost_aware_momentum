@@ -1,5 +1,10 @@
 # Operator Manual
 
+## First training readiness
+
+Default training preflight currently needs at least 1206 label-eligible hourly timestamps. Release 1.52.6 sets `INITIAL_BACKFILL_BARS=1500` and makes startup kline sync paginate beyond one 1000-row exchange page. If your existing `.env` still says `INITIAL_BACKFILL_BARS=1000`, change it to `1500` and restart worker/trainer; otherwise the system may wait for progressive history backfill even though historical candles are available.
+
+
 ## Безопасный запуск
 
 1. Создайте Python environment по требованию `pyproject.toml`.

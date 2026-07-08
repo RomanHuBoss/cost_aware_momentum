@@ -31,6 +31,7 @@ from app.services.audit import append_audit_event, publish_outbox
 logger = logging.getLogger(__name__)
 
 BYBIT_READ_ONLY_ACCOUNT_ID = "bybit-unified"
+BYBIT_KLINE_PAGE_LIMIT = 1000
 
 
 @dataclass(frozen=True)
@@ -301,7 +302,41 @@ async def sync_candles(
 
     async def fetch(symbol: str, price_type: str) -> tuple[str, str, list[list[str]] | None]:
         try:
-            rows = await client.get_kline(symbol, interval=interval, limit=limit, price_type=price_type)
+            rows: list[list[str]] = []
+            remaining = max(1, int(limit))
+            end_ms: int | None = None
+            seen_open_ms: set[int] = set()
+            while remaining > 0:
+                page_limit = min(remaining, BYBIT_KLINE_PAGE_LIMIT)
+                request_kwargs = {
+                    "interval": interval,
+                    "limit": page_limit,
+                    "price_type": price_type,
+                }
+                if end_ms is not None:
+                    request_kwargs["end_ms"] = end_ms
+                page = await client.get_kline(symbol, **request_kwargs)
+                if not page:
+                    break
+                page_times: list[int] = []
+                new_rows: list[list[str]] = []
+                for row in page:
+                    try:
+                        open_ms = int(row[0])
+                    except (IndexError, TypeError, ValueError):
+                        continue
+                    page_times.append(open_ms)
+                    if open_ms in seen_open_ms:
+                        continue
+                    seen_open_ms.add(open_ms)
+                    new_rows.append(row)
+                if not page_times or not new_rows:
+                    break
+                rows.extend(new_rows)
+                remaining = max(0, int(limit) - len(rows))
+                if remaining <= 0 or len(page) < page_limit:
+                    break
+                end_ms = min(page_times) - 1
             return symbol, price_type, rows
         except Exception:
             logger.exception(

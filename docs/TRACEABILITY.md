@@ -12,6 +12,7 @@
 | Quantity-safe orderbook sizing и aggregate VWAP acceptance | `orderbook_depth_notional_cap`, `validate_execution_plan_for_acceptance`, recommendation accept endpoint | `test_orderbook_vwap_sizing_integrity_2026_07_08.py`, multilevel acceptance regression |
 | Point-in-time research dataset | `app/ml/training.py`, context/funding modules | point-in-time, tick geometry, funding replay tests |
 | Frozen dynamic historical bootstrap | `app/workers/trainer.py::current_training_scope`, `app/ml/lifecycle.py::load_dynamic_bootstrap_cohort` | `tests/unit/test_historical_dynamic_bootstrap_2026_07_07.py` |
+| Startup backfill reaches default training preflight depth | `app/config.py`, `app/services/market_data.py::sync_candles` | `tests/unit/test_initial_training_backfill_readiness_2026_07_08.py` |
 | Bootstrap preflight/artifact provenance | `require_training_universe_scope`, `evaluate_quality_gate` | bootstrap evidence/profile integrity tests |
 | Exact prospective replay without full-sample symbol selection | `load_training_data_profile(require_universe_replay=True)` | `test_exact_dynamic_profile_never_applies_full_sample_symbol_cap` |
 | Model lifecycle fail-closed | `app/ml/lifecycle.py`, promotion/activation services | lifecycle, activation, experiment governance tests |

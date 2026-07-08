@@ -1,5 +1,12 @@
 # Configuration
 
+## Startup training backfill
+
+- `INITIAL_BACKFILL_BARS=1500` — default startup candle depth. It intentionally exceeds the current default training readiness minimum of 1206 label-eligible hourly timestamps.
+- Bybit kline responses are single-page bounded; the worker paginates startup candle requests when this value is greater than 1000.
+- Existing `.env` files with `INITIAL_BACKFILL_BARS=1000` remain valid but may leave the trainer waiting for progressive history backfill before the first candidate attempt.
+
+
 Канонический перечень переменных и безопасные примеры находятся в `.env.example`; реальные credentials в release не входят.
 
 ## Основные группы

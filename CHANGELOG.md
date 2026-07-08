@@ -2,6 +2,21 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.6 — 2026-07-08
+
+### Fixed
+
+- Startup market backfill depth now matches the default training quality-gate precondition: `INITIAL_BACKFILL_BARS` default increased from 1000 to 1500, above the current 1206-hour default minimum.
+- `sync_candles()` now paginates Bybit kline requests when the caller requests more than the exchange single-page limit, so `INITIAL_BACKFILL_BARS>1000` actually stores the requested depth instead of silently receiving only one page.
+- Added regression coverage proving that the default backfill can cover the training preflight minimum and that a 1206-bar startup request produces two kline pages and 1206 distinct hourly rows.
+
+### Compatibility
+
+- Миграций БД, новых `.env` variables, API-breaking changes и model-artifact schema changes нет.
+- Existing `.env` files with `INITIAL_BACKFILL_BARS=1000` remain accepted, but they can delay first training readiness; set it to at least `1500` for the new startup behavior.
+- Quality, walk-forward, holdout, policy, promotion and risk gates are unchanged.
+
+
 ## 1.52.5 — 2026-07-08
 
 ### Fixed

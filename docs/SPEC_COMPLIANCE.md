@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.5; они не означают полную production/economic validation.
+Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.6; они не означают полную production/economic validation.
 
 | Требование | Статус | Evidence / ограничение |
 |---|---|---|
@@ -14,6 +14,7 @@
 | Safe qty rounding и min order blocking | Implemented, unit tested | floor-to-step и post-round checks |
 | Point-in-time features/specs | Implemented, unit tested | training/context/spec timeline tests |
 | Clean-install dynamic historical bootstrap | Implemented, unit tested | frozen hash-validated cohort, immutable preflight scope, conservative tick fallback, automatic prospective upgrade |
+| Startup backfill depth covers default training minimum | Implemented, unit tested | `INITIAL_BACKFILL_BARS=1500`; `sync_candles()` paginates >1000 kline requests; does not lower quality gates |
 | Purged temporal split/final holdout | Implemented, unit tested | shared capacity contract, structured post-filter deferral, `chronological_split`, walk-forward tests |
 | Immutable artifact + guarded activation | Implemented, unit tested | lifecycle/artifact/promotion tests |
 | Drift/attrition/selection governance | Implemented, unit tested | соответствующие services и tests |
