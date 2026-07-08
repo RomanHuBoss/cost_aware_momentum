@@ -2,6 +2,21 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.7 — 2026-07-08
+
+### Fixed
+
+- Open-interest history backfill now has a separate default depth: `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL=7`, covering the current 1206-hour training-readiness precondition at Bybit's 200-row hourly OI page size.
+- Startup trainer defer `insufficient_walk_forward_history_after_filtering` with observed `actual_timestamps=326 < required_timestamps=366` is no longer caused by the old 2-page OI cap when candle/mark/index history is otherwise available.
+- The worker suppresses repeated stale hourly decision attempts for the same event hour after a terminal `decision_publication_lag_exceeded` result; the next hour remains eligible.
+- `/api/v1/status` exposes `history_backfill.open_interest_pages_per_symbol` for operator diagnostics.
+
+### Compatibility
+
+- No database migration, API-breaking change, order execution capability, model-artifact schema change or gate weakening.
+- Existing `.env` files can add `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL=7`; absent values use the new safe default.
+- Restart worker and trainer after update.
+
 ## 1.52.6 — 2026-07-08
 
 ### Fixed

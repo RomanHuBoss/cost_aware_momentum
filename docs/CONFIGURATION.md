@@ -6,6 +6,11 @@
 - Bybit kline responses are single-page bounded; the worker paginates startup candle requests when this value is greater than 1000.
 - Existing `.env` files with `INITIAL_BACKFILL_BARS=1000` remain valid but may leave the trainer waiting for progressive history backfill before the first candidate attempt.
 
+## Progressive market-context backfill
+
+- `HISTORY_BACKFILL_PAGES_PER_SYMBOL=2` remains the generic progressive page count for candle/mark/index/funding cycles.
+- `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL=7` is intentionally separate because Bybit hourly open-interest pages are capped at 200 rows. The previous generic 2-page default loaded only about 400 OI hours, which can shrink to about 326 usable development timestamps after point-in-time market-context and label filtering while current walk-forward requires 366.
+- Do not reduce open-interest pages to make training start sooner; insufficient OI history correctly defers training fail-closed.
 
 Канонический перечень переменных и безопасные примеры находятся в `.env.example`; реальные credentials в release не входят.
 

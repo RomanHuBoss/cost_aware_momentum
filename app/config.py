@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     history_backfill_interval_seconds: int = 60
     history_backfill_symbols_per_cycle: int = 5
     history_backfill_pages_per_symbol: int = 2
+    history_backfill_open_interest_pages_per_symbol: int = 7
     history_backfill_page_size: int = 1000
     market_poll_seconds: int = 60
     instrument_refresh_seconds: int = 21600
@@ -474,6 +475,8 @@ class Settings(BaseSettings):
             raise ValueError("HISTORY_BACKFILL_SYMBOLS_PER_CYCLE must be positive")
         if self.history_backfill_pages_per_symbol < 1:
             raise ValueError("HISTORY_BACKFILL_PAGES_PER_SYMBOL must be positive")
+        if self.history_backfill_open_interest_pages_per_symbol < 1:
+            raise ValueError("HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL must be positive")
         if not 50 <= self.history_backfill_page_size <= 1000:
             raise ValueError("HISTORY_BACKFILL_PAGE_SIZE must be between 50 and 1000")
         if self.outcome_intrabar_max_windows_per_cycle < 1:

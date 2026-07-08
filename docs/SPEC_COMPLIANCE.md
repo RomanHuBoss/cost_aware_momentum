@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.6; они не означают полную production/economic validation.
+Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.7; они не означают полную production/economic validation.
 
 | Требование | Статус | Evidence / ограничение |
 |---|---|---|
@@ -26,3 +26,5 @@
 | Trainer data-dependent wait diagnostics | Implemented, unit tested | rejected bootstrap/recovery candidates report `quality_gate_failed_waiting_for_new_data` or `training_deferred_waiting_for_new_data` with new-labeled-hour progress; previous profile evidence is recovered from trigger or candidate metrics |
 | Dependency QA reproducibility | Implemented, static/unit checked | NumPy constrained to `<2.5`; NumPy 2.5.1 fresh install was confirmed incompatible with existing funding/policy tests |
 | Complete release attestation | Implemented since 1.51.1 | required docs, version agreement, patch/report, SHA256SUMS |
+
+| Open-interest startup history depth | Implemented, unit tested | separate `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL=7` covers default 1206-hour training readiness at 200 OI rows/page |

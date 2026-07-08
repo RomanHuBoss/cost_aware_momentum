@@ -96,3 +96,16 @@ async def test_sync_candles_paginates_initial_backfill_beyond_bybit_page_limit(m
     assert client.calls[0]["end_ms"] is None
     assert client.calls[1]["limit"] == 206
     assert isinstance(client.calls[1]["end_ms"], int)
+
+
+def test_default_open_interest_history_backfill_covers_training_quality_gate_precondition() -> None:
+    settings = Settings()
+    required = minimum_hourly_history_timestamps_for_quality_gate(
+        horizon_hours=settings.default_horizon_hours,
+        minimum_holdout_rows=settings.auto_train_min_holdout_rows,
+        minimum_holdout_span_hours=settings.auto_train_min_holdout_span_hours,
+    )
+    open_interest_rows = settings.history_backfill_open_interest_pages_per_symbol * 200
+
+    assert open_interest_rows >= required
+    assert settings.history_backfill_pages_per_symbol * 200 < required

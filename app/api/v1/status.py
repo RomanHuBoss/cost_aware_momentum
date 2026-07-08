@@ -491,6 +491,7 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "interval_seconds": settings.history_backfill_interval_seconds,
             "symbols_per_cycle": settings.history_backfill_symbols_per_cycle,
             "pages_per_symbol": settings.history_backfill_pages_per_symbol,
+            "open_interest_pages_per_symbol": settings.history_backfill_open_interest_pages_per_symbol,
             "page_size": settings.history_backfill_page_size,
         },
         "database_revision": await current_revision(session),

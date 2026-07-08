@@ -2,7 +2,7 @@
 
 ## First training readiness
 
-Default training preflight currently needs at least 1206 label-eligible hourly timestamps. Release 1.52.6 sets `INITIAL_BACKFILL_BARS=1500` and makes startup kline sync paginate beyond one 1000-row exchange page. If your existing `.env` still says `INITIAL_BACKFILL_BARS=1000`, change it to `1500` and restart worker/trainer; otherwise the system may wait for progressive history backfill even though historical candles are available.
+Default training preflight currently needs at least 1206 label-eligible hourly timestamps, and the purged walk-forward development slice currently needs 366 timestamps after filtering. Release 1.52.7 keeps `INITIAL_BACKFILL_BARS=1500` and adds `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL=7` so hourly OI context no longer caps the usable development history near 326 timestamps. If your existing `.env` still says `INITIAL_BACKFILL_BARS=1000`, change it to `1500`; if it defines `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL` below 7, change it to 7. Restart worker/trainer afterward.
 
 
 ## Безопасный запуск
@@ -20,6 +20,16 @@ Default training preflight currently needs at least 1206 label-eligible hourly t
 - Реальный вход и выход регистрируются вручную в fills/trades journal.
 - Не обходите `NO_TRADE`, stale, risk, margin, liquidity, reconciliation или model quarantine блокировки.
 
+
+## Обновление 1.52.7
+
+Миграций нет. Добавлена новая `.env` variable `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL=7`; отсутствующее значение безопасно берётся из default, но при явном меньшем значении в локальном `.env` trainer может снова показать `insufficient_walk_forward_history_after_filtering`.
+
+Если в логах есть `actual_timestamps=326, required_timestamps=366`, сначала проверьте `history_backfill.open_interest_history.progress`: старый 2-page OI cap давал около 400 raw hourly OI rows и не покрывал текущий walk-forward development contract. Не снижайте folds/purge/holdout; увеличьте OI history depth и дайте worker завершить backfill.
+
+Повторяющиеся `Hourly decision cycle skipped because publication window is stale` для одного и того же event hour теперь подавляются после первого terminal skip. Сам `decision_publication_lag_exceeded` остается правильной fail-closed блокировкой; устаревший hourly signal публиковать нельзя.
+
+После обновления перезапустите worker и trainer.
 
 ## Обновление 1.52.5
 

@@ -206,6 +206,7 @@ class Worker:
         self.last_account_sync: datetime | None = None
         self.last_universe_refresh: datetime | None = None
         self.last_model_refresh: datetime | None = None
+        self.last_stale_hourly_decision_event_time: datetime | None = None
         self.active_model_registry_id: str | None = None
         self.model_notice: dict[str, object] | None = None
         self.model_artifact_durability: dict[str, object] | None = None
@@ -740,7 +741,7 @@ class Worker:
                     open_interest_candidates,
                     target_days=settings.history_backfill_target_days,
                     page_size=min(settings.history_backfill_page_size, 200),
-                    max_pages_per_symbol=settings.history_backfill_pages_per_symbol,
+                    max_pages_per_symbol=settings.history_backfill_open_interest_pages_per_symbol,
                 )
                 if open_interest_candidates
                 else {"symbols_processed": 0, "rows_received": 0, "progress": []}
@@ -1018,6 +1019,24 @@ class Worker:
         await self.retention_job(event_time)
         return {"status": "completed", "inference": inference_result}
 
+    async def hourly_decision_cycle_if_due(
+        self,
+        event_time: datetime,
+        *,
+        cycle_started_at: datetime,
+    ) -> dict[str, object]:
+        """Suppress repeated stale-publication attempts until the next event hour."""
+
+        if getattr(self, "last_stale_hourly_decision_event_time", None) == event_time:
+            return {
+                "skipped": "stale_hourly_decision_already_recorded",
+                "event_time": event_time.isoformat(),
+            }
+        result = await self.hourly_decision_cycle(event_time, cycle_started_at=cycle_started_at)
+        if result.get("skipped") == "decision_publication_lag_exceeded":
+            self.last_stale_hourly_decision_event_time = event_time
+        return result
+
     async def retention_job(self, event_time: datetime) -> dict:
         async def task(session):
             now = datetime.now(UTC)
@@ -1105,7 +1124,7 @@ class Worker:
                 event_time = now.replace(minute=0, second=0, microsecond=0)
                 run_after = event_time + timedelta(seconds=settings.inference_delay_seconds)
                 if now >= run_after:
-                    await self.hourly_decision_cycle(event_time, cycle_started_at=now)
+                    await self.hourly_decision_cycle_if_due(event_time, cycle_started_at=now)
                 await self.expiry_job()
                 await self.heartbeat(
                     self.model_heartbeat_status(),

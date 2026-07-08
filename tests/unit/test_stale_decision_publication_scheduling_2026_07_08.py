@@ -109,3 +109,56 @@ async def test_stale_catchup_records_terminal_skip_without_execution_refresh(
     worker._refresh_execution_inputs.assert_not_awaited()
     worker._refresh_tickers_for_symbols.assert_not_awaited()
     publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_repeated_stale_hourly_cycle_is_suppressed_until_next_event_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_time = datetime(2026, 7, 8, 3, 0, tzinfo=UTC)
+    checked_at = event_time + timedelta(minutes=41)
+    worker = object.__new__(runner_module.Worker)
+    worker.active_symbols = ("BTCUSDT", "ETHUSDT")
+    worker.last_stale_hourly_decision_event_time = None
+    calls = 0
+
+    monkeypatch.setattr(
+        runner_module,
+        "settings",
+        SimpleNamespace(max_signal_publication_delay_seconds=600, drift_monitor_enabled=True),
+    )
+
+    async def fake_cycle(value: datetime, *, cycle_started_at: datetime | None = None) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {
+            "skipped": "decision_publication_lag_exceeded",
+            "event_time": value.isoformat(),
+            "publication_boundary": {"publish_time": cycle_started_at.isoformat() if cycle_started_at else None},
+        }
+
+    worker.hourly_decision_cycle = fake_cycle
+
+    first = await runner_module.Worker.hourly_decision_cycle_if_due(
+        worker,
+        event_time,
+        cycle_started_at=checked_at,
+    )
+    second = await runner_module.Worker.hourly_decision_cycle_if_due(
+        worker,
+        event_time,
+        cycle_started_at=checked_at + timedelta(seconds=15),
+    )
+    next_hour = await runner_module.Worker.hourly_decision_cycle_if_due(
+        worker,
+        event_time + timedelta(hours=1),
+        cycle_started_at=event_time + timedelta(hours=1, minutes=41),
+    )
+
+    assert first["skipped"] == "decision_publication_lag_exceeded"
+    assert second == {
+        "skipped": "stale_hourly_decision_already_recorded",
+        "event_time": event_time.isoformat(),
+    }
+    assert next_hour["skipped"] == "decision_publication_lag_exceeded"
+    assert calls == 2

@@ -24,3 +24,12 @@
 | PostgreSQL migration head | `migrations/versions/0018_inference_observations.py` | Alembic head check; integration upgrade not run here |
 
 Точное число и результат выполненных проверок фиксируются в `docs/QA_REPORT.md`; неподтверждённые external/live свойства не считаются закрытыми.
+
+## 1.52.7 — Open-interest backfill and stale hourly suppression
+
+- Requirement: startup/progressive history must make the current training contract reachable without weakening temporal validation.
+  - Implementation: `app/config.py` adds `history_backfill_open_interest_pages_per_symbol=7`; `app/workers/runner.py` uses it only for OI history; `/api/v1/status` exposes the value.
+  - Tests: `tests/unit/test_initial_training_backfill_readiness_2026_07_08.py::test_default_open_interest_history_backfill_covers_training_quality_gate_precondition`.
+- Requirement: stale recommendations must remain blocked without noisy repeated attempts in the same event hour.
+  - Implementation: `Worker.hourly_decision_cycle_if_due` latches terminal stale hourly skips until the next event hour.
+  - Tests: `tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py::test_repeated_stale_hourly_cycle_is_suppressed_until_next_event_hour`.
