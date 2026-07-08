@@ -27,6 +27,7 @@ from app.db.models import (
     TickerSnapshot,
 )
 from app.risk.liquidity import ORDERBOOK_EXECUTION_SCHEMA_VERSION
+from app.risk.math import positive_finite_decimal
 from app.services.audit import append_audit_event, publish_outbox
 from app.services.drift_monitor import production_drift_publication_guard
 from app.services.execution import (
@@ -40,7 +41,6 @@ from app.services.execution import (
     latest_spec,
     liquidity_notional_cap,
     load_acceptance_risk_state,
-    orderbook_depth_notional_cap,
     orderbook_fill_for_qty,
     orderbook_snapshot_is_fresh,
     reconciliation_issues,
@@ -571,10 +571,9 @@ async def accept_recommendation(
             if current_fill.status != "FULL" or current_fill.vwap is None:
                 raise ValueError("Current orderbook cannot fully fill the plan within impact limit")
             executable_price = current_fill.vwap
-            current_depth_cap = orderbook_depth_notional_cap(
-                orderbook,
-                direction=signal.direction,
-                max_impact_bps=Decimal(str(settings.max_vwap_impact_bps)),
+            current_depth_cap = positive_finite_decimal(
+                current_fill.available_notional,
+                "current orderbook depth notional cap",
             )
         except ValueError as exc:
             conflict_reason = str(exc)

@@ -127,7 +127,11 @@ async def test_catchup_inference_uses_the_same_fresh_ticker_barrier(
     monkeypatch.setattr(runner_module, "sync_tickers", sync_tickers)
     monkeypatch.setattr(runner_module, "publish_hourly_signals", publish)
 
-    result = await runner_module.Worker.catchup_inference_job(worker, "universe_expanded")
+    result = await runner_module.Worker.catchup_inference_job(
+        worker,
+        "universe_expanded",
+        checked_at=datetime(2026, 7, 8, 1, 1, 15, tzinfo=UTC),
+    )
 
     assert events == ["persist_orderbooks", "fetch_tickers", "persist_tickers", "publish"]
     assert result["decision_ticker_refresh"]["stored"] == 1

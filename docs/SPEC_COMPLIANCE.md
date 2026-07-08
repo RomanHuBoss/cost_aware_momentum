@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.1; они не означают полную production/economic validation.
+Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.3; они не означают полную production/economic validation.
 
 | Требование | Статус | Evidence / ограничение |
 |---|---|---|
@@ -10,6 +10,7 @@
 | Market signal отделён от capital-dependent plan | Implemented, unit tested | `app/services/signals.py`, `app/services/execution.py` |
 | Directional LONG/SHORT geometry | Implemented, unit tested | `app/risk/math.py`, barrier/tick tests |
 | Cost-aware fee/slippage/funding math | Implemented, unit tested | Decimal risk math и policy/backtest tests |
+| Bounded-depth VWAP sizing и fresh acceptance | Implemented, unit tested | quantity-safe base-depth cap; aggregate VWAP may be between ticks; FULL-fill and tick-aligned source levels remain mandatory |
 | Safe qty rounding и min order blocking | Implemented, unit tested | floor-to-step и post-round checks |
 | Point-in-time features/specs | Implemented, unit tested | training/context/spec timeline tests |
 | Clean-install dynamic historical bootstrap | Implemented, unit tested | frozen hash-validated cohort, immutable preflight scope, conservative tick fallback, automatic prospective upgrade |
@@ -19,5 +20,6 @@
 | Full PostgreSQL integration evidence | Not verified this iteration | отдельная TEST_DATABASE_URL не была настроена |
 | Live Bybit/network smoke evidence | Not verified this iteration | внешняя сеть/credentials не использовались |
 | Economic profitability | Not claimed | требуется paper/shadow/forward evidence |
-| Fail-closed operator diagnostics | Implemented, unit tested | structured walk-forward capacity and safe decision-time contract JSON fields |
+| Fail-closed operator diagnostics | Implemented, unit tested | structured walk-forward capacity, safe decision-time contract JSON fields, and pre-publication stale skip diagnostics |
+| Worker stale decision scheduling | Implemented, unit tested | stale hourly/catch-up inference records `decision_publication_lag_exceeded` before publication attempt |
 | Complete release attestation | Implemented since 1.51.1 | required docs, version agreement, patch/report, SHA256SUMS |

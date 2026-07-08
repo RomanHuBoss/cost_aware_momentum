@@ -15,6 +15,18 @@
 - Реальный вход и выход регистрируются вручную в fills/trades journal.
 - Не обходите `NO_TRADE`, stale, risk, margin, liquidity, reconciliation или model quarantine блокировки.
 
+## Обновление 1.52.3
+
+Миграций и новых `.env` variables нет. После обновления перезапустите inference worker.
+
+Если видите `decision_publication_lag_exceeded`, это означает, что сигнал за текущий hourly event time уже опоздал относительно `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS`; worker теперь не пытается публиковать такой stale signal и фиксирует terminal skip. Не увеличивайте лимит ради появления рекомендаций: сначала проверьте, почему market/backfill/drift/startup jobs заняли больше допустимого окна. Следующий eligible hour должен обрабатываться штатно.
+
+## Обновление 1.52.2
+
+Миграций и новых `.env` variables нет. После обновления перезапустите API и inference worker.
+
+Execution plan теперь ограничивает размер quantity-safe глубиной стакана: суммарный quote notional нескольких уровней не переводится обратно в завышенный base quantity по одной цене. При принятии плана fresh FULL-fill VWAP может находиться между тиками, если каждый исходный уровень и signal geometry соответствуют tick size. `PARTIAL`/`NO_FILL`, stale snapshot, выход за entry zone, ухудшение цены, risk, funding, margin и reconciliation по-прежнему блокируют acceptance.
+
 ## Обновление 1.52.1
 
 Миграций и новых `.env` variables нет. После обновления перезапустите worker и trainer.

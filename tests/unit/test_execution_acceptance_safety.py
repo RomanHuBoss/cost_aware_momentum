@@ -34,6 +34,7 @@ DEFAULT_TURNOVER_24H = D("100000000")
 DEFAULT_ORDERBOOK_SIZE = D("100000")
 DEFAULT_BID_PRICE = D("99.9")
 DEFAULT_ASK_PRICE = D("100.1")
+DEFAULT_PLAN_ENTRY_PRICE = D("100")
 
 
 class _ScalarResult:
@@ -612,6 +613,9 @@ async def _run_acceptance_case(
     reconciliation_failures: list[str] | None = None,
     profile_max_total_risk_rate: Decimal = DEFAULT_PROFILE_MAX_TOTAL_RISK_RATE,
     orderbook_ask_size: Decimal = DEFAULT_ORDERBOOK_SIZE,
+    orderbook_bids: list[list[str]] | None = None,
+    orderbook_asks: list[list[str]] | None = None,
+    plan_entry_price: Decimal = DEFAULT_PLAN_ENTRY_PRICE,
     plan_has_orderbook_evidence: bool = True,
     plan_planning_offset_seconds: int = -5,
     drift_blocked: bool = False,
@@ -646,7 +650,7 @@ async def _run_acceptance_case(
         model_version="model-v2",
     )
     sizing_snapshot = {
-        "entry_price": "100",
+        "entry_price": str(plan_entry_price),
         "planning_time": (now + timedelta(seconds=plan_planning_offset_seconds)).isoformat(),
         "costs": {"funding_rate": str(stored_funding_rate)},
     }
@@ -656,7 +660,7 @@ async def _run_acceptance_case(
             "fill_status": "FULL",
             "requested_qty": str(qty),
             "filled_qty": str(qty),
-            "vwap": "100",
+            "vwap": str(plan_entry_price),
         }
     plan = SimpleNamespace(
         id=uuid4(),
@@ -668,7 +672,7 @@ async def _run_acceptance_case(
         actual_stress_loss=actual_stress_loss,
         margin_estimate=margin_estimate,
         qty=qty,
-        notional=qty * D("100"),
+        notional=qty * plan_entry_price,
         leverage=plan_leverage,
         sizing_snapshot=sizing_snapshot,
         accepted_at=None,
@@ -704,10 +708,10 @@ async def _run_acceptance_case(
         update_id=1,
         sequence=1,
         depth=200,
-        best_bid=D("99.9"),
-        best_ask=D("100"),
-        bids=[["99.9", "100000"]],
-        asks=[["100", str(orderbook_ask_size)]],
+        best_bid=D((orderbook_bids or [["99.9", "100000"]])[0][0]),
+        best_ask=D((orderbook_asks or [["100", str(orderbook_ask_size)]])[0][0]),
+        bids=orderbook_bids or [["99.9", "100000"]],
+        asks=orderbook_asks or [["100", str(orderbook_ask_size)]],
     )
     spec = SimpleNamespace(
         valid_from=now - timedelta(hours=1),
@@ -820,6 +824,26 @@ async def test_acceptance_persists_exact_orderbook_fill_evidence(
     assert D(evidence["vwap"]) == D("100")
     assert evidence["update_id"] == 1
     assert decision.context_snapshot["operator_latency_seconds"] >= 5
+
+
+async def test_acceptance_uses_exact_multilevel_depth_and_allows_between_tick_vwap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.models import OperatorDecision
+
+    response, plan = await _run_acceptance_case(
+        monkeypatch,
+        qty=D("2"),
+        orderbook_asks=[["100", "1"], ["100.1", "1"]],
+        plan_entry_price=D("100.05"),
+    )
+
+    assert response.status_code == 200
+    decision = next(
+        record for record in plan.added_records if isinstance(record, OperatorDecision)
+    )
+    evidence = decision.context_snapshot["execution_quality"]
+    assert D(evidence["vwap"]) == D("100.05")
 
 
 async def test_acceptance_rejects_actionable_plan_after_critical_drift(

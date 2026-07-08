@@ -240,7 +240,8 @@ def validate_execution_plan_for_acceptance(
         or current_notional < min_notional
         or (max_qty is not None and qty > max_qty)
         or Decimal(leverage) > allowed_leverage
-        or not _is_step_aligned(entry, tick_size)
+        # ``entry`` is an aggregate VWAP across individually tick-aligned book
+        # levels. A weighted average is not itself required to lie on tick grid.
         or not signal_prices_match_tick(signal, tick_size=tick_size)
     ):
         raise ValueError("Current instrument constraints invalidate plan sizing")
@@ -441,13 +442,29 @@ def orderbook_depth_notional_cap(
     direction: str,
     max_impact_bps: Decimal,
 ) -> Decimal:
+    """Return a quantity-safe conservative notional cap for plan sizing.
+
+    ``available_notional`` is the quote value of all eligible levels. Dividing
+    that sum by the best quote can request more base quantity than the book
+    actually contains whenever more than one price level is used. Value the
+    available base quantity at the lowest executable level instead; then any
+    best-quote/VWAP revaluation inside the sizing loop cannot exceed the
+    fillable quantity.
+    """
+
     probe = orderbook_fill_for_qty(
         snapshot,
         direction=direction,
         qty=Decimal("1E30"),
         max_impact_bps=max_impact_bps,
     )
-    return positive_finite_decimal(probe.available_notional, "orderbook depth notional cap")
+    if probe.best_price is None or probe.worst_price is None:
+        raise ValueError("orderbook depth is unavailable inside the impact limit")
+    conservative_price = min(probe.best_price, probe.worst_price)
+    return positive_finite_decimal(
+        probe.available_qty * conservative_price,
+        "orderbook depth notional cap",
+    )
 
 
 def ticker_snapshot_is_fresh(

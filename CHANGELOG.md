@@ -2,6 +2,37 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+
+## 1.52.3 — 2026-07-08
+
+### Fixed
+
+- Worker больше не запускает hourly decision cycle, если текущий event hour уже вышел за `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS` до начала цикла.
+- Catch-up inference больше не пытается публиковать current-hour сигнал после истечения decision-time publication window; вместо этого сохраняется terminal skip `decision_publication_lag_exceeded` с lag/limit diagnostics.
+- Hourly inference повторно проверяет publication window непосредственно перед execution input refresh/publication, если предшествующие jobs заняли слишком много времени.
+- Retry accounting теперь использует terminal `symbol_outcome_count` для inference jobs и не делает повторные попытки только из-за sparse actionability.
+
+### Compatibility
+
+- Миграций БД, новых `.env` variables, API-breaking changes и model-artifact changes нет.
+- `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS` намеренно не увеличен; stale recommendations остаются blocked.
+- После обновления требуется перезапуск inference worker.
+
+## 1.52.2 — 2026-07-08
+
+### Fixed
+
+- Многоуровневый orderbook sizing больше не переводит суммарный quote notional обратно в завышенное base quantity по best/reference price.
+- Quantity-safe depth cap гарантирует, что плановый размер не превышает доступный base quantity внутри impact limit для LONG и SHORT.
+- Acceptance больше не требует tick alignment от агрегированного VWAP нескольких валидных уровней.
+- Fresh acceptance использует фактический available depth notional после точной FULL-fill симуляции, а не консервативный planning cap.
+
+### Compatibility
+
+- Миграций БД, новых `.env` variables, API-breaking changes и model-artifact changes нет.
+- Tick validation уровней стакана и signal geometry, FULL-fill, freshness, risk, funding, margin и reconciliation gates сохранены.
+- После обновления требуется перезапуск API и inference worker.
+
 ## 1.52.1 — 2026-07-08
 
 ### Fixed

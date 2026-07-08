@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.1: недостаток post-filter истории для purged walk-forward больше не переводит background trainer в аварийный `ERROR`: задача завершается fail-closed как диагностируемый `DEFERRED`, сохраняет exact capacity и ждёт новых данных. Decision-time execution contract теперь выводит безопасные структурированные причины и сравниваемые параметры в JSON-логах.
+> Версия 1.52.3: worker больше не запускает stale hourly/catch-up inference после истечения decision-time publication window. Опоздавший цикл фиксируется как terminal skip `decision_publication_lag_exceeded` до market refresh/publication, без расширения безопасного лимита и без публикации устаревших рекомендаций.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -170,6 +170,10 @@ Override не является способом обойти плохие мет
 
 
 
+
+Release 1.52.3 не добавляет migration, `.env`, API или model-artifact changes. После обновления перезапустите inference worker. Если текущий hourly/catch-up цикл стартует позже `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS`, worker записывает terminal skip `decision_publication_lag_exceeded` и ждёт следующего eligible hour; `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS` не увеличен, stale recommendations не публикуются.
+
+Release 1.52.2 не добавляет migration, `.env`, API или model-artifact changes. После обновления перезапустите API и inference worker. Многоуровневый depth sizing теперь ограничивается фактически доступным base quantity, а acceptance допускает агрегированный FULL-fill VWAP между тиками при tick-aligned уровнях стакана и signal geometry. Fresh depth, entry-zone, adverse-price, risk, funding, margin и reconciliation checks остаются fail-closed.
 
 Release 1.52.0 не добавляет migration или API-breaking changes, но добавляет три `.env`-параметра с безопасными defaults: `AUTO_TRAIN_DYNAMIC_BOOTSTRAP_ENABLED=true`, `AUTO_TRAIN_BOOTSTRAP_MIN_SYMBOLS=3`, `AUTO_TRAIN_BOOTSTRAP_INSTRUMENT_SPEC_EXTRA_TICKS=1`. После обновления перезапустите worker и trainer. На чистой dynamic-базе первый candidate может обучаться на historical candles hash-bound frozen cohort сразу после загрузки не менее 1206 label-eligible часов и прохождения неизменённых quality/policy/experiment gates. Использование earliest locally observed tick для pre-observation history сопровождается adverse extra-tick stress и явным artifact evidence; точная historical universe membership, bid/ask и depth не реконструируются.
 

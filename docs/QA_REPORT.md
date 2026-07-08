@@ -1,4 +1,4 @@
-# QA Report — 1.52.1
+# QA Report — 1.52.3
 
 Дата проверки: 2026-07-08.
 
@@ -8,10 +8,17 @@
 - Project Python requirement: `>=3.12`.
 - Node.js: доступен; `node --check` выполнен.
 - Alembic head: `0018_inference_observations`.
-- Проверки выполнялись из отдельного virtual environment `/mnt/data/cam_work/testenv`; project-local `.venv` намеренно не создавался.
-- Безопасная отдельная PostgreSQL `TEST_DATABASE_URL` не была настроена; production/user database не использовалась.
+- Проверки выполнялись из отдельного isolated environment `/tmp/cam_lag/.venv`; project-local `.venv` намеренно не создавался.
+- Безопасная отдельная PostgreSQL `TEST_DATABASE_URL` не настроена; production/user database не использовалась.
 
-## Baseline 1.52.0 до production-правок
+## Входной release 1.52.2
+
+- ZIP: `cost_aware_momentum-1.52.2-orderbook-vwap-sizing.zip`.
+- SHA-256: `6c2a57852410297823719c3105149562bea25df720fc7bff33b9de6a654623c5`.
+- Состав по release manifest: 275 файлов.
+- `.env`, secrets, caches, bytecode, virtual environments, `*.egg-info`, database dumps и реальные model artifacts во входном ZIP не обнаружены.
+
+## Baseline 1.52.2 до production-правок
 
 | Проверка | Статус | Результат |
 |---|---|---|
@@ -19,45 +26,37 @@
 | `python -m pip check` | PASSED | No broken requirements found |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
 | `python -m ruff check .` | PASSED | All checks passed |
-| `python -m pytest -q` | PASSED | 846 passed, 8 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED | 854 passed, 8 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED | exit 0 |
 | `alembic heads` | PASSED | `0018_inference_observations (head)` |
 | `python manage.py doctor` | FAILED / environment limitation | external venv не признаётся project-local runtime: `Виртуальная среда не найдена` |
-| `python manage.py test --require-integration` | NOT RUN | wrapper остановился до тестов из-за отсутствия project-local `.venv`; безопасная PostgreSQL test DB также не настроена |
-
-Входной ZIP содержал 270 файлов, 98 production/script Python-файлов, 120 test Python-файлов, 13 documentation-файлов и 18 Alembic revisions. Release-мусор, `.env`, caches, bytecode, virtual environments и `*.egg-info` во входном архиве не обнаружены.
+| `python manage.py test --require-integration` | NOT RUN | project-local `.venv` и безопасная PostgreSQL test DB не настроены |
 
 ## Red → green evidence
 
 Новый regression module:
 
 ```text
-tests/unit/test_fail_closed_incident_diagnostics_2026_07_08.py
+tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py
 ```
 
-Red-команда на исходном production code 1.52.0:
+Red-команда на неизменённом production code 1.52.2:
 
 ```bash
-python -m pytest -q tests/unit/test_fail_closed_incident_diagnostics_2026_07_08.py
+python -m pytest -q tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py
 ```
 
 Red-результат: `3 failed`.
 
-- generic `ValueError` не имел структурированного `capacity`;
-- background trainer завершал ожидаемый дефицит истории как `FAILED` и `ERROR`;
-- `JsonFormatter` отбрасывал `reason_code` и остальные безопасные contract diagnostics.
+- `resolve_decision_publication_window` отсутствовал.
+- `hourly_decision_cycle` не принимал `cycle_started_at` и не мог skip до тяжёлых jobs.
+- `catchup_inference_job` не принимал explicit `checked_at` и не записывал terminal stale skip.
 
 Green после исправления: `3 passed`.
 
-Дополнительный scheduler regression test:
+Дополнительно стабилизированы existing catch-up tests, чтобы они проверяли fresh path с explicit within-window timestamp и не зависели от фактической минуты запуска тестов.
 
-```text
-tests/unit/test_trainer_recovery_scheduling.py::test_deferred_bootstrap_waits_for_new_training_data_after_cooldown
-```
-
-Он подтверждает, что `DEFERRED`-bootstrap не создаёт tight retry loop и ждёт новых timestamps или material profile change.
-
-## Post-check 1.52.1
+## Post-check 1.52.3
 
 | Проверка | Статус | Результат |
 |---|---|---|
@@ -65,19 +64,15 @@ tests/unit/test_trainer_recovery_scheduling.py::test_deferred_bootstrap_waits_fo
 | `python -m pip check` | PASSED | No broken requirements found |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
 | `python -m ruff check .` | PASSED | All checks passed |
-| `python -m pytest -q` | PASSED | 850 passed, 8 skipped, 62 warnings |
+| `python -m pytest -q` | PASSED | 857 passed, 8 skipped, 62 warnings |
 | `node --check web/js/app.js` | PASSED | exit 0 |
 | `alembic heads` | PASSED | `0018_inference_observations (head)` |
 | `python manage.py doctor` | FAILED / environment limitation | external venv не признаётся project-local runtime: `Виртуальная среда не найдена` |
-| `python manage.py test --require-integration` | NOT RUN | wrapper остановился до тестов из-за отсутствия project-local `.venv`; безопасная PostgreSQL test DB не настроена |
-| `python -B manage.py release-check --write` | PASSED | clean manifest создан; после финального изменения docs пересчитан повторно |
-| `python -B manage.py release-check` | PASSED | полный release contract и checksums подтверждены |
-| ZIP integrity / clean re-extract | PASSED | архив протестирован, повторно распакован; один root и отсутствие запрещённых артефактов подтверждены |
-
-## Warnings
-
-62 существующих `DeprecationWarning` происходят преимущественно из `joblib`/NumPy shape semantics и pandas/NumPy timedelta semantics. Они не стали failures и не вызваны текущим patch, но требуют отдельной dependency-compatibility итерации до обновления библиотек, где warning может стать error.
+| `python manage.py test --require-integration` | NOT RUN | project-local `.venv` и безопасная PostgreSQL test DB не настроены |
+| `python -B manage.py release-check --write` | PASSED | release files внесены в clean manifest |
+| `python -B manage.py release-check` | PASSED | release contract, version agreement и checksums подтверждены |
+| ZIP integrity / clean re-extract | PASSED | `unzip -t`, один root, 0 forbidden artifacts, internal release-check PASSED |
 
 ## Scope statement
 
-В 1.52.1 изменены только fail-closed walk-forward capacity/deferral и безопасная incident diagnostics. Ни один walk-forward fold, purge, holdout, feature, calibration, policy, experiment, cost-stress, EV/RR, risk или promotion threshold не снижен. Unit/static integrity не является доказательством прибыльности, экономической устойчивости или production readiness без PostgreSQL integration и forward evidence.
+В 1.52.3 изменена только scheduling/worker-семантика stale decision publication. Publication delay limit не увеличен, stale recommendations не публикуются, risk/math/model/Bybit contracts не менялись. Unit/static integrity не является доказательством прибыльности, economic edge или production readiness без PostgreSQL integration, live read-only smoke и forward evidence.

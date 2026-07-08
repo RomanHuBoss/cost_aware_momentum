@@ -110,7 +110,11 @@ async def test_catchup_inference_uses_same_execution_snapshot_barrier(
     monkeypatch.setattr(runner_module, "sync_orderbooks", sync_orderbooks)
     monkeypatch.setattr(runner_module, "publish_hourly_signals", publish)
 
-    result = await runner_module.Worker.catchup_inference_job(worker, "startup_backfill")
+    result = await runner_module.Worker.catchup_inference_job(
+        worker,
+        "startup_backfill",
+        checked_at=datetime(2026, 7, 8, 1, 1, 15, tzinfo=UTC),
+    )
 
     assert events == ["account", "orderbooks", "tickers", "publish"]
     assert result["execution_input_refresh"]["orderbooks"]["duplicates"] == 1
@@ -180,7 +184,11 @@ async def test_account_refresh_failure_blocks_publication_before_market_signal_w
     monkeypatch.setattr(runner_module, "publish_hourly_signals", publish)
 
     with pytest.raises(RuntimeError, match="private account unavailable"):
-        await runner_module.Worker.catchup_inference_job(worker, "startup_backfill")
+        await runner_module.Worker.catchup_inference_job(
+            worker,
+            "startup_backfill",
+            checked_at=datetime(2026, 7, 8, 1, 1, 15, tzinfo=UTC),
+        )
 
     sync_orderbooks.assert_not_awaited()
     worker._refresh_tickers_for_symbols.assert_not_awaited()

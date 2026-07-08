@@ -5,6 +5,7 @@ import logging
 import signal
 from collections.abc import Iterable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -48,6 +49,101 @@ from app.services.universe import (
 settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class DecisionPublicationWindow:
+    event_time: datetime
+    checked_at: datetime
+    publication_lag_seconds: float
+    maximum_delay_seconds: int
+    within_window: bool
+    reason_code: str | None = None
+
+    def as_diagnostics(self) -> dict[str, object]:
+        return {
+            "event_time": self.event_time.isoformat(),
+            "publish_time": self.checked_at.isoformat(),
+            "publication_lag_seconds": self.publication_lag_seconds,
+            "maximum_delay_seconds": self.maximum_delay_seconds,
+            "passed": self.within_window,
+            "reason_code": self.reason_code,
+        }
+
+
+def resolve_decision_publication_window(
+    *,
+    event_time: datetime,
+    checked_at: datetime,
+    maximum_delay_seconds: int,
+) -> DecisionPublicationWindow:
+    """Classify whether a decision can still be published for its event hour."""
+
+    if event_time.tzinfo is None or checked_at.tzinfo is None:
+        raise ValueError("decision publication timestamps must be timezone-aware")
+    if isinstance(maximum_delay_seconds, bool) or maximum_delay_seconds <= 0:
+        raise ValueError("maximum signal publication delay must be positive")
+    lag = (checked_at - event_time).total_seconds()
+    reason_code: str | None = None
+    if lag < 0:
+        reason_code = "decision_publication_time_before_event"
+    elif lag > maximum_delay_seconds:
+        reason_code = "decision_publication_lag_exceeded"
+    return DecisionPublicationWindow(
+        event_time=event_time,
+        checked_at=checked_at,
+        publication_lag_seconds=lag,
+        maximum_delay_seconds=maximum_delay_seconds,
+        within_window=reason_code is None,
+        reason_code=reason_code,
+    )
+
+
+def _maximum_signal_publication_delay() -> int:
+    raw = getattr(settings, "max_signal_publication_delay_seconds", 600)
+    if isinstance(raw, bool):
+        raise ValueError("maximum signal publication delay must be positive")
+    delay = int(raw)
+    if delay <= 0:
+        raise ValueError("maximum signal publication delay must be positive")
+    return delay
+
+
+def _stale_publication_skip_result(
+    *,
+    event_time: datetime,
+    checked_at: datetime,
+    active_symbols: Iterable[str],
+    reason: str | None = None,
+) -> dict[str, object] | None:
+    window = resolve_decision_publication_window(
+        event_time=event_time,
+        checked_at=checked_at,
+        maximum_delay_seconds=_maximum_signal_publication_delay(),
+    )
+    if window.within_window:
+        return None
+    symbols = tuple(active_symbols)
+    reason_code = window.reason_code or "decision_publication_contract_failed"
+    result: dict[str, object] = {
+        "skipped": reason_code,
+        "reason_code": reason_code,
+        "event_time": event_time.isoformat(),
+        "universe_symbols": len(symbols),
+        "symbols_total": len(symbols),
+        "published": 0,
+        "signal_ids": [],
+        "skip_counts": {reason_code: len(symbols)} if symbols else {},
+        "symbol_outcomes": [
+            {"symbol": symbol, "terminal_state": "SKIPPED", "reason_code": reason_code}
+            for symbol in symbols
+        ],
+        "symbol_outcome_count": len(symbols),
+        "skipped_total": len(symbols),
+        "publication_boundary": window.as_diagnostics(),
+    }
+    if reason is not None:
+        result["reason"] = reason
+    return result
 
 
 def should_retry_incomplete_coverage(
@@ -293,16 +389,22 @@ class Worker:
                         retry_count = int(details.get(retry_count_key, 0))
                     except (TypeError, ValueError):
                         retry_count = 0
-                    incomplete_retryable = bool(
-                        retry_incomplete_success
-                        and should_retry_incomplete_coverage(
+                    if retry_incomplete_success and retry_count_key == "inference_retry_count":
+                        incomplete_retryable = should_retry_incomplete_inference(
                             details,
-                            total_key=retry_total_key,
-                            covered_keys=retry_covered_keys,
-                            retry_count_key=retry_count_key,
                             max_retries=max_inference_retries,
                         )
-                    )
+                    else:
+                        incomplete_retryable = bool(
+                            retry_incomplete_success
+                            and should_retry_incomplete_coverage(
+                                details,
+                                total_key=retry_total_key,
+                                covered_keys=retry_covered_keys,
+                                retry_count_key=retry_count_key,
+                                max_retries=max_inference_retries,
+                            )
+                        )
                     cooldown_elapsed = bool(
                         existing.finished_at
                         and (datetime.now(UTC) - existing.finished_at).total_seconds() >= retry_after_seconds
@@ -734,8 +836,24 @@ class Worker:
             "tickers": ticker_refresh,
         }
 
-    async def inference_job(self, event_time: datetime) -> dict:
+    async def inference_job(self, event_time: datetime, *, checked_at: datetime | None = None) -> dict:
         async def task(session):
+            publication_checked_at = checked_at or datetime.now(UTC)
+            stale_skip = (
+                _stale_publication_skip_result(
+                    event_time=event_time,
+                    checked_at=publication_checked_at,
+                    active_symbols=self.active_symbols,
+                )
+                if checked_at is not None
+                else None
+            )
+            if stale_skip is not None:
+                logger.warning(
+                    "Hourly inference skipped because publication window is stale",
+                    extra=stale_skip["publication_boundary"],
+                )
+                return stale_skip
             execution_input_refresh = await self._refresh_execution_inputs(
                 session,
                 self.active_symbols,
@@ -772,7 +890,7 @@ class Worker:
             self.last_account_sync = datetime.now(UTC)
         return result
 
-    async def catchup_inference_job(self, reason: str) -> dict:
+    async def catchup_inference_job(self, reason: str, *, checked_at: datetime | None = None) -> dict:
         """Publish missing current-hour signals after a universe bootstrap/change.
 
         The normal hourly job is intentionally idempotent.  After switching from a
@@ -780,11 +898,23 @@ class Worker:
         SUCCESS for the old symbols.  This separate job fills only missing natural keys
         and therefore does not duplicate existing recommendations.
         """
-        now = datetime.now(UTC)
+        now = checked_at or datetime.now(UTC)
         event_time = now.replace(minute=0, second=0, microsecond=0)
         scheduled = now.replace(second=0, microsecond=0)
 
         async def task(session):
+            stale_skip = _stale_publication_skip_result(
+                event_time=event_time,
+                checked_at=now,
+                active_symbols=self.active_symbols,
+                reason=reason,
+            )
+            if stale_skip is not None:
+                logger.warning(
+                    "Catch-up inference skipped because publication window is stale",
+                    extra=stale_skip["publication_boundary"],
+                )
+                return stale_skip
             execution_input_refresh = await self._refresh_execution_inputs(
                 session,
                 self.active_symbols,
@@ -856,15 +986,37 @@ class Worker:
             self.last_drift_summary = result
         return result
 
-    async def hourly_decision_cycle(self, event_time: datetime) -> None:
-        """Run the hourly safety checks before publishing the new decision set."""
+    async def hourly_decision_cycle(
+        self,
+        event_time: datetime,
+        *,
+        cycle_started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        """Run hourly jobs only while the decision can still be published safely."""
+
+        if cycle_started_at is not None:
+            stale_skip = _stale_publication_skip_result(
+                event_time=event_time,
+                checked_at=cycle_started_at,
+                active_symbols=self.active_symbols,
+            )
+            if stale_skip is not None:
+                logger.warning(
+                    "Hourly decision cycle skipped because publication window is stale",
+                    extra=stale_skip["publication_boundary"],
+                )
+                return stale_skip
 
         await self.hourly_market_close_job(event_time)
         await self.counterfactual_outcome_job(event_time)
         if settings.drift_monitor_enabled:
             await self.drift_monitor_job(event_time)
-        await self.inference_job(event_time)
+        if cycle_started_at is None:
+            inference_result = await self.inference_job(event_time)
+        else:
+            inference_result = await self.inference_job(event_time, checked_at=datetime.now(UTC))
         await self.retention_job(event_time)
+        return {"status": "completed", "inference": inference_result}
 
     async def retention_job(self, event_time: datetime) -> dict:
         async def task(session):
@@ -953,7 +1105,7 @@ class Worker:
                 event_time = now.replace(minute=0, second=0, microsecond=0)
                 run_after = event_time + timedelta(seconds=settings.inference_delay_seconds)
                 if now >= run_after:
-                    await self.hourly_decision_cycle(event_time)
+                    await self.hourly_decision_cycle(event_time, cycle_started_at=now)
                 await self.expiry_job()
                 await self.heartbeat(
                     self.model_heartbeat_status(),
