@@ -22,6 +22,19 @@ Default training preflight currently needs at least 1206 label-eligible hourly t
 
 
 
+## Обновление 1.52.10
+
+Миграций и новых `.env` variables нет. После обновления перезапустите inference worker/API process.
+
+Если в логах была серия `Skipping symbol with invalid tick-aligned signal economics` без причины, теперь этот fail-closed путь пишет `Skipping symbol with invalid signal economics` с `reason_code`, `contract_error`, `reason_detail`, bid/ask, decision anchor, entry band и tick size. Частый `quote_outside_decision_entry_zone` означает, что текущий executable bid/ask уже вышел за immutable decision-time entry zone; не ослабляйте gate и не расширяйте окно без отдельного evidence. Проверьте lag decision pipeline, свежесть ticker/candle/spec и spread.
+
+## Обновление 1.52.9
+
+Миграций и новых `.env` variables нет. После обновления достаточно перезапустить API/UI process; worker и trainer logic не менялись.
+
+Если после запуска с пустой базы окно trainer показывает `quality_gate_failed_waiting_for_new_data`, `baseline-momentum-v1` активен, а progress bar вроде `6 из 168`, это нормальное защитное состояние: предыдущий candidate был построен, но не прошёл quality gate, поэтому повтор до накопления новых размеченных часов обычно не даст нового evidence. Диалог теперь прямо пишет, что это штатное защитное ожидание, показывает остаток (`осталось 162`) и строку `Минимум до повтора`. Не нажимайте emergency/recovery ради обхода gate; дождитесь роста счётчика или проверьте ingestion/backfill, если он перестал увеличиваться несколько часов подряд.
+
+
 ## Обновление 1.52.8
 
 Если trainer показывает `RUNNING`, активна `baseline-momentum-v1`, а последняя попытка завершилась ошибкой `No direction-specific barrier labels could be built from PostgreSQL candles`, это означает, что текущий PostgreSQL market-data slice не дал пригодного direction-specific набора labels `TP / SL / TIMEOUT` для LONG/SHORT scenarios. В 1.52.8 диалог trainer больше не показывает общее `Trainer еще не сообщил причину ожидания`, когда такая ошибка уже сохранена в `model_retraining` job; он выводит derived `effective_wait_reason` и последнюю ошибку.

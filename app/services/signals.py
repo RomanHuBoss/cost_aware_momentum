@@ -162,6 +162,85 @@ class SignalScenarioEconomics:
     timeout_return_rate: Decimal
 
 
+class SignalEconomicsSkipReason:
+    __slots__ = ("reason_code", "reason_detail")
+
+    def __init__(self, reason_code: str, reason_detail: str) -> None:
+        self.reason_code = reason_code
+        self.reason_detail = reason_detail
+
+
+def classify_signal_economics_skip(error: ValueError) -> SignalEconomicsSkipReason:
+    """Classify fail-closed market-signal economics rejects for operator diagnostics."""
+
+    message = str(error)
+    normalized = message.lower()
+    if "moved outside the decision-time entry zone" in normalized:
+        return SignalEconomicsSkipReason(
+            "quote_outside_decision_entry_zone",
+            "Quote is outside the immutable decision-time entry band",
+        )
+    if "not aligned to tick_size" in normalized:
+        return SignalEconomicsSkipReason(
+            "executable_quote_not_tick_aligned",
+            "Executable bid/ask reference is not aligned to the instrument tick size",
+        )
+    if "no executable tick lies inside" in normalized:
+        return SignalEconomicsSkipReason(
+            "no_tick_inside_decision_entry_zone",
+            "No exchange tick is executable inside the immutable decision-time entry band",
+        )
+    if "exactly one long and one short" in normalized:
+        return SignalEconomicsSkipReason(
+            "directional_prediction_contract_invalid",
+            "Model output must contain exactly one LONG and one SHORT scenario",
+        )
+    if "expected funding must be zero" in normalized:
+        return SignalEconomicsSkipReason(
+            "signal_policy_funding_contract_invalid",
+            "Market-signal selector received non-zero expected funding",
+        )
+    return SignalEconomicsSkipReason(
+        "invalid_signal_economics",
+        message or "Signal economics validation failed",
+    )
+
+
+def _signal_economics_context(
+    *,
+    error: ValueError,
+    reason: SignalEconomicsSkipReason,
+    ticker: TickerSnapshot,
+    decision_anchor_price: Decimal,
+    atr_pct: Decimal,
+    entry_zone_atr_fraction: Decimal,
+    tick_size: Decimal | None,
+) -> dict[str, object]:
+    detail: dict[str, object] = {
+        "contract_error": str(error),
+        "reason_detail": reason.reason_detail,
+        "bid_price": str(ticker.bid_price),
+        "ask_price": str(ticker.ask_price),
+        "decision_anchor_price": str(decision_anchor_price),
+        "tick_size": str(tick_size) if tick_size is not None else None,
+    }
+    try:
+        price_step = positive_finite_decimal(tick_size, "tick_size") if tick_size is not None else None
+        zone_half = decision_anchor_price * atr_pct * entry_zone_atr_fraction
+        low = decision_anchor_price - zone_half
+        high = decision_anchor_price + zone_half
+        if price_step is not None:
+            low = (low / price_step).to_integral_value(rounding=ROUND_CEILING) * price_step
+            high = (high / price_step).to_integral_value(rounding=ROUND_FLOOR) * price_step
+        detail["entry_low"] = str(low)
+        detail["entry_high"] = str(high)
+    except (ArithmeticError, ValueError):
+        # Diagnostics must never mask the original fail-closed economics reject.
+        detail["entry_low"] = None
+        detail["entry_high"] = None
+    return detail
+
+
 def resolve_decision_execution_contract(
     *,
     settings: Settings,
@@ -681,6 +760,7 @@ async def publish_hourly_signals(
         terminal_state: str,
         reason_code: str,
         signal_id: str | None = None,
+        details: dict[str, object] | None = None,
     ) -> None:
         if diagnostics is None:
             return
@@ -688,15 +768,18 @@ async def publish_hourly_signals(
             count(reason_code)
         outcomes = diagnostics.setdefault("symbol_outcomes", [])
         assert isinstance(outcomes, list)
-        outcomes.append(
-            {
-                "symbol": symbol,
-                "event_time": event_time.isoformat(),
-                "terminal_state": terminal_state,
-                "reason_code": reason_code,
-                "signal_id": signal_id,
-            }
-        )
+        outcome: dict[str, object] = {
+            "symbol": symbol,
+            "event_time": event_time.isoformat(),
+            "terminal_state": terminal_state,
+            "reason_code": reason_code,
+            "signal_id": signal_id,
+        }
+        if details:
+            for key, value in details.items():
+                if key not in outcome:
+                    outcome[key] = value
+        outcomes.append(outcome)
 
     if diagnostics is not None:
         diagnostics.update(
@@ -1002,12 +1085,13 @@ async def publish_hourly_signals(
                 extra={"symbol": symbol, "error": str(prediction_error)},
             )
             continue
+        decision_anchor_price = decimal(frame.iloc[-1]["close"])
         try:
             scenario = select_cost_aware_scenario(
                 directional_predictions,
                 bid_price=ticker.bid_price,
                 ask_price=ticker.ask_price,
-                decision_anchor_price=decimal(frame.iloc[-1]["close"]),
+                decision_anchor_price=decision_anchor_price,
                 atr_pct=atr_pct,
                 entry_zone_atr_fraction=effective_entry_zone_fraction,
                 costs=costs,
@@ -1017,10 +1101,25 @@ async def publish_hourly_signals(
                 timeout_return_rate=decimal(getattr(settings, "timeout_gross_return_rate", -0.002)),
             )
         except ValueError as exc:
-            record_symbol_outcome(symbol, terminal_state="SKIPPED", reason_code="invalid_signal_economics")
+            reason = classify_signal_economics_skip(exc)
+            detail = _signal_economics_context(
+                error=exc,
+                reason=reason,
+                ticker=ticker,
+                decision_anchor_price=decision_anchor_price,
+                atr_pct=atr_pct,
+                entry_zone_atr_fraction=effective_entry_zone_fraction,
+                tick_size=spec.tick_size,
+            )
+            record_symbol_outcome(
+                symbol,
+                terminal_state="SKIPPED",
+                reason_code=reason.reason_code,
+                details=detail,
+            )
             logger.warning(
-                "Skipping symbol with invalid tick-aligned signal economics",
-                extra={"symbol": symbol, "error": str(exc)},
+                "Skipping symbol with invalid signal economics",
+                extra={"symbol": symbol, "reason_code": reason.reason_code, **detail},
             )
             continue
         prediction = scenario.prediction

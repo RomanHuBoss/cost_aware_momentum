@@ -18,3 +18,12 @@ def test_operator_ui_exposes_trainer_status_dialog_and_safe_controls() -> None:
     assert "no_direction_specific_barrier_labels" in javascript
     assert "last_training_failed_waiting_for_retry" in javascript
     assert "effective_wait_reason" in javascript
+
+
+def test_operator_ui_explains_labeled_hour_wait_as_progress_not_failure() -> None:
+    root = Path(__file__).resolve().parents[2]
+    javascript = (root / "web" / "js" / "app.js").read_text(encoding="utf-8")
+
+    assert "осталось" in javascript
+    assert "штатное защитное ожидание" in javascript
+    assert "Минимум до повтора" in javascript

@@ -22,6 +22,18 @@
 
 Если job имеет PostgreSQL status `SUCCESS`, но `details.status=DEFERRED`, это ожидаемая fail-closed остановка до регистрации candidate, а не повреждение trainer. Для `insufficient_walk_forward_history_after_filtering` сравните `walk_forward_capacity.actual_timestamps` и `required_timestamps`, затем проверьте gaps, context/spec/funding/mark coverage и symbol attrition. Не уменьшайте folds, purge или holdout. Scheduler повторит попытку только после новых timestamps или material data-profile change.
 
+
+## Signal economics skips across many symbols
+
+If logs show `Skipping symbol with invalid signal economics`, read `reason_code` before changing thresholds:
+
+- `quote_outside_decision_entry_zone`: executable bid/ask moved outside the immutable decision-time entry band; investigate publication lag, ticker freshness and spread.
+- `executable_quote_not_tick_aligned`: bid/ask reference is not aligned to current instrument tick size; check ticker/spec snapshots and point-in-time spec selection.
+- `no_tick_inside_decision_entry_zone`: entry band is too narrow to contain an exchange tick for the current decision anchor/ATR/tick-size combination; preserve fail-closed behavior and inspect artifact/runtime contract.
+- `directional_prediction_contract_invalid` or `signal_policy_funding_contract_invalid`: treat as model/runtime policy contract evidence and do not publish the signal.
+
+Do not widen entry-zone, extend publication delay, round quotes upward/downward or force recommendations merely to reduce skipped symbols. Capture the JSON fields `contract_error`, `reason_detail`, bid/ask, decision anchor, entry band and tick size, then replay the decision point-in-time.
+
 ## Stale/invalid market or account state
 
 Не принимайте plan. Проверьте timestamps, confirmed candle, ticker/orderbook/spec/funding snapshots, account capital и reconciliation.

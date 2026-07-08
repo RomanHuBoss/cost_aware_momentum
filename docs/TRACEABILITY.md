@@ -18,9 +18,10 @@
 | Model lifecycle fail-closed | `app/ml/lifecycle.py`, promotion/activation services | lifecycle, activation, experiment governance tests |
 | Post-filter walk-forward shortage is deferred, not fatal | `WalkForwardCapacity`, `InsufficientWalkForwardHistoryError`, `BackgroundTrainer.run_training_once` | `test_fail_closed_incident_diagnostics_2026_07_08.py`, trainer recovery scheduling test |
 | Decision-time contract warning preserves safe diagnostics | `app/logging.py::JsonFormatter`, `app/services/signals.py` | `test_json_formatter_preserves_safe_contract_diagnostics` |
+| Signal-economics skips preserve exact fail-closed reason and context | `app/services/signals.py::classify_signal_economics_skip`, `app/logging.py::JsonFormatter` | `tests/unit/test_signal_economics_diagnostics_2026_07_08.py` |
 | Stale hourly/catch-up decision publication is skipped before stale publish attempt | `app/workers/runner.py::resolve_decision_publication_window`, `Worker.hourly_decision_cycle`, `Worker.catchup_inference_job`, `Worker.inference_job` | `tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py` |
 | Trainer effective wait reason falls back to persisted job failure | `app/api/v1/status.py::trainer_effective_wait_reason`, `web/js/app.js::trainerWaitDescription` | `tests/unit/test_trainer_status_diagnostics_2026_07_08.py`, `tests/unit/test_trainer_operator_ui.py` |
-| Trainer explains rejected-candidate wait without hiding behind generic cooldown | `app/workers/trainer.py::_job_training_profile`, `app/workers/trainer.py::due_reason`, `web/js/app.js::trainerWaitDescription` | `test_rejected_bootstrap_reports_new_data_wait_even_during_cooldown`, `test_rejected_bootstrap_recovers_profile_from_candidate_metrics`, `test_trainer_operator_ui.py` |
+| Trainer explains rejected-candidate wait without hiding behind generic cooldown | `app/workers/trainer.py::_job_training_profile`, `app/workers/trainer.py::due_reason`, `web/js/app.js::trainerWaitDescription`, `web/js/app.js::trainerProgressRow` | `test_rejected_bootstrap_reports_new_data_wait_even_during_cooldown`, `test_rejected_bootstrap_recovers_profile_from_candidate_metrics`, `test_trainer_operator_ui.py` |
 | NumPy dependency bound remains compatible with funding/policy contracts | `pyproject.toml` | full `pytest -q` under NumPy 2.3.5; NumPy 2.5.1 incompatibility documented in QA report |
 | PostgreSQL migration head | `migrations/versions/0018_inference_observations.py` | Alembic head check; integration upgrade not run here |
 
@@ -43,3 +44,15 @@
 - Requirement: trainer UI must not say that no wait reason was reported when the latest persisted training job already contains a concrete failure.
   - Implementation: `/api/v1/status` derives `trainer_control.effective_wait_reason` from heartbeat `wait_reason` first, then from `last_result` / latest `model_retraining` job errors; UI consumes that field.
   - Tests: `tests/unit/test_trainer_status_diagnostics_2026_07_08.py`, `tests/unit/test_trainer_operator_ui.py`.
+
+## 1.52.9 — Trainer wait progress clarity
+
+- Requirement: a rejected/deferred candidate wait must be understandable to the operator as a safe data-dependent wait, not as a stuck trainer.
+  - Implementation: `web/js/app.js` labels `quality_gate_failed_waiting_for_new_data` and `training_deferred_waiting_for_new_data` as normal protective waits, shows remaining new-labeled-hour threshold in `trainerProgressRow`, and adds a `Минимум до повтора` note.
+  - Tests: `tests/unit/test_trainer_operator_ui.py::test_operator_ui_explains_labeled_hour_wait_as_progress_not_failure`.
+
+## 1.52.10 — Signal economics skip diagnostics
+
+- Requirement: fail-closed market-signal economics skips must be operator-diagnosable without weakening publication gates.
+  - Implementation: `classify_signal_economics_skip()` maps stable economics validation failures to exact `reason_code` values; `record_symbol_outcome()` attaches safe context; `JsonFormatter` emits the fields.
+  - Tests: `tests/unit/test_signal_economics_diagnostics_2026_07_08.py`.

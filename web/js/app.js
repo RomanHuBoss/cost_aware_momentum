@@ -42,8 +42,8 @@ const trainerWaitLabels = {
   not_enough_new_or_changed_training_data: 'После активной модели накоплено недостаточно новых размеченных часов или изменений набора данных.',
   not_enough_new_labeled_time: 'После активной модели накоплено недостаточно новых размеченных часов.',
   training_cooldown_not_elapsed: 'Действует защитная пауза после предыдущей попытки обучения.',
-  quality_gate_failed_waiting_for_new_data: 'Предыдущий candidate не прошёл quality gate; trainer ждёт новых размеченных часов перед повтором.',
-  training_deferred_waiting_for_new_data: 'Предыдущее обучение отложено из-за недостаточной walk-forward истории; trainer ждёт новых размеченных часов.',
+  quality_gate_failed_waiting_for_new_data: 'Предыдущий candidate не прошёл quality gate; trainer ждёт новых размеченных часов перед повтором. Это штатное защитное ожидание: active model не отключается и повтор без новых данных не запускается.',
+  training_deferred_waiting_for_new_data: 'Предыдущее обучение отложено из-за недостаточной walk-forward истории; trainer ждёт новых размеченных часов. Это штатное защитное ожидание: temporal validation и quality gate не ослабляются.',
   no_direction_specific_barrier_labels: 'Последняя попытка не смогла построить direction-specific TP/SL/TIMEOUT labels из PostgreSQL candles; trainer ждёт следующего retry/backfill.',
   last_training_failed_waiting_for_retry: 'Последняя попытка обучения завершилась ошибкой; trainer ждёт следующей проверки или команды восстановления.',
   training_recovery_backoff_not_elapsed: 'Действует короткая защитная пауза после неудачного восстановления.',
@@ -293,12 +293,30 @@ function trainerDate(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('ru-RU');
 }
 
-function trainerProgressRow(label, current, required, formatter = value => fmt(value, 0)) {
+function trainerProgressRow(label, current, required, formatter = value => fmt(value, 0), options = {}) {
   const currentNumber = Number(current);
   const requiredNumber = Number(required);
   if (!Number.isFinite(currentNumber) || !Number.isFinite(requiredNumber) || requiredNumber <= 0) return '';
-  const percentage = Math.max(0, Math.min(100, currentNumber / requiredNumber * 100));
-  return `<div class="trainer-progress-row"><span class="trainer-progress-label">${escapeHtml(label)}</span><div class="trainer-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${escapeHtml(requiredNumber)}" aria-valuenow="${escapeHtml(currentNumber)}"><div class="trainer-progress-value" style="width:${percentage.toFixed(1)}%"></div></div><span class="trainer-progress-number">${escapeHtml(formatter(currentNumber))} из ${escapeHtml(formatter(requiredNumber))}</span></div>`;
+  const clampedCurrent = Math.max(0, currentNumber);
+  const percentage = Math.max(0, Math.min(100, clampedCurrent / requiredNumber * 100));
+  const remaining = Math.max(0, requiredNumber - clampedCurrent);
+  const remainingText = options.showRemaining === false
+    ? ''
+    : remaining > 0
+      ? ` · осталось ${formatter(remaining)}`
+      : ' · порог достигнут';
+  return `<div class="trainer-progress-row"><span class="trainer-progress-label">${escapeHtml(label)}</span><div class="trainer-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${escapeHtml(requiredNumber)}" aria-valuenow="${escapeHtml(clampedCurrent)}"><div class="trainer-progress-value" style="width:${percentage.toFixed(1)}%"></div></div><span class="trainer-progress-number">${escapeHtml(formatter(clampedCurrent))} из ${escapeHtml(formatter(requiredNumber))}${escapeHtml(remainingText)}</span></div>`;
+}
+
+function trainerRetryThresholdNote(waitReason) {
+  const currentNumber = Number(waitReason?.new_timestamps);
+  const requiredNumber = Number(waitReason?.required_new_timestamps);
+  if (!Number.isFinite(currentNumber) || !Number.isFinite(requiredNumber) || requiredNumber <= 0) return '';
+  const remaining = Math.max(0, requiredNumber - Math.max(0, currentNumber));
+  const text = remaining > 0
+    ? `Минимум до повтора: осталось ${fmt(remaining, 0)} новых размеченных часов.`
+    : 'Минимум до повтора достигнут; trainer сможет проверить candidate на следующем штатном цикле.';
+  return `<p class="trainer-message trainer-hint">${escapeHtml(text)}</p>`;
 }
 
 function trainerWaitDescription(waitReason) {
@@ -318,6 +336,7 @@ function trainerWaitDescription(waitReason) {
   }
   if (['not_enough_new_or_changed_training_data', 'not_enough_new_labeled_time', 'quality_gate_failed_waiting_for_new_data', 'training_deferred_waiting_for_new_data'].includes(reason)) {
     progress += trainerProgressRow('Новые размеченные часы', waitReason.new_timestamps, waitReason.required_new_timestamps);
+    progress += trainerRetryThresholdNote(waitReason);
   }
   const pending = waitReason.pending_trigger;
   if (pending?.new_timestamps !== undefined && pending?.required_new_timestamps !== undefined) {

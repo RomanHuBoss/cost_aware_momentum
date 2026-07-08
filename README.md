@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.8: worker теперь подавляет повторные stale catch-up inference попытки для одного `reason + event hour` после terminal `decision_publication_lag_exceeded`, а `/api/v1/status` и UI выводят понятную причину ожидания trainer из последней сохранённой training job, если heartbeat ещё не содержит `wait_reason`. Это прямо покрывает ситуацию `No direction-specific barrier labels could be built from PostgreSQL candles`. Миграций, новых `.env` variables и API-breaking changes нет.
+> Версия 1.52.10: inference diagnostics теперь классифицирует fail-closed пропуски `invalid_signal_economics`: `quote_outside_decision_entry_zone`, `executable_quote_not_tick_aligned` и другие причины выводятся в JSON-логах и `symbol_outcomes` с safe context (`contract_error`, bid/ask, decision anchor, entry band, tick size). Миграций, новых `.env` variables и API-breaking changes нет.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

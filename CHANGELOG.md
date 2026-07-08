@@ -2,6 +2,32 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.10 — 2026-07-08
+
+### Fixed
+
+- Signal publication no longer collapses all tick/entry-zone economics rejects into opaque `invalid_signal_economics`; quote-outside-entry-zone, quote/tick misalignment, missing executable tick, directional prediction contract and signal funding contract rejects now get distinct `reason_code` values.
+- JSON logs for signal-economics skips now preserve safe operator diagnostics: `contract_error`, `reason_detail`, bid/ask, decision anchor, tick-aligned entry band and tick size.
+- Inference `symbol_outcomes` now include the same per-symbol context for fail-closed economics skips, so worker/job diagnostics explain why each symbol was skipped instead of only listing the symbol.
+
+### Compatibility
+
+- No database migration, `.env` change, order execution capability, model-artifact schema change, gate weakening or API-breaking change.
+- Restart inference worker/API process after update so JSON logging and diagnostics use the new classifier.
+
+## 1.52.9 — 2026-07-08
+
+### Fixed
+
+- Trainer dialog now explains data-dependent waits as safe fail-closed states instead of an ambiguous idle/stuck state when a candidate failed quality gate or was deferred for insufficient walk-forward history.
+- New-labeled-hour progress now shows the remaining threshold, for example `6 из 168 · осталось 162`, and adds a concise retry-threshold note.
+- Operator manual, traceability, compliance, QA and iteration evidence were updated for the trainer progress-clarity patch.
+
+### Compatibility
+
+- No database migration, `.env` change, order execution capability, model-artifact schema change, gate weakening or API-breaking change.
+- Restart API/UI after update; worker and trainer logic are unchanged.
+
 ## 1.52.8 — 2026-07-08
 
 ### Fixed
