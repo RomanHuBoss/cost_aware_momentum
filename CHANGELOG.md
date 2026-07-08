@@ -2,6 +2,21 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.5 — 2026-07-08
+
+### Fixed
+
+- Trainer scheduler теперь восстанавливает previous `TrainingDataProfile` из `JobRun.details.metrics.training_data_profile`, если legacy/successful candidate job не содержит профиль в `trigger`.
+- Data-dependent bootstrap/recovery skip после `quality_gate_failed` или walk-forward deferral больше не откатывается к generic `training_cooldown_not_elapsed`, когда persisted candidate metrics уже доказывают тот же training profile и отсутствие новых размеченных часов.
+- Wait reason получил поле `previous_profile_source`, чтобы оператор и QA видели, из какого persisted evidence взят профиль предыдущей попытки.
+
+### Compatibility
+
+- Миграций БД, новых `.env` variables, API-breaking changes и model-artifact schema changes нет.
+- Trainer gates, thresholds, cooldown durations и activation semantics не ослаблены; меняется только извлечение уже сохранённого evidence для диагностики/планирования повтора.
+- После обновления требуется перезапуск trainer и API/UI process.
+
+
 ## 1.52.4 — 2026-07-08
 
 ### Fixed

@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.4: trainer после отклонённого bootstrap/recovery candidate из-за `quality_gate_failed` или недостаточной walk-forward истории сразу показывает первопричину и прогресс новых размеченных часов, а не маскирует состояние общим cooldown. Dependency contract дополнительно ограничивает NumPy `<2.5` для воспроизводимости unit/static QA.
+> Версия 1.52.5: trainer извлекает persisted training profile не только из `JobRun.details.trigger`, но и из candidate `metrics`, поэтому quality-gate/deferred bootstrap jobs с legacy-профилем в metrics больше не маскируются общим cooldown и корректно ждут новых размеченных часов. Миграций, `.env` и API changes нет.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 
@@ -170,6 +170,8 @@ Override не является способом обойти плохие мет
 
 
 
+
+Release 1.52.5 не добавляет migration, `.env`, API или model-artifact changes. После обновления перезапустите trainer/API. Если предыдущий bootstrap/recovery candidate сохранил `training_data_profile` только в `JobRun.details.metrics`, scheduler теперь использует этот persisted profile как доказательство data-dependent wait и показывает `quality_gate_failed_waiting_for_new_data` / `training_deferred_waiting_for_new_data` вместо generic cooldown. Если профиль отсутствует и в trigger, и в metrics, fail-closed generic cooldown сохраняется, потому что отсутствие доказанного профиля нельзя трактовать как отсутствие новых данных.
 
 Release 1.52.4 не добавляет migration, `.env`, API или model-artifact changes. После обновления перезапустите trainer/API, чтобы UI получил новые wait reason labels. Если trainer показывает `quality_gate_failed_waiting_for_new_data` или `training_deferred_waiting_for_new_data`, это означает, что активная baseline-модель сохранена, а повторное обучение ждёт material dataset change или минимум `AUTO_TRAIN_MIN_NEW_TIMESTAMPS` новых размеченных часов. NumPy ограничен `<2.5`, потому что fresh install с NumPy 2.5.1 нарушал существующие funding/policy unit contracts.
 

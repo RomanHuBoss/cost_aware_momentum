@@ -18,7 +18,7 @@
 | Post-filter walk-forward shortage is deferred, not fatal | `WalkForwardCapacity`, `InsufficientWalkForwardHistoryError`, `BackgroundTrainer.run_training_once` | `test_fail_closed_incident_diagnostics_2026_07_08.py`, trainer recovery scheduling test |
 | Decision-time contract warning preserves safe diagnostics | `app/logging.py::JsonFormatter`, `app/services/signals.py` | `test_json_formatter_preserves_safe_contract_diagnostics` |
 | Stale hourly/catch-up decision publication is skipped before stale publish attempt | `app/workers/runner.py::resolve_decision_publication_window`, `Worker.hourly_decision_cycle`, `Worker.catchup_inference_job`, `Worker.inference_job` | `tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py` |
-| Trainer explains rejected-candidate wait without hiding behind generic cooldown | `app/workers/trainer.py::due_reason`, `web/js/app.js::trainerWaitDescription` | `test_rejected_bootstrap_reports_new_data_wait_even_during_cooldown`, `test_trainer_operator_ui.py` |
+| Trainer explains rejected-candidate wait without hiding behind generic cooldown | `app/workers/trainer.py::_job_training_profile`, `app/workers/trainer.py::due_reason`, `web/js/app.js::trainerWaitDescription` | `test_rejected_bootstrap_reports_new_data_wait_even_during_cooldown`, `test_rejected_bootstrap_recovers_profile_from_candidate_metrics`, `test_trainer_operator_ui.py` |
 | NumPy dependency bound remains compatible with funding/policy contracts | `pyproject.toml` | full `pytest -q` under NumPy 2.3.5; NumPy 2.5.1 incompatibility documented in QA report |
 | PostgreSQL migration head | `migrations/versions/0018_inference_observations.py` | Alembic head check; integration upgrade not run here |
 

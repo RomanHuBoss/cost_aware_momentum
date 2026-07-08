@@ -16,6 +16,12 @@
 - Не обходите `NO_TRADE`, stale, risk, margin, liquidity, reconciliation или model quarantine блокировки.
 
 
+## Обновление 1.52.5
+
+Миграций и новых `.env` variables нет. После обновления перезапустите trainer и API/UI process.
+
+Если предыдущий bootstrap/recovery candidate не прошёл quality gate, а его training profile был сохранён только в `metrics`, окно trainer теперь всё равно показывает ожидание новых размеченных часов вместо общей защитной паузы. Поле `previous_profile_source` может быть `trigger.training_data_profile` или `metrics.training_data_profile`; оба источника являются persisted job evidence. Если профиль отсутствует в обоих местах, scheduler сохраняет generic cooldown и не делает недоказанный вывод о данных.
+
 ## Обновление 1.52.4
 
 Миграций и новых `.env` variables нет. После обновления перезапустите trainer и API/UI process.

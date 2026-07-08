@@ -43,6 +43,7 @@ def attempt(
     active_version: str | None,
     activation_skipped: str | None = None,
     profile=None,
+    metrics_profile=None,
 ) -> SimpleNamespace:
     trigger: dict[str, object] = {
         "reason": trigger_reason,
@@ -53,6 +54,8 @@ def attempt(
     details: dict[str, object] = {"trigger": trigger}
     if activation_skipped is not None:
         details["activation_skipped"] = activation_skipped
+    if metrics_profile is not None:
+        details["metrics"] = {"training_data_profile": metrics_profile.to_dict()}
     return SimpleNamespace(status=status, started_at=started_at, details=details)
 
 
@@ -244,6 +247,34 @@ async def test_rejected_recovery_candidate_uses_controlled_success_cooldown(
 
 
 @pytest.mark.asyncio
+async def test_rejected_bootstrap_recovers_profile_from_candidate_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    profile = training_profile(now)
+    latest = attempt(
+        status="SUCCESS",
+        started_at=now - timedelta(hours=1),
+        trigger_reason="bootstrap_training",
+        active_version=None,
+        activation_skipped="quality_gate_failed",
+        metrics_profile=profile,
+    )
+    trainer = await configure_trainer(
+        monkeypatch,
+        active=None,
+        latest=latest,
+        profile=profile,
+    )
+
+    due, reason = await trainer.due_reason()
+
+    assert due is False
+    assert reason["reason"] == "quality_gate_failed_waiting_for_new_data"
+    assert reason["previous_profile_source"] == "metrics.training_data_profile"
+    assert reason["new_timestamps"] == 0
+
+
 async def test_rejected_bootstrap_reports_new_data_wait_even_during_cooldown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

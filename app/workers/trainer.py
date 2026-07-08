@@ -86,6 +86,33 @@ def _job_trigger(details: object) -> dict[str, object] | None:
     return trigger if isinstance(trigger, dict) else None
 
 
+def _job_training_profile(details: object) -> tuple[TrainingDataProfile | None, str | None]:
+    """Return the best available training profile persisted with a prior job.
+
+    Current jobs persist the immutable preflight profile in ``trigger``.  Older
+    successful candidate jobs may only have the same profile under candidate
+    ``metrics``.  Treat both as persisted evidence; if neither is valid the
+    scheduler must keep its generic fail-closed cooldown instead of guessing.
+    """
+
+    if not isinstance(details, dict):
+        return None, None
+
+    candidates: list[tuple[str, object]] = []
+    trigger = _job_trigger(details)
+    if trigger is not None:
+        candidates.append(("trigger.training_data_profile", trigger.get("training_data_profile")))
+    metrics = details.get("metrics")
+    if isinstance(metrics, dict):
+        candidates.append(("metrics.training_data_profile", metrics.get("training_data_profile")))
+
+    for source, payload in candidates:
+        profile = TrainingDataProfile.from_mapping(payload if isinstance(payload, dict) else None)
+        if profile is not None:
+            return profile, source
+    return None, None
+
+
 def require_training_trigger_profile(
     trigger: dict[str, object],
     *,
@@ -920,10 +947,7 @@ class BackgroundTrainer:
                 and _same_bootstrap_episode(latest, trigger)
             )
             if data_dependent_bootstrap_skip:
-                previous_trigger = _job_trigger(latest.details)
-                previous_profile = TrainingDataProfile.from_mapping(
-                    previous_trigger.get("training_data_profile") if previous_trigger is not None else None
-                )
+                previous_profile, previous_profile_source = _job_training_profile(latest.details)
                 if previous_profile is not None:
                     retry_comparison = compare_training_profiles(
                         profile,
@@ -962,6 +986,7 @@ class BackgroundTrainer:
                             "required_new_timestamps": (settings.auto_train_min_new_timestamps),
                             "dataset_change": retry_comparison,
                             "previous_training_data_profile": previous_profile.to_dict(),
+                            "previous_profile_source": previous_profile_source,
                             **training_scope,
                         }
 
