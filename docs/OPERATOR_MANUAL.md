@@ -21,6 +21,15 @@ Default training preflight currently needs at least 1206 label-eligible hourly t
 - Не обходите `NO_TRADE`, stale, risk, margin, liquidity, reconciliation или model quarantine блокировки.
 
 
+
+## Обновление 1.52.8
+
+Если trainer показывает `RUNNING`, активна `baseline-momentum-v1`, а последняя попытка завершилась ошибкой `No direction-specific barrier labels could be built from PostgreSQL candles`, это означает, что текущий PostgreSQL market-data slice не дал пригодного direction-specific набора labels `TP / SL / TIMEOUT` для LONG/SHORT scenarios. В 1.52.8 диалог trainer больше не показывает общее `Trainer еще не сообщил причину ожидания`, когда такая ошибка уже сохранена в `model_retraining` job; он выводит derived `effective_wait_reason` и последнюю ошибку.
+
+Действия оператора: не включайте baseline как доказательство качества модели и не ослабляйте gates. Дождитесь backfill/funding/mark/index/OI/spec context либо перезапустите trainer после завершения backfill. Если ошибка повторяется на достаточной истории, проверьте `recent_jobs`, `data_quality_issues` и coverage market context в PostgreSQL.
+
+Повторные `Catch-up inference skipped because publication window is stale` для одного `reason + event hour` теперь подавляются после первого terminal skip. Следующий час остаётся eligible; `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS` не увеличен.
+
 ## Обновление 1.52.7
 
 Миграций нет. Добавлена новая `.env` variable `HISTORY_BACKFILL_OPEN_INTEREST_PAGES_PER_SYMBOL=7`; отсутствующее значение безопасно берётся из default, но при явном меньшем значении в локальном `.env` trainer может снова показать `insufficient_walk_forward_history_after_filtering`.

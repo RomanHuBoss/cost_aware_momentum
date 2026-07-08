@@ -168,6 +168,63 @@ def job_run_payload(job: JobRun | None) -> dict[str, object] | None:
     }
 
 
+def _trainer_failure_reason(error: object) -> str:
+    text = str(error or "")
+    if "No direction-specific barrier labels could be built" in text:
+        return "no_direction_specific_barrier_labels"
+    return "last_training_failed_waiting_for_retry"
+
+
+def trainer_effective_wait_reason(
+    trainer_heartbeat: ServiceHeartbeat | None,
+    latest_training_job: JobRun | None,
+) -> dict[str, object] | None:
+    """Return the clearest operator-facing reason the trainer is currently idle.
+
+    Heartbeat ``wait_reason`` remains authoritative while the trainer has computed
+    one.  If the trainer is still alive but the heartbeat has no wait reason, use
+    the latest persisted training failure so the UI does not say that the trainer
+    has not reported anything while a concrete PostgreSQL-backed error exists.
+    """
+
+    heartbeat_details = trainer_heartbeat.details if trainer_heartbeat is not None else None
+    heartbeat_details = heartbeat_details if isinstance(heartbeat_details, dict) else {}
+    wait_reason = heartbeat_details.get("wait_reason")
+    if isinstance(wait_reason, dict) and wait_reason:
+        return {**wait_reason, "source": "heartbeat_wait_reason"}
+
+    candidates: list[tuple[str, dict[str, object], JobRun | None]] = []
+    last_result = heartbeat_details.get("last_result")
+    if isinstance(last_result, dict):
+        candidates.append(("heartbeat_last_result", last_result, None))
+    latest_details = latest_training_job.details if latest_training_job is not None else None
+    if isinstance(latest_details, dict):
+        candidates.append(("latest_training_job", latest_details, latest_training_job))
+
+    for source, result, job in candidates:
+        error = result.get("error")
+        training_result = result.get("training_result")
+        if error is None and isinstance(training_result, dict):
+            error = training_result.get("error")
+        if error is None:
+            continue
+        payload: dict[str, object] = {
+            "reason": _trainer_failure_reason(error),
+            "source": source,
+            "error": str(error),
+        }
+        if job is not None:
+            payload.update(
+                {
+                    "last_status": job.status,
+                    "last_started_at": job.started_at.isoformat(),
+                    "last_finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                }
+            )
+        return payload
+    return None
+
+
 def expected_revision() -> str:
     cfg = Config("alembic.ini")
     cfg.set_main_option("script_location", "migrations")
@@ -533,6 +590,10 @@ async def status(session: SessionDep, settings: SettingsDep) -> dict:
             "stale_after_seconds": trainer_control_stale_after_seconds(settings),
             "latest_request": control_job_payload(latest_control_job),
             "latest_training_job": job_run_payload(latest_training_job),
+            "effective_wait_reason": trainer_effective_wait_reason(
+                trainer_heartbeat,
+                latest_training_job,
+            ),
         },
         "recommendation_summary": {
             "generated_at": now.isoformat(),

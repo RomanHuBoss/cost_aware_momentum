@@ -162,3 +162,64 @@ async def test_repeated_stale_hourly_cycle_is_suppressed_until_next_event_hour(
     }
     assert next_hour["skipped"] == "decision_publication_lag_exceeded"
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_stale_catchup_is_suppressed_until_next_event_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_time = datetime(2026, 7, 8, 4, 0, tzinfo=UTC)
+    checked_at = event_time + timedelta(minutes=12, seconds=39)
+    worker = object.__new__(runner_module.Worker)
+    worker.active_symbols = ("BTCUSDT", "ETHUSDT")
+    worker.runtime = SimpleNamespace(version="model-v1", is_baseline=False)
+    worker.client = object()
+    worker._refresh_execution_inputs = AsyncMock(side_effect=AssertionError("stale catchup refreshed execution inputs"))
+    worker.last_account_sync = None
+    calls = 0
+
+    async def execute_job(_name, _scheduled, task, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return await task(object())
+
+    worker.run_job = execute_job
+    monkeypatch.setattr(
+        runner_module,
+        "settings",
+        SimpleNamespace(
+            bybit_read_only_account=False,
+            market_poll_seconds=60,
+            max_signal_publication_delay_seconds=600,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "publish_hourly_signals",
+        AsyncMock(side_effect=AssertionError("stale catchup reached publication")),
+    )
+
+    first = await runner_module.Worker.catchup_inference_job(
+        worker,
+        "startup_backfill",
+        checked_at=checked_at,
+    )
+    second = await runner_module.Worker.catchup_inference_job(
+        worker,
+        "startup_backfill",
+        checked_at=checked_at + timedelta(seconds=30),
+    )
+    next_hour = await runner_module.Worker.catchup_inference_job(
+        worker,
+        "startup_backfill",
+        checked_at=event_time + timedelta(hours=1, minutes=12, seconds=39),
+    )
+
+    assert first["skipped"] == "decision_publication_lag_exceeded"
+    assert second == {
+        "skipped": "stale_catchup_inference_already_recorded",
+        "reason": "startup_backfill",
+        "event_time": event_time.isoformat(),
+    }
+    assert next_hour["skipped"] == "decision_publication_lag_exceeded"
+    assert calls == 2

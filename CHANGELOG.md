@@ -2,6 +2,19 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.8 — 2026-07-08
+
+### Fixed
+
+- Catch-up inference now latches a terminal stale publication skip by `(reason, event hour)`, so repeated `startup_backfill` / `universe_expanded` loops do not re-log and re-run the same stale `decision_publication_lag_exceeded` decision until the next hour.
+- `/api/v1/status` now exposes `trainer_control.effective_wait_reason`: heartbeat `wait_reason` remains authoritative, but if it is absent the API derives an operator-facing reason from the latest persisted `model_retraining` failure.
+- The trainer UI now uses `effective_wait_reason` and has explicit copy for `no_direction_specific_barrier_labels`, covering `No direction-specific barrier labels could be built from PostgreSQL candles`.
+
+### Compatibility
+
+- No database migration, `.env` change, order execution capability, model-artifact schema change, gate weakening or API-breaking change.
+- Restart API/UI, worker and trainer after update.
+
 ## 1.52.7 — 2026-07-08
 
 ### Fixed

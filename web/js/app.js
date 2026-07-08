@@ -44,6 +44,8 @@ const trainerWaitLabels = {
   training_cooldown_not_elapsed: 'Действует защитная пауза после предыдущей попытки обучения.',
   quality_gate_failed_waiting_for_new_data: 'Предыдущий candidate не прошёл quality gate; trainer ждёт новых размеченных часов перед повтором.',
   training_deferred_waiting_for_new_data: 'Предыдущее обучение отложено из-за недостаточной walk-forward истории; trainer ждёт новых размеченных часов.',
+  no_direction_specific_barrier_labels: 'Последняя попытка не смогла построить direction-specific TP/SL/TIMEOUT labels из PostgreSQL candles; trainer ждёт следующего retry/backfill.',
+  last_training_failed_waiting_for_retry: 'Последняя попытка обучения завершилась ошибкой; trainer ждёт следующей проверки или команды восстановления.',
   training_recovery_backoff_not_elapsed: 'Действует короткая защитная пауза после неудачного восстановления.',
   operator_recovery_not_required: 'Активный artifact доступен; восстановительное обучение не требуется.',
   operator_recovery_blocked_by_active_model_path: 'Восстановление заблокировано настройкой ACTIVE_MODEL_PATH.',
@@ -223,8 +225,9 @@ async function loadStatus() {
     state.systemStatus = status;
     const trainer = [...status.heartbeats].filter(item => item.service === 'trainer').sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
     const trainerPhase = trainer?.details?.phase;
-    const waitReason = trainer?.details?.wait_reason || null;
-    const lastTrainingResult = trainer?.details?.last_result || null;
+    const waitReason = status.trainer_control?.effective_wait_reason || trainer?.details?.wait_reason || null;
+    const latestTrainingJob = status.trainer_control?.latest_training_job || null;
+    const lastTrainingResult = trainer?.details?.last_result || latestTrainingJob?.details || null;
     let trainingState = status.auto_training?.enabled
       ? (trainerPhaseLabels[trainerPhase] || 'ожидание trainer')
       : 'отключено';
@@ -237,7 +240,11 @@ async function loadStatus() {
         : 'пауза перед повторной проверкой';
     } else if (waitReason?.reason === 'training_recovery_backoff_not_elapsed') {
       trainingState = 'короткая пауза перед повтором восстановления';
-    } else if (trainerPhase === 'ERROR' && lastTrainingResult?.error) {
+    } else if (waitReason?.reason === 'no_direction_specific_barrier_labels') {
+      trainingState = 'ожидание пригодных labels для обучения';
+    } else if (waitReason?.reason === 'last_training_failed_waiting_for_retry') {
+      trainingState = 'ошибка последней попытки, ожидание повтора';
+    } else if ((trainerPhase === 'ERROR' || waitReason?.error) && lastTrainingResult?.error) {
       trainingState = `ошибка: ${lastTrainingResult.error}`;
     }
 
@@ -317,7 +324,9 @@ function trainerWaitDescription(waitReason) {
     progress += trainerProgressRow('Новые размеченные часы', pending.new_timestamps, pending.required_new_timestamps);
   }
   const nextDue = waitReason.next_due_at ? ` Следующая допустимая попытка: ${trainerDate(waitReason.next_due_at)}.` : '';
-  return { text: `${text}${nextDue}`, progress };
+  const lastFailure = waitReason.last_started_at ? ` Последняя попытка: ${trainerDate(waitReason.last_started_at)}.` : '';
+  const error = waitReason.error ? ` Ошибка: ${waitReason.error}` : '';
+  return { text: `${text}${nextDue}${lastFailure}${error}`, progress };
 }
 
 function trainerResultMarkup(status, trainer) {
@@ -383,7 +392,8 @@ function renderTrainerDialog(status = state.systemStatus) {
   const bannerClass = healthy ? 'ok' : online ? 'warn' : 'bad';
   const processText = !enabled ? 'Автоматическое обучение отключено' : online ? 'Фоновый trainer работает' : 'Фоновый trainer недоступен';
   const phaseText = trainerPhaseLabels[details.phase] || details.phase || 'нет heartbeat';
-  const wait = trainerWaitDescription(details.wait_reason);
+  const effectiveWaitReason = control.effective_wait_reason || details.wait_reason || null;
+  const wait = trainerWaitDescription(effectiveWaitReason);
   const active = status.active_model || {};
   const runtime = active.worker_runtime || {};
   const notice = active.worker_notice || {};
@@ -416,7 +426,7 @@ function renderTrainerDialog(status = state.systemStatus) {
     historical_frozen_dynamic_bootstrap: 'historical frozen dynamic bootstrap',
     prospective_dynamic_replay: 'exact prospective dynamic replay',
   };
-  const waitScope = details.wait_reason || {};
+  const waitScope = effectiveWaitReason || {};
   const trainingMode = waitScope.training_universe_mode || '—';
   const trainingEvidence = waitScope.training_universe_evidence || {};
   const recoveryReasonLabels = {

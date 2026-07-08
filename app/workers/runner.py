@@ -207,6 +207,7 @@ class Worker:
         self.last_universe_refresh: datetime | None = None
         self.last_model_refresh: datetime | None = None
         self.last_stale_hourly_decision_event_time: datetime | None = None
+        self.last_stale_catchup_inference_key: tuple[str, datetime] | None = None
         self.active_model_registry_id: str | None = None
         self.model_notice: dict[str, object] | None = None
         self.model_artifact_durability: dict[str, object] | None = None
@@ -902,6 +903,13 @@ class Worker:
         now = checked_at or datetime.now(UTC)
         event_time = now.replace(minute=0, second=0, microsecond=0)
         scheduled = now.replace(second=0, microsecond=0)
+        stale_key = (reason, event_time)
+        if getattr(self, "last_stale_catchup_inference_key", None) == stale_key:
+            return {
+                "skipped": "stale_catchup_inference_already_recorded",
+                "reason": reason,
+                "event_time": event_time.isoformat(),
+            }
 
         async def task(session):
             stale_skip = _stale_publication_skip_result(
@@ -915,6 +923,7 @@ class Worker:
                     "Catch-up inference skipped because publication window is stale",
                     extra=stale_skip["publication_boundary"],
                 )
+                self.last_stale_catchup_inference_key = stale_key
                 return stale_skip
             execution_input_refresh = await self._refresh_execution_inputs(
                 session,

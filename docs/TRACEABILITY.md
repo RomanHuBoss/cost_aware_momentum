@@ -19,6 +19,7 @@
 | Post-filter walk-forward shortage is deferred, not fatal | `WalkForwardCapacity`, `InsufficientWalkForwardHistoryError`, `BackgroundTrainer.run_training_once` | `test_fail_closed_incident_diagnostics_2026_07_08.py`, trainer recovery scheduling test |
 | Decision-time contract warning preserves safe diagnostics | `app/logging.py::JsonFormatter`, `app/services/signals.py` | `test_json_formatter_preserves_safe_contract_diagnostics` |
 | Stale hourly/catch-up decision publication is skipped before stale publish attempt | `app/workers/runner.py::resolve_decision_publication_window`, `Worker.hourly_decision_cycle`, `Worker.catchup_inference_job`, `Worker.inference_job` | `tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py` |
+| Trainer effective wait reason falls back to persisted job failure | `app/api/v1/status.py::trainer_effective_wait_reason`, `web/js/app.js::trainerWaitDescription` | `tests/unit/test_trainer_status_diagnostics_2026_07_08.py`, `tests/unit/test_trainer_operator_ui.py` |
 | Trainer explains rejected-candidate wait without hiding behind generic cooldown | `app/workers/trainer.py::_job_training_profile`, `app/workers/trainer.py::due_reason`, `web/js/app.js::trainerWaitDescription` | `test_rejected_bootstrap_reports_new_data_wait_even_during_cooldown`, `test_rejected_bootstrap_recovers_profile_from_candidate_metrics`, `test_trainer_operator_ui.py` |
 | NumPy dependency bound remains compatible with funding/policy contracts | `pyproject.toml` | full `pytest -q` under NumPy 2.3.5; NumPy 2.5.1 incompatibility documented in QA report |
 | PostgreSQL migration head | `migrations/versions/0018_inference_observations.py` | Alembic head check; integration upgrade not run here |
@@ -33,3 +34,12 @@
 - Requirement: stale recommendations must remain blocked without noisy repeated attempts in the same event hour.
   - Implementation: `Worker.hourly_decision_cycle_if_due` latches terminal stale hourly skips until the next event hour.
   - Tests: `tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py::test_repeated_stale_hourly_cycle_is_suppressed_until_next_event_hour`.
+
+## 1.52.8 — Catch-up stale suppression and trainer failure diagnostics
+
+- Requirement: stale catch-up publication must stay fail-closed without repeated terminal attempts for the same stale current-hour event.
+  - Implementation: `Worker.catchup_inference_job` records `last_stale_catchup_inference_key=(reason, event_time)` after terminal `decision_publication_lag_exceeded` and returns `stale_catchup_inference_already_recorded` on duplicate attempts until the next event hour.
+  - Tests: `tests/unit/test_stale_decision_publication_scheduling_2026_07_08.py::test_repeated_stale_catchup_is_suppressed_until_next_event_hour`.
+- Requirement: trainer UI must not say that no wait reason was reported when the latest persisted training job already contains a concrete failure.
+  - Implementation: `/api/v1/status` derives `trainer_control.effective_wait_reason` from heartbeat `wait_reason` first, then from `last_result` / latest `model_retraining` job errors; UI consumes that field.
+  - Tests: `tests/unit/test_trainer_status_diagnostics_2026_07_08.py`, `tests/unit/test_trainer_operator_ui.py`.
