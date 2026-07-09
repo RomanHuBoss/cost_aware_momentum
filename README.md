@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.13: sizing engine теперь явно различает биржевые notional/maxQty ограничения и минимальный размер ордера: exchange-cap breach возвращает `BLOCKED_EXCHANGE`/`EXCHANGE`, ограниченный биржей план получает операторское предупреждение, attrition относит его к `RISK_EXECUTION`, а UI показывает отдельный статус. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
+> Версия 1.52.14: денежные helper-функции теперь fail-closed валидируют funding notional, execution price и fee rate: отрицательный position value больше не может инвертировать знак funding cash-flow, а отрицательная комиссия не может создать фиктивный rebate. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

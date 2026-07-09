@@ -274,11 +274,16 @@ def pretrade_funding_return_rate(
 
 def funding_cash_flow(direction: Direction, position_value: Decimal, funding_rate: Decimal) -> Decimal:
     """Cash flow from trader perspective. Positive funding means LONG pays and SHORT receives."""
-    return d(position_value) * funding_return_rate(direction, funding_rate)
+
+    notional = positive_finite_decimal(position_value, "position_value")
+    return notional * funding_return_rate(direction, funding_rate)
 
 
 def fee_cash(qty: Decimal, executed_price: Decimal, fee_rate: Decimal) -> Decimal:
-    return abs(d(qty) * d(executed_price)) * d(fee_rate)
+    quantity = finite_decimal(qty, "qty")
+    price = positive_finite_decimal(executed_price, "executed_price")
+    rate = nonnegative_finite_decimal(fee_rate, "fee_rate")
+    return abs(quantity) * price * rate
 
 
 def normalized_round_trip_fee_rate(

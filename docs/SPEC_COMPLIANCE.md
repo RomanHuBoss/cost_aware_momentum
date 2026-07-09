@@ -7,8 +7,10 @@
 - Risk sizing floors quantity to step and blocks unsafe min-size cases instead of rounding up.
 - LONG/SHORT geometry validation rejects inverted TP/SL relationships.
 - Funding sign is trader-perspective correct in risk math.
+- Funding cash-flow now rejects non-positive/non-finite position notional before applying LONG/SHORT funding sign.
+- Execution fee cash now rejects invalid execution price and negative/non-finite fee rates before fee arithmetic.
 - Acceptance validator rechecks fresh entry zone, current funding deterioration, per-trade risk, total portfolio risk, margin, liquidity, and economics.
-- `BLOCKED_EXCHANGE` now distinguishes exchange-cap constraints from min-order constraints.
+- `BLOCKED_EXCHANGE` distinguishes exchange-cap constraints from min-order constraints.
 
 ## Implemented but requires configured environment for full verification
 

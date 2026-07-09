@@ -7,6 +7,7 @@ from app.risk.math import (
     CostScenario,
     InstrumentConstraints,
     calculate_position_plan,
+    fee_cash,
     floor_to_step,
     funding_cash_flow,
     gross_pnl,
@@ -389,3 +390,13 @@ def test_exchange_cap_limited_plan_has_operator_warning() -> None:
     assert plan.limiting_cap == "EXCHANGE"
     assert plan.notional <= D("500")
     assert any("бирж" in warning.lower() for warning in plan.warnings)
+
+
+def test_funding_cash_flow_rejects_negative_position_value() -> None:
+    with pytest.raises(ValueError, match="position_value"):
+        funding_cash_flow("LONG", D("-1000"), D("0.0001"))
+
+
+def test_fee_cash_rejects_negative_fee_rate() -> None:
+    with pytest.raises(ValueError, match="fee_rate"):
+        fee_cash(D("1"), D("100"), D("-0.001"))

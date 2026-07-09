@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 1.52.14 — 2026-07-09
+
+Scope: `validated-cash-inputs`
+
+- Hardened `funding_cash_flow()` so funding accounting rejects non-positive/non-finite `position_value` instead of allowing a negative notional to invert LONG/SHORT funding sign.
+- Hardened `fee_cash()` so execution fee accounting rejects invalid execution prices and negative/non-finite fee rates instead of producing impossible negative fees.
+- Added pure unit regression coverage for negative funding notional and negative fee-rate inputs.
+- No migration, `.env`, API schema, advisory-only, or Bybit endpoint changes.
+
 ## 1.52.13 — 2026-07-09
 
 ### Fixed
