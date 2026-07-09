@@ -145,6 +145,30 @@ def _instrument_spec_values(item: dict) -> InstrumentSpecValues:
     )
 
 
+def _validated_wallet_account(wallet: dict) -> dict[str, object]:
+    if not isinstance(wallet, dict):
+        raise RuntimeError("Bybit wallet response result is invalid")
+    account_list = wallet.get("list")
+    if account_list is None:
+        raise RuntimeError("Bybit wallet response list is missing")
+    if not isinstance(account_list, list):
+        raise RuntimeError("Bybit wallet response list is invalid")
+    if len(account_list) != 1:
+        raise RuntimeError("Bybit wallet response must contain exactly one account")
+    account = account_list[0]
+    if not isinstance(account, dict):
+        raise RuntimeError("Bybit wallet account row is invalid")
+    coins = account.get("coin")
+    if not isinstance(coins, list):
+        raise RuntimeError("Bybit wallet account coin list is missing or invalid")
+    if not any(
+        isinstance(coin, dict) and str(coin.get("coin") or "").strip().upper() == "USDT"
+        for coin in coins
+    ):
+        raise RuntimeError("Bybit wallet account is missing USDT coin row")
+    return account
+
+
 def _normalized_open_position(item: dict) -> dict[str, object] | None:
     size = _required_nonnegative_decimal(item.get("size"), "position.size")
     if size == 0:
@@ -1320,10 +1344,7 @@ async def sync_read_only_account(session: AsyncSession, client: BybitClient, set
     if not settings.bybit_read_only_account:
         return {"enabled": False}
     wallet = await client.get_wallet_balance("UNIFIED")
-    account_list = wallet.get("list") or []
-    if not account_list:
-        raise RuntimeError("Bybit wallet response contained no account")
-    account = account_list[0]
+    account = _validated_wallet_account(wallet)
     equity = _required_positive_decimal(account.get("totalEquity"), "totalEquity")
     available = _required_nonnegative_decimal(account.get("totalAvailableBalance"), "totalAvailableBalance")
     raw_positions = await client.get_positions("USDT")

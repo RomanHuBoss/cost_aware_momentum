@@ -256,7 +256,13 @@ async def test_account_sync_rejects_malformed_open_position_before_any_write() -
     client = SimpleNamespace(
         get_wallet_balance=AsyncMock(
             return_value={
-                "list": [{"totalEquity": "1000", "totalAvailableBalance": "750"}]
+                "list": [
+                    {
+                        "totalEquity": "1000",
+                        "totalAvailableBalance": "750",
+                        "coin": [{"coin": "USDT", "walletBalance": "750"}],
+                    }
+                ]
             }
         ),
         get_positions=AsyncMock(
@@ -289,7 +295,14 @@ async def test_account_sync_rejects_missing_equity_before_persisting_snapshot() 
     session = SimpleNamespace(execute=AsyncMock(return_value=_Result()), add=Mock())
     client = SimpleNamespace(
         get_wallet_balance=AsyncMock(
-            return_value={"list": [{"totalAvailableBalance": "100"}]}
+            return_value={
+                "list": [
+                    {
+                        "totalAvailableBalance": "100",
+                        "coin": [{"coin": "USDT", "walletBalance": "100"}],
+                    }
+                ]
+            }
         ),
         get_positions=AsyncMock(return_value=[]),
     )
@@ -354,3 +367,55 @@ def test_profit_factor_is_undefined_when_holdout_has_no_losses() -> None:
     assert metrics["policy_trades"] == 1
     assert metrics["policy_realized_total_r"] > 0
     assert metrics["policy_profit_factor"] is None
+
+
+@pytest.mark.asyncio
+async def test_account_sync_rejects_wallet_without_coin_list_before_any_write() -> None:
+    session = SimpleNamespace(execute=AsyncMock(return_value=_Result()), add=Mock())
+    client = SimpleNamespace(
+        get_wallet_balance=AsyncMock(
+            return_value={
+                "list": [{"totalEquity": "1000", "totalAvailableBalance": "750"}]
+            }
+        ),
+        get_positions=AsyncMock(return_value=[]),
+    )
+    settings = Settings(
+        database_url="postgresql+psycopg://u:p@localhost/db",
+        bybit_read_only_account=True,
+    )
+
+    with pytest.raises(RuntimeError, match="coin list"):
+        await sync_read_only_account(session, client, settings)
+
+    session.add.assert_not_called()
+    client.get_positions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_account_sync_rejects_wallet_without_usdt_coin_before_any_write() -> None:
+    session = SimpleNamespace(execute=AsyncMock(return_value=_Result()), add=Mock())
+    client = SimpleNamespace(
+        get_wallet_balance=AsyncMock(
+            return_value={
+                "list": [
+                    {
+                        "totalEquity": "1000",
+                        "totalAvailableBalance": "750",
+                        "coin": [{"coin": "BTC", "walletBalance": "0.1"}],
+                    }
+                ]
+            }
+        ),
+        get_positions=AsyncMock(return_value=[]),
+    )
+    settings = Settings(
+        database_url="postgresql+psycopg://u:p@localhost/db",
+        bybit_read_only_account=True,
+    )
+
+    with pytest.raises(RuntimeError, match="USDT coin"):
+        await sync_read_only_account(session, client, settings)
+
+    session.add.assert_not_called()
+    client.get_positions.assert_not_awaited()

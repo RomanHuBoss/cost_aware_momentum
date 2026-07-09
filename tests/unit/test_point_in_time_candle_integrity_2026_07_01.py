@@ -205,6 +205,7 @@ async def test_account_snapshot_time_is_after_wallet_and_position_reads(monkeypa
                     {
                         "totalEquity": "1000",
                         "totalAvailableBalance": "800",
+                        "coin": [{"coin": "USDT", "walletBalance": "800"}],
                     }
                 ]
             }

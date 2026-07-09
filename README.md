@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.16: Bybit-клиент теперь fail-closed требует фактического `result.list` JSON array для всех list-shaped read-only endpoints: tickers, kline, fee-rate, instruments, funding history, open interest и positions. Отсутствующий или null `list` больше не маскируется под пустой список. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
+> Версия 1.52.17: wallet/account путь Bybit теперь fail-closed проверяет `wallet-balance.result.list`, ровно одну account-row, наличие `coin` JSON array и USDT coin-row перед сохранением equity snapshot. Отсутствующие/null/non-list wallet payloads и частичные account rows больше не маскируются под пустой аккаунт или пригодный капитал. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

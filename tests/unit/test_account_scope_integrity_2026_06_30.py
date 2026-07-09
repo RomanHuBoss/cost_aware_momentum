@@ -154,6 +154,7 @@ async def test_account_sync_stamps_positions_with_same_account_id() -> None:
                     {
                         "totalEquity": "1000",
                         "totalAvailableBalance": "750",
+                        "coin": [{"coin": "USDT", "walletBalance": "750"}],
                     }
                 ]
             }

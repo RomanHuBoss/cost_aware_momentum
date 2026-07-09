@@ -12,6 +12,7 @@ from app.bybit.client import BybitClient, BybitResponse
         ("get_tickers", ("linear",)),
         ("get_kline", ("BTCUSDT",)),
         ("get_fee_rate", ("BTCUSDT",)),
+        ("get_wallet_balance", ("UNIFIED",)),
     ],
 )
 async def test_bybit_list_endpoints_reject_non_list_payloads(monkeypatch, method_name: str, args: tuple[object, ...]) -> None:
@@ -39,6 +40,7 @@ async def test_bybit_list_endpoints_reject_non_list_payloads(monkeypatch, method
         ("get_funding_history", ("BTCUSDT",)),
         ("get_open_interest", ("BTCUSDT",)),
         ("get_positions", ("USDT",)),
+        ("get_wallet_balance", ("UNIFIED",)),
     ],
 )
 async def test_bybit_list_endpoints_reject_missing_or_null_list_payloads(

@@ -227,9 +227,11 @@ class BybitClient:
         return result
 
     async def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict:
-        return (
+        result = (
             await self._get("/v5/account/wallet-balance", {"accountType": account_type}, private=True)
         ).result
+        _require_result_list(result, "wallet balance")
+        return result
 
     async def get_positions(self, settle_coin: str = "USDT") -> list[dict]:
         positions: list[dict] = []

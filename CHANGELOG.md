@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 1.52.17 — 2026-07-09
+
+Scope: `wallet-account-contract`
+
+- Hardened read-only Bybit wallet-balance parsing so missing, null, or non-list `result.list` payloads fail closed before downstream account sync.
+- Added account wallet semantic validation: exactly one account row, required `coin` array, and required USDT coin row before persisting equity snapshots.
+- Added client and account-sync regressions for malformed wallet payloads and partial wallet account rows.
+- No migration, `.env`, API schema, advisory-only, or Bybit endpoint changes.
+
 ## 1.52.16 — 2026-07-09
 
 Scope: `bybit-list-presence`
