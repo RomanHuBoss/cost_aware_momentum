@@ -25,3 +25,35 @@ async def test_bybit_list_endpoints_reject_non_list_payloads(monkeypatch, method
             await getattr(client, method_name)(*args)
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{}, {"list": None}])
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        ("get_tickers", ("linear",)),
+        ("get_kline", ("BTCUSDT",)),
+        ("get_fee_rate", ("BTCUSDT",)),
+        ("get_instruments", ("linear",)),
+        ("get_funding_history", ("BTCUSDT",)),
+        ("get_open_interest", ("BTCUSDT",)),
+        ("get_positions", ("USDT",)),
+    ],
+)
+async def test_bybit_list_endpoints_reject_missing_or_null_list_payloads(
+    monkeypatch,
+    method_name: str,
+    args: tuple[object, ...],
+    payload: dict,
+) -> None:
+    async def fake_get(self, path, params=None, private=False):
+        return BybitResponse(result=payload, server_time_ms=0, raw={})
+
+    monkeypatch.setattr(BybitClient, "_get", fake_get)
+    client = BybitClient(base_url="https://example.invalid", api_key="read", api_secret="secret")
+    try:
+        with pytest.raises(RuntimeError, match=r"response list is (missing|invalid)"):
+            await getattr(client, method_name)(*args)
+    finally:
+        await client.close()

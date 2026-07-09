@@ -3,7 +3,7 @@
 ## Implemented and unit-tested
 
 - Advisory-only Bybit client does not expose order create/amend/cancel/withdraw methods.
-- Bybit list-shaped endpoint payloads for tickers, kline, and fee-rate are now fail-closed validated as JSON arrays before downstream use.
+- Bybit list-shaped endpoint payloads for tickers, kline, fee-rate, instruments, funding history, open interest, and positions are now fail-closed validated for present, non-null JSON arrays before downstream use.
 - PostgreSQL-only settings validation rejects SQLite database URLs.
 - Risk sizing floors quantity to step and blocks unsafe min-size cases instead of rounding up.
 - LONG/SHORT geometry validation rejects inverted TP/SL relationships.

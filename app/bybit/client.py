@@ -20,7 +20,11 @@ class BybitAPIError(RuntimeError):
 
 
 def _require_result_list(result: dict, context: str) -> list:
-    items = result.get("list") or []
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Bybit {context} response result is invalid")
+    if "list" not in result or result["list"] is None:
+        raise RuntimeError(f"Bybit {context} response list is missing")
+    items = result["list"]
     if not isinstance(items, list):
         raise RuntimeError(f"Bybit {context} response list is invalid")
     return items
@@ -114,9 +118,7 @@ class BybitClient:
             if cursor is not None:
                 params["cursor"] = cursor
             result = (await self._get("/v5/market/instruments-info", params)).result
-            page = result.get("list") or []
-            if not isinstance(page, list):
-                raise RuntimeError("Bybit instruments response list is invalid")
+            page = _require_result_list(result, "instruments")
             items.extend(page)
 
             next_cursor = str(result.get("nextPageCursor") or "").strip()
@@ -181,10 +183,7 @@ class BybitClient:
                 "endTime": end_ms,
             },
         )
-        items = response.result.get("list") or []
-        if not isinstance(items, list):
-            raise RuntimeError("Bybit funding history response list is invalid")
-        return items
+        return _require_result_list(response.result, "funding history")
 
     async def get_open_interest(
         self,
@@ -210,9 +209,7 @@ class BybitClient:
                 "cursor": cursor,
             },
         )
-        items = response.result.get("list") or []
-        if not isinstance(items, list):
-            raise RuntimeError("Bybit open-interest response list is invalid")
+        items = _require_result_list(response.result, "open-interest")
         return {
             "items": items,
             "next_cursor": str(response.result.get("nextPageCursor") or "").strip() or None,
@@ -247,9 +244,7 @@ class BybitClient:
             if cursor is not None:
                 params["cursor"] = cursor
             result = (await self._get("/v5/position/list", params, private=True)).result
-            page = result.get("list") or []
-            if not isinstance(page, list):
-                raise RuntimeError("Bybit positions response list is invalid")
+            page = _require_result_list(result, "positions")
             positions.extend(page)
 
             next_cursor = str(result.get("nextPageCursor") or "").strip()

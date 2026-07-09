@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 1.52.16 — 2026-07-09
+
+Scope: `bybit-list-presence`
+
+- Hardened read-only Bybit list extraction so missing or null `result.list` payloads fail closed instead of being silently converted to empty lists.
+- Extended the contract from tickers/kline/fee-rate to all list-shaped Bybit client methods: instruments, funding history, open interest, and positions.
+- Added async regression coverage for missing and null list payloads across public market-data and private read-only account endpoints.
+- No migration, `.env`, API schema, advisory-only, or Bybit endpoint changes.
+
 ## 1.52.15 — 2026-07-09
 
 Scope: `bybit-list-payload-validation`
