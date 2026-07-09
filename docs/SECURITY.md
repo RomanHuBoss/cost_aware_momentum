@@ -16,3 +16,7 @@ Release artifacts must exclude `.env`, credentials, bytecode caches, virtual env
 ## 1.52.13 note
 
 No new credentials, scopes, Bybit trading permissions, or exchange write endpoints were added.
+
+## 1.52.18 market-data integrity note
+
+Kline/OHLCV rows with impossible price geometry, non-positive prices, negative volume, or non-finite turnover are rejected before persistence. This preserves fail-closed behavior for market facts that feed features, labels, inference, and advisory plans.

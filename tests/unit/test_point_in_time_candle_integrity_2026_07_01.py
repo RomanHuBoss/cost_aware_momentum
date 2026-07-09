@@ -335,3 +335,71 @@ async def test_funding_and_oi_availability_is_stamped_after_each_response(monkey
     assert oi_received in oi_params.values()
     assert request_started not in funding_params.values()
     assert request_started not in oi_params.values()
+
+
+def test_candle_values_reject_invalid_ohlcv_rows_before_persistence() -> None:
+    now = datetime(2026, 7, 1, 2, 0, tzinfo=UTC)
+    open_ms = str(int((now - timedelta(hours=1)).timestamp() * 1000))
+
+    with pytest.raises(ValueError, match="OHLC"):
+        _candle_values(
+            symbol="BTCUSDT",
+            interval="60",
+            price_type="last",
+            rows=[[open_ms, "100", "99", "98", "100.5", "10", "1000"]],
+            now=now,
+            interval_minutes=60,
+        )
+
+    with pytest.raises(ValueError, match="volume"):
+        _candle_values(
+            symbol="BTCUSDT",
+            interval="60",
+            price_type="last",
+            rows=[[open_ms, "100", "101", "99", "100.5", "-1", "1000"]],
+            now=now,
+            interval_minutes=60,
+        )
+
+    with pytest.raises(ValueError, match="turnover"):
+        _candle_values(
+            symbol="BTCUSDT",
+            interval="60",
+            price_type="last",
+            rows=[[open_ms, "100", "101", "99", "100.5", "10", "NaN"]],
+            now=now,
+            interval_minutes=60,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sync_candles_reports_malformed_ohlcv_without_persisting(monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services import market_data
+
+    now = datetime(2026, 7, 1, 2, 0, tzinfo=UTC)
+    open_ms = str(int((now - timedelta(hours=1)).timestamp() * 1000))
+
+    class _Client:
+        async def get_kline(self, *args, **kwargs):
+            return [[open_ms, "100", "99", "98", "100.5", "10", "1000"]]
+
+    upsert = AsyncMock()
+    monkeypatch.setattr(market_data, "_upsert_candle_values", upsert)
+    diagnostics: dict[str, object] = {}
+
+    count = await market_data.sync_candles(
+        SimpleNamespace(),
+        _Client(),
+        ["BTCUSDT"],
+        interval="60",
+        limit=1,
+        price_types=("last",),
+        diagnostics=diagnostics,
+    )
+
+    assert count == 0
+    assert diagnostics["requests_failed"] == 1
+    assert diagnostics["requests_succeeded"] == 0
+    upsert.assert_not_awaited()

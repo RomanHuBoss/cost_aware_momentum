@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.17: wallet/account путь Bybit теперь fail-closed проверяет `wallet-balance.result.list`, ровно одну account-row, наличие `coin` JSON array и USDT coin-row перед сохранением equity snapshot. Отсутствующие/null/non-list wallet payloads и частичные account rows больше не маскируются под пустой аккаунт или пригодный капитал. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
+> Версия 1.52.18: Bybit kline/OHLCV persistence теперь fail-closed валидирует каждую строку свечи: обязательные open/high/low/close должны быть положительными finite Decimal, volume/turnover — non-negative finite Decimal, а OHLC geometry должна быть непротиворечивой. Малформированные candle rows больше не сохраняются как market facts и отражаются в diagnostics как failed request. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

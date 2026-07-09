@@ -105,6 +105,30 @@ def _required_nonnegative_decimal(value: object, field: str) -> Decimal:
     return result
 
 
+def _required_candle_decimal(row: list[str], index: int, field: str, *, positive: bool) -> Decimal:
+    if len(row) <= index:
+        raise ValueError(f"Bybit kline row is incomplete: missing {field}")
+    return (
+        _required_positive_decimal(row[index], field)
+        if positive
+        else _required_nonnegative_decimal(row[index], field)
+    )
+
+
+def _validated_candle_ohlcv(row: list[str]) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]:
+    open_price = _required_candle_decimal(row, 1, "kline.open", positive=True)
+    high_price = _required_candle_decimal(row, 2, "kline.high", positive=True)
+    low_price = _required_candle_decimal(row, 3, "kline.low", positive=True)
+    close_price = _required_candle_decimal(row, 4, "kline.close", positive=True)
+    volume = _required_candle_decimal(row, 5, "kline.volume", positive=False)
+    turnover = _required_candle_decimal(row, 6, "kline.turnover", positive=False)
+    if high_price < max(open_price, low_price, close_price) or low_price > min(
+        open_price, high_price, close_price
+    ):
+        raise ValueError("Bybit kline OHLC geometry is inconsistent")
+    return open_price, high_price, low_price, close_price, volume, turnover
+
+
 def _instrument_spec_values(item: dict) -> InstrumentSpecValues:
     price_filter = item.get("priceFilter") or {}
     lot_filter = item.get("lotSizeFilter") or {}
@@ -380,18 +404,31 @@ async def sync_candles(
             if rows is None:
                 requests_failed += 1
                 continue
-            requests_succeeded += 1
             if not rows:
+                requests_succeeded += 1
                 continue
-            values_list = _candle_values(
-                symbol=symbol,
-                interval=interval,
-                price_type=price_type,
-                rows=rows,
-                now=datetime.now(UTC),
-                interval_minutes=interval_minutes,
-            )
-            await _upsert_candle_values(session, values_list)
+            try:
+                values_list = _candle_values(
+                    symbol=symbol,
+                    interval=interval,
+                    price_type=price_type,
+                    rows=rows,
+                    now=datetime.now(UTC),
+                    interval_minutes=interval_minutes,
+                )
+                await _upsert_candle_values(session, values_list)
+            except Exception:
+                requests_failed += 1
+                logger.exception(
+                    "Failed to validate or persist candles",
+                    extra={
+                        "symbol": symbol,
+                        "price_type": price_type,
+                        "event": "candle_validation_failed",
+                    },
+                )
+                continue
+            requests_succeeded += 1
             count += len(values_list)
             if (
                 required_close_time is not None
@@ -535,9 +572,13 @@ def _candle_values(
     values_list: list[dict] = []
     for row in rows:
         # [startTime, open, high, low, close, volume, turnover]
-        open_time = _dt_ms(row[0])
+        try:
+            open_time = _dt_ms(row[0])
+        except (IndexError, TypeError, ValueError) as exc:
+            raise ValueError("Bybit kline open time is missing or invalid") from exc
         if open_time is None:
-            continue
+            raise ValueError("Bybit kline open time is missing or invalid")
+        open_price, high_price, low_price, close_price, volume, turnover = _validated_candle_ohlcv(row)
         close_time = open_time + timedelta(minutes=interval_minutes)
         values_list.append(
             {
@@ -550,12 +591,12 @@ def _candle_values(
                 # been known before this process actually received them.
                 "available_at": now,
                 "price_type": price_type,
-                "open": _decimal(row[1]),
-                "high": _decimal(row[2]),
-                "low": _decimal(row[3]),
-                "close": _decimal(row[4]),
-                "volume": _decimal(row[5] if len(row) > 5 else 0),
-                "turnover": _decimal(row[6] if len(row) > 6 else 0),
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "volume": volume,
+                "turnover": turnover,
                 "confirmed": close_time <= now,
                 "source": "bybit_v5",
             }

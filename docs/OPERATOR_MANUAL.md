@@ -23,3 +23,7 @@
 ## 1.52.13 note
 
 A plan blocked by exchange notional/maxQty caps is now shown separately from minimum-order failures. Do not resolve `BLOCKED_EXCHANGE` by increasing risk or rounding quantity upward.
+
+## 1.52.18 candle-data note
+
+Malformed Bybit candle rows are no longer persisted. If current-hour candle coverage is missing after an exchange/API anomaly, treat the recommendation path as stale/missing data and retry after data recovery rather than overriding the gate.

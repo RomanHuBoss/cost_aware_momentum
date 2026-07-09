@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 1.52.18 — 2026-07-09
+
+Scope: `candle-ohlcv-validation`
+
+- Hardened Bybit kline/OHLCV row normalization so open/high/low/close must be positive finite decimals, volume/turnover must be non-negative finite decimals, and OHLC geometry must be internally consistent before persistence.
+- `sync_candles()` now reports malformed candle payloads as failed requests and does not call candle upsert for invalid OHLCV rows.
+- Added regression coverage for invalid OHLC geometry, negative volume, non-finite turnover, and sync diagnostics/no-persistence behavior.
+- No migration, `.env`, API schema, advisory-only, or Bybit endpoint changes.
+
 ## 1.52.17 — 2026-07-09
 
 Scope: `wallet-account-contract`

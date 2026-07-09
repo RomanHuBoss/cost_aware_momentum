@@ -16,3 +16,7 @@ No new variables were introduced. Existing exchange/instrument limits are now su
 - exchange notional cap breaches return `BLOCKED_EXCHANGE`;
 - exchange-limited plans retain `LIMITED` but include an operator warning;
 - UI and attrition diagnostics preserve the exchange-cap cause.
+
+## 1.52.18 changes
+
+No new configuration variables were introduced. Existing candle ingestion now fails closed on malformed OHLCV rows before persistence.
