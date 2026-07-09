@@ -1,7 +1,7 @@
-# QA report — 1.52.18
+# QA report — 1.52.19
 
 Date: 2026-07-09  
-Scope: `candle-ohlcv-validation`
+Scope: `mark-index-kline-volume`
 
 ## Baseline before code changes
 
@@ -11,32 +11,36 @@ Scope: `candle-ohlcv-validation`
 | `python -m pip check` | FAILED | `moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0, but you have pillow 12.2.0.` |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
 | `python -m ruff check .` | UNAVAILABLE | `/opt/pyvenv/bin/python: No module named ruff` |
-| `python -m pytest -q` | FAILED | `62 errors in 8.45s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
+| `python -m pytest -q` | FAILED | `62 errors in 8.64s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
 | `node --check web/js/app.js` | PASSED | exit code 0 |
 | `python -m alembic heads` | PASSED | `0018_inference_observations (head)` |
 | `python manage.py doctor` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
 | `python manage.py test --require-integration` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
+
 Baseline full pytest counts: passed 0 / failed 0 / skipped 0 / xfailed 0 / errors 62 during collection.
 
 ## Red evidence
 
-The new regression was added before the implementation change and run against the unpatched 1.52.17 implementation.
+The new regression was added before the implementation change and run against the unpatched 1.52.18 implementation.
 
 Command:
 
 ```bash
 python -m pytest -q \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_invalid_ohlcv_rows_before_persistence -q
+  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_accept_mark_and_index_price_only_klines_without_volume_turnover \
+  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_still_reject_last_klines_missing_volume_turnover
 ```
 
 Result on unpatched code:
 
 ```text
-FAILED tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_invalid_ohlcv_rows_before_persistence
-Failed: DID NOT RAISE <class 'ValueError'>
+F.                                                                       [100%]
+FAILED tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_accept_mark_and_index_price_only_klines_without_volume_turnover
+ValueError: Bybit kline row is incomplete: missing kline.volume
+1 failed, 1 passed in 3.02s
 ```
 
-This proved that `_candle_values()` accepted inconsistent OHLC geometry before the fix.
+This proved that the previous implementation rejected documented five-field mark/index kline rows while still correctly rejecting last-trade klines missing volume/turnover.
 
 ## Green evidence
 
@@ -44,76 +48,50 @@ New regression command:
 
 ```bash
 python -m pytest -q \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_invalid_ohlcv_rows_before_persistence \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_sync_candles_reports_malformed_ohlcv_without_persisting
+  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_accept_mark_and_index_price_only_klines_without_volume_turnover \
+  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_still_reject_last_klines_missing_volume_turnover
 ```
 
 Result after patch:
 
 ```text
-2 passed in 3.14s
+2 passed in 3.05s
 ```
 
-Related candle/market-data regression subset:
+Related candle/mark-index subset:
 
 ```bash
 python -m pytest -q \
   tests/unit/test_point_in_time_candle_integrity_2026_07_01.py \
-  tests/unit/test_candle_availability_integrity_2026_07_03.py \
-  tests/unit/test_initial_training_backfill_readiness_2026_07_08.py \
-  tests/unit/test_intrabar_outcomes.py \
-  tests/unit/test_intrahorizon_liquidation_mtm_2026_07_05.py
+  tests/unit/test_intrahorizon_liquidation_mtm_2026_07_05.py::test_progressive_history_backfill_persists_explicit_mark_price_type
 ```
 
 Result after patch:
 
 ```text
-31 passed in 3.16s
+13 passed in 2.69s
 ```
 
-Broader PostgreSQL-free risk/client/market-data subset:
-
-```bash
-python -m pytest -q \
-  tests/unit/test_external_state_econometric_integrity_2026_06_30.py \
-  tests/unit/test_bybit_response_contract_2026_07_09.py \
-  tests/unit/test_orderbook_execution_quality_2026_07_05.py \
-  tests/unit/test_risk_math.py
-```
-
-Result after patch:
-
-```text
-80 passed in 3.49s
-```
-
-Post targeted counts: passed 111 / failed 0 / skipped 0 / xfailed 0 / errors 0.
+Post targeted counts: passed 15 / failed 0 / skipped 0 / xfailed 0 / errors 0.
 
 ## Post-check after patch
 
 | Command | Status | Exact result / note |
 |---|---:|---|
-| `python -m pip check` | FAILED | same environment conflict: `moviepy 2.2.1` requires `pillow<12.0`, installed `pillow 12.2.0` |
+| `python -m pip check` | FAILED | same sandbox dependency conflict: `moviepy 2.2.1` requires `pillow<12.0`, installed `pillow 12.2.0` |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
 | `python -m ruff check .` | UNAVAILABLE | `/opt/pyvenv/bin/python: No module named ruff` |
-| new candle regressions | PASSED | `2 passed in 3.14s` |
-| candle/market-data subset | PASSED | `31 passed in 3.16s` |
-| PostgreSQL-free risk/client/market-data subset | PASSED | `80 passed in 3.49s` |
-| `python -m pytest -q` | FAILED | `62 errors in 8.45s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
+| new mark/index regressions | PASSED | `2 passed in 3.05s` |
+| candle/mark-index subset | PASSED | `13 passed in 2.69s` |
+| `python -m pytest -q` | FAILED | `62 errors in 7.18s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
 | `node --check web/js/app.js` | PASSED | exit code 0 |
 | `python -m alembic heads` | PASSED | `0018_inference_observations (head)` |
-| order create/amend/cancel/withdraw endpoint grep in `app scripts web` | PASSED | no forbidden endpoint strings found |
-| `python manage.py doctor` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
-| `python manage.py test --require-integration` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
-| `python scripts/release_integrity.py --write` | PASSED | `Release integrity PASSED: 284 files checked, 284 manifest entries.` |
-| `python scripts/release_integrity.py` | PASSED | `Release integrity PASSED: 284 files checked, 284 manifest entries.` |
 
-Post full pytest counts: passed 0 / failed 0 / skipped 0 / xfailed 0 / errors 62 during collection.
+Full pytest counts after patch: passed 0 / failed 0 / skipped 0 / xfailed 0 / errors 62 during collection, because this sandbox lacks `psycopg`.
 
-## Not verified in this sandbox
+## Not verified here
 
-- Ruff static analysis, because `ruff` is not installed.
-- Full pytest suite, because collection imports PostgreSQL engine paths and `psycopg` is not installed.
-- PostgreSQL integration tests and `doctor`, because no safe PostgreSQL test database was provided.
-- Live/paper/shadow Bybit connectivity.
-- Model-training, activation, and drift-monitoring end-to-end flows.
+- PostgreSQL integration tests.
+- `manage.py doctor` against a real local PostgreSQL configuration.
+- `python -m ruff check .`, because ruff is not installed in the sandbox.
+- `python -m pip check` clean status, because the global sandbox has an unrelated `moviepy`/`pillow` conflict.

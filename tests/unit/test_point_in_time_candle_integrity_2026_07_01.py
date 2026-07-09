@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -367,6 +368,42 @@ def test_candle_values_reject_invalid_ohlcv_rows_before_persistence() -> None:
             interval="60",
             price_type="last",
             rows=[[open_ms, "100", "101", "99", "100.5", "10", "NaN"]],
+            now=now,
+            interval_minutes=60,
+        )
+
+
+def test_candle_values_accept_mark_and_index_price_only_klines_without_volume_turnover() -> None:
+    now = datetime(2026, 7, 1, 2, 0, tzinfo=UTC)
+    open_ms = str(int((now - timedelta(hours=1)).timestamp() * 1000))
+
+    for price_type in ("mark", "index"):
+        values = _candle_values(
+            symbol="BTCUSDT",
+            interval="60",
+            price_type=price_type,
+            rows=[[open_ms, "100", "101", "99", "100.5"]],
+            now=now,
+            interval_minutes=60,
+        )
+
+        assert values[0]["price_type"] == price_type
+        assert values[0]["open"] == Decimal("100")
+        assert values[0]["close"] == Decimal("100.5")
+        assert values[0]["volume"] == Decimal("0")
+        assert values[0]["turnover"] == Decimal("0")
+
+
+def test_candle_values_still_reject_last_klines_missing_volume_turnover() -> None:
+    now = datetime(2026, 7, 1, 2, 0, tzinfo=UTC)
+    open_ms = str(int((now - timedelta(hours=1)).timestamp() * 1000))
+
+    with pytest.raises(ValueError, match="missing kline.volume"):
+        _candle_values(
+            symbol="BTCUSDT",
+            interval="60",
+            price_type="last",
+            rows=[[open_ms, "100", "101", "99", "100.5"]],
             now=now,
             interval_minutes=60,
         )

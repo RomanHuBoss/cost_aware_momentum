@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.18: Bybit kline/OHLCV persistence теперь fail-closed валидирует каждую строку свечи: обязательные open/high/low/close должны быть положительными finite Decimal, volume/turnover — non-negative finite Decimal, а OHLC geometry должна быть непротиворечивой. Малформированные candle rows больше не сохраняются как market facts и отражаются в diagnostics как failed request. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
+> Версия 1.52.19: Bybit mark/index kline теперь обрабатываются как price-only series: для `price_type=mark` и `price_type=index` допускается официальный пятиэлементный payload без `volume`/`turnover`, при этом OHLC остается строго positive/finite и геометрически непротиворечивым. Для ordinary last-trade kline `volume` и `turnover` по-прежнему обязательны и валидируются fail-closed. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

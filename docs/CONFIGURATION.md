@@ -20,3 +20,7 @@ No new variables were introduced. Existing exchange/instrument limits are now su
 ## 1.52.18 changes
 
 No new configuration variables were introduced. Existing candle ingestion now fails closed on malformed OHLCV rows before persistence.
+
+## 1.52.19 changes
+
+No new `.env` variables are required. Existing mark/index synchronization can stay enabled; the ingestion path now accepts the documented price-only Bybit mark/index kline shape while preserving strict ordinary last-trade OHLCV validation.

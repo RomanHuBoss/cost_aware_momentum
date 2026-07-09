@@ -1,3 +1,14 @@
+# Changelog
+
+## 1.52.19 — 2026-07-09
+
+Scope: `mark-index-kline-volume`.
+
+- Fixed `app.services.market_data._candle_values()` to treat Bybit `mark` and `index` kline payloads as price-only series when the exchange returns the documented five fields: startTime/open/high/low/close.
+- Preserved fail-closed last-trade candle semantics: ordinary `last` kline still requires non-negative `volume` and `turnover`; malformed or incomplete last-trade rows still block persistence.
+- Added red→green regressions for five-field mark/index klines and last-trade missing-volume rejection.
+- No Alembic migration, `.env`, public API schema, or advisory-only/exchange endpoint changes.
+
 # CHANGELOG
 
 ## 1.52.18 — 2026-07-09

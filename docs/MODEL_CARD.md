@@ -21,3 +21,7 @@ The runtime model estimates direction-conditional TP/SL/TIMEOUT market outcomes 
 ## 1.52.13 note
 
 This patch does not change model training, inference, features, classes, artifacts, or activation policy. It changes only execution-plan risk diagnostics after the model signal exists.
+
+## 1.52.19 note
+
+Feature pipelines may use last, mark, and index candle price series. Release 1.52.19 treats mark/index candles as price-only Bybit series with explicit zero volume/turnover placeholders in the shared candle table; model features must not interpret mark/index volume or turnover as exchange-traded volume.

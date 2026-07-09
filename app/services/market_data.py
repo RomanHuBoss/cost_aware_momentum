@@ -115,17 +115,38 @@ def _required_candle_decimal(row: list[str], index: int, field: str, *, positive
     )
 
 
-def _validated_candle_ohlcv(row: list[str]) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]:
+def _validated_candle_ohlcv(
+    row: list[str], price_type: str
+) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]:
     open_price = _required_candle_decimal(row, 1, "kline.open", positive=True)
     high_price = _required_candle_decimal(row, 2, "kline.high", positive=True)
     low_price = _required_candle_decimal(row, 3, "kline.low", positive=True)
     close_price = _required_candle_decimal(row, 4, "kline.close", positive=True)
-    volume = _required_candle_decimal(row, 5, "kline.volume", positive=False)
-    turnover = _required_candle_decimal(row, 6, "kline.turnover", positive=False)
     if high_price < max(open_price, low_price, close_price) or low_price > min(
         open_price, high_price, close_price
     ):
         raise ValueError("Bybit kline OHLC geometry is inconsistent")
+
+    if price_type == "last":
+        volume = _required_candle_decimal(row, 5, "kline.volume", positive=False)
+        turnover = _required_candle_decimal(row, 6, "kline.turnover", positive=False)
+    elif price_type in {"mark", "index"}:
+        # Bybit mark/index price klines are price-only series. The database schema
+        # stores all candle price types in one non-null OHLCV table, so persist an
+        # explicit zero for unavailable volume/turnover while still validating any
+        # optional extra fields if an upstream response includes them.
+        volume = (
+            _required_candle_decimal(row, 5, "kline.volume", positive=False)
+            if len(row) > 5
+            else Decimal("0")
+        )
+        turnover = (
+            _required_candle_decimal(row, 6, "kline.turnover", positive=False)
+            if len(row) > 6
+            else Decimal("0")
+        )
+    else:
+        raise ValueError("price_type must be last, mark, or index")
     return open_price, high_price, low_price, close_price, volume, turnover
 
 
@@ -571,14 +592,14 @@ def _candle_values(
 ) -> list[dict]:
     values_list: list[dict] = []
     for row in rows:
-        # [startTime, open, high, low, close, volume, turnover]
+        # last: [startTime, open, high, low, close, volume, turnover]; mark/index: price-only.
         try:
             open_time = _dt_ms(row[0])
         except (IndexError, TypeError, ValueError) as exc:
             raise ValueError("Bybit kline open time is missing or invalid") from exc
         if open_time is None:
             raise ValueError("Bybit kline open time is missing or invalid")
-        open_price, high_price, low_price, close_price, volume, turnover = _validated_candle_ohlcv(row)
+        open_price, high_price, low_price, close_price, volume, turnover = _validated_candle_ohlcv(row, price_type)
         close_time = open_time + timedelta(minutes=interval_minutes)
         values_list.append(
             {

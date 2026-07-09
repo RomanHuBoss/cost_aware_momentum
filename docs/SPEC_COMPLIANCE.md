@@ -4,8 +4,9 @@
 
 - Advisory-only Bybit client does not expose order create/amend/cancel/withdraw methods.
 - Bybit list-shaped endpoint payloads for tickers, kline, fee-rate, wallet balance, instruments, funding history, open interest, and positions are fail-closed validated for present, non-null JSON arrays before downstream use.
-- Bybit kline/OHLCV rows are semantically validated before persistence: open/high/low/close must be positive finite decimals, volume/turnover must be non-negative finite decimals, and OHLC geometry must be internally consistent.
-- Malformed candle rows are reported as failed candle requests and are not persisted as market facts.
+- Bybit ordinary `last` kline rows are semantically validated before persistence: open/high/low/close must be positive finite decimals, volume/turnover must be non-negative finite decimals, and OHLC geometry must be internally consistent.
+- Bybit `mark` and `index` kline rows are handled as documented price-only candles when volume/turnover are absent; OHLC validation remains strict and shared non-null `market.candles` volume/turnover columns receive explicit zero placeholders for these price-only series.
+- Malformed ordinary candle rows are reported as failed candle requests and are not persisted as market facts.
 - PostgreSQL-only settings validation rejects SQLite database URLs.
 - Risk sizing floors quantity to step and blocks unsafe min-size cases instead of rounding up.
 - LONG/SHORT geometry validation rejects inverted TP/SL relationships.
@@ -30,4 +31,4 @@
 
 ## Current verification limitations
 
-The sandbox lacks `psycopg` and `ruff`; therefore full pytest collection and ruff static analysis cannot be completed here. PostgreSQL integration tests and `manage.py doctor` were not run because no safe PostgreSQL test configuration was provided.
+The sandbox lacks `psycopg` and `ruff`; therefore full pytest collection and ruff static analysis cannot be completed here. PostgreSQL integration tests and `manage.py doctor` were not run because no safe PostgreSQL test configuration was provided. The sandbox-wide `moviepy`/`pillow` dependency conflict also prevents a clean `python -m pip check` result.

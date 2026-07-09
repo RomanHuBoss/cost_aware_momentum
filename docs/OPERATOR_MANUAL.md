@@ -27,3 +27,7 @@ A plan blocked by exchange notional/maxQty caps is now shown separately from min
 ## 1.52.18 candle-data note
 
 Malformed Bybit candle rows are no longer persisted. If current-hour candle coverage is missing after an exchange/API anomaly, treat the recommendation path as stale/missing data and retry after data recovery rather than overriding the gate.
+
+## 1.52.19 mark/index candle-data note
+
+If previous logs showed `candle_validation_failed` with `missing kline.volume` during mark/index synchronization, upgrade to 1.52.19 and rerun candle sync/backfill. Ordinary last-trade candles still require exchange volume/turnover; do not override missing-volume failures for `price_type=last`.

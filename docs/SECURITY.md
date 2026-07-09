@@ -20,3 +20,7 @@ No new credentials, scopes, Bybit trading permissions, or exchange write endpoin
 ## 1.52.18 market-data integrity note
 
 Kline/OHLCV rows with impossible price geometry, non-positive prices, negative volume, or non-finite turnover are rejected before persistence. This preserves fail-closed behavior for market facts that feed features, labels, inference, and advisory plans.
+
+## 1.52.19 market-data integrity note
+
+Bybit ordinary `last` kline volume/turnover remain mandatory and fail-closed. Bybit `mark` and `index` klines are price-only endpoints; absent volume/turnover are represented as explicit zero placeholders only for those price types to preserve non-null schema compatibility without misclassifying valid exchange payloads as malformed data.
