@@ -154,6 +154,80 @@ def test_acceptance_validator_rejects_current_entry_outside_signal_zone() -> Non
         )
 
 
+def test_acceptance_validator_rejects_fresh_total_portfolio_risk_breach() -> None:
+    """The validator is the safety boundary for fresh portfolio-risk capacity.
+
+    The API wrapper also checks total open risk, but service-level callers can use
+    ``validate_execution_plan_for_acceptance()`` directly.  Acceptance must fail
+    closed if already-open risk plus the fresh plan stress loss exceeds the
+    profile's total-risk cap.
+    """
+
+    now = datetime.now(UTC)
+    signal = SimpleNamespace(
+        direction="LONG",
+        entry_reference=D("100"),
+        entry_low=D("99"),
+        entry_high=D("101"),
+        stop_loss=D("98"),
+        take_profit_1=D("120"),
+        fee_rate_round_trip=D("0.0011"),
+        slippage_rate=D("0.0003"),
+        p_tp=0.60,
+        p_sl=0.25,
+        p_timeout=0.15,
+        feature_snapshot={"model_runtime": {"baseline": False}},
+        calibration_version="calibrated-v1",
+        model_version="model-v1",
+    )
+    plan = SimpleNamespace(
+        qty=D("1"),
+        leverage=3,
+        sizing_snapshot={
+            "entry_price": "100",
+            "planning_time": now.isoformat(),
+            "costs": {"funding_rate": "0"},
+        },
+    )
+    profile = SimpleNamespace(
+        mode="manual",
+        risk_rate=D("0.01"),
+        max_total_risk_rate=D("0.02"),
+        margin_reserve_rate=D("0.25"),
+        default_leverage=3,
+        max_leverage=5,
+    )
+    risk_state = execution.AcceptanceRiskState(
+        open_risk_usdt=D("199"),
+        reserved_margin_usdt=D("0"),
+        effective_capital=D("10000"),
+        available_margin=None,
+        capital_verified=True,
+        capital_snapshot={"source": "manual"},
+    )
+    spec = SimpleNamespace(
+        tick_size=D("0.1"),
+        qty_step=D("0.001"),
+        min_qty=D("0.001"),
+        min_notional=D("5"),
+        max_qty=D("1000"),
+        max_leverage=D("100"),
+    )
+
+    with pytest.raises(ValueError, match="Portfolio risk limit"):
+        execution.validate_execution_plan_for_acceptance(
+            plan=plan,
+            signal=signal,
+            profile=profile,
+            risk_state=risk_state,
+            spec=spec,
+            executable_price=D("100"),
+            current_funding_rate=D("0"),
+            current_liquidity_notional_cap=D("100000"),
+            settings=Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+        )
+
+
 async def test_effective_capital_rejects_stale_exchange_snapshot() -> None:
     now = datetime(2026, 6, 29, 12, 0, tzinfo=UTC)
     snapshot = SimpleNamespace(

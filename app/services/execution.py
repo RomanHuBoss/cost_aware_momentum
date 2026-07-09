@@ -286,6 +286,15 @@ def validate_execution_plan_for_acceptance(
     if current_stress_loss > per_trade_risk_limit:
         raise ValueError("Fresh per-trade risk limit changed")
 
+    try:
+        raw_open_risk = risk_state.open_risk_usdt
+    except AttributeError as exc:
+        raise ValueError("Fresh portfolio risk state is incomplete") from exc
+    open_risk = nonnegative_finite_decimal(raw_open_risk, "open_risk_usdt")
+    max_total_risk = capital * profile_policy.max_total_risk_rate
+    if open_risk + current_stress_loss > max_total_risk:
+        raise ValueError("Portfolio risk limit changed")
+
     current_margin_estimate = current_notional / Decimal(leverage)
     margin_capacity: Decimal | None = None
     reserved_margin = nonnegative_finite_decimal(risk_state.reserved_margin_usdt, "reserved_margin_usdt")

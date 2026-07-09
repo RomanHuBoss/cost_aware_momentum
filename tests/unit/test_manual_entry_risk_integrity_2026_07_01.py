@@ -309,6 +309,7 @@ def test_acceptance_rejects_plan_when_other_reservations_exhaust_margin() -> Non
         mode="manual",
     )
     risk_state = SimpleNamespace(
+        open_risk_usdt=D("0"),
         effective_capital=D("1000"),
         available_margin=D("1000"),
         reserved_margin_usdt=D("700"),

@@ -117,6 +117,7 @@ def test_acceptance_allows_aggregate_vwap_between_valid_price_ticks() -> None:
         mode="manual",
     )
     risk_state = SimpleNamespace(
+        open_risk_usdt=D("0"),
         effective_capital=D("100000"),
         available_margin=D("100000"),
         reserved_margin_usdt=D("0"),
