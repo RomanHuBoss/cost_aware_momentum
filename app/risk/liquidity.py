@@ -77,8 +77,8 @@ def validate_orderbook_levels(
 ) -> tuple[tuple[tuple[Decimal, Decimal], ...], tuple[tuple[Decimal, Decimal], ...]]:
     normalized_bids = normalize_book_levels(bids, side="bid")
     normalized_asks = normalize_book_levels(asks, side="ask")
-    if normalized_asks[0][0] < normalized_bids[0][0]:
-        raise ValueError("orderbook is crossed")
+    if normalized_asks[0][0] <= normalized_bids[0][0]:
+        raise ValueError("orderbook is locked or crossed")
     return normalized_bids, normalized_asks
 
 

@@ -11,4 +11,5 @@
 | PostgreSQL-only | `app/config.py`, `.env.example`, `tests/unit/test_runtime_auth_config.py` | Existing unit coverage; full suite blocked in this sandbox |
 | Safe position sizing never rounds risk upward | `app/risk/math.py`, `tests/unit/test_risk_math.py` | Existing coverage retained; not rerun in this narrow iteration |
 | Exchange cap is not min-order failure | `app/risk/math.py`, `tests/unit/test_risk_math.py::test_exchange_cap_block_is_not_reported_as_min_order` | Existing coverage retained; not rerun in this narrow iteration |
+| Orderbook/liquidity evidence must not accept locked or crossed top-of-book states | `app/risk/liquidity.py::validate_orderbook_levels`, `tests/unit/test_orderbook_execution_quality_2026_07_05.py::test_orderbook_normalization_rejects_locked_top_of_book` | New red→green regression passed; related orderbook subset passed |
 | Release evidence exists | `CHANGELOG.md`, `PATCH_1.52.19.md`, docs files, `SHA256SUMS` | Verified by `scripts/release_integrity.py --write` and `scripts/release_integrity.py` after cache cleanup |

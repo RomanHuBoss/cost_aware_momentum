@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.52.20 — 2026-07-09
+
+Scope: `locked-orderbook-validation`.
+
+- Hardened orderbook/liquidity validation so locked top-of-book snapshots (`best_ask == best_bid`) are rejected fail-closed alongside crossed books.
+- Added a red→green regression covering locked Bybit orderbook normalization before the snapshot can feed VWAP sizing, liquidity caps, execution evidence, or recommendation economics.
+- Preserved advisory-only behavior: no order placement/amend/cancel endpoints, no Alembic migration, no `.env` variables, and no public API schema changes.
+
 ## 1.52.19 — 2026-07-09
 
 Scope: `mark-index-kline-volume`.

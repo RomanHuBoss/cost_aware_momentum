@@ -7,6 +7,7 @@
 - Bybit ordinary `last` kline rows are semantically validated before persistence: open/high/low/close must be positive finite decimals, volume/turnover must be non-negative finite decimals, and OHLC geometry must be internally consistent.
 - Bybit `mark` and `index` kline rows are handled as documented price-only candles when volume/turnover are absent; OHLC validation remains strict and shared non-null `market.candles` volume/turnover columns receive explicit zero placeholders for these price-only series.
 - Malformed ordinary candle rows are reported as failed candle requests and are not persisted as market facts.
+- Orderbook normalization rejects empty, malformed, duplicate, unsorted, locked, and crossed top-of-book levels before snapshots can feed VWAP sizing or execution evidence.
 - PostgreSQL-only settings validation rejects SQLite database URLs.
 - Risk sizing floors quantity to step and blocks unsafe min-size cases instead of rounding up.
 - LONG/SHORT geometry validation rejects inverted TP/SL relationships.

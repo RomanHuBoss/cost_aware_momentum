@@ -24,3 +24,7 @@ No new configuration variables were introduced. Existing candle ingestion now fa
 ## 1.52.19 changes
 
 No new `.env` variables are required. Existing mark/index synchronization can stay enabled; the ingestion path now accepts the documented price-only Bybit mark/index kline shape while preserving strict ordinary last-trade OHLCV validation.
+## 1.52.20 changes
+
+No new `.env` variables are required. Existing orderbook settings remain unchanged, but depth snapshots now fail closed if the normalized top of book is locked or crossed (`best_ask <= best_bid`).
+

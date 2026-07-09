@@ -24,3 +24,7 @@ Kline/OHLCV rows with impossible price geometry, non-positive prices, negative v
 ## 1.52.19 market-data integrity note
 
 Bybit ordinary `last` kline volume/turnover remain mandatory and fail-closed. Bybit `mark` and `index` klines are price-only endpoints; absent volume/turnover are represented as explicit zero placeholders only for those price types to preserve non-null schema compatibility without misclassifying valid exchange payloads as malformed data.
+## 1.52.20 orderbook integrity note
+
+Orderbook validation now rejects locked (`best_ask == best_bid`) as well as crossed (`best_ask < best_bid`) top-of-book states before snapshots can become execution/liquidity evidence. This preserves fail-closed behavior when exchange depth data is internally inconsistent or not safe for conservative execution planning.
+

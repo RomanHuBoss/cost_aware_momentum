@@ -98,6 +98,26 @@ def test_orderbook_normalization_uses_matching_engine_time_and_rejects_crossed_b
         )
 
 
+def test_orderbook_normalization_rejects_locked_top_of_book() -> None:
+    received_at = datetime(2026, 7, 5, 12, 0, 1, tzinfo=UTC)
+
+    with pytest.raises(ValueError, match="locked or crossed"):
+        normalize_orderbook_snapshot(
+            {
+                "s": "BTCUSDT",
+                "b": [["100.0", "2"]],
+                "a": [["100.0", "3"]],
+                "ts": 1783252800500,
+                "cts": 1783252800400,
+                "u": 125,
+                "seq": 458,
+            },
+            expected_symbol="BTCUSDT",
+            received_at=received_at,
+            requested_depth=50,
+        )
+
+
 @pytest.mark.asyncio
 async def test_sync_orderbooks_persists_point_in_time_snapshot() -> None:
     source_time = datetime.now(UTC) - timedelta(seconds=1)
