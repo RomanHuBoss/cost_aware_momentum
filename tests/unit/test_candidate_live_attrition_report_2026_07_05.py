@@ -676,3 +676,19 @@ def test_execution_plan_evidence_is_machine_readable_and_single_terminal() -> No
         "reason_codes": ["position_plan.blocked_portfolio", "limiting_cap.portfolio"],
         "limiting_cap": "PORTFOLIO",
     }
+
+
+def test_exchange_block_is_risk_execution_attrition() -> None:
+    evidence = execution_plan_attrition_evidence(
+        status="BLOCKED_EXCHANGE",
+        reason_codes=["position_plan.blocked_exchange", "limiting_cap.exchange"],
+        limiting_cap="EXCHANGE",
+    )
+
+    assert evidence == {
+        "schema": "execution-plan-attrition-v1",
+        "terminal_stage": "RISK_EXECUTION",
+        "primary_reason_code": "position_plan.blocked_exchange",
+        "reason_codes": ["position_plan.blocked_exchange", "limiting_cap.exchange"],
+        "limiting_cap": "EXCHANGE",
+    }

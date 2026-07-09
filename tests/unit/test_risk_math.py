@@ -352,3 +352,40 @@ def test_projected_funding_excludes_settlement_at_exact_start_boundary() -> None
         interval_minutes=480,
         current_rate=D("0.0001"),
     ) == D("0.0001")
+
+
+def test_exchange_cap_block_is_not_reported_as_min_order() -> None:
+    plan = calculate_position_plan(
+        effective_capital=D("5000"),
+        risk_rate=D("0.0035"),
+        entry=D("100"),
+        stop=D("98.5"),
+        direction="LONG",
+        costs=costs(),
+        constraints=constraints(),
+        leverage=3,
+        exchange_notional_cap=D("0"),
+        capital_verified=True,
+    )
+    assert plan.status == "BLOCKED_EXCHANGE"
+    assert plan.limiting_cap == "EXCHANGE"
+    assert any("бирж" in warning.lower() for warning in plan.warnings)
+
+
+def test_exchange_cap_limited_plan_has_operator_warning() -> None:
+    plan = calculate_position_plan(
+        effective_capital=D("50000"),
+        risk_rate=D("0.0035"),
+        entry=D("100"),
+        stop=D("98.5"),
+        direction="LONG",
+        costs=costs(),
+        constraints=constraints(),
+        leverage=3,
+        exchange_notional_cap=D("500"),
+        capital_verified=True,
+    )
+    assert plan.status == "LIMITED"
+    assert plan.limiting_cap == "EXCHANGE"
+    assert plan.notional <= D("500")
+    assert any("бирж" in warning.lower() for warning in plan.warnings)

@@ -86,6 +86,7 @@ function statusLabel(status) {
     ACTIONABLE: 'Можно исполнить', LIMITED: 'Размер ограничен', NO_TRADE: 'Без сделки',
     BLOCKED_MIN_SIZE: 'Меньше min order', BLOCKED_MARGIN: 'Недостаточно маржи',
     BLOCKED_PORTFOLIO: 'Портфельный лимит', BLOCKED_LIQUIDITY: 'Недостаточно ликвидности',
+    BLOCKED_EXCHANGE: 'Биржевой лимит',
     BLOCKED_STALE_DATA: 'Устаревшие данные', BLOCKED_DATA: 'Неполные данные',
     BLOCKED_LIQUIDATION: 'Риск ликвидации', CAPITAL_UNVERIFIED: 'Капитал не подтвержден',
     ACCEPTED: 'Принято оператором', ENTERED: 'Вход записан', REJECTED: 'Отклонено',

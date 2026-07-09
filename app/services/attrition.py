@@ -42,6 +42,8 @@ def _execution_terminal_stage(status: str) -> str:
         return "DATA_INTEGRITY"
     if status == "BLOCKED_LIQUIDITY":
         return "LIQUIDITY"
+    if status == "BLOCKED_EXCHANGE":
+        return "RISK_EXECUTION"
     if status in {
         "BLOCKED_MARGIN",
         "BLOCKED_PORTFOLIO",

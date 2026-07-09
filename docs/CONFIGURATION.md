@@ -1,0 +1,18 @@
+# Configuration
+
+Configuration is read from environment variables documented in `.env.example` and validated by `app.config.Settings`.
+
+## Required production principles
+
+- `DATABASE_URL` must use PostgreSQL through `postgresql+psycopg://`.
+- Production must not rely on demo seed data or the uncalibrated baseline model for actionable recommendations.
+- Bybit credentials, when supplied, are used only for read-only account endpoints.
+- Risk, fee, slippage, funding, spread, leverage, and margin parameters must remain conservative and explicit.
+
+## 1.52.13 changes
+
+No new variables were introduced. Existing exchange/instrument limits are now surfaced more accurately by the sizing engine:
+
+- exchange notional cap breaches return `BLOCKED_EXCHANGE`;
+- exchange-limited plans retain `LIMITED` but include an operator warning;
+- UI and attrition diagnostics preserve the exchange-cap cause.

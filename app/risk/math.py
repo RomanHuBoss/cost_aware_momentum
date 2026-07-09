@@ -722,12 +722,16 @@ def calculate_position_plan(
             "MARGIN": "BLOCKED_MARGIN",
             "LIQUIDITY": "BLOCKED_LIQUIDITY",
             "PORTFOLIO": "BLOCKED_PORTFOLIO",
+            "EXCHANGE": "BLOCKED_EXCHANGE",
+            "EXCHANGE_MAX_QTY": "BLOCKED_EXCHANGE",
         }.get(limiting_cap, "BLOCKED_MIN_SIZE")
         blocked_message = {
             "BLOCKED_MARGIN": "Недостаточно свободной маржи с учетом резерва",
             "BLOCKED_LIQUIDITY": "Безопасный размер не исполняется при допустимой ликвидности",
             "BLOCKED_PORTFOLIO": "Исчерпан общий или кластерный риск портфеля",
+            "BLOCKED_EXCHANGE": "Безопасный размер не исполняется при текущих биржевых лимитах инструмента",
         }.get(blocked_status, "Безопасный размер меньше минимального ордера биржи")
+        blocked_limiting_cap = "EXCHANGE" if blocked_status == "BLOCKED_EXCHANGE" else limiting_cap
         return PositionPlan(
             blocked_status,
             effective_capital,
@@ -739,7 +743,7 @@ def calculate_position_plan(
             actual_loss,
             leverage,
             margin,
-            limiting_cap if blocked_status != "BLOCKED_MIN_SIZE" else "MIN_ORDER",
+            blocked_limiting_cap if blocked_status != "BLOCKED_MIN_SIZE" else "MIN_ORDER",
             tuple(warnings + [blocked_message]),
         )
 
@@ -772,6 +776,8 @@ def calculate_position_plan(
         warnings.append("Размер позиции ограничен портфельным лимитом")
     elif limiting_cap == "MARGIN":
         warnings.append("Размер позиции ограничен свободной маржой")
+    elif limiting_cap in {"EXCHANGE", "EXCHANGE_MAX_QTY"}:
+        warnings.append("Размер позиции ограничен биржевыми лимитами инструмента")
 
     return PositionPlan(
         status,
