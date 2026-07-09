@@ -2,6 +2,19 @@
 
 Все существенные изменения текущей линии фиксируются здесь начиная с версии 1.51.1. История до 1.51.1 отсутствовала во входном release-архиве и не реконструируется задним числом без доказательств.
 
+## 1.52.11 — 2026-07-09
+
+### Fixed
+
+- Fresh acceptance validation now enforces the immutable decision-time entry zone inside `validate_execution_plan_for_acceptance()`, not only in the recommendation API wrapper.
+- A stale `ACTIONABLE` plan can no longer be accepted at a fresh executable price outside the model's decision-time support merely because the move is price-favorable and the fresh RR/EV/risk checks still pass.
+- Added regression coverage proving the direct validator rejects this bypass case before risk/math acceptance continues.
+
+### Compatibility
+
+- No database migration, `.env` change, order execution capability, model-artifact schema change, quality-gate weakening or API-breaking change.
+- Restart API/worker after update so any caller of the acceptance validator receives the hardened fail-closed contract.
+
 ## 1.52.10 — 2026-07-08
 
 ### Fixed

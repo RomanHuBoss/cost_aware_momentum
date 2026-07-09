@@ -9,6 +9,7 @@
 | Directional and cost math | `app/risk/math.py` | `test_risk_math.py`, quant/econometric test modules |
 | Capital-independent signal | `app/services/signals.py` | cost-aware direction and policy-alignment tests |
 | Account-dependent plan/acceptance | `app/services/execution.py`, recommendation API | execution acceptance/manual risk tests |
+| Acceptance не может обойти immutable decision-time entry zone | `app/api/v1/recommendations.py`, `app/services/execution.py::validate_execution_plan_for_acceptance` | `tests/unit/test_execution_acceptance_safety.py::test_acceptance_validator_rejects_current_entry_outside_signal_zone` |
 | Quantity-safe orderbook sizing и aggregate VWAP acceptance | `orderbook_depth_notional_cap`, `validate_execution_plan_for_acceptance`, recommendation accept endpoint | `test_orderbook_vwap_sizing_integrity_2026_07_08.py`, multilevel acceptance regression |
 | Point-in-time research dataset | `app/ml/training.py`, context/funding modules | point-in-time, tick geometry, funding replay tests |
 | Frozen dynamic historical bootstrap | `app/workers/trainer.py::current_training_scope`, `app/ml/lifecycle.py::load_dynamic_bootstrap_cohort` | `tests/unit/test_historical_dynamic_bootstrap_2026_07_07.py` |
@@ -26,6 +27,12 @@
 | PostgreSQL migration head | `migrations/versions/0018_inference_observations.py` | Alembic head check; integration upgrade not run here |
 
 Точное число и результат выполненных проверок фиксируются в `docs/QA_REPORT.md`; неподтверждённые external/live свойства не считаются закрытыми.
+
+## 1.52.11 — Acceptance entry-zone validation boundary
+
+- Requirement: immutable decision-time entry support must remain enforced at fresh acceptance, even if a stale plan still looks favorable by RR/EV.
+  - Implementation: `validate_execution_plan_for_acceptance()` validates `signal.entry_low <= executable_price <= signal.entry_high` directly before risk/funding/RR checks.
+  - Tests: `tests/unit/test_execution_acceptance_safety.py::test_acceptance_validator_rejects_current_entry_outside_signal_zone`.
 
 ## 1.52.7 — Open-interest backfill and stale hourly suppression
 

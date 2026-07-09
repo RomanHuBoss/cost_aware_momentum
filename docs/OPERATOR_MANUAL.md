@@ -22,6 +22,12 @@ Default training preflight currently needs at least 1206 label-eligible hourly t
 
 
 
+## Обновление 1.52.11
+
+Миграций и новых `.env` variables нет. После обновления перезапустите API/worker process.
+
+Acceptance validation теперь повторно применяет immutable decision-time entry zone внутри самого safety validator. Если fresh FULL-fill VWAP находится ниже `entry_low` или выше `entry_high`, старый `ACTIONABLE` plan будет отправлен на recalculation / fail-closed path даже при благоприятном RR/EV. Это защищает от принятия stale plan за пределами той price support, на которой были построены вероятности модели.
+
 ## Обновление 1.52.10
 
 Миграций и новых `.env` variables нет. После обновления перезапустите inference worker/API process.

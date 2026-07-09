@@ -38,6 +38,8 @@ Do not widen entry-zone, extend publication delay, round quotes upward/downward 
 
 Не принимайте plan. Проверьте timestamps, confirmed candle, ticker/orderbook/spec/funding snapshots, account capital и reconciliation.
 
+Если acceptance возвращает `Current executable price is outside entry zone`, не обходите это ручным accept/retry: текущий FULL-fill VWAP вышел за immutable decision-time support старого signal. Создайте/дождитесь нового plan по свежему signal или проверьте lag между публикацией и решением оператора.
+
 ## Suspected loss or bad recommendation
 
 Зафиксируйте signal/plan/model versions, decision/availability times, bid/ask/orderbook, actual fills/fees/funding и outcome. Не объявляйте причиной модель до воспроизводимого point-in-time replay.

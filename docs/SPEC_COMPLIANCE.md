@@ -1,6 +1,6 @@
 # Specification Compliance
 
-Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.10; они не означают полную production/economic validation.
+Источник концепции: `docs/source/Cost_aware_hourly_ML_momentum_specification.docx`. Статусы ниже основаны на коде и доступных unit/static checks версии 1.52.11; они не означают полную production/economic validation.
 
 | Требование | Статус | Evidence / ограничение |
 |---|---|---|
@@ -9,6 +9,7 @@
 | Разделение API / inference / trainer | Implemented | `app/main.py`, `app/workers/runner.py`, `app/workers/trainer.py` |
 | Market signal отделён от capital-dependent plan | Implemented, unit tested | `app/services/signals.py`, `app/services/execution.py` |
 | Directional LONG/SHORT geometry | Implemented, unit tested | `app/risk/math.py`, barrier/tick tests |
+| Immutable decision-time entry zone при acceptance | Implemented, unit tested | API wrapper и `validate_execution_plan_for_acceptance()` fail-closed блокируют fresh executable price вне `entry_low`/`entry_high` |
 | Cost-aware fee/slippage/funding math | Implemented, unit tested | Decimal risk math и policy/backtest tests |
 | Bounded-depth VWAP sizing и fresh acceptance | Implemented, unit tested | quantity-safe base-depth cap; aggregate VWAP may be between ticks; FULL-fill and tick-aligned source levels remain mandatory |
 | Safe qty rounding и min order blocking | Implemented, unit tested | floor-to-step и post-round checks |

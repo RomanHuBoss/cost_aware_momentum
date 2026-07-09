@@ -218,6 +218,12 @@ def validate_execution_plan_for_acceptance(
 
     profile_policy = validate_capital_profile_policy(profile, settings=settings)
     entry = positive_finite_decimal(executable_price, "current executable price")
+    entry_low = positive_finite_decimal(signal.entry_low, "signal entry_low")
+    entry_high = positive_finite_decimal(signal.entry_high, "signal entry_high")
+    if entry_low > entry_high:
+        raise ValueError("Signal entry zone is invalid")
+    if not entry_low <= entry <= entry_high:
+        raise ValueError("Current executable price is outside entry zone")
     qty = positive_finite_decimal(plan.qty, "plan qty")
     leverage = positive_integer(plan.leverage, "plan leverage")
     capital = positive_finite_decimal(risk_state.effective_capital, "effective capital")
