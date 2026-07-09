@@ -133,18 +133,18 @@ def _validated_candle_ohlcv(
     elif price_type in {"mark", "index"}:
         # Bybit mark/index price klines are price-only series. The database schema
         # stores all candle price types in one non-null OHLCV table, so persist an
-        # explicit zero for unavailable volume/turnover while still validating any
-        # optional extra fields if an upstream response includes them.
-        volume = (
-            _required_candle_decimal(row, 5, "kline.volume", positive=False)
-            if len(row) > 5
-            else Decimal("0")
-        )
-        turnover = (
-            _required_candle_decimal(row, 6, "kline.turnover", positive=False)
-            if len(row) > 6
-            else Decimal("0")
-        )
+        # explicit zero only when both fields are truly unavailable. If an upstream
+        # response includes one OHLCV-like field but omits the paired field, reject
+        # the row fail-closed instead of silently mixing exchange data with a
+        # synthetic placeholder.
+        if len(row) == 5:
+            volume = Decimal("0")
+            turnover = Decimal("0")
+        elif len(row) >= 7:
+            volume = _required_candle_decimal(row, 5, "kline.volume", positive=False)
+            turnover = _required_candle_decimal(row, 6, "kline.turnover", positive=False)
+        else:
+            raise ValueError("Bybit mark/index kline volume and turnover must be both present or both absent")
     else:
         raise ValueError("price_type must be last, mark, or index")
     return open_price, high_price, low_price, close_price, volume, turnover

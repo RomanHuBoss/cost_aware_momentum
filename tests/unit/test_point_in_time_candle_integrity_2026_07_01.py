@@ -394,6 +394,22 @@ def test_candle_values_accept_mark_and_index_price_only_klines_without_volume_tu
         assert values[0]["turnover"] == Decimal("0")
 
 
+def test_candle_values_reject_partial_mark_index_ohlcv_rows() -> None:
+    now = datetime(2026, 7, 1, 2, 0, tzinfo=UTC)
+    open_ms = str(int((now - timedelta(hours=1)).timestamp() * 1000))
+
+    for price_type in ("mark", "index"):
+        with pytest.raises(ValueError, match="volume and turnover"):
+            _candle_values(
+                symbol="BTCUSDT",
+                interval="60",
+                price_type=price_type,
+                rows=[[open_ms, "100", "101", "99", "100.5", "10"]],
+                now=now,
+                interval_minutes=60,
+            )
+
+
 def test_candle_values_still_reject_last_klines_missing_volume_turnover() -> None:
     now = datetime(2026, 7, 1, 2, 0, tzinfo=UTC)
     open_ms = str(int((now - timedelta(hours=1)).timestamp() * 1000))

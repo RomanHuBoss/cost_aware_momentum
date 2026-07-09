@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.20: orderbook validation теперь fail-closed отклоняет не только crossed, но и locked top-of-book (`best_ask <= best_bid`), чтобы execution/liquidity evidence не использовал невозможный нулевой или отрицательный spread. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
+> Версия 1.52.21: mark/index kline ingestion теперь fail-closed отклоняет частичные OHLCV-like строки, где присутствует volume без парного turnover. Полностью price-only mark/index rows по-прежнему принимаются с явными zero placeholders; обычные last candles сохраняют строгую OHLCV-валидацию. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

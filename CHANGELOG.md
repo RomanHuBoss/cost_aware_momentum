@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.52.21 — 2026-07-09
+
+Scope: `partial-mark-index-kline-validation`.
+
+- Hardened Bybit mark/index kline normalization so partial OHLCV-like rows with one optional volume/turnover field fail closed instead of mixing exchange-provided values with synthetic zero placeholders.
+- Preserved documented price-only mark/index kline handling: five-field rows still persist explicit zero volume/turnover placeholders for the shared non-null candle schema.
+- Added a red→green regression for partial mark/index kline rows before candle values can be persisted as market facts.
+- No Alembic migration, `.env`, public API schema, advisory-only, or Bybit endpoint changes.
+
 ## 1.52.20 — 2026-07-09
 
 Scope: `locked-orderbook-validation`.

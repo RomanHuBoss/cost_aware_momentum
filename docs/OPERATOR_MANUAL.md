@@ -31,3 +31,8 @@ Malformed Bybit candle rows are no longer persisted. If current-hour candle cove
 ## 1.52.19 mark/index candle-data note
 
 If previous logs showed `candle_validation_failed` with `missing kline.volume` during mark/index synchronization, upgrade to 1.52.19 and rerun candle sync/backfill. Ordinary last-trade candles still require exchange volume/turnover; do not override missing-volume failures for `price_type=last`.
+
+
+## 1.52.21 mark/index candle-data note
+
+If mark/index backfill or synchronization reports a `volume and turnover must be both present or both absent` validation error, treat it as malformed exchange payload evidence. Do not override the gate; retry or backfill after data recovery.

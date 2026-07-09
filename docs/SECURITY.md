@@ -28,3 +28,7 @@ Bybit ordinary `last` kline volume/turnover remain mandatory and fail-closed. By
 
 Orderbook validation now rejects locked (`best_ask == best_bid`) as well as crossed (`best_ask < best_bid`) top-of-book states before snapshots can become execution/liquidity evidence. This preserves fail-closed behavior when exchange depth data is internally inconsistent or not safe for conservative execution planning.
 
+
+## 1.52.21 market-data integrity note
+
+Mark/index kline validation now rejects partial OHLCV-like rows where one optional volume/turnover field is present without the other. This prevents downstream candle facts from combining exchange-provided values with synthetic placeholders except for the explicitly supported fully price-only mark/index shape.

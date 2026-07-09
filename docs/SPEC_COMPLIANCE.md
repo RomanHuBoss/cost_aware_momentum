@@ -5,7 +5,7 @@
 - Advisory-only Bybit client does not expose order create/amend/cancel/withdraw methods.
 - Bybit list-shaped endpoint payloads for tickers, kline, fee-rate, wallet balance, instruments, funding history, open interest, and positions are fail-closed validated for present, non-null JSON arrays before downstream use.
 - Bybit ordinary `last` kline rows are semantically validated before persistence: open/high/low/close must be positive finite decimals, volume/turnover must be non-negative finite decimals, and OHLC geometry must be internally consistent.
-- Bybit `mark` and `index` kline rows are handled as documented price-only candles when volume/turnover are absent; OHLC validation remains strict and shared non-null `market.candles` volume/turnover columns receive explicit zero placeholders for these price-only series.
+- Bybit `mark` and `index` kline rows are handled as documented price-only candles when volume/turnover are absent; OHLC validation remains strict and shared non-null `market.candles` volume/turnover columns receive explicit zero placeholders only when both fields are absent. Partial OHLCV-like mark/index rows with one optional field missing fail closed before persistence.
 - Malformed ordinary candle rows are reported as failed candle requests and are not persisted as market facts.
 - Orderbook normalization rejects empty, malformed, duplicate, unsorted, locked, and crossed top-of-book levels before snapshots can feed VWAP sizing or execution evidence.
 - PostgreSQL-only settings validation rejects SQLite database URLs.

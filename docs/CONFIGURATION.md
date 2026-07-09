@@ -28,3 +28,6 @@ No new `.env` variables are required. Existing mark/index synchronization can st
 
 No new `.env` variables are required. Existing orderbook settings remain unchanged, but depth snapshots now fail closed if the normalized top of book is locked or crossed (`best_ask <= best_bid`).
 
+## 1.52.21 changes
+
+No new `.env` variables are required. Existing mark/index synchronization remains enabled as before, but malformed partial mark/index kline rows now fail closed when only one of the optional volume/turnover fields is present. Five-field price-only mark/index rows remain supported.
