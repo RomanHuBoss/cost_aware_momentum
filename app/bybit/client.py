@@ -19,6 +19,13 @@ class BybitAPIError(RuntimeError):
         self.payload = payload or {}
 
 
+def _require_result_list(result: dict, context: str) -> list:
+    items = result.get("list") or []
+    if not isinstance(items, list):
+        raise RuntimeError(f"Bybit {context} response list is invalid")
+    return items
+
+
 @dataclass(frozen=True)
 class BybitResponse:
     result: dict
@@ -122,7 +129,7 @@ class BybitClient:
 
     async def get_tickers(self, category: str = "linear", symbol: str | None = None) -> list[dict]:
         response = await self._get("/v5/market/tickers", {"category": category, "symbol": symbol})
-        return response.result.get("list") or []
+        return _require_result_list(response.result, "tickers")
 
     async def get_kline(
         self,
@@ -150,7 +157,7 @@ class BybitClient:
                 "end": end_ms,
             },
         )
-        return response.result.get("list") or []
+        return _require_result_list(response.result, f"{price_type} kline")
 
     async def get_funding_history(
         self,
@@ -257,4 +264,4 @@ class BybitClient:
         result = (
             await self._get("/v5/account/fee-rate", {"category": "linear", "symbol": symbol}, private=True)
         ).result
-        return result.get("list") or []
+        return _require_result_list(result, "fee-rate")

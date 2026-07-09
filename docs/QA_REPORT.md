@@ -1,7 +1,7 @@
-# QA report — 1.52.14
+# QA report — 1.52.15
 
 Date: 2026-07-09  
-Scope: `validated-cash-inputs`
+Scope: `bybit-list-payload-validation`
 
 ## Baseline before code changes
 
@@ -11,10 +11,12 @@ Scope: `validated-cash-inputs`
 | `python -m pip check` | FAILED | `moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0, but you have pillow 12.2.0.` |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
 | `python -m ruff check .` | UNAVAILABLE | `/opt/pyvenv/bin/python: No module named ruff` |
-| `python -m pytest -q` | FAILED | collection interrupted: `62 errors in 8.76s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
+| `python -m pytest -q` | FAILED | collection interrupted: `62 errors in 9.35s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
 | `node --check web/js/app.js` | PASSED | exit code 0 |
 | `python manage.py doctor` | SKIPPED | no safe configured PostgreSQL instance in sandbox |
 | `python manage.py test --require-integration` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
+| `python scripts/release_integrity.py --write` | PASSED | `Release integrity PASSED: 278 files checked, 278 manifest entries.` |
+| `python scripts/release_integrity.py` | PASSED | `Release integrity PASSED: 278 files checked, 278 manifest entries.` |
 
 Baseline full pytest counts: passed 0 / failed 0 / skipped 0 / xfailed 0 / errors 62 during collection.
 
@@ -23,18 +25,17 @@ Baseline full pytest counts: passed 0 / failed 0 / skipped 0 / xfailed 0 / error
 Command:
 
 ```bash
-python -m pytest -q \
-  tests/unit/test_risk_math.py::test_funding_cash_flow_rejects_negative_position_value \
-  tests/unit/test_risk_math.py::test_fee_cash_rejects_negative_fee_rate
+python -m pytest -q tests/unit/test_bybit_response_contract_2026_07_09.py
 ```
 
-Result on the unpatched code after adding the regression tests:
+Result on the unpatched code after adding the regression test:
 
 ```text
-FF [100%]
-Failed: DID NOT RAISE <class 'ValueError'>
-Failed: DID NOT RAISE <class 'ValueError'>
-2 failed in 0.28s
+FFF [100%]
+Failed: DID NOT RAISE <class 'RuntimeError'>
+Failed: DID NOT RAISE <class 'RuntimeError'>
+Failed: DID NOT RAISE <class 'RuntimeError'>
+3 failed in 0.55s
 ```
 
 ## Green evidence
@@ -42,29 +43,30 @@ Failed: DID NOT RAISE <class 'ValueError'>
 Targeted regression command:
 
 ```bash
-python -m pytest -q \
-  tests/unit/test_risk_math.py::test_funding_cash_flow_rejects_negative_position_value \
-  tests/unit/test_risk_math.py::test_fee_cash_rejects_negative_fee_rate
+python -m pytest -q tests/unit/test_bybit_response_contract_2026_07_09.py
 ```
 
 Result after patch:
 
 ```text
-.. [100%]
-2 passed in 0.11s
+... [100%]
+3 passed in 0.41s
 ```
 
-Full pure risk-math command:
+Related Bybit/client contract command:
 
 ```bash
-python -m pytest -q tests/unit/test_risk_math.py
+python -m pytest -q \
+  tests/unit/test_bybit_response_contract_2026_07_09.py \
+  tests/unit/test_execution_exchange_integrity_2026_07_01.py \
+  tests/unit/test_market_context_features_2026_07_05.py::test_open_interest_client_supports_bounded_historical_queries
 ```
 
 Result after patch:
 
 ```text
-................................ [100%]
-32 passed in 0.16s
+........ [100%]
+8 passed in 2.79s
 ```
 
 ## Post-check after patch
@@ -74,16 +76,18 @@ Result after patch:
 | `python -m pip check` | FAILED | same environment conflict: `moviepy 2.2.1` requires `pillow<12.0`, installed `pillow 12.2.0` |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
 | `python -m ruff check .` | UNAVAILABLE | `/opt/pyvenv/bin/python: No module named ruff` |
-| targeted regression pytest | PASSED | `2 passed in 0.11s` |
-| `python -m pytest -q tests/unit/test_risk_math.py` | PASSED | `32 passed in 0.16s` |
-| `python -m pytest -q` | FAILED | collection interrupted: `62 errors in 6.85s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
+| `python -m pytest -q tests/unit/test_bybit_response_contract_2026_07_09.py` | PASSED | `3 passed in 0.41s` |
+| related Bybit/client contract pytest | PASSED | `8 passed in 2.79s` |
+| `python -m pytest -q` | FAILED | collection interrupted: `62 errors in 6.77s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
 | `node --check web/js/app.js` | PASSED | exit code 0 |
+| `python -m alembic heads` | PASSED | `0018_inference_observations (head)` |
+| order create/amend/cancel/withdraw endpoint grep in `app scripts web` | PASSED | no forbidden endpoints found |
 | `python manage.py doctor` | SKIPPED | no safe configured PostgreSQL instance in sandbox |
 | `python manage.py test --require-integration` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
-| `python scripts/release_integrity.py --write` | PASSED | `Release integrity PASSED: 275 files checked, 275 manifest entries.` |
-| `python scripts/release_integrity.py` | PASSED | run after cache cleanup; `Release integrity PASSED: 275 files checked, 275 manifest entries.` |
+| `python scripts/release_integrity.py --write` | PASSED | `Release integrity PASSED: 278 files checked, 278 manifest entries.` |
+| `python scripts/release_integrity.py` | PASSED | `Release integrity PASSED: 278 files checked, 278 manifest entries.` |
 
-Post targeted counts: passed 32 / failed 0 / skipped 0 / xfailed 0 / errors 0.
+Post targeted counts: passed 8 / failed 0 / skipped 0 / xfailed 0 / errors 0.
 
 Post full pytest counts: passed 0 / failed 0 / skipped 0 / xfailed 0 / errors 62 during collection.
 

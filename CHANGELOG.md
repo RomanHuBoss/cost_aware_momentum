@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 1.52.15 — 2026-07-09
+
+Scope: `bybit-list-payload-validation`
+
+- Hardened read-only Bybit list extraction for tickers, kline, and fee-rate responses so malformed non-list `result.list` payloads fail closed instead of propagating downstream.
+- Added a pure async unit regression covering malformed list payloads across public market-data and private read-only account-cost endpoints.
+- No migration, `.env`, API schema, advisory-only, or Bybit endpoint changes.
+
 ## 1.52.14 — 2026-07-09
 
 Scope: `validated-cash-inputs`
