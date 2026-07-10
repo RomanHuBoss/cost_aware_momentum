@@ -45,3 +45,6 @@ Recommendation detail fields such as profile names, model/version strings, statu
 
 When a Bybit ticker reports `bid == ask`, the system treats the executable quote as invalid. The symbol may retain a last price for observation, but it is excluded from dynamic eligibility and cannot produce or validate an actionable plan until a strictly positive spread (`ask > bid`) is observed. Do not override this gate as a zero-cost market condition.
 
+## 1.52.24 authenticated operator surface
+
+After upgrade, anonymous requests to capital profiles, recommendations, trades, portfolio risk, detailed readiness/status, and `/api/v1/events` receive `401`. Log in through the UI or use `X-Operator-Token` for machine clients. Browser logout requires the current CSRF token and may return `403` when a stale tab or client omits it; re-authenticate rather than bypassing the check. Production deployments must use HTTPS with `COOKIE_SECURE=true`. Configure automated `/health/ready` probes with `X-Operator-Token`; keep `/health/live` for anonymous liveness only.

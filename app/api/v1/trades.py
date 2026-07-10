@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Response
 from sqlalchemy import select
 
-from app.api.deps import MutatingOperatorDep, SessionDep
+from app.api.deps import MutatingOperatorDep, OperatorDep, SessionDep
 from app.api.schemas import ManualEntryRequest, TradeCloseRequest
 from app.db.models import ExecutionPlan, Fill, ManualTrade, MarketSignal
 from app.risk.math import (
@@ -68,7 +68,11 @@ async def _cached_or_none(session, key, scope, payload):
 
 
 @router.get("")
-async def list_trades(session: SessionDep, status_filter: str | None = None) -> dict:
+async def list_trades(
+    session: SessionDep,
+    _operator: OperatorDep,
+    status_filter: str | None = None,
+) -> dict:
     query = select(ManualTrade).order_by(ManualTrade.entry_time.desc())
     if status_filter:
         query = query.where(ManualTrade.status == status_filter.upper())

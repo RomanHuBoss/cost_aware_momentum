@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from app.api.deps import OperatorDep
 from app.db.engine import SessionFactory
 from app.db.models import OutboxEvent
 
@@ -14,7 +15,11 @@ router = APIRouter(prefix="/api/v1", tags=["events"])
 
 
 @router.get("/events")
-async def events(request: Request, last_event_id: int = 0) -> StreamingResponse:
+async def events(
+    request: Request,
+    _operator: OperatorDep,
+    last_event_id: int = 0,
+) -> StreamingResponse:
     header_value = request.headers.get("last-event-id")
     cursor = int(header_value) if header_value and header_value.isdigit() else last_event_id
 

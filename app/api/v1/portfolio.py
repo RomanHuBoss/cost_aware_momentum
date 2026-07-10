@@ -6,7 +6,7 @@ from decimal import Decimal
 from fastapi import APIRouter
 from sqlalchemy import select
 
-from app.api.deps import SessionDep, SettingsDep
+from app.api.deps import OperatorDep, SessionDep, SettingsDep
 from app.db.models import (
     CapitalProfile,
     ExecutionPlan,
@@ -22,7 +22,11 @@ router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
 
 
 @router.get("/risk")
-async def portfolio_risk(session: SessionDep, settings: SettingsDep) -> dict:
+async def portfolio_risk(
+    session: SessionDep,
+    settings: SettingsDep,
+    _operator: OperatorDep,
+) -> dict:
     now = datetime.now(UTC)
     active_profile = (
         await session.execute(select(CapitalProfile).where(CapitalProfile.active.is_(True)).limit(1))

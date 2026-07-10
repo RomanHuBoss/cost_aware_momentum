@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.52.24 — 2026-07-10
+
+Scope: `operator-surface-auth`.
+
+- Required operator authentication for capital profiles, recommendations/details, manual trades, portfolio risk, detailed readiness/status, and the SSE outbox stream.
+- Preserved only the minimal liveness probe as anonymous operational health surface; login, static UI, glossary, and public market chart remain intentionally public.
+- Required authenticated CSRF protection for logout, preventing cross-site forced session termination.
+- Made production configuration fail closed when `COOKIE_SECURE=false`; paper/development local HTTP behavior remains configurable.
+- Added five red→green security regressions and synchronized operator/configuration/security documentation.
+- No Alembic migration, database semantics, response schema, model artifact, risk threshold, or Bybit endpoint change.
+
 ## 1.52.23 — 2026-07-10
 
 Scope: `locked-ticker-validation`.

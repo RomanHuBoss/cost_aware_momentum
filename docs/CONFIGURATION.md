@@ -31,3 +31,14 @@ No new `.env` variables are required. Existing orderbook settings remain unchang
 ## 1.52.21 changes
 
 No new `.env` variables are required. Existing mark/index synchronization remains enabled as before, but malformed partial mark/index kline rows now fail closed when only one of the optional volume/turnover fields is present. Five-field price-only mark/index rows remain supported.
+
+## 1.52.24 authentication changes
+
+No environment variable was renamed or added, but production validation is stricter:
+
+- `APP_MODE=production` requires `COOKIE_SECURE=true`; otherwise settings construction fails.
+- Browser access uses the signed `cam_session` cookie and `X-CSRF-Token` for mutating requests.
+- Machine clients and authenticated readiness probes should set a strong `OPERATOR_API_TOKEN` and send it as `X-Operator-Token`.
+- `COOKIE_SECURE=false` remains valid only outside production for local HTTP development/paper operation.
+
+After deployment, update the readiness probe to call `/health/ready` with `X-Operator-Token`; `/health/live` remains anonymous and may be used as the minimal liveness probe.

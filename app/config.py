@@ -585,6 +585,8 @@ class Settings(BaseSettings):
                 )
         if self.app_mode == "production":
             errors: list[str] = []
+            if not self.cookie_secure:
+                errors.append("COOKIE_SECURE must be true")
             if self.allow_demo_seed:
                 errors.append("ALLOW_DEMO_SEED must be false")
             if self.allow_baseline_model:

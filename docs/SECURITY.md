@@ -41,3 +41,6 @@ Recommendation detail data lists now escape label and value text before generate
 
 Locked ticker quotes (`best ask == best bid`) are no longer accepted as zero-spread executable evidence. They are removed from dynamic-universe eligibility, persisted without bid/ask execution fields, and rejected by the shared signal/plan/acceptance quote validator. This prevents malformed or transient external market data from understating execution friction.
 
+## 1.52.24 operator-surface authentication note
+
+Anonymous access is no longer permitted to capital profiles, recommendations/details, manual trades, portfolio risk, detailed readiness/status, or the SSE outbox stream. These routes require a valid signed operator session or `X-Operator-Token`. Logout is a mutating session action and now requires the same authentication plus CSRF for cookie-authenticated requests. Production startup fails closed when `COOKIE_SECURE=false`; local paper/development HTTP may retain `false`. `/health/live` intentionally remains anonymous and minimal.

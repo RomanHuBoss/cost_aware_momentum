@@ -9,7 +9,7 @@ from alembic.script import ScriptDirectory
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import desc, func, select
 
-from app.api.deps import SessionDep, SettingsDep
+from app.api.deps import OperatorDep, SessionDep, SettingsDep
 from app.db.health import current_revision, database_health
 from app.db.models import (
     CapitalProfile,
@@ -237,7 +237,7 @@ async def live() -> dict:
 
 
 @router.get("/health/ready")
-async def ready(session: SessionDep, settings: SettingsDep) -> dict:
+async def ready(session: SessionDep, settings: SettingsDep, _operator: OperatorDep) -> dict:
     checks: dict = {}
     try:
         checks["database"] = await database_health(session)
@@ -368,7 +368,7 @@ async def ready(session: SessionDep, settings: SettingsDep) -> dict:
 
 
 @router.get("/api/v1/status")
-async def status(session: SessionDep, settings: SettingsDep) -> dict:
+async def status(session: SessionDep, settings: SettingsDep, _operator: OperatorDep) -> dict:
     now = datetime.now(UTC)
     heartbeats = (await session.execute(select(ServiceHeartbeat))).scalars().all()
     jobs = (await session.execute(select(JobRun).order_by(desc(JobRun.started_at)).limit(20))).scalars().all()

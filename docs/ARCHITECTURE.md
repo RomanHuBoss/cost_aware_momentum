@@ -28,3 +28,6 @@ Exchange notional/maxQty caps are now distinct execution-risk constraints in siz
 
 Ticker-derived execution evidence uses one shared strict top-of-book invariant: bid and ask must be positive, finite, and `ask > bid`. Locked or crossed quotes are excluded from dynamic-universe eligibility; ticker ingestion retains a valid last price but stores no executable bid/ask; signal selection, plan construction, acceptance revalidation, entry-state rendering, and spread diagnostics fail closed through the shared validator.
 
+## 1.52.24 operator surface boundary
+
+The browser/operator data plane is private by default. Capital profiles, recommendations, trade journal, portfolio risk, detailed readiness/status, and the outbox SSE stream depend on `current_operator`; state-changing routes, including logout, depend on `require_csrf`. Authentication accepts either a signed same-site session cookie or the explicit `X-Operator-Token` machine credential. `/health/live` remains the only anonymous health probe and exposes no database, migration, model, worker, trainer, account, signal, or audit details.

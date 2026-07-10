@@ -205,7 +205,11 @@ async def test_portfolio_api_filters_manual_journal_to_active_profile() -> None:
     )
     session = SimpleNamespace(execute=AsyncMock(side_effect=[_Result(profile), _Result([])]))
 
-    result = await portfolio_risk(session, Settings(database_url="postgresql+psycopg://u:p@localhost/db"))
+    result = await portfolio_risk(
+        session,
+        Settings(database_url="postgresql+psycopg://u:p@localhost/db"),
+        "test-operator",
+    )
 
     journal_statement = str(session.execute.await_args_list[1].args[0])
     assert "execution_plans.profile_id" in journal_statement

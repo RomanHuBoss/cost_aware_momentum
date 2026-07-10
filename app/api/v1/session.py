@@ -5,7 +5,7 @@ import secrets
 
 from fastapi import APIRouter, HTTPException, Response, status
 
-from app.api.deps import SettingsDep, sign_session
+from app.api.deps import MutatingOperatorDep, SettingsDep, sign_session
 from app.api.schemas import LoginRequest
 
 router = APIRouter(prefix="/api/v1/session", tags=["session"])
@@ -39,7 +39,7 @@ async def login(payload: LoginRequest, response: Response, settings: SettingsDep
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict:
+async def logout(response: Response, _operator: MutatingOperatorDep) -> dict:
     response.delete_cookie("cam_session", path="/")
     response.delete_cookie("cam_csrf", path="/")
     return {"ok": True}

@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select, update
 
-from app.api.deps import MutatingOperatorDep, SessionDep, SettingsDep
+from app.api.deps import MutatingOperatorDep, OperatorDep, SessionDep, SettingsDep
 from app.api.schemas import CapitalProfileCreate, CapitalProfilePatch
 from app.api.serializers import profile_dict
 from app.config import Settings
@@ -77,7 +77,7 @@ def _policy_http_error(exc: TypeError | ValueError) -> HTTPException:
 
 
 @router.get("")
-async def list_profiles(session: SessionDep) -> dict:
+async def list_profiles(session: SessionDep, _operator: OperatorDep) -> dict:
     profiles = (
         (await session.execute(select(CapitalProfile).order_by(CapitalProfile.created_at))).scalars().all()
     )

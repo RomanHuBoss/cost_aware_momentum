@@ -10,7 +10,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app import __version__
-from app.api.deps import MutatingOperatorDep, SessionDep, SettingsDep
+from app.api.deps import MutatingOperatorDep, OperatorDep, SessionDep, SettingsDep
 from app.api.schemas import DecisionRequest, RecommendationExposureBatchRequest
 from app.api.serializers import counterfactual_outcome_dict, detail_dict, tile_dict
 from app.db.models import (
@@ -175,6 +175,7 @@ def recommendation_signal_query(
 @router.get("")
 async def list_recommendations(
     session: SessionDep,
+    _operator: OperatorDep,
     profile_id: UUID | None = None,
     symbol: str | None = None,
     include_expired: bool = False,
@@ -354,6 +355,7 @@ async def record_recommendation_exposures(
 async def recommendation_detail(
     signal_id: UUID,
     session: SessionDep,
+    _operator: OperatorDep,
     profile_id: UUID | None = None,
 ) -> dict:
     signal = await session.get(MarketSignal, signal_id)
