@@ -775,8 +775,12 @@ async function openDetail(signalId) {
   } catch (error) { toast(error.message, 'error'); }
 }
 
+function formatDataListValue(value) {
+  return escapeHtml(value ?? '—').replaceAll('\n', '<br>');
+}
+
 function dataList(rows) {
-  return `<dl class="data-list">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v ?? '—'}</dd>`).join('')}</dl>`;
+  return `<dl class="data-list">${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${formatDataListValue(v)}</dd>`).join('')}</dl>`;
 }
 
 function renderDetail() {
@@ -784,7 +788,7 @@ function renderDetail() {
   if (!d) return;
   let html = '';
   if (state.detailTab === 'plan') {
-    const tp = d.trading_plan.take_profits.map((x, i) => `TP${i + 1}: ${fmtPrice(x.price)} (${fmt(x.weight * 100, 0)}%)`).join('<br>');
+    const tp = d.trading_plan.take_profits.map((x, i) => `TP${i + 1}: ${fmtPrice(x.price)} (${fmt(x.weight * 100, 0)}%)`).join('\n');
     html = `<div class="detail-grid">
       <section class="detail-card"><h3>Уровни сделки</h3>${dataList([
         ['Направление', d.trading_plan.direction], ['Текущая цена', fmtPrice(d.current_price)],
@@ -825,9 +829,9 @@ function renderDetail() {
       ? `${fmt(planOutcome.estimated_net_pnl, 4)} USDT`
       : '—';
     const outcomeCard = outcome ? `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3>${dataList([
-      ['Исход первичного барьера', escapeHtml(outcome.outcome)], ['Цена выхода', fmtPrice(outcome.exit_price)],
+      ['Исход первичного барьера', outcome.outcome], ['Цена выхода', fmtPrice(outcome.exit_price)],
       ['Время исхода', new Date(outcome.exit_time).toLocaleString('ru-RU')], ['Неоднозначный часовой бар', outcome.ambiguous ? 'Да, консервативно SL' : 'Нет'],
-      ['Оценка плана', planOutcome ? escapeHtml(valuationLabels[planOutcome.valuation_status] || planOutcome.valuation_status) : 'Ожидает расчета'],
+      ['Оценка плана', planOutcome ? (valuationLabels[planOutcome.valuation_status] || planOutcome.valuation_status) : 'Ожидает расчета'],
       ['Оценочный net P&L', planOutcomePnl],
       ['Контрфактический результат', planOutcome?.counterfactual_r === null || planOutcome?.counterfactual_r === undefined ? '—' : `${fmt(planOutcome.counterfactual_r, 4)}R`],
     ])}<p class="section-note">Это автоматическая оценка TP1/SL/TIMEOUT по подтвержденным часовым свечам и сохраненным предположениям плана, а не фактический P&L ручного исполнения.</p></section>` : `<section class="detail-card" style="grid-column:1/-1"><h3>Контрфактический исход</h3><p>Еще не определен: горизонт не завершен, барьер не достигнут либо не хватает подтвержденной свечи.</p></section>`;

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.52.22 — 2026-07-09
+
+Scope: `frontend-data-list-escaping`.
+
+- Hardened frontend recommendation detail rendering so `dataList()` HTML-escapes both labels and values before inserting generated markup via `innerHTML`.
+- Preserved multi-line Take Profit display by converting escaped newline separators to `<br>` instead of passing raw HTML fragments through the generic data-list renderer.
+- Added a red→green frontend regression guarding against returning to raw `<dt>${k}</dt><dd>${v}</dd>` interpolation.
+- No Alembic migration, `.env`, public API schema, advisory-only, or Bybit endpoint changes.
+
 ## 1.52.21 — 2026-07-09
 
 Scope: `partial-mark-index-kline-validation`.

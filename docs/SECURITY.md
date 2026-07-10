@@ -32,3 +32,7 @@ Orderbook validation now rejects locked (`best_ask == best_bid`) as well as cros
 ## 1.52.21 market-data integrity note
 
 Mark/index kline validation now rejects partial OHLCV-like rows where one optional volume/turnover field is present without the other. This prevents downstream candle facts from combining exchange-provided values with synthetic placeholders except for the explicitly supported fully price-only mark/index shape.
+
+## 1.52.22 frontend escaping note
+
+Recommendation detail data lists now escape label and value text before generated markup is assigned to `innerHTML`. Intentional multi-line display uses escaped newline-to-`<br>` conversion, not raw user/DB-provided HTML.

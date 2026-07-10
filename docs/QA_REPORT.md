@@ -1,7 +1,7 @@
-# QA report — 1.52.21
+# QA report — 1.52.22
 
 Date: 2026-07-09  
-Scope: `partial-mark-index-kline-validation`
+Scope: `frontend-data-list-escaping`
 
 ## Baseline before code changes
 
@@ -11,9 +11,8 @@ Scope: `partial-mark-index-kline-validation`
 | `python -m pip check` | FAILED | `moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0, but you have pillow 12.2.0.` |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
 | `python -m ruff check .` | UNAVAILABLE | `/opt/pyvenv/bin/python: No module named ruff` |
-| `python -m pytest -q` | FAILED | `62 errors in 9.99s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
+| `python -m pytest -q` | FAILED | `62 errors in 8.88s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
 | `node --check web/js/app.js` | PASSED | exit code 0 |
-| `python -m alembic heads` | PASSED | `0018_inference_observations (head)` |
 | `python manage.py doctor` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
 | `python manage.py test --require-integration` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
 
@@ -21,47 +20,43 @@ Baseline full pytest counts: passed 0 / failed 0 / skipped 0 / xfailed 0 / error
 
 ## Red evidence
 
-The new regression was added before changing `app/services/market_data.py`.
+The new regression was added before changing `web/js/app.js`.
 
 Command:
 
 ```bash
-python -m pytest -q tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_partial_mark_index_ohlcv_rows
+python -m pytest -q tests/unit/test_frontend_html_escaping_2026_07_09.py
 ```
 
-Result on unpatched 1.52.20 code:
+Result on unpatched 1.52.21 code:
 
 ```text
-FAILED tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_partial_mark_index_ohlcv_rows - Failed: DID NOT RAISE <class 'ValueError'>
-1 failed in 2.98s
+FAILED tests/unit/test_frontend_html_escaping_2026_07_09.py::test_data_list_escapes_labels_and_values_before_inner_html_insertion - AssertionError: assert 'function formatDataListValue' in ...
+1 failed in 0.16s
 ```
 
-This proved that a mark/index kline row containing `volume` but missing paired `turnover` passed normalization and could become a persisted candle fact with synthetic zero turnover.
+This proved that the shared detail-list renderer had no central value formatter and still used raw label/value interpolation before `innerHTML` insertion.
 
 ## Green evidence
 
 New regression:
 
 ```bash
-python -m pytest -q tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_partial_mark_index_ohlcv_rows
+python -m pytest -q tests/unit/test_frontend_html_escaping_2026_07_09.py
 ```
 
 ```text
-1 passed in 2.59s
+1 passed in 0.08s
 ```
 
-Related candle validation subset:
+Related UI subset:
 
 ```bash
-python -m pytest -q \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_accept_mark_and_index_price_only_klines_without_volume_turnover \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_partial_mark_index_ohlcv_rows \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_still_reject_last_klines_missing_volume_turnover \
-  tests/unit/test_point_in_time_candle_integrity_2026_07_01.py::test_candle_values_reject_invalid_ohlcv_rows_before_persistence
+python -m pytest -q tests/unit/test_frontend_html_escaping_2026_07_09.py tests/unit/test_trainer_operator_ui.py
 ```
 
 ```text
-4 passed in 2.74s
+3 passed in 0.09s
 ```
 
 ## Post-check after code and documentation updates
@@ -71,14 +66,14 @@ python -m pytest -q \
 | `python -m pip check` | FAILED | `moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0, but you have pillow 12.2.0.` |
 | `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
 | `python -m ruff check .` | UNAVAILABLE | `/opt/pyvenv/bin/python: No module named ruff` |
-| `python -m pytest -q` | FAILED | `62 errors in 8.06s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
+| `python -m pytest -q` | FAILED | `62 errors in 7.05s`; representative error `ModuleNotFoundError: No module named 'psycopg'` |
 | `node --check web/js/app.js` | PASSED | exit code 0 |
 | `python -m alembic heads` | PASSED | `0018_inference_observations (head)` |
-| Targeted new regression | PASSED | `1 passed in 2.59s` |
-| Related candle subset | PASSED | `4 passed in 2.74s` |
-| Forbidden exchange write endpoint grep in `app scripts web` | PASSED | no matches |
-| `python scripts/release_integrity.py --write` | PASSED | `SHA256 manifest written`; `Release integrity PASSED: 290 files checked, 290 manifest entries.` |
-| `python scripts/release_integrity.py` | PASSED | `Release integrity PASSED: 290 files checked, 290 manifest entries.` |
+| Targeted new regression | PASSED | `1 passed in 0.07s` |
+| Related UI subset | PASSED | `3 passed in 0.10s` |
+| Forbidden exchange write endpoint grep in `app scripts web` | PASSED | no create/amend/cancel/withdraw exchange endpoint implementation found |
+| `python scripts/release_integrity.py --write` | PASSED | `Release integrity PASSED: 293 files checked, 293 manifest entries.` after cache cleanup |
+| `python scripts/release_integrity.py` | PASSED | `Release integrity PASSED: 293 files checked, 293 manifest entries.` |
 | `python manage.py doctor` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
 | `python manage.py test --require-integration` | SKIPPED | no safe configured PostgreSQL instance in sandbox and `psycopg` missing |
 

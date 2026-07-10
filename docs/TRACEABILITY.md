@@ -1,6 +1,6 @@
 # Traceability
 
-| Requirement / invariant | Evidence in 1.52.21 | Verification status |
+| Requirement / invariant | Evidence in 1.52.22 | Verification status |
 |---|---|---|
 | Advisory-only: no order create/amend/cancel/withdraw methods | `app/bybit/client.py`, `tests/unit/test_runtime_auth_config.py`; forbidden endpoint grep in `app scripts web` | Targeted grep passed after cache cleanup; full suite blocked by missing `psycopg` in sandbox |
 | Bybit malformed/stale list payloads must not masquerade as valid lists, including missing or null `result.list` | `app/bybit/client.py::_require_result_list`, `tests/unit/test_bybit_response_contract_2026_07_09.py` | Existing targeted regressions retained; not fully rerun here |
@@ -13,4 +13,5 @@
 | Safe position sizing never rounds risk upward | `app/risk/math.py`, `tests/unit/test_risk_math.py` | Existing coverage retained; not rerun in this narrow iteration |
 | Exchange cap is not min-order failure | `app/risk/math.py`, `tests/unit/test_risk_math.py::test_exchange_cap_block_is_not_reported_as_min_order` | Existing coverage retained; not rerun in this narrow iteration |
 | Orderbook/liquidity evidence must not accept locked or crossed top-of-book states | `app/risk/liquidity.py::validate_orderbook_levels`, `tests/unit/test_orderbook_execution_quality_2026_07_05.py::test_orderbook_normalization_rejects_locked_top_of_book` | Existing 1.52.20 coverage retained; not rerun in this narrow iteration |
-| Release evidence exists | `CHANGELOG.md`, `PATCH_1.52.21.md`, docs files, `SHA256SUMS` | Verified by `scripts/release_integrity.py --write` and `scripts/release_integrity.py` after cache cleanup |
+| Frontend generic detail-list rendering must not insert raw user/DB-provided labels or values through `innerHTML` | `web/js/app.js::formatDataListValue`, `web/js/app.js::dataList`, `tests/unit/test_frontend_html_escaping_2026_07_09.py` | New red→green regression passed; `node --check web/js/app.js` passed |
+| Release evidence exists | `CHANGELOG.md`, `PATCH_1.52.22.md`, docs files, `SHA256SUMS` | Verified by `scripts/release_integrity.py --write` and `scripts/release_integrity.py` after cache cleanup |

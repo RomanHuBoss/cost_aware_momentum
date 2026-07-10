@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.21: mark/index kline ingestion теперь fail-closed отклоняет частичные OHLCV-like строки, где присутствует volume без парного turnover. Полностью price-only mark/index rows по-прежнему принимаются с явными zero placeholders; обычные last candles сохраняют строгую OHLCV-валидацию. Миграций, новых `.env` variables, order execution capability и API-breaking changes нет.
+> Версия 1.52.22: frontend detail `dataList()` теперь экранирует labels/values перед вставкой через `innerHTML`, сохраняя переносы строк как `<br>` для безопасного отображения TP-list. Исправление закрывает XSS-risk для пользовательских/БД-полей вроде имени capital profile без изменения API, Alembic migrations, `.env` variables, advisory-only posture или Bybit endpoint set.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

@@ -2,6 +2,7 @@
 
 ## Implemented and unit-tested
 
+- Frontend recommendation detail data lists escape labels and values before `innerHTML` insertion; multi-line TP display uses escaped newline conversion instead of raw HTML field values.
 - Advisory-only Bybit client does not expose order create/amend/cancel/withdraw methods.
 - Bybit list-shaped endpoint payloads for tickers, kline, fee-rate, wallet balance, instruments, funding history, open interest, and positions are fail-closed validated for present, non-null JSON arrays before downstream use.
 - Bybit ordinary `last` kline rows are semantically validated before persistence: open/high/low/close must be positive finite decimals, volume/turnover must be non-negative finite decimals, and OHLC geometry must be internally consistent.

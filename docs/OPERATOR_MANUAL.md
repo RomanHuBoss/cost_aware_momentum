@@ -36,3 +36,7 @@ If previous logs showed `candle_validation_failed` with `missing kline.volume` d
 ## 1.52.21 mark/index candle-data note
 
 If mark/index backfill or synchronization reports a `volume and turnover must be both present or both absent` validation error, treat it as malformed exchange payload evidence. Do not override the gate; retry or backfill after data recovery.
+
+## 1.52.22 UI safety note
+
+Recommendation detail fields such as profile names, model/version strings, statuses, and audit values are displayed as text in generic data lists. The UI preserves Take Profit line breaks without allowing raw HTML in those fields.
