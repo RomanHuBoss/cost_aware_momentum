@@ -81,7 +81,7 @@ def test_signal_geometry_uses_artifact_barrier_multipliers() -> None:
 
     selected = select_cost_aware_scenario(
         predictions,
-        bid_price=D("100"),
+        bid_price=D("99.999999999999"),
         ask_price=D("100"),
         decision_anchor_price=D("100"),
         atr_pct=D("0.02"),
@@ -104,7 +104,7 @@ def test_signal_geometry_rejects_non_finite_barrier_multiplier() -> None:
     with pytest.raises(ValueError, match="positive and finite"):
         select_cost_aware_scenario(
             predictions,
-            bid_price=D("100"),
+            bid_price=D("99.999999999999"),
             ask_price=D("100"),
             decision_anchor_price=D("100"),
             atr_pct=D("0.02"),
@@ -120,10 +120,11 @@ def test_signal_geometry_is_conservatively_aligned_to_exchange_tick() -> None:
     )
     selected = select_cost_aware_scenario(
         predictions,
-        bid_price=D("100"),
+        bid_price=D("99.5"),
         ask_price=D("100"),
         decision_anchor_price=D("100"),
         atr_pct=D("0.013"),
+        entry_zone_atr_fraction=D("0.5"),
         costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
         stop_atr_multiplier=1.7,
         tp_atr_multiplier=2.3,
@@ -146,9 +147,10 @@ def test_short_signal_geometry_uses_conservative_tick_rounding() -> None:
     selected = select_cost_aware_scenario(
         predictions,
         bid_price=D("100"),
-        ask_price=D("100"),
+        ask_price=D("100.5"),
         decision_anchor_price=D("100"),
         atr_pct=D("0.013"),
+        entry_zone_atr_fraction=D("0.5"),
         costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
         stop_atr_multiplier=1.7,
         tp_atr_multiplier=2.3,

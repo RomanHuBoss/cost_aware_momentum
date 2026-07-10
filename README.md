@@ -1,6 +1,6 @@
 # Cost-aware hourly ML momentum
 
-> Версия 1.52.22: frontend detail `dataList()` теперь экранирует labels/values перед вставкой через `innerHTML`, сохраняя переносы строк как `<br>` для безопасного отображения TP-list. Исправление закрывает XSS-risk для пользовательских/БД-полей вроде имени capital profile без изменения API, Alembic migrations, `.env` variables, advisory-only posture или Bybit endpoint set.
+> Версия 1.52.23: locked ticker quote (`bid == ask`) теперь отклоняется fail-closed во всех ticker-based путях. Такая котировка не участвует в dynamic-universe selection, не сохраняется как исполнимый bid/ask и не может пройти market-signal policy, plan construction или acceptance revalidation. API, Alembic migrations, `.env`, model artifacts, risk thresholds и advisory-only Bybit endpoint set не изменены.
 
 Локальная advisory-only система для анализа linear USDT perpetuals Bybit. Она получает рыночные данные, строит часовые признаки, оценивает сценарии LONG/SHORT, учитывает комиссии, проскальзывание, funding, риск и портфельные ограничения и показывает оператору исполнимый план. Приложение не размещает, не изменяет и не отменяет биржевые ордера.
 

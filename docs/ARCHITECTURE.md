@@ -23,3 +23,8 @@ The system is a PostgreSQL-only, human-in-the-loop advisory platform for Bybit l
 ## 1.52.13 note
 
 Exchange notional/maxQty caps are now distinct execution-risk constraints in sizing diagnostics. They are not treated as minimum-order failures.
+
+## 1.52.23 ticker quote integrity note
+
+Ticker-derived execution evidence uses one shared strict top-of-book invariant: bid and ask must be positive, finite, and `ask > bid`. Locked or crossed quotes are excluded from dynamic-universe eligibility; ticker ingestion retains a valid last price but stores no executable bid/ask; signal selection, plan construction, acceptance revalidation, entry-state rendering, and spread diagnostics fail closed through the shared validator.
+

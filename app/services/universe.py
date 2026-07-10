@@ -163,7 +163,7 @@ def _decimal(value: object) -> Decimal | None:
 
 
 def _spread_bps_from_prices(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
-    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask <= bid:
         return None
     mid = (bid + ask) / Decimal("2")
     if mid <= 0:

@@ -1232,7 +1232,7 @@ async def sync_tickers(
             continue
         bid_price = _positive_decimal_or_none(item.get("bid1Price"))
         ask_price = _positive_decimal_or_none(item.get("ask1Price"))
-        if bid_price is None or ask_price is None or ask_price < bid_price:
+        if bid_price is None or ask_price is None or ask_price <= bid_price:
             bid_price = None
             ask_price = None
         values_list.append(

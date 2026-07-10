@@ -2,6 +2,7 @@
 
 ## Implemented and unit-tested
 
+- Ticker top-of-book evidence is fail-closed across ingestion, dynamic-universe selection, market-signal policy, plan construction, acceptance revalidation, entry-state rendering, and spread diagnostics: bid/ask must be positive, finite, and strictly unlocked (`ask > bid`).
 - Frontend recommendation detail data lists escape labels and values before `innerHTML` insertion; multi-line TP display uses escaped newline conversion instead of raw HTML field values.
 - Advisory-only Bybit client does not expose order create/amend/cancel/withdraw methods.
 - Bybit list-shaped endpoint payloads for tickers, kline, fee-rate, wallet balance, instruments, funding history, open interest, and positions are fail-closed validated for present, non-null JSON arrays before downstream use.

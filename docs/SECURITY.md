@@ -36,3 +36,8 @@ Mark/index kline validation now rejects partial OHLCV-like rows where one option
 ## 1.52.22 frontend escaping note
 
 Recommendation detail data lists now escape label and value text before generated markup is assigned to `innerHTML`. Intentional multi-line display uses escaped newline-to-`<br>` conversion, not raw user/DB-provided HTML.
+
+## 1.52.23 ticker integrity note
+
+Locked ticker quotes (`best ask == best bid`) are no longer accepted as zero-spread executable evidence. They are removed from dynamic-universe eligibility, persisted without bid/ask execution fields, and rejected by the shared signal/plan/acceptance quote validator. This prevents malformed or transient external market data from understating execution friction.
+

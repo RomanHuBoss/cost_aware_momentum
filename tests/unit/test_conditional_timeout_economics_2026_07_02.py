@@ -81,7 +81,7 @@ def test_signal_policy_uses_scenario_specific_timeout_return_r() -> None:
     selected = select_cost_aware_scenario(
         predictions,
         bid_price=D("100"),
-        ask_price=D("100"),
+        ask_price=D("100.000000000001"),
         decision_anchor_price=D("100"),
         atr_pct=D("0.02"),
         costs=CostScenario(D("0"), D("0"), D("0"), D("0")),

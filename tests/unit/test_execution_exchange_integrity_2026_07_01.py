@@ -28,18 +28,19 @@ def _directional_predictions() -> tuple[Prediction, Prediction]:
 def test_entry_zone_rounding_never_expands_beyond_continuous_policy_band() -> None:
     selected = select_cost_aware_scenario(
         _directional_predictions(),
-        bid_price=D("100"),
+        bid_price=D("99.5"),
         ask_price=D("100"),
         decision_anchor_price=D("100"),
         atr_pct=D("0.02"),
+        entry_zone_atr_fraction=D("0.33"),
         costs=CostScenario(D("0"), D("0"), D("0"), D("0")),
-        tick_size=D("1"),
+        tick_size=D("0.5"),
     )
 
-    # Continuous policy band is [99.76, 100.24].  The only executable tick inside
-    # that interval is 100.  Tick rounding must not widen the accepted entry set.
-    assert selected.entry_low == D("100")
-    assert selected.entry_high == D("100")
+    # Continuous policy band is [99.34, 100.66].  Conservative tick rounding
+    # contracts it to [99.5, 100.5] and never expands the accepted entry set.
+    assert selected.entry_low == D("99.5")
+    assert selected.entry_high == D("100.5")
 
 
 @pytest.mark.asyncio

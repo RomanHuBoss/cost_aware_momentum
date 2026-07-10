@@ -348,7 +348,7 @@ def validated_bid_ask(
     bid_price: Decimal | None,
     ask_price: Decimal | None,
 ) -> tuple[Decimal, Decimal]:
-    """Return a finite, positive, non-crossed top-of-book quote."""
+    """Return a finite, positive, unlocked and non-crossed top-of-book quote."""
 
     try:
         bid = positive_finite_decimal(bid_price, "bid_price") if bid_price is not None else None
@@ -357,8 +357,8 @@ def validated_bid_ask(
         raise ValueError(f"Current executable bid/ask quote is invalid: {exc}") from exc
     if bid is None or ask is None:
         raise ValueError("Current executable bid/ask quote is missing or invalid")
-    if ask < bid:
-        raise ValueError("Current executable bid/ask quote is crossed")
+    if ask <= bid:
+        raise ValueError("Current executable bid/ask quote is locked or crossed")
     return bid, ask
 
 

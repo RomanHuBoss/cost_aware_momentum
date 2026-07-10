@@ -40,3 +40,8 @@ If mark/index backfill or synchronization reports a `volume and turnover must be
 ## 1.52.22 UI safety note
 
 Recommendation detail fields such as profile names, model/version strings, statuses, and audit values are displayed as text in generic data lists. The UI preserves Take Profit line breaks without allowing raw HTML in those fields.
+
+## 1.52.23 locked ticker note
+
+When a Bybit ticker reports `bid == ask`, the system treats the executable quote as invalid. The symbol may retain a last price for observation, but it is excluded from dynamic eligibility and cannot produce or validate an actionable plan until a strictly positive spread (`ask > bid`) is observed. Do not override this gate as a zero-cost market condition.
+

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.52.23 — 2026-07-10
+
+Scope: `locked-ticker-validation`.
+
+- Rejected locked ticker top-of-book quotes (`ask == bid`) in the shared executable bid/ask validator used by signal selection, plan construction, acceptance revalidation, entry-state rendering, and spread diagnostics.
+- Excluded locked ticker quotes from dynamic-universe eligibility instead of treating zero spread as valid executable evidence.
+- Preserved the last price while nulling locked bid/ask fields during ticker persistence, preventing an unsafe quote from becoming execution evidence.
+- Added four red→green regressions covering signal policy, acceptance, universe selection, and ticker ingestion.
+- No Alembic migration, `.env`, public API schema, model-artifact contract, risk threshold, or Bybit endpoint changes.
+
 ## 1.52.22 — 2026-07-09
 
 Scope: `frontend-data-list-escaping`.
