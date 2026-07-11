@@ -50,6 +50,22 @@ settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
+RETRYABLE_INFERENCE_DATA_REASON_CODES = frozenset(
+    {
+        "missing_ticker",
+        "stale_ticker",
+        "missing_instrument_spec",
+        "insufficient_candle_history",
+        "incomplete_feature_vector",
+        "missing_decision_candle",
+        "stale_candle_cutoff",
+        "incomplete_market_context",
+        "missing_executable_bid_ask",
+        "missing_funding_snapshot",
+        "unknown_funding_interval",
+    }
+)
+
 @dataclass(frozen=True)
 class DecisionPublicationWindow:
     event_time: datetime
@@ -166,14 +182,35 @@ def should_retry_incomplete_coverage(
 
 
 def should_retry_incomplete_inference(details: dict[str, object], *, max_retries: int) -> bool:
-    """Return true only when some symbols lack a terminal inference outcome.
+    """Return true when inference coverage or transient data evidence is incomplete.
 
     A completed symbol may legitimately end as PUBLISHED, EXISTING_CURRENT_HOUR
-    or SKIPPED (for example NO_TRADE, spread, stale data or missing context).
-    Recommendation count is therefore not processing coverage.  New job evidence
-    records one terminal outcome per selected symbol; older details fall back to
-    the historical published/existing accounting for compatibility.
+    or a non-retryable SKIPPED policy outcome. A data-availability skip remains
+    retryable while the immutable publication window is open because the preceding
+    market-close job can still acquire the exact candle/context/quote on its own
+    bounded retry. Spread, entry-zone, model, drift, and economics rejects are not
+    retried, so this recovery path cannot wait for a more favourable market state.
+
+    Recommendation count is not processing coverage. New job evidence records one
+    terminal outcome per selected symbol; older details fall back to the historical
+    published/existing accounting for compatibility.
     """
+
+    try:
+        retry_count = int(details.get("inference_retry_count", 0))
+    except (TypeError, ValueError):
+        return False
+    if retry_count >= max_retries:
+        return False
+
+    outcomes = details.get("symbol_outcomes")
+    if isinstance(outcomes, list) and any(
+        isinstance(outcome, dict)
+        and outcome.get("terminal_state") == "SKIPPED"
+        and str(outcome.get("reason_code") or "") in RETRYABLE_INFERENCE_DATA_REASON_CODES
+        for outcome in outcomes
+    ):
+        return True
 
     covered_keys = (
         ("symbol_outcome_count",)

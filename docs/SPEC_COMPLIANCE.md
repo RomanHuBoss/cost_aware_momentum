@@ -2,6 +2,7 @@
 
 ## Implemented and unit-tested
 
+- Hourly inference retries explicit transient market-data availability outcomes within the unchanged publication window and bounded retry limit; policy/market/model/drift/economics rejects remain terminal.
 - Operator authentication protects capital profiles, recommendations/details, manual trades, portfolio risk, detailed readiness/status, and the SSE outbox stream.
 - State-changing operator routes use authenticated CSRF; logout is included in that contract.
 - Production settings reject `COOKIE_SECURE=false`; local non-production HTTP remains configurable.
@@ -30,4 +31,4 @@
 
 ## Current verification limitations
 
-A clean isolated virtual environment completed dependency, compile, Ruff, JavaScript syntax, Alembic-head, and the full non-integration pytest suite. PostgreSQL integration tests and `manage.py doctor` were not run because no safe `TEST_DATABASE_URL` or local deployment database was available. Host-Python dependency failures were recorded separately and were not used as release evidence. Real TLS/session-cookie transport and real proxy health probes were not exercised.
+A clean isolated virtual environment completed dependency, compile, Ruff, JavaScript syntax, Alembic-head, and the full non-integration pytest suite. PostgreSQL integration tests and `manage.py doctor` were not run because no safe `TEST_DATABASE_URL` or local deployment database was available. Real Bybit delay/rate-limit incidence and the user's deployed JobRun/database evidence were not available, so this release proves the recovery contract but does not claim it was the only cause of the observed two-day absence.

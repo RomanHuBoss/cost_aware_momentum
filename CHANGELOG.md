@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.52.25 — 2026-07-11
+
+Scope: `transient-inference-retry`.
+
+- Fixed hourly inference recovery so a complete `SKIPPED` outcome caused by transient market-data availability remains retryable within the immutable publication window.
+- Kept retries bounded by the existing cooldown and five-attempt limit; stale-window checks still block late publication.
+- Kept spread, entry-zone, model, drift, and economics rejects terminal, preventing retries from waiting for more favorable market conditions.
+- Added three regressions covering transient retry, policy-skip finality, and retry exhaustion.
+- No Alembic migration, `.env`, API schema, model artifact, strategy/risk threshold, or Bybit endpoint change.
+
 ## 1.52.24 — 2026-07-10
 
 Scope: `operator-surface-auth`.

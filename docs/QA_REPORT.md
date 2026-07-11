@@ -1,76 +1,87 @@
-# QA report — 1.52.24
+# QA report — 1.52.25
 
-Date: 2026-07-10  
-Scope: `operator-surface-auth`
+Date: 2026-07-11  
+Scope: `transient-inference-retry`
 
 ## Baseline before code changes
 
-The host Python environment was incomplete for this project. Its failures were recorded rather than hidden. A clean temporary project virtual environment was installed from `.[dev]`, and the isolated baseline completed before production code changes.
-
-### Host environment preflight
+### Host runtime
 
 | Command | Status | Exact result / note |
 |---|---:|---|
-| `python --version` | PASSED | `Python 3.13.5` |
-| `python -m pip check` | FAILED | unrelated host conflict: `moviepy 2.2.1` requires `pillow<12.0`, host had `pillow 12.2.0` |
-| `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
-| `python -m ruff check .` | UNAVAILABLE | host interpreter had no `ruff` module |
-| `python -m pytest -q` | FAILED | collection stopped with `62 errors`; representative cause `ModuleNotFoundError: No module named 'psycopg'` |
-| `node --check web/js/app.js` | PASSED | exit code 0 |
-
-### Isolated project environment baseline
-
-| Command | Status | Exact result / note |
-|---|---:|---|
-| `python --version` | PASSED | `Python 3.13.5`; project requires `>=3.12` |
+| `python --version` | PASSED | `Python 3.12.13` |
 | `python -m pip check` | PASSED | `No broken requirements found.` |
-| `python -m compileall -q app scripts tests manage.py` | PASSED | exit code 0 |
-| `python -m ruff check .` | PASSED | `All checks passed!` |
-| `python -m pytest -q` | PASSED | `909 passed, 8 skipped in 24.37s` |
-| `node --check web/js/app.js` | PASSED | exit code 0 |
-| `python -m alembic heads` | PASSED | one head: `0018_inference_observations (head)` |
-| `python manage.py doctor` | SKIPPED | no safe configured PostgreSQL deployment in the sandbox |
-| `python manage.py test --require-integration` | SKIPPED | `TEST_DATABASE_URL` was not configured |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
+| `python -m ruff check .` | UNAVAILABLE | host runtime had no `ruff` module |
+| `python -m pytest -q` | UNAVAILABLE | host runtime had no `pytest` module |
+| `node --check web/js/app.js` | PASSED | exit 0 |
 
-Baseline counts: passed 909 / failed 0 / skipped 8 / xfailed 0 / errors 0. The eight skips are PostgreSQL integration cases.
+### Isolated project environment
+
+The first raw isolated-suite run inherited a host SOCKS proxy and failed during `httpx.AsyncClient` construction because optional `socksio` was unavailable: `24 failed, 890 passed, 8 skipped`. With proxy variables removed for hermetic unit execution, the pre-change source baseline was:
+
+| Command | Status | Exact result / note |
+|---|---:|---|
+| `python -m pip check` | PASSED | `No broken requirements found.` |
+| `python -m compileall -q app scripts tests manage.py` | PASSED | exit 0 |
+| `python -m ruff check .` | PASSED | `All checks passed!` |
+| `python -m pytest -q` | PASSED | `914 passed, 8 skipped in 10.63s` |
+| `node --check web/js/app.js` | PASSED | exit 0 |
+| `python -m alembic heads` | PASSED | one head: `0018_inference_observations (head)` |
+| `python manage.py doctor` | SKIPPED | no deployment `.env` or safe PostgreSQL database |
+| `python manage.py test --require-integration` | SKIPPED | no safe `TEST_DATABASE_URL` |
+
+Controlled baseline counts: 914 passed / 0 failed / 8 skipped / 0 xfailed / 0 errors.
 
 ## Red evidence
 
-Five tests were added in `tests/unit/test_operator_surface_security_2026_07_10.py` before production changes:
+The regression was added before the production change:
 
 ```bash
-python -m pytest -q tests/unit/test_operator_surface_security_2026_07_10.py
+python -m pytest -q \
+  tests/unit/test_inference_retry.py::test_complete_hourly_inference_retries_transient_market_data_skip
 ```
 
-Unpatched 1.52.23 result:
+Unpatched 1.52.24 result:
 
 ```text
-FAILED test_sensitive_financial_read_endpoints_require_operator_authentication
-FAILED test_operational_status_endpoints_require_operator_authentication
-FAILED test_outbox_event_stream_requires_operator_authentication
-FAILED test_production_requires_secure_authentication_cookies
-FAILED test_logout_requires_authenticated_csrf_protection
-5 failed in 6.30s
+FAILED test_complete_hourly_inference_retries_transient_market_data_skip
+AssertionError: assert False
+1 failed in 1.60s
 ```
 
-The route failures showed only storage/settings dependencies or no dependencies; production settings did not raise for `COOKIE_SECURE=false`; logout had no `require_csrf` dependency.
+The failure proves that complete terminal coverage made `missing_decision_candle` non-retryable.
 
 ## Green evidence
 
-After the minimal patch:
+After the minimal production fix:
 
 ```text
-5 passed in 6.44s
+1 passed in 1.28s
 ```
 
-The full suite initially found one pre-existing test that directly called the newly protected `portfolio_risk()` handler without FastAPI dependency injection. That test was updated to pass a synthetic authenticated operator value; production authentication was not weakened.
-
-Current full-suite result before final packaging:
+Retry-contract file:
 
 ```text
-914 passed, 8 skipped in 22.21s
+6 passed in 1.23s
+```
+
+Related runner/scheduling/candle/ticker subset:
+
+```text
+26 passed in 1.40s
+```
+
+Intermediate full suite after code and test changes:
+
+```text
+917 passed, 8 skipped in 10.96s
 ```
 
 ## Post-check
 
-Final exact command results are recorded in `docs/ITERATION_REPORT_2026-07-10_operator-surface-auth.md`. Release integrity passed for 298 files, `unzip -t` passed, and clean re-extraction produced exactly one root with a second passing integrity check. PostgreSQL integration, real TLS, and live reverse-proxy/session behavior remain explicitly unverified.
+Final dependency, compile, Ruff, pytest, JavaScript syntax, Alembic-head, version, forbidden endpoint/artifact, manifest, ZIP integrity, clean re-extraction, and changed-content checks were completed. Release integrity passed for 300 eligible files and 300 manifest entries; exact archive identity is provided in the final handoff.
+
+Final non-integration counts: 917 passed / 0 failed / 8 skipped / 0 xfailed / 0 errors.
+
+PostgreSQL integration tests, `manage.py doctor`, real Bybit forward delay/rate-limit behavior, and the user's deployed `JobRun`/log evidence were not available and are not claimed.

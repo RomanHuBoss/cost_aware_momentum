@@ -31,3 +31,7 @@ Ticker-derived execution evidence uses one shared strict top-of-book invariant: 
 ## 1.52.24 operator surface boundary
 
 The browser/operator data plane is private by default. Capital profiles, recommendations, trade journal, portfolio risk, detailed readiness/status, and the outbox SSE stream depend on `current_operator`; state-changing routes, including logout, depend on `require_csrf`. Authentication accepts either a signed same-site session cookie or the explicit `X-Operator-Token` machine credential. `/health/live` remains the only anonymous health probe and exposes no database, migration, model, worker, trainer, account, signal, or audit details.
+
+## 1.52.25 transient inference recovery
+
+`hourly_inference` still records one outcome for every selected symbol. A `SKIPPED` outcome is terminal when it represents policy, spread, entry-zone, model, drift, or economics evidence. Explicit market-data availability outcomes remain bounded-retryable while the existing publication window is open, allowing the preceding market-close/data-refresh cycle to acquire delayed evidence without changing the decision time or weakening a gate.

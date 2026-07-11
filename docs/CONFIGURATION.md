@@ -42,3 +42,7 @@ No environment variable was renamed or added, but production validation is stric
 - `COOKIE_SECURE=false` remains valid only outside production for local HTTP development/paper operation.
 
 After deployment, update the readiness probe to call `/health/ready` with `X-Operator-Token`; `/health/live` remains anonymous and may be used as the minimal liveness probe.
+
+## 1.52.25 inference retry behavior
+
+No environment variable was added or changed. Transient data-availability skips reuse the existing `MARKET_POLL_SECONDS` cooldown, five-attempt worker limit, and `MAX_SIGNAL_PUBLICATION_DELAY_SECONDS` boundary. Increasing the publication window or lowering market/risk/model thresholds is not required and is not part of this patch.

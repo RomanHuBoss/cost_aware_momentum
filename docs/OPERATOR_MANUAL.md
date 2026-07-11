@@ -48,3 +48,7 @@ When a Bybit ticker reports `bid == ask`, the system treats the executable quote
 ## 1.52.24 authenticated operator surface
 
 After upgrade, anonymous requests to capital profiles, recommendations, trades, portfolio risk, detailed readiness/status, and `/api/v1/events` receive `401`. Log in through the UI or use `X-Operator-Token` for machine clients. Browser logout requires the current CSRF token and may return `403` when a stale tab or client omits it; re-authenticate rather than bypassing the check. Production deployments must use HTTPS with `COOKIE_SECURE=true`. Configure automated `/health/ready` probes with `X-Operator-Token`; keep `/health/live` for anonymous liveness only.
+
+## 1.52.25 delayed-data retry note
+
+When the first hourly inference pass reports a temporary data-availability reason such as `missing_decision_candle` or `incomplete_market_context`, the worker now retries that exact decision on the existing cooldown, up to five times and only inside the configured publication window. A spread, entry-zone, model, drift, economics, or expired-window rejection is not retried. Use the latest `hourly_inference` diagnostics to distinguish “data still arriving” from a deliberate `NO TRADE`/blocked decision.

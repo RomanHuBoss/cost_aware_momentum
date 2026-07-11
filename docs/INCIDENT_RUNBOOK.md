@@ -19,3 +19,11 @@ For `BLOCKED_EXCHANGE` or exchange-limited `LIMITED` plans:
 - verify the latest instrument-spec snapshot source time;
 - do not round quantity upward to bypass a cap;
 - treat the event as `RISK_EXECUTION` attrition evidence.
+
+## No recommendations after an hourly decision
+
+1. Inspect authenticated `/api/v1/status` and the latest `hourly_inference` `skip_counts`, `symbol_outcomes`, `inference_retry_count`, and `publication_boundary`.
+2. Treat delayed candle/context/ticker/spec reason codes as data incidents. Release 1.52.25 retries those reasons at most five times and only while the original decision remains publishable.
+3. Do not override spread, entry-zone, model, drift, economics, or stale-publication rejects; they intentionally remain terminal for that decision hour.
+4. If retries are exhausted, preserve the exact JobRun evidence and check market-close coverage, Bybit errors/rate limits, worker duration, database latency, and clock synchronization.
+5. Do not extend the publication window or weaken thresholds merely to increase recommendation count.
